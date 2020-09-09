@@ -111,12 +111,9 @@ type LibraryPath struct {
 // LibraryPaths is a map from library name to on-host and on-device paths to its DEX jar.
 type LibraryPaths map[string]*LibraryPath
 
-// Add a new path to the map of library paths, unless a path for this library already exists.
-func (libPaths LibraryPaths) AddLibraryPath(ctx android.PathContext, lib *string, hostPath, installPath android.Path) {
-	if lib == nil {
-		return
-	}
-	if _, present := libPaths[*lib]; !present {
+// Add a new library path to the map, unless a path for this library already exists.
+func (libPaths LibraryPaths) addLibraryPath(ctx android.PathContext, lib string, hostPath, installPath android.Path) {
+	if _, present := libPaths[lib]; !present {
 		var devicePath string
 		if installPath != nil {
 			devicePath = android.InstallPathToOnDevicePath(ctx, installPath.(android.InstallPath))
@@ -127,9 +124,36 @@ func (libPaths LibraryPaths) AddLibraryPath(ctx android.PathContext, lib *string
 			// but we cannot use if for dexpreopt.
 			devicePath = UnknownInstallLibraryPath
 		}
-		libPaths[*lib] = &LibraryPath{hostPath, devicePath}
+		libPaths[lib] = &LibraryPath{hostPath, devicePath}
 	}
-	return
+}
+
+// Add a new library path to the map. Ensure that the build path to the library exists.
+func (libPaths LibraryPaths) AddLibraryPath(ctx android.PathContext, lib string, hostPath, installPath android.Path) {
+	if hostPath != nil && installPath != nil {
+		// Add a library only if the build and install path to it is known.
+		libPaths.addLibraryPath(ctx, lib, hostPath, installPath)
+	} else if ctx.Config().AllowMissingDependencies() {
+		// If missing dependencies are allowed, the build shouldn't fail when a <uses-library> is
+		// not found. However, this is likely to result is disabling dexpreopt, as it won't be
+		// possible to construct class loader context without on-host and on-device library paths.
+	} else {
+		// Error on libraries with unknown paths.
+		if hostPath == nil {
+			android.ReportPathErrorf(ctx, "unknown build path to <uses-library> '%s'", lib)
+		} else {
+			android.ReportPathErrorf(ctx, "unknown install path to <uses-library> '%s'", lib)
+		}
+	}
+}
+
+// Add a new library path to the map, if the library exists (name is not nil).
+func (libPaths LibraryPaths) MaybeAddLibraryPath(ctx android.PathContext, lib *string, hostPath, installPath android.Path) {
+	if lib != nil {
+		// Don't check the build paths, add in any case. Some libraries may be missing from the
+		// build, but their names still need to be added to <uses-library> tags in the manifest.
+		libPaths.addLibraryPath(ctx, *lib, hostPath, installPath)
+	}
 }
 
 // Add library paths from the second map to the first map (do not override existing entries).

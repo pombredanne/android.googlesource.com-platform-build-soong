@@ -26,6 +26,7 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
+	"android/soong/bpf"
 	"android/soong/cc"
 	prebuilt_etc "android/soong/etc"
 	"android/soong/java"
@@ -41,6 +42,9 @@ const (
 	imageApexType     = "image"
 	zipApexType       = "zip"
 	flattenedApexType = "flattened"
+
+	ext4FsType = "ext4"
+	f2fsFsType = "f2fs"
 )
 
 type dependencyTag struct {
@@ -63,6 +67,7 @@ var (
 	usesTag        = dependencyTag{name: "uses"}
 	androidAppTag  = dependencyTag{name: "androidApp", payload: true}
 	rroTag         = dependencyTag{name: "rro", payload: true}
+	bpfTag         = dependencyTag{name: "bpf", payload: true}
 
 	apexAvailBaseline = makeApexAvailableBaseline()
 
@@ -747,18 +752,6 @@ func markPlatformAvailability(mctx android.BottomUpMutatorContext) {
 	if am, ok := mctx.Module().(android.ApexModule); ok {
 		availableToPlatform := am.AvailableFor(android.AvailableToPlatform)
 
-		// In a rare case when a lib is marked as available only to an apex
-		// but the apex doesn't exist. This can happen in a partial manifest branch
-		// like master-art. Currently, libstatssocket in the stats APEX is causing
-		// this problem.
-		// Include the lib in platform because the module SDK that ought to provide
-		// it doesn't exist, so it would otherwise be left out completely.
-		// TODO(b/154888298) remove this by adding those libraries in module SDKS and skipping
-		// this check for libraries provided by SDKs.
-		if !availableToPlatform && !android.InAnyApex(am.Name()) {
-			availableToPlatform = true
-		}
-
 		// If any of the dep is not available to platform, this module is also considered
 		// as being not available to platform even if it has "//apex_available:platform"
 		mctx.VisitDirectDeps(func(child android.Module) {
@@ -970,6 +963,9 @@ type apexBundleProperties struct {
 	// List of prebuilt files that are embedded inside this APEX bundle
 	Prebuilts []string
 
+	// List of BPF programs inside APEX
+	Bpfs []string
+
 	// Name of the apex_key module that provides the private key to sign APEX
 	Key *string
 
@@ -1040,6 +1036,10 @@ type apexBundleProperties struct {
 	// Should be only used in non-system apexes (e.g. vendor: true).
 	// Default is false.
 	Use_vndk_as_stable *bool
+
+	// The type of filesystem to use for an image apex. Either 'ext4' or 'f2fs'.
+	// Default 'ext4'.
+	Payload_fs_type *string
 }
 
 type apexTargetBundleProperties struct {
@@ -1247,6 +1247,24 @@ func (af *apexFile) AvailableToPlatform() bool {
 	return false
 }
 
+type fsType int
+
+const (
+	ext4 fsType = iota
+	f2fs
+)
+
+func (f fsType) string() string {
+	switch f {
+	case ext4:
+		return ext4FsType
+	case f2fs:
+		return f2fsFsType
+	default:
+		panic(fmt.Errorf("unknown APEX payload type %d", f))
+	}
+}
+
 type apexBundle struct {
 	android.ModuleBase
 	android.DefaultableModuleBase
@@ -1312,6 +1330,8 @@ type apexBundle struct {
 
 	// Optional list of lint report zip files for apexes that contain java or app modules
 	lintReports android.Paths
+
+	payloadFsType fsType
 }
 
 func addDependenciesForNativeModules(ctx android.BottomUpMutatorContext,
@@ -1321,26 +1341,30 @@ func addDependenciesForNativeModules(ctx android.BottomUpMutatorContext,
 	// conflicting variations with this module. This is required since
 	// arch variant of an APEX bundle is 'common' but it is 'arm' or 'arm64'
 	// for native shared libs.
-	ctx.AddFarVariationDependencies(append(target.Variations(), []blueprint.Variation{
-		{Mutator: "image", Variation: imageVariation},
-		{Mutator: "link", Variation: "shared"},
-		{Mutator: "version", Variation: ""}, // "" is the non-stub variant
-	}...), sharedLibTag, nativeModules.Native_shared_libs...)
 
-	ctx.AddFarVariationDependencies(append(target.Variations(), []blueprint.Variation{
-		{Mutator: "image", Variation: imageVariation},
-		{Mutator: "link", Variation: "shared"},
-		{Mutator: "version", Variation: ""}, // "" is the non-stub variant
-	}...), jniLibTag, nativeModules.Jni_libs...)
+	binVariations := target.Variations()
+	libVariations := append(target.Variations(),
+		blueprint.Variation{Mutator: "link", Variation: "shared"})
+	testVariations := append(target.Variations(),
+		blueprint.Variation{Mutator: "test_per_src", Variation: ""}) // "" is the all-tests variant
 
-	ctx.AddFarVariationDependencies(append(target.Variations(),
-		blueprint.Variation{Mutator: "image", Variation: imageVariation}),
-		executableTag, nativeModules.Binaries...)
+	if ctx.Device() {
+		binVariations = append(binVariations,
+			blueprint.Variation{Mutator: "image", Variation: imageVariation})
+		libVariations = append(libVariations,
+			blueprint.Variation{Mutator: "image", Variation: imageVariation},
+			blueprint.Variation{Mutator: "version", Variation: ""}) // "" is the non-stub variant
+		testVariations = append(testVariations,
+			blueprint.Variation{Mutator: "image", Variation: imageVariation})
+	}
 
-	ctx.AddFarVariationDependencies(append(target.Variations(), []blueprint.Variation{
-		{Mutator: "image", Variation: imageVariation},
-		{Mutator: "test_per_src", Variation: ""}, // "" is the all-tests variant
-	}...), testTag, nativeModules.Tests...)
+	ctx.AddFarVariationDependencies(libVariations, sharedLibTag, nativeModules.Native_shared_libs...)
+
+	ctx.AddFarVariationDependencies(libVariations, jniLibTag, nativeModules.Jni_libs...)
+
+	ctx.AddFarVariationDependencies(binVariations, executableTag, nativeModules.Binaries...)
+
+	ctx.AddFarVariationDependencies(testVariations, testTag, nativeModules.Tests...)
 }
 
 func (a *apexBundle) combineProperties(ctx android.BottomUpMutatorContext) {
@@ -1457,6 +1481,9 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 
 	ctx.AddFarVariationDependencies(ctx.Config().AndroidCommonTarget.Variations(),
 		javaLibTag, a.properties.Java_libs...)
+
+	ctx.AddFarVariationDependencies(ctx.Config().AndroidCommonTarget.Variations(),
+		bpfTag, a.properties.Bpfs...)
 
 	// With EMMA_INSTRUMENT_FRAMEWORK=true the ART boot image includes jacoco library.
 	if a.artApex && ctx.Config().IsEnvTrue("EMMA_INSTRUMENT_FRAMEWORK") {
@@ -1725,7 +1752,7 @@ func apexFileForJavaLibrary(ctx android.BaseModuleContext, module javaModule) ap
 }
 
 func apexFileForPrebuiltEtc(ctx android.BaseModuleContext, prebuilt prebuilt_etc.PrebuiltEtcModule, depName string) apexFile {
-	dirInApex := filepath.Join("etc", prebuilt.SubDir())
+	dirInApex := filepath.Join(prebuilt.BaseDir(), prebuilt.SubDir())
 	fileToCopy := prebuilt.OutputFile()
 	return newApexFile(ctx, fileToCopy, depName, dirInApex, etc, prebuilt)
 }
@@ -1776,6 +1803,11 @@ func apexFileForRuntimeResourceOverlay(ctx android.BaseModuleContext, rro java.R
 		af.overriddenPackageName = a.OverriddenManifestPackageName()
 	}
 	return af
+}
+
+func apexFileForBpfProgram(ctx android.BaseModuleContext, builtFile android.Path, bpfProgram bpf.BpfModule) apexFile {
+	dirInApex := filepath.Join("etc", "bpf")
+	return newApexFile(ctx, builtFile, builtFile.Base(), dirInApex, etc, bpfProgram)
 }
 
 // Context "decorator", overriding the InstallBypassMake method to always reply `true`.
@@ -2113,6 +2145,15 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 				} else {
 					ctx.PropertyErrorf("rros", "%q is not an runtime_resource_overlay module", depName)
 				}
+			case bpfTag:
+				if bpfProgram, ok := child.(bpf.BpfModule); ok {
+					filesToCopy, _ := bpfProgram.OutputFiles("")
+					for _, bpfFile := range filesToCopy {
+						filesInfo = append(filesInfo, apexFileForBpfProgram(ctx, bpfFile, bpfProgram))
+					}
+				} else {
+					ctx.PropertyErrorf("bpfs", "%q is not a bpf module", depName)
+				}
 			case prebuiltTag:
 				if prebuilt, ok := child.(prebuilt_etc.PrebuiltEtcModule); ok {
 					filesInfo = append(filesInfo, apexFileForPrebuiltEtc(ctx, prebuilt, depName))
@@ -2283,6 +2324,15 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	a.installDir = android.PathForModuleInstall(ctx, "apex")
 	a.filesInfo = filesInfo
+
+	switch proptools.StringDefault(a.properties.Payload_fs_type, ext4FsType) {
+	case ext4FsType:
+		a.payloadFsType = ext4
+	case f2fsFsType:
+		a.payloadFsType = f2fs
+	default:
+		ctx.PropertyErrorf("payload_fs_type", "%q is not a valid filesystem for apex [ext4, f2fs]", *a.properties.Payload_fs_type)
+	}
 
 	// Optimization. If we are building bundled APEX, for the files that are gathered due to the
 	// transitive dependencies, don't place them inside the APEX, but place a symlink pointing

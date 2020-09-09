@@ -27,6 +27,7 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
+	"android/soong/bpf"
 	"android/soong/cc"
 	"android/soong/dexpreopt"
 	prebuilt_etc "android/soong/etc"
@@ -248,7 +249,7 @@ func testApexContext(_ *testing.T, bp string, handlers ...testCustomizer) (*andr
 	ctx.RegisterModuleType("cc_test", cc.TestFactory)
 	ctx.RegisterModuleType("vndk_prebuilt_shared", cc.VndkPrebuiltSharedFactory)
 	ctx.RegisterModuleType("vndk_libraries_txt", cc.VndkLibrariesTxtFactory)
-	ctx.RegisterModuleType("prebuilt_etc", prebuilt_etc.PrebuiltEtcFactory)
+	prebuilt_etc.RegisterPrebuiltEtcBuildComponents(ctx)
 	ctx.RegisterModuleType("platform_compat_config", java.PlatformCompatConfigFactory)
 	ctx.RegisterModuleType("sh_binary", sh.ShBinaryFactory)
 	ctx.RegisterModuleType("filegroup", android.FileGroupFactory)
@@ -257,6 +258,7 @@ func testApexContext(_ *testing.T, bp string, handlers ...testCustomizer) (*andr
 	java.RegisterAppBuildComponents(ctx)
 	java.RegisterSdkLibraryBuildComponents(ctx)
 	ctx.RegisterSingletonType("apex_keys_text", apexKeysTextFactory)
+	ctx.RegisterModuleType("bpf", bpf.BpfFactory)
 
 	ctx.PreDepsMutators(RegisterPreDepsMutators)
 	ctx.PostDepsMutators(RegisterPostDepsMutators)
@@ -606,6 +608,7 @@ func TestDefaults(t *testing.T) {
 			java_libs: ["myjar"],
 			apps: ["AppFoo"],
 			rros: ["rro"],
+			bpfs: ["bpf"],
 		}
 
 		prebuilt_etc {
@@ -652,6 +655,11 @@ func TestDefaults(t *testing.T) {
 			theme: "blue",
 		}
 
+		bpf {
+			name: "bpf",
+			srcs: ["bpf.c", "bpf2.c"],
+		}
+
 	`)
 	ensureExactContents(t, ctx, "myapex", "android_common_myapex_image", []string{
 		"etc/myetc",
@@ -659,6 +667,8 @@ func TestDefaults(t *testing.T) {
 		"lib64/mylib.so",
 		"app/AppFoo/AppFoo.apk",
 		"overlay/blue/rro.apk",
+		"etc/bpf/bpf.o",
+		"etc/bpf/bpf2.o",
 	})
 }
 
@@ -2270,6 +2280,32 @@ func TestVendorApex_use_vndk_as_stable(t *testing.T) {
 	apexManifestRule := ctx.ModuleForTests("myapex", "android_common_myapex_image").Rule("apexManifestRule")
 	requireNativeLibs := names(apexManifestRule.Args["requireNativeLibs"])
 	ensureListContains(t, requireNativeLibs, ":vndk")
+}
+
+func TestVendorApex_withPrebuiltFirmware(t *testing.T) {
+	ctx, _ := testApex(t, `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			prebuilts: ["myfirmware"],
+			vendor: true,
+		}
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+		}
+		prebuilt_firmware {
+			name: "myfirmware",
+			src: "myfirmware.bin",
+			filename_from_src: true,
+			vendor: true,
+		}
+	`)
+
+	ensureExactContents(t, ctx, "myapex", "android_common_myapex_image", []string{
+		"firmware/myfirmware.bin",
+	})
 }
 
 func TestAndroidMk_UseVendorRequired(t *testing.T) {
@@ -5397,29 +5433,6 @@ func TestApexMutatorsDontRunIfDisabled(t *testing.T) {
 	if expected, got := []string{""}, ctx.ModuleVariantsForTests("myapex"); !reflect.DeepEqual(expected, got) {
 		t.Errorf("Expected variants: %v, but got: %v", expected, got)
 	}
-}
-
-func TestApexWithJniLibs_Errors(t *testing.T) {
-	testApexError(t, `jni_libs: "xxx" is not a cc_library`, `
-		apex {
-			name: "myapex",
-			key: "myapex.key",
-			jni_libs: ["xxx"],
-		}
-
-		apex_key {
-			name: "myapex.key",
-			public_key: "testkey.avbpubkey",
-			private_key: "testkey.pem",
-		}
-
-		prebuilt_etc {
-			name: "xxx",
-			src: "xxx",
-		}
-	`, withFiles(map[string][]byte{
-		"xxx": nil,
-	}))
 }
 
 func TestAppBundle(t *testing.T) {

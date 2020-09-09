@@ -437,6 +437,7 @@ type Module struct {
 	hiddenAPI
 	dexer
 	dexpreopter
+	usesLibrary
 	linter
 
 	// list of the xref extraction files
@@ -452,6 +453,7 @@ func (j *Module) addHostProperties() {
 	j.AddProperties(
 		&j.properties,
 		&j.protoProperties,
+		&j.usesLibraryProperties,
 	)
 }
 
@@ -564,6 +566,7 @@ var (
 	certificateTag        = dependencyTag{name: "certificate"}
 	instrumentationForTag = dependencyTag{name: "instrumentation_for"}
 	usesLibTag            = dependencyTag{name: "uses-library"}
+	usesLibCompatTag      = dependencyTag{name: "uses-library-compat"}
 	extraLintCheckTag     = dependencyTag{name: "extra-lint-check"}
 )
 
@@ -679,25 +682,29 @@ func (j *Module) AvailableFor(what string) bool {
 	return j.ApexModuleBase.AvailableFor(what)
 }
 
+func sdkDeps(ctx android.BottomUpMutatorContext, sdkContext sdkContext, d dexer) {
+	sdkDep := decodeSdkDep(ctx, sdkContext)
+	if sdkDep.useModule {
+		ctx.AddVariationDependencies(nil, bootClasspathTag, sdkDep.bootclasspath...)
+		ctx.AddVariationDependencies(nil, java9LibTag, sdkDep.java9Classpath...)
+		ctx.AddVariationDependencies(nil, libTag, sdkDep.classpath...)
+		if d.effectiveOptimizeEnabled() && sdkDep.hasStandardLibs() {
+			ctx.AddVariationDependencies(nil, proguardRaiseTag, config.LegacyCorePlatformBootclasspathLibraries...)
+		}
+		if d.effectiveOptimizeEnabled() && sdkDep.hasFrameworkLibs() {
+			ctx.AddVariationDependencies(nil, proguardRaiseTag, config.FrameworkLibraries...)
+		}
+	}
+	if sdkDep.systemModules != "" {
+		ctx.AddVariationDependencies(nil, systemModulesTag, sdkDep.systemModules)
+	}
+}
+
 func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 	if ctx.Device() {
 		j.linter.deps(ctx)
 
-		sdkDep := decodeSdkDep(ctx, sdkContext(j))
-		if sdkDep.useModule {
-			ctx.AddVariationDependencies(nil, bootClasspathTag, sdkDep.bootclasspath...)
-			ctx.AddVariationDependencies(nil, java9LibTag, sdkDep.java9Classpath...)
-			ctx.AddVariationDependencies(nil, libTag, sdkDep.classpath...)
-			if j.effectiveOptimizeEnabled() && sdkDep.hasStandardLibs() {
-				ctx.AddVariationDependencies(nil, proguardRaiseTag, config.LegacyCorePlatformBootclasspathLibraries...)
-			}
-			if j.effectiveOptimizeEnabled() && sdkDep.hasFrameworkLibs() {
-				ctx.AddVariationDependencies(nil, proguardRaiseTag, config.FrameworkLibraries...)
-			}
-		}
-		if sdkDep.systemModules != "" {
-			ctx.AddVariationDependencies(nil, systemModulesTag, sdkDep.systemModules)
-		}
+		sdkDeps(ctx, sdkContext(j), j.dexer)
 	}
 
 	syspropPublicStubs := syspropPublicStubs(ctx.Config())
@@ -991,7 +998,7 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			case libTag:
 				deps.classpath = append(deps.classpath, dep.SdkHeaderJars(ctx, j.sdkVersion())...)
 				// names of sdk libs that are directly depended are exported
-				j.exportedSdkLibs.AddLibraryPath(ctx, dep.OptionalImplicitSdkLibrary(), dep.DexJarBuildPath(), dep.DexJarInstallPath())
+				j.exportedSdkLibs.MaybeAddLibraryPath(ctx, dep.OptionalImplicitSdkLibrary(), dep.DexJarBuildPath(), dep.DexJarInstallPath())
 			case staticLibTag:
 				ctx.ModuleErrorf("dependency on java_sdk_library %q can only be in libs", otherName)
 			}
@@ -1970,7 +1977,12 @@ func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	// add the name of that java_sdk_library to the exported sdk libs to make sure
 	// that, if necessary, a <uses-library> element for that java_sdk_library is
 	// added to the Android manifest.
-	j.exportedSdkLibs.AddLibraryPath(ctx, j.OptionalImplicitSdkLibrary(), j.DexJarBuildPath(), j.DexJarInstallPath())
+	j.exportedSdkLibs.MaybeAddLibraryPath(ctx, j.OptionalImplicitSdkLibrary(), j.DexJarBuildPath(), j.DexJarInstallPath())
+
+	// If this is a non-SDK uses-library, export itself.
+	if proptools.Bool(j.usesLibraryProperties.Is_uses_lib) {
+		j.exportedSdkLibs.AddLibraryPath(ctx, ctx.ModuleName(), j.DexJarBuildPath(), j.DexJarInstallPath())
+	}
 
 	j.distFiles = j.GenerateTaggedDistFiles(ctx)
 }
@@ -2209,6 +2221,7 @@ type JavaTestImport struct {
 	prebuiltTestProperties prebuiltTestProperties
 
 	testConfig android.Path
+	dexJarFile android.Path
 }
 
 func (j *TestHost) DepsMutator(ctx android.BottomUpMutatorContext) {
@@ -2531,7 +2544,13 @@ type Import struct {
 	// Functionality common to Module and Import.
 	embeddableInModuleAndImport
 
+	hiddenAPI
+	dexer
+
 	properties ImportProperties
+
+	// output file containing classes.dex and resources
+	dexJarFile android.Path
 
 	combinedClasspathFile android.Path
 	exportedSdkLibs       dexpreopt.LibraryPaths
@@ -2546,7 +2565,15 @@ func (j *Import) makeSdkVersion() string {
 	return j.sdkVersion().raw
 }
 
+func (j *Import) systemModules() string {
+	return "none"
+}
+
 func (j *Import) minSdkVersion() sdkSpec {
+	return j.sdkVersion()
+}
+
+func (j *Import) targetSdkVersion() sdkSpec {
 	return j.sdkVersion()
 }
 
@@ -2576,6 +2603,10 @@ func (a *Import) JacocoReportClassesFile() android.Path {
 
 func (j *Import) DepsMutator(ctx android.BottomUpMutatorContext) {
 	ctx.AddVariationDependencies(nil, libTag, j.properties.Libs...)
+
+	if ctx.Device() && Bool(j.dexProperties.Compile_dex) {
+		sdkDeps(ctx, sdkContext(j), j.dexer)
+	}
 }
 
 func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
@@ -2593,6 +2624,8 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	j.combinedClasspathFile = outputFile
 	j.exportedSdkLibs = make(dexpreopt.LibraryPaths)
 
+	var flags javaBuilderFlags
+
 	ctx.VisitDirectDeps(func(module android.Module) {
 		otherName := ctx.OtherModuleName(module)
 		tag := ctx.OtherModuleDependencyTag(module)
@@ -2601,14 +2634,18 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		case Dependency:
 			switch tag {
 			case libTag, staticLibTag:
+				flags.classpath = append(flags.classpath, dep.HeaderJars()...)
 				// sdk lib names from dependencies are re-exported
 				j.exportedSdkLibs.AddLibraryPaths(dep.ExportedSdkLibs())
+			case bootClasspathTag:
+				flags.bootClasspath = append(flags.bootClasspath, dep.HeaderJars()...)
 			}
 		case SdkLibraryDependency:
 			switch tag {
 			case libTag:
+				flags.classpath = append(flags.classpath, dep.SdkHeaderJars(ctx, j.sdkVersion())...)
 				// names of sdk libs that are directly depended are exported
-				j.exportedSdkLibs.AddLibraryPath(ctx, &otherName, dep.DexJarBuildPath(), dep.DexJarInstallPath())
+				j.exportedSdkLibs.AddLibraryPath(ctx, otherName, dep.DexJarBuildPath(), dep.DexJarInstallPath())
 			}
 		}
 	})
@@ -2623,9 +2660,29 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	// add the name of that java_sdk_library to the exported sdk libs to make sure
 	// that, if necessary, a <uses-library> element for that java_sdk_library is
 	// added to the Android manifest.
-	j.exportedSdkLibs.AddLibraryPath(ctx, j.OptionalImplicitSdkLibrary(), outputFile, installFile)
+	j.exportedSdkLibs.MaybeAddLibraryPath(ctx, j.OptionalImplicitSdkLibrary(), outputFile, installFile)
 
 	j.exportAidlIncludeDirs = android.PathsForModuleSrc(ctx, j.properties.Aidl.Export_include_dirs)
+
+	if ctx.Device() && Bool(j.dexProperties.Compile_dex) {
+		sdkDep := decodeSdkDep(ctx, sdkContext(j))
+		if sdkDep.invalidVersion {
+			ctx.AddMissingDependencies(sdkDep.bootclasspath)
+			ctx.AddMissingDependencies(sdkDep.java9Classpath)
+		} else if sdkDep.useFiles {
+			// sdkDep.jar is actually equivalent to turbine header.jar.
+			flags.classpath = append(flags.classpath, sdkDep.jars...)
+		}
+
+		// Dex compilation
+		var dexOutputFile android.ModuleOutPath
+		dexOutputFile = j.dexer.compileDex(ctx, flags, j.minSdkVersion(), outputFile, jarName)
+		if ctx.Failed() {
+			return
+		}
+
+		j.dexJarFile = dexOutputFile
+	}
 }
 
 var _ Dependency = (*Import)(nil)
@@ -2656,7 +2713,7 @@ func (j *Import) ImplementationAndResourcesJars() android.Paths {
 }
 
 func (j *Import) DexJarBuildPath() android.Path {
-	return nil
+	return j.dexJarFile
 }
 
 func (j *Import) DexJarInstallPath() android.Path {
@@ -2724,9 +2781,14 @@ var _ android.PrebuiltInterface = (*Import)(nil)
 func ImportFactory() android.Module {
 	module := &Import{}
 
-	module.AddProperties(&module.properties)
+	module.AddProperties(
+		&module.properties,
+		&module.dexer.dexProperties,
+	)
 
 	module.initModuleAndImport(&module.ModuleBase)
+
+	module.dexProperties.Optimize.EnabledByDefault = false
 
 	android.InitPrebuiltModule(module, &module.properties.Jars)
 	android.InitApexModule(module)

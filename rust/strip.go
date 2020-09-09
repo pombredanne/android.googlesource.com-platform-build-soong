@@ -1,4 +1,4 @@
-// Copyright 2015 Google Inc. All rights reserved.
+// Copyright 2020 Google Inc. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,24 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-bootstrap_go_binary {
-    name: "soong_build",
-    deps: [
-        "blueprint",
-        "blueprint-bootstrap",
-        "golang-protobuf-proto",
-        "soong",
-        "soong-android",
-        "soong-env",
-        "soong-ui-metrics_proto",
-    ],
-    srcs: [
-        "main.go",
-        "writedocs.go",
-        "bazel_overlay.go",
-    ],
-    testSrcs: [
-        "bazel_overlay_test.go",
-    ],
-    primaryBuilder: true,
+package rust
+
+import (
+	"android/soong/android"
+	"android/soong/cc"
+)
+
+// Stripper encapsulates cc.Stripper.
+type Stripper struct {
+	cc.Stripper
+}
+
+func (s *Stripper) StripExecutableOrSharedLib(ctx ModuleContext, in android.Path, out android.ModuleOutPath) {
+	ccFlags := cc.StripFlags{Toolchain: ctx.RustModule().ccToolchain(ctx)}
+	s.Stripper.StripExecutableOrSharedLib(ctx, in, out, ccFlags)
 }
