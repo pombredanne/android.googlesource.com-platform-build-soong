@@ -94,6 +94,8 @@ type EarlyModuleContext interface {
 	GlobFiles(globPattern string, excludes []string) Paths
 	IsSymlink(path Path) bool
 	Readlink(path Path) string
+
+	Namespace() *Namespace
 }
 
 // BaseModuleContext is the same as blueprint.BaseModuleContext except that Config() returns
@@ -204,7 +206,6 @@ type ModuleContext interface {
 	VisitAllModuleVariants(visit func(Module))
 
 	GetMissingDependencies() []string
-	Namespace() blueprint.Namespace
 }
 
 type Module interface {
@@ -298,6 +299,28 @@ func (q qualifiedModuleName) getContainingPackageId() qualifiedModuleName {
 func newPackageId(pkg string) qualifiedModuleName {
 	// A qualified id for a package module has no name.
 	return qualifiedModuleName{pkg: pkg, name: ""}
+}
+
+type Dist struct {
+	// Copy the output of this module to the $DIST_DIR when `dist` is specified on the
+	// command line and any of these targets are also on the command line, or otherwise
+	// built
+	Targets []string `android:"arch_variant"`
+
+	// The name of the output artifact. This defaults to the basename of the output of
+	// the module.
+	Dest *string `android:"arch_variant"`
+
+	// The directory within the dist directory to store the artifact. Defaults to the
+	// top level directory ("").
+	Dir *string `android:"arch_variant"`
+
+	// A suffix to add to the artifact file name (before any extension).
+	Suffix *string `android:"arch_variant"`
+
+	// A string tag to select the OutputFiles associated with the tag. Defaults to the
+	// the empty "" string.
+	Tag *string `android:"arch_variant"`
 }
 
 type nameProperties struct {
@@ -439,24 +462,6 @@ type commonProperties struct {
 	// relative path to a file to include in the list of notices for the device
 	Notice *string `android:"path"`
 
-	Dist struct {
-		// copy the output of this module to the $DIST_DIR when `dist` is specified on the
-		// command line and  any of these targets are also on the command line, or otherwise
-		// built
-		Targets []string `android:"arch_variant"`
-
-		// The name of the output artifact. This defaults to the basename of the output of
-		// the module.
-		Dest *string `android:"arch_variant"`
-
-		// The directory within the dist directory to store the artifact. Defaults to the
-		// top level directory ("").
-		Dir *string `android:"arch_variant"`
-
-		// A suffix to add to the artifact file name (before any extension).
-		Suffix *string `android:"arch_variant"`
-	} `android:"arch_variant"`
-
 	// The OsType of artifacts that this module variant is responsible for creating.
 	//
 	// Set by osMutator
@@ -520,6 +525,30 @@ type commonProperties struct {
 
 	// set by ImageMutator
 	ImageVariation string `blueprint:"mutated"`
+}
+
+type distProperties struct {
+	// configuration to distribute output files from this module to the distribution
+	// directory (default: $OUT/dist, configurable with $DIST_DIR)
+	Dist Dist `android:"arch_variant"`
+
+	// a list of configurations to distribute output files from this module to the
+	// distribution directory (default: $OUT/dist, configurable with $DIST_DIR)
+	Dists []Dist `android:"arch_variant"`
+}
+
+// A map of OutputFile tag keys to Paths, for disting purposes.
+type TaggedDistFiles map[string]Paths
+
+func MakeDefaultDistFiles(paths ...Path) TaggedDistFiles {
+	for _, path := range paths {
+		if path == nil {
+			panic("The path to a dist file cannot be nil.")
+		}
+	}
+
+	// The default OutputFile tag is the empty "" string.
+	return TaggedDistFiles{"": paths}
 }
 
 type hostAndDeviceProperties struct {
@@ -603,7 +632,8 @@ func InitAndroidModule(m Module) {
 
 	m.AddProperties(
 		&base.nameProperties,
-		&base.commonProperties)
+		&base.commonProperties,
+		&base.distProperties)
 
 	initProductVariableModule(m)
 
@@ -694,6 +724,7 @@ type ModuleBase struct {
 
 	nameProperties          nameProperties
 	commonProperties        commonProperties
+	distProperties          distProperties
 	variableProperties      interface{}
 	hostAndDeviceProperties hostAndDeviceProperties
 	generalProperties       []interface{}
@@ -798,6 +829,41 @@ func (m *ModuleBase) qualifiedModuleId(ctx BaseModuleContext) qualifiedModuleNam
 
 func (m *ModuleBase) visibilityProperties() []visibilityProperty {
 	return m.visibilityPropertyInfo
+}
+
+func (m *ModuleBase) Dists() []Dist {
+	if len(m.distProperties.Dist.Targets) > 0 {
+		// Make a copy of the underlying Dists slice to protect against
+		// backing array modifications with repeated calls to this method.
+		distsCopy := append([]Dist(nil), m.distProperties.Dists...)
+		return append(distsCopy, m.distProperties.Dist)
+	} else {
+		return m.distProperties.Dists
+	}
+}
+
+func (m *ModuleBase) GenerateTaggedDistFiles(ctx BaseModuleContext) TaggedDistFiles {
+	distFiles := make(TaggedDistFiles)
+	for _, dist := range m.Dists() {
+		var tag string
+		var distFilesForTag Paths
+		if dist.Tag == nil {
+			tag = ""
+		} else {
+			tag = *dist.Tag
+		}
+		distFilesForTag, err := m.base().module.(OutputFileProducer).OutputFiles(tag)
+		if err != nil {
+			ctx.PropertyErrorf("dist.tag", "%s", err.Error())
+		}
+		for _, distFile := range distFilesForTag {
+			if distFile != nil && !distFiles[tag].containsPath(distFile) {
+				distFiles[tag] = append(distFiles[tag], distFile)
+			}
+		}
+	}
+
+	return distFiles
 }
 
 func (m *ModuleBase) Target() Target {
@@ -1079,7 +1145,7 @@ func (m *ModuleBase) generateModuleTarget(ctx ModuleContext) {
 
 	var deps Paths
 
-	namespacePrefix := ctx.Namespace().(*Namespace).id
+	namespacePrefix := ctx.Namespace().id
 	if namespacePrefix != "" {
 		namespacePrefix = namespacePrefix + "-"
 	}
@@ -1235,20 +1301,20 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 	ctx.Variable(pctx, "moduleDescSuffix", s)
 
 	// Some common property checks for properties that will be used later in androidmk.go
-	if m.commonProperties.Dist.Dest != nil {
-		_, err := validateSafePath(*m.commonProperties.Dist.Dest)
+	if m.distProperties.Dist.Dest != nil {
+		_, err := validateSafePath(*m.distProperties.Dist.Dest)
 		if err != nil {
 			ctx.PropertyErrorf("dist.dest", "%s", err.Error())
 		}
 	}
-	if m.commonProperties.Dist.Dir != nil {
-		_, err := validateSafePath(*m.commonProperties.Dist.Dir)
+	if m.distProperties.Dist.Dir != nil {
+		_, err := validateSafePath(*m.distProperties.Dist.Dir)
 		if err != nil {
 			ctx.PropertyErrorf("dist.dir", "%s", err.Error())
 		}
 	}
-	if m.commonProperties.Dist.Suffix != nil {
-		if strings.Contains(*m.commonProperties.Dist.Suffix, "/") {
+	if m.distProperties.Dist.Suffix != nil {
+		if strings.Contains(*m.distProperties.Dist.Suffix, "/") {
 			ctx.PropertyErrorf("dist.suffix", "Suffix may not contain a '/' character.")
 		}
 	}
@@ -1375,6 +1441,10 @@ func (e *earlyModuleContext) ProductSpecific() bool {
 
 func (e *earlyModuleContext) SystemExtSpecific() bool {
 	return e.kind == systemExtSpecificModule
+}
+
+func (e *earlyModuleContext) Namespace() *Namespace {
+	return e.EarlyModuleContext.Namespace().(*Namespace)
 }
 
 type baseModuleContext struct {

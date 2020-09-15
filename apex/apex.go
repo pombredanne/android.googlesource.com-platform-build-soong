@@ -28,6 +28,7 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
+	"android/soong/bpf"
 	"android/soong/cc"
 	prebuilt_etc "android/soong/etc"
 	"android/soong/java"
@@ -63,6 +64,7 @@ var (
 	certificateTag = dependencyTag{name: "certificate"}
 	usesTag        = dependencyTag{name: "uses"}
 	androidAppTag  = dependencyTag{name: "androidApp", payload: true}
+	bpfTag         = dependencyTag{name: "bpf", payload: true}
 
 	apexAvailBaseline = makeApexAvailableBaseline()
 
@@ -1062,6 +1064,9 @@ type apexBundleProperties struct {
 	// List of tests that are embedded inside this APEX bundle
 	Tests []string
 
+	// List of BPF programs inside APEX
+	Bpfs []string
+
 	// Name of the apex_key module that provides the private key to sign APEX
 	Key *string
 
@@ -1265,6 +1270,7 @@ type apexFile struct {
 	hostRequiredModuleNames   []string
 
 	jacocoReportClassesFile android.Path     // only for javalibs and apps
+	lintDepSets             java.LintDepSets // only for javalibs and apps
 	certificate             java.Certificate // only for apps
 	overriddenPackageName   string           // only for apps
 
@@ -1390,6 +1396,9 @@ type apexBundle struct {
 
 	// Struct holding the merged notice file paths in different formats
 	mergedNotices android.NoticeOutputs
+
+	// Optional list of lint report zip files for apexes that contain java or app modules
+	lintReports android.Paths
 }
 
 func addDependenciesForNativeModules(ctx android.BottomUpMutatorContext,
@@ -1550,6 +1559,9 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 
 	ctx.AddFarVariationDependencies(ctx.Config().AndroidCommonTarget.Variations(),
 		javaLibTag, a.properties.Java_libs...)
+
+	ctx.AddFarVariationDependencies(ctx.Config().AndroidCommonTarget.Variations(),
+		bpfTag, a.properties.Bpfs...)
 
 	// With EMMA_INSTRUMENT_FRAMEWORK=true the ART boot image includes jacoco library.
 	if a.artApex && ctx.Config().IsEnvTrue("EMMA_INSTRUMENT_FRAMEWORK") {
@@ -1752,8 +1764,15 @@ func apexFileForShBinary(ctx android.BaseModuleContext, sh *sh.ShBinary) apexFil
 type javaDependency interface {
 	DexJar() android.Path
 	JacocoReportClassesFile() android.Path
+	LintDepSets() java.LintDepSets
+
 	Stem() string
 }
+
+var _ javaDependency = (*java.Library)(nil)
+var _ javaDependency = (*java.SdkLibrary)(nil)
+var _ javaDependency = (*java.DexImport)(nil)
+var _ javaDependency = (*java.SdkLibraryImport)(nil)
 
 func apexFileForJavaLibrary(ctx android.BaseModuleContext, lib javaDependency, module android.Module) apexFile {
 	dirInApex := "javalib"
@@ -1762,6 +1781,7 @@ func apexFileForJavaLibrary(ctx android.BaseModuleContext, lib javaDependency, m
 	name := strings.TrimPrefix(module.Name(), "prebuilt_")
 	af := newApexFile(ctx, fileToCopy, name, dirInApex, javaSharedLib, module)
 	af.jacocoReportClassesFile = lib.JacocoReportClassesFile()
+	af.lintDepSets = lib.LintDepSets()
 	af.stem = lib.Stem() + ".jar"
 	return af
 }
@@ -1802,6 +1822,11 @@ func apexFileForAndroidApp(ctx android.BaseModuleContext, aapp interface {
 		af.overriddenPackageName = app.OverriddenManifestPackageName()
 	}
 	return af
+}
+
+func apexFileForBpfProgram(ctx android.BaseModuleContext, builtFile android.Path, bpfProgram bpf.BpfModule) apexFile {
+	dirInApex := filepath.Join("etc", "bpf")
+	return newApexFile(ctx, builtFile, builtFile.Base(), dirInApex, etc, bpfProgram)
 }
 
 // Context "decorator", overriding the InstallBypassMake method to always reply `true`.
@@ -2070,6 +2095,15 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 				} else {
 					ctx.PropertyErrorf("apps", "%q is not an android_app module", depName)
 				}
+			case bpfTag:
+				if bpfProgram, ok := child.(bpf.BpfModule); ok {
+					filesToCopy, _ := bpfProgram.OutputFiles("")
+					for _, bpfFile := range filesToCopy {
+						filesInfo = append(filesInfo, apexFileForBpfProgram(ctx, bpfFile, bpfProgram))
+					}
+				} else {
+					ctx.PropertyErrorf("bpfs", "%q is not a bpf module", depName)
+				}
 			case prebuiltTag:
 				if prebuilt, ok := child.(prebuilt_etc.PrebuiltEtcModule); ok {
 					filesInfo = append(filesInfo, apexFileForPrebuiltEtc(ctx, prebuilt, depName))
@@ -2115,7 +2149,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			case android.PrebuiltDepTag:
 				// If the prebuilt is force disabled, remember to delete the prebuilt file
 				// that might have been installed in the previous builds
-				if prebuilt, ok := child.(*Prebuilt); ok && prebuilt.isForceDisabled() {
+				if prebuilt, ok := child.(prebuilt); ok && prebuilt.isForceDisabled() {
 					a.prebuiltFileToDelete = prebuilt.InstallFilename()
 				}
 			}
@@ -2277,6 +2311,8 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	a.compatSymlinks = makeCompatSymlinks(a.BaseModuleName(), ctx)
 
 	a.buildApexDependencyInfo(ctx)
+
+	a.buildLintReports(ctx)
 }
 
 // Enforce that Java deps of the apex are using stable SDKs to compile

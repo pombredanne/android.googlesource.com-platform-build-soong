@@ -137,6 +137,7 @@ type apiScope struct {
 	droidstubsArgsForGeneratingApi []string
 
 	// True if the stubs source and api can be created by the same metalava invocation.
+	// TODO(b/146727827) Now that metalava supports "API hierarchy", do we still need it?
 	createStubsSourceAndApiTogether bool
 
 	// Whether the api scope can be treated as unstable, and should skip compat checks.
@@ -278,6 +279,7 @@ var (
 		sdkVersion:    "module_current",
 		droidstubsArgs: []string{
 			"--show-annotation android.annotation.SystemApi\\(client=android.annotation.SystemApi.Client.MODULE_LIBRARIES\\)",
+			"--show-for-stub-purposes-annotation android.annotation.SystemApi\\(client=android.annotation.SystemApi.Client.PRIVILEGED_APPS\\)",
 		},
 	})
 	apiScopeSystemServer = initApiScope(&apiScope{
@@ -1086,10 +1088,24 @@ func (module *SdkLibrary) latestRemovedApiFilegroupName(apiScope *apiScope) stri
 	return ":" + module.BaseModuleName() + "-removed.api." + apiScope.name + ".latest"
 }
 
+func childModuleVisibility(childVisibility []string) []string {
+	if childVisibility == nil {
+		// No child visibility set. The child will use the visibility of the sdk_library.
+		return nil
+	}
+
+	// Prepend an override to ignore the sdk_library's visibility, and rely on the child visibility.
+	var visibility []string
+	visibility = append(visibility, "//visibility:override")
+	visibility = append(visibility, childVisibility...)
+	return visibility
+}
+
 // Creates the implementation java library
 func (module *SdkLibrary) createImplLibrary(mctx android.DefaultableHookContext) {
-
 	moduleNamePtr := proptools.StringPtr(module.BaseModuleName())
+
+	visibility := childModuleVisibility(module.sdkLibraryProperties.Impl_library_visibility)
 
 	props := struct {
 		Name              *string
@@ -1098,7 +1114,7 @@ func (module *SdkLibrary) createImplLibrary(mctx android.DefaultableHookContext)
 		ConfigurationName *string
 	}{
 		Name:       proptools.StringPtr(module.implLibraryModuleName()),
-		Visibility: module.sdkLibraryProperties.Impl_library_visibility,
+		Visibility: visibility,
 		// Set the instrument property to ensure it is instrumented when instrumentation is required.
 		Instrument: true,
 
@@ -1110,6 +1126,7 @@ func (module *SdkLibrary) createImplLibrary(mctx android.DefaultableHookContext)
 		&module.properties,
 		&module.protoProperties,
 		&module.deviceProperties,
+		&module.dexProperties,
 		&module.dexpreoptProperties,
 		&module.linter.properties,
 		&props,
@@ -1149,12 +1166,7 @@ func (module *SdkLibrary) createStubsLibrary(mctx android.DefaultableHookContext
 	}{}
 
 	props.Name = proptools.StringPtr(module.stubsLibraryModuleName(apiScope))
-
-	// If stubs_library_visibility is not set then the created module will use the
-	// visibility of this module.
-	visibility := module.sdkLibraryProperties.Stubs_library_visibility
-	props.Visibility = visibility
-
+	props.Visibility = childModuleVisibility(module.sdkLibraryProperties.Stubs_library_visibility)
 	// sources are generated from the droiddoc
 	props.Srcs = []string{":" + module.stubsSourceModuleName(apiScope)}
 	sdkVersion := module.sdkVersionForStubsLibrary(mctx, apiScope)
@@ -1174,8 +1186,8 @@ func (module *SdkLibrary) createStubsLibrary(mctx android.DefaultableHookContext
 	// We compile the stubs for 1.8 in line with the main android.jar stubs, and potential
 	// interop with older developer tools that don't support 1.9.
 	props.Java_version = proptools.StringPtr("1.8")
-	if module.deviceProperties.Compile_dex != nil {
-		props.Compile_dex = module.deviceProperties.Compile_dex
+	if module.dexProperties.Compile_dex != nil {
+		props.Compile_dex = module.dexProperties.Compile_dex
 	}
 
 	// Dist the class jar artifact for sdk builds.
@@ -1236,12 +1248,7 @@ func (module *SdkLibrary) createStubsSourcesAndApi(mctx android.DefaultableHookC
 	// * libs (static_libs/libs)
 
 	props.Name = proptools.StringPtr(name)
-
-	// If stubs_source_visibility is not set then the created module will use the
-	// visibility of this module.
-	visibility := module.sdkLibraryProperties.Stubs_source_visibility
-	props.Visibility = visibility
-
+	props.Visibility = childModuleVisibility(module.sdkLibraryProperties.Stubs_source_visibility)
 	props.Srcs = append(props.Srcs, module.properties.Srcs...)
 	props.Sdk_version = module.deviceProperties.Sdk_version
 	props.System_modules = module.deviceProperties.System_modules
@@ -2007,6 +2014,15 @@ func (module *SdkLibraryImport) JacocoReportClassesFile() android.Path {
 		return nil
 	} else {
 		return module.implLibraryModule.JacocoReportClassesFile()
+	}
+}
+
+// to satisfy apex.javaDependency interface
+func (module *SdkLibraryImport) LintDepSets() LintDepSets {
+	if module.implLibraryModule == nil {
+		return LintDepSets{}
+	} else {
+		return module.implLibraryModule.LintDepSets()
 	}
 }
 
