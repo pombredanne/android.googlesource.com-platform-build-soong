@@ -286,6 +286,10 @@ func (a *apexBundle) buildNoticeFiles(ctx android.ModuleContext, apexFileName st
 		return true
 	})
 
+	for _, fi := range a.filesInfo {
+		noticeFiles = append(noticeFiles, fi.noticeFiles...)
+	}
+
 	if len(noticeFiles) == 0 {
 		return android.NoticeOutputs{}
 	}
@@ -652,7 +656,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		a.container_certificate_file,
 		a.container_private_key_file,
 	}
-	if ctx.Config().IsEnvTrue("RBE_SIGNAPK") {
+	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_SIGNAPK") {
 		rule = java.SignapkRE
 		args["implicits"] = strings.Join(implicits.Strings(), ",")
 		args["outCommaList"] = a.outputFile.String()
@@ -686,7 +690,7 @@ func (a *apexBundle) buildFlattenedApex(ctx android.ModuleContext) {
 	apexBundleName := a.Name()
 	a.outputFile = android.PathForModuleInstall(&factx, "apex", apexBundleName)
 
-	if a.installable() && a.GetOverriddenBy() == "" {
+	if a.installable() {
 		installPath := android.PathForModuleInstall(ctx, "apex", apexBundleName)
 		devicePath := android.InstallPathToOnDevicePath(ctx, installPath)
 		addFlattenedFileContextsInfos(ctx, apexBundleName+":"+devicePath+":"+a.fileContexts.String())

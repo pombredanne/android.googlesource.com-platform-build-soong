@@ -31,7 +31,6 @@ func init() {
 }
 
 var robolectricDefaultLibs = []string{
-	"robolectric_android-all-stub",
 	"Robolectric_all-target",
 	"mockito-robolectric-prebuilt",
 	"truth-prebuilt",
@@ -99,7 +98,8 @@ func (r *robolectricTest) DepsMutator(ctx android.BottomUpMutatorContext) {
 
 	ctx.AddVariationDependencies(nil, roboCoverageLibsTag, r.robolectricProperties.Coverage_libs...)
 
-	ctx.AddVariationDependencies(nil, roboRuntimesTag, "robolectric-android-all-prebuilts")
+	ctx.AddFarVariationDependencies(ctx.Config().BuildOSCommonTarget.Variations(),
+		roboRuntimesTag, "robolectric-android-all-prebuilts")
 }
 
 func (r *robolectricTest) GenerateAndroidBuildActions(ctx android.ModuleContext) {
@@ -326,14 +326,16 @@ func RobolectricTestFactory() android.Module {
 	return module
 }
 
-func (r *robolectricTest) InstallBypassMake() bool         { return true }
-func (r *robolectricTest) InstallInTestcases() bool        { return true }
-func (r *robolectricTest) InstallForceOS() *android.OsType { return &android.BuildOs }
+func (r *robolectricTest) InstallBypassMake() bool  { return true }
+func (r *robolectricTest) InstallInTestcases() bool { return true }
+func (r *robolectricTest) InstallForceOS() (*android.OsType, *android.ArchType) {
+	return &android.BuildOs, &android.BuildArch
+}
 
 func robolectricRuntimesFactory() android.Module {
 	module := &robolectricRuntimes{}
 	module.AddProperties(&module.props)
-	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibCommon)
+	android.InitAndroidArchModule(module, android.HostSupportedNoCross, android.MultilibCommon)
 	return module
 }
 
@@ -363,6 +365,10 @@ func (r *robolectricRuntimes) DepsMutator(ctx android.BottomUpMutatorContext) {
 }
 
 func (r *robolectricRuntimes) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+	if ctx.Target().Os != ctx.Config().BuildOSCommonTarget.Os {
+		return
+	}
+
 	files := android.PathsForModuleSrc(ctx, r.props.Jars)
 
 	androidAllDir := android.PathForModuleInstall(ctx, "android-all")
@@ -390,6 +396,8 @@ func (r *robolectricRuntimes) GenerateAndroidBuildActions(ctx android.ModuleCont
 	}
 }
 
-func (r *robolectricRuntimes) InstallBypassMake() bool         { return true }
-func (r *robolectricRuntimes) InstallInTestcases() bool        { return true }
-func (r *robolectricRuntimes) InstallForceOS() *android.OsType { return &android.BuildOs }
+func (r *robolectricRuntimes) InstallBypassMake() bool  { return true }
+func (r *robolectricRuntimes) InstallInTestcases() bool { return true }
+func (r *robolectricRuntimes) InstallForceOS() (*android.OsType, *android.ArchType) {
+	return &android.BuildOs, &android.BuildArch
+}

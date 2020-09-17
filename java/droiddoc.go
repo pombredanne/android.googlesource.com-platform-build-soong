@@ -181,12 +181,6 @@ type DroiddocProperties struct {
 	// filegroup or genrule can be included within this property.
 	Knowntags []string `android:"path"`
 
-	// the generated public API filename by Doclava.
-	Api_filename *string
-
-	// the generated removed API filename by Doclava.
-	Removed_api_filename *string
-
 	// if set to true, generate docs through Dokka instead of Doclava.
 	Dokka_enabled *bool
 
@@ -195,10 +189,10 @@ type DroiddocProperties struct {
 }
 
 type DroidstubsProperties struct {
-	// the generated public API filename by Metalava.
+	// The generated public API filename by Metalava, defaults to <module>_api.txt
 	Api_filename *string
 
-	// the generated removed API filename by Metalava.
+	// the generated removed API filename by Metalava, defaults to <module>_removed.txt
 	Removed_api_filename *string
 
 	// the generated removed Dex API filename by Metalava.
@@ -1127,7 +1121,8 @@ func (d *Droidstubs) stubsFlags(ctx android.ModuleContext, cmd *android.RuleBuil
 	if apiCheckEnabled(ctx, d.properties.Check_api.Current, "current") ||
 		apiCheckEnabled(ctx, d.properties.Check_api.Last_released, "last_released") ||
 		String(d.properties.Api_filename) != "" {
-		d.apiFile = android.PathForModuleOut(ctx, ctx.ModuleName()+"_api.txt")
+		filename := proptools.StringDefault(d.properties.Api_filename, ctx.ModuleName()+"_api.txt")
+		d.apiFile = android.PathForModuleOut(ctx, filename)
 		cmd.FlagWithOutput("--api ", d.apiFile)
 		d.apiFilePath = d.apiFile
 	}
@@ -1135,7 +1130,8 @@ func (d *Droidstubs) stubsFlags(ctx android.ModuleContext, cmd *android.RuleBuil
 	if apiCheckEnabled(ctx, d.properties.Check_api.Current, "current") ||
 		apiCheckEnabled(ctx, d.properties.Check_api.Last_released, "last_released") ||
 		String(d.properties.Removed_api_filename) != "" {
-		d.removedApiFile = android.PathForModuleOut(ctx, ctx.ModuleName()+"_removed.txt")
+		filename := proptools.StringDefault(d.properties.Removed_api_filename, ctx.ModuleName()+"_removed.txt")
+		d.removedApiFile = android.PathForModuleOut(ctx, filename)
 		cmd.FlagWithOutput("--removed-api ", d.removedApiFile)
 	}
 
@@ -1277,7 +1273,7 @@ func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersi
 	// Metalava uses lots of memory, restrict the number of metalava jobs that can run in parallel.
 	rule.HighMem()
 	cmd := rule.Command()
-	if ctx.Config().IsEnvTrue("RBE_METALAVA") {
+	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_METALAVA") {
 		rule.Remoteable(android.RemoteRuleSupports{RBE: true})
 		pool := ctx.Config().GetenvWithDefault("RBE_METALAVA_POOL", "metalava")
 		execStrategy := ctx.Config().GetenvWithDefault("RBE_METALAVA_EXEC_STRATEGY", remoteexec.LocalExecStrategy)
@@ -1412,6 +1408,15 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		}
 		d.apiLintReport = android.PathForModuleOut(ctx, "api_lint_report.txt")
 		cmd.FlagWithOutput("--report-even-if-suppressed ", d.apiLintReport) // TODO:  Change to ":api-lint"
+
+		// TODO(b/154317059): Clean up this whitelist by baselining and/or checking in last-released.
+		if d.Name() != "android.car-system-stubs-docs" &&
+			d.Name() != "android.car-stubs-docs" &&
+			d.Name() != "system-api-stubs-docs" &&
+			d.Name() != "test-api-stubs-docs" {
+			cmd.Flag("--lints-as-errors")
+			cmd.Flag("--warnings-as-errors") // Most lints are actually warnings.
+		}
 
 		baselineFile := android.OptionalPathForModuleSrc(ctx, d.properties.Check_api.Api_lint.Baseline_file)
 		updatedBaselineOutput := android.PathForModuleOut(ctx, "api_lint_baseline.txt")

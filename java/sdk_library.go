@@ -419,6 +419,9 @@ type sdkLibraryProperties struct {
 	//  $(location <label>): the path to the droiddoc_option_files with name <label>
 	Droiddoc_options []string
 
+	// is set to true, Metalava will allow framework SDK to contain annotations.
+	Annotations_enabled *bool
+
 	// a list of top-level directories containing files to merge qualifier annotations
 	// (i.e. those intended to be included in the stubs written) from.
 	Merge_annotations_dirs []string
@@ -572,9 +575,7 @@ func (paths *scopePaths) extractStubsSourceAndApiInfoFromApiStubsProvider(dep an
 type commonToSdkLibraryAndImportProperties struct {
 	// The naming scheme to use for the components that this module creates.
 	//
-	// If not specified then it defaults to "default". The other allowable value is
-	// "framework-modules" which matches the scheme currently used by framework modules
-	// for the equivalent components represented as separate Soong modules.
+	// If not specified then it defaults to "default".
 	//
 	// This is a temporary mechanism to simplify conversion from separate modules for each
 	// component that follow a different naming pattern to the default one.
@@ -618,8 +619,6 @@ func (c *commonToSdkLibraryAndImport) initCommonAfterDefaultsApplied(ctx android
 	switch schemeProperty {
 	case "default":
 		c.namingScheme = &defaultNamingScheme{}
-	case "framework-modules":
-		c.namingScheme = &frameworkModulesNamingScheme{}
 	default:
 		ctx.PropertyErrorf("naming_scheme", "expected 'default' but was %q", schemeProperty)
 		return false
@@ -1086,10 +1085,24 @@ func (module *SdkLibrary) latestRemovedApiFilegroupName(apiScope *apiScope) stri
 	return ":" + module.BaseModuleName() + "-removed.api." + apiScope.name + ".latest"
 }
 
+func childModuleVisibility(childVisibility []string) []string {
+	if childVisibility == nil {
+		// No child visibility set. The child will use the visibility of the sdk_library.
+		return nil
+	}
+
+	// Prepend an override to ignore the sdk_library's visibility, and rely on the child visibility.
+	var visibility []string
+	visibility = append(visibility, "//visibility:override")
+	visibility = append(visibility, childVisibility...)
+	return visibility
+}
+
 // Creates the implementation java library
 func (module *SdkLibrary) createImplLibrary(mctx android.DefaultableHookContext) {
-
 	moduleNamePtr := proptools.StringPtr(module.BaseModuleName())
+
+	visibility := childModuleVisibility(module.sdkLibraryProperties.Impl_library_visibility)
 
 	props := struct {
 		Name              *string
@@ -1098,7 +1111,7 @@ func (module *SdkLibrary) createImplLibrary(mctx android.DefaultableHookContext)
 		ConfigurationName *string
 	}{
 		Name:       proptools.StringPtr(module.implLibraryModuleName()),
-		Visibility: module.sdkLibraryProperties.Impl_library_visibility,
+		Visibility: visibility,
 		// Set the instrument property to ensure it is instrumented when instrumentation is required.
 		Instrument: true,
 
@@ -1145,12 +1158,7 @@ func (module *SdkLibrary) createStubsLibrary(mctx android.DefaultableHookContext
 	}{}
 
 	props.Name = proptools.StringPtr(module.stubsLibraryModuleName(apiScope))
-
-	// If stubs_library_visibility is not set then the created module will use the
-	// visibility of this module.
-	visibility := module.sdkLibraryProperties.Stubs_library_visibility
-	props.Visibility = visibility
-
+	props.Visibility = childModuleVisibility(module.sdkLibraryProperties.Stubs_library_visibility)
 	// sources are generated from the droiddoc
 	props.Srcs = []string{":" + module.stubsSourceModuleName(apiScope)}
 	sdkVersion := module.sdkVersionForStubsLibrary(mctx, apiScope)
@@ -1159,6 +1167,11 @@ func (module *SdkLibrary) createStubsLibrary(mctx android.DefaultableHookContext
 	props.Patch_module = module.properties.Patch_module
 	props.Installable = proptools.BoolPtr(false)
 	props.Libs = module.sdkLibraryProperties.Stub_only_libs
+	// The stub-annotations library contains special versions of the annotations
+	// with CLASS retention policy, so that they're kept.
+	if proptools.Bool(module.sdkLibraryProperties.Annotations_enabled) {
+		props.Libs = append(props.Libs, "stub-annotations")
+	}
 	props.Openjdk9.Srcs = module.properties.Openjdk9.Srcs
 	props.Openjdk9.Javacflags = module.properties.Openjdk9.Javacflags
 	// We compile the stubs for 1.8 in line with the main android.jar stubs, and potential
@@ -1193,6 +1206,7 @@ func (module *SdkLibrary) createStubsSourcesAndApi(mctx android.DefaultableHookC
 		Arg_files                        []string
 		Args                             *string
 		Java_version                     *string
+		Annotations_enabled              *bool
 		Merge_annotations_dirs           []string
 		Merge_inclusion_annotations_dirs []string
 		Generate_stubs                   *bool
@@ -1225,12 +1239,7 @@ func (module *SdkLibrary) createStubsSourcesAndApi(mctx android.DefaultableHookC
 	// * libs (static_libs/libs)
 
 	props.Name = proptools.StringPtr(name)
-
-	// If stubs_source_visibility is not set then the created module will use the
-	// visibility of this module.
-	visibility := module.sdkLibraryProperties.Stubs_source_visibility
-	props.Visibility = visibility
-
+	props.Visibility = childModuleVisibility(module.sdkLibraryProperties.Stubs_source_visibility)
 	props.Srcs = append(props.Srcs, module.properties.Srcs...)
 	props.Sdk_version = module.deviceProperties.Sdk_version
 	props.System_modules = module.deviceProperties.System_modules
@@ -1243,6 +1252,7 @@ func (module *SdkLibrary) createStubsSourcesAndApi(mctx android.DefaultableHookC
 	props.Aidl.Local_include_dirs = module.deviceProperties.Aidl.Local_include_dirs
 	props.Java_version = module.properties.Java_version
 
+	props.Annotations_enabled = module.sdkLibraryProperties.Annotations_enabled
 	props.Merge_annotations_dirs = module.sdkLibraryProperties.Merge_annotations_dirs
 	props.Merge_inclusion_annotations_dirs = module.sdkLibraryProperties.Merge_inclusion_annotations_dirs
 
@@ -1573,31 +1583,6 @@ func (s *defaultNamingScheme) apiModuleName(scope *apiScope, baseName string) st
 }
 
 var _ sdkLibraryComponentNamingScheme = (*defaultNamingScheme)(nil)
-
-type frameworkModulesNamingScheme struct {
-}
-
-func (s *frameworkModulesNamingScheme) moduleSuffix(scope *apiScope) string {
-	suffix := scope.name
-	if scope == apiScopeModuleLib {
-		suffix = "module_libs_"
-	}
-	return suffix
-}
-
-func (s *frameworkModulesNamingScheme) stubsLibraryModuleName(scope *apiScope, baseName string) string {
-	return fmt.Sprintf("%s-stubs-%sapi", baseName, s.moduleSuffix(scope))
-}
-
-func (s *frameworkModulesNamingScheme) stubsSourceModuleName(scope *apiScope, baseName string) string {
-	return fmt.Sprintf("%s-stubs-srcs-%sapi", baseName, s.moduleSuffix(scope))
-}
-
-func (s *frameworkModulesNamingScheme) apiModuleName(scope *apiScope, baseName string) string {
-	return fmt.Sprintf("%s-api-%sapi", baseName, s.moduleSuffix(scope))
-}
-
-var _ sdkLibraryComponentNamingScheme = (*frameworkModulesNamingScheme)(nil)
 
 func moduleStubLinkType(name string) (stub bool, ret linkType) {
 	// This suffix-based approach is fragile and could potentially mis-trigger.
@@ -2067,6 +2052,11 @@ func (module *sdkLibraryXml) UniqueApexVariations() bool {
 	// sdkLibraryXml needs a unique variation per APEX because the generated XML file contains the path to the
 	// mounted APEX, which contains the name of the APEX.
 	return true
+}
+
+// from android.PrebuiltEtcModule
+func (module *sdkLibraryXml) BaseDir() string {
+	return "etc"
 }
 
 // from android.PrebuiltEtcModule
