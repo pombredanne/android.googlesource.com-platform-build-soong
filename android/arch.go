@@ -125,6 +125,7 @@ var archVariants = map[ArchType][]string{
 	Arm64: {
 		"armv8_a",
 		"armv8_2a",
+		"armv8-2a-dotprod",
 		"cortex-a53",
 		"cortex-a55",
 		"cortex-a72",
@@ -172,6 +173,9 @@ var archFeatures = map[ArchType][]string{
 	Arm: {
 		"neon",
 	},
+	Arm64: {
+		"dotprod",
+	},
 	X86: {
 		"ssse3",
 		"sse4",
@@ -207,6 +211,11 @@ var archFeatureMap = map[ArchType]map[string][]string{
 		},
 		"armv8-2a": {
 			"neon",
+		},
+	},
+	Arm64: {
+		"armv8-2a-dotprod": {
+			"dotprod",
 		},
 	},
 	X86: {
@@ -1434,20 +1443,15 @@ func (m *ModuleBase) setArchProperties(ctx BottomUpMutatorContext) {
 			//         key: value,
 			//     },
 			// },
-			// TODO(ccross): is this still necessary with native bridge?
 			if os.Class == Device {
-				if (arch.ArchType == X86 && (hasArmAbi(arch) ||
-					hasArmAndroidArch(ctx.Config().Targets[Android]))) ||
-					(arch.ArchType == Arm &&
-						hasX86AndroidArch(ctx.Config().Targets[Android])) {
+				if arch.ArchType == X86 && (hasArmAbi(arch) ||
+					hasArmAndroidArch(ctx.Config().Targets[Android])) {
 					field := "Arm_on_x86"
 					prefix := "target.arm_on_x86"
 					m.appendProperties(ctx, genProps, targetProp, field, prefix)
 				}
-				if (arch.ArchType == X86_64 && (hasArmAbi(arch) ||
-					hasArmAndroidArch(ctx.Config().Targets[Android]))) ||
-					(arch.ArchType == Arm &&
-						hasX8664AndroidArch(ctx.Config().Targets[Android])) {
+				if arch.ArchType == X86_64 && (hasArmAbi(arch) ||
+					hasArmAndroidArch(ctx.Config().Targets[Android])) {
 					field := "Arm_on_x86_64"
 					prefix := "target.arm_on_x86_64"
 					m.appendProperties(ctx, genProps, targetProp, field, prefix)
@@ -1594,27 +1598,7 @@ func hasArmAbi(arch Arch) bool {
 // hasArmArch returns true if targets has at least non-native_bridge arm Android arch
 func hasArmAndroidArch(targets []Target) bool {
 	for _, target := range targets {
-		if target.Os == Android && target.Arch.ArchType == Arm && target.NativeBridge == NativeBridgeDisabled {
-			return true
-		}
-	}
-	return false
-}
-
-// hasX86Arch returns true if targets has at least x86 Android arch
-func hasX86AndroidArch(targets []Target) bool {
-	for _, target := range targets {
-		if target.Os == Android && target.Arch.ArchType == X86 {
-			return true
-		}
-	}
-	return false
-}
-
-// hasX8664Arch returns true if targets has at least x86_64 Android arch
-func hasX8664AndroidArch(targets []Target) bool {
-	for _, target := range targets {
-		if target.Os == Android && target.Arch.ArchType == X86_64 {
+		if target.Os == Android && target.Arch.ArchType == Arm {
 			return true
 		}
 	}
@@ -1653,9 +1637,10 @@ func getMegaDeviceConfig() []archConfig {
 		{"arm64", "armv8-a", "kryo", []string{"arm64-v8a"}},
 		{"arm64", "armv8-a", "exynos-m1", []string{"arm64-v8a"}},
 		{"arm64", "armv8-a", "exynos-m2", []string{"arm64-v8a"}},
-		{"arm64", "armv8-2a", "cortex-a75", []string{"arm64-v8a"}},
-		{"arm64", "armv8-2a", "cortex-a76", []string{"arm64-v8a"}},
 		{"arm64", "armv8-2a", "kryo385", []string{"arm64-v8a"}},
+		{"arm64", "armv8-2a-dotprod", "cortex-a55", []string{"arm64-v8a"}},
+		{"arm64", "armv8-2a-dotprod", "cortex-a75", []string{"arm64-v8a"}},
+		{"arm64", "armv8-2a-dotprod", "cortex-a76", []string{"arm64-v8a"}},
 		{"x86", "", "", []string{"x86"}},
 		{"x86", "atom", "", []string{"x86"}},
 		{"x86", "haswell", "", []string{"x86"}},

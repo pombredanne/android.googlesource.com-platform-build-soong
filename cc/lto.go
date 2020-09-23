@@ -52,6 +52,9 @@ type LTOProperties struct {
 
 	// Use clang lld instead of gnu ld.
 	Use_clang_lld *bool
+
+	// Use -fwhole-program-vtables cflag.
+	Whole_program_vtables *bool
 }
 
 type lto struct {
@@ -97,6 +100,10 @@ func (lto *lto) flags(ctx BaseModuleContext, flags Flags) Flags {
 		flags.Local.CFlags = append(flags.Local.CFlags, ltoFlag)
 		flags.Local.LdFlags = append(flags.Local.LdFlags, ltoFlag)
 
+		if Bool(lto.Properties.Whole_program_vtables) {
+			flags.Local.CFlags = append(flags.Local.CFlags, "-fwhole-program-vtables")
+		}
+
 		if ctx.Config().IsEnvTrue("USE_THINLTO_CACHE") && Bool(lto.Properties.Lto.Thin) && lto.useClangLld(ctx) {
 			// Set appropriate ThinLTO cache policy
 			cacheDirFormat := "-Wl,--thinlto-cache-dir="
@@ -110,12 +117,11 @@ func (lto *lto) flags(ctx BaseModuleContext, flags Flags) Flags {
 			flags.Local.LdFlags = append(flags.Local.LdFlags, cachePolicyFormat+policy)
 		}
 
-		// If the module does not have a profile, be conservative and do not inline
-		// or unroll loops during LTO, in order to prevent significant size bloat.
+		// If the module does not have a profile, be conservative and limit cross TU inline
+		// limit to 5 LLVM IR instructions, to balance binary size increase and performance.
 		if !ctx.isPgoCompile() {
 			flags.Local.LdFlags = append(flags.Local.LdFlags,
-				"-Wl,-plugin-opt,-inline-threshold=0",
-				"-Wl,-plugin-opt,-unroll-threshold=0")
+				"-Wl,-plugin-opt,-import-instr-limit=5")
 		}
 	}
 	return flags
