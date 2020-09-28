@@ -88,18 +88,17 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 		"prebuilts/sdk/30/system/api/bar-removed.txt":              nil,
 		"prebuilts/sdk/30/test/api/bar-removed.txt":                nil,
 		"prebuilts/sdk/tools/core-lambda-stubs.jar":                nil,
-		"prebuilts/sdk/Android.bp":                                 []byte(`prebuilt_apis { name: "sdk", api_dirs: ["14", "28", "30", "current"],}`),
+		"prebuilts/sdk/Android.bp":                                 []byte(`prebuilt_apis { name: "sdk", api_dirs: ["14", "28", "30", "current"], imports_sdk_version: "none", imports_compile_dex:true,}`),
 
 		"bin.py": nil,
 		python.StubTemplateHost: []byte(`PYTHON_BINARY = '%interpreter%'
 		MAIN_FILE = '%main%'`),
 
 		// For java_sdk_library
-		"api/module-lib-current.txt":                        nil,
-		"api/module-lib-removed.txt":                        nil,
-		"api/system-server-current.txt":                     nil,
-		"api/system-server-removed.txt":                     nil,
-		"build/soong/scripts/gen-java-current-api-files.sh": nil,
+		"api/module-lib-current.txt":    nil,
+		"api/module-lib-removed.txt":    nil,
+		"api/system-server-current.txt": nil,
+		"api/system-server-removed.txt": nil,
 	}
 
 	cc.GatherRequiredFilesForTest(mockFS)
@@ -146,6 +145,7 @@ func GatherRequiredDepsForTest() string {
 				srcs: ["a.java"],
 				sdk_version: "none",
 				system_modules: "stable-core-platform-api-stubs-system-modules",
+				compile_dex: true,
 			}
 		`, extra)
 	}

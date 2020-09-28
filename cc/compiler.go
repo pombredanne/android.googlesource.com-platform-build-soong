@@ -354,8 +354,14 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX_NAME__='\""+ctx.apexVariationName()+"\"'")
 		}
 		if ctx.Device() {
-			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_SDK_VERSION__="+strconv.Itoa(ctx.apexSdkVersion()))
+			flags.Global.CommonFlags = append(flags.Global.CommonFlags,
+				fmt.Sprintf("-D__ANDROID_SDK_VERSION__=%d",
+					ctx.apexSdkVersion().FinalOrFutureInt()))
 		}
+	}
+
+	if ctx.Target().NativeBridge == android.NativeBridgeEnabled {
+		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_NATIVE_BRIDGE__")
 	}
 
 	instructionSet := String(compiler.Properties.Instruction_set)
@@ -386,7 +392,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	if ctx.Os().Class == android.Device {
 		version := ctx.sdkVersion()
 		if version == "" || version == "current" {
-			target += strconv.Itoa(android.FutureApiLevel)
+			target += strconv.Itoa(android.FutureApiLevelInt)
 		} else {
 			target += version
 		}
@@ -573,10 +579,12 @@ func (compiler *baseCompiler) uniqueApexVariations() bool {
 	return compiler.useApexNameMacro()
 }
 
+var invalidDefineCharRegex = regexp.MustCompile("[^a-zA-Z0-9_]")
+
 // makeDefineString transforms a name of an APEX module into a value to be used as value for C define
 // For example, com.android.foo => COM_ANDROID_FOO
 func makeDefineString(name string) string {
-	return strings.ReplaceAll(strings.ToUpper(name), ".", "_")
+	return invalidDefineCharRegex.ReplaceAllString(strings.ToUpper(name), "_")
 }
 
 var gnuToCReplacer = strings.NewReplacer("gnu", "c")

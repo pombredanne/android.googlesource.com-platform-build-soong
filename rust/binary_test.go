@@ -30,6 +30,13 @@ func TestBinaryLinkage(t *testing.T) {
 			rustlibs: ["libfoo"],
 			host_supported: true,
 		}
+		rust_binary {
+			name: "rlib_linked",
+			srcs: ["foo.rs"],
+			rustlibs: ["libfoo"],
+			host_supported: true,
+			prefer_rlib: true,
+		}
 		rust_library {
 			name: "libfoo",
 			srcs: ["foo.rs"],
@@ -40,12 +47,40 @@ func TestBinaryLinkage(t *testing.T) {
 	fizzBuzzHost := ctx.ModuleForTests("fizz-buzz", "linux_glibc_x86_64").Module().(*Module)
 	fizzBuzzDevice := ctx.ModuleForTests("fizz-buzz", "android_arm64_armv8-a").Module().(*Module)
 
-	if !android.InList("libfoo", fizzBuzzHost.Properties.AndroidMkRlibs) {
+	if !android.InList("libfoo.rlib-std", fizzBuzzHost.Properties.AndroidMkRlibs) {
 		t.Errorf("rustlibs dependency libfoo should be an rlib dep for host modules")
 	}
 
 	if !android.InList("libfoo", fizzBuzzDevice.Properties.AndroidMkDylibs) {
 		t.Errorf("rustlibs dependency libfoo should be an dylib dep for device modules")
+	}
+}
+
+// Test that prefer_rlib links in libstd statically as well as rustlibs.
+func TestBinaryPreferRlib(t *testing.T) {
+	ctx := testRust(t, `
+		rust_binary {
+			name: "rlib_linked",
+			srcs: ["foo.rs"],
+			rustlibs: ["libfoo"],
+			host_supported: true,
+			prefer_rlib: true,
+		}
+		rust_library {
+			name: "libfoo",
+			srcs: ["foo.rs"],
+			crate_name: "foo",
+			host_supported: true,
+		}`)
+
+	mod := ctx.ModuleForTests("rlib_linked", "android_arm64_armv8-a").Module().(*Module)
+
+	if !android.InList("libfoo.rlib-std", mod.Properties.AndroidMkRlibs) {
+		t.Errorf("rustlibs dependency libfoo should be an rlib dep when prefer_rlib is defined")
+	}
+
+	if !android.InList("libstd", mod.Properties.AndroidMkRlibs) {
+		t.Errorf("libstd dependency should be an rlib dep when prefer_rlib is defined")
 	}
 }
 

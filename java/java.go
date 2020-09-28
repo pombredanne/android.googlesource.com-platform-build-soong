@@ -324,6 +324,10 @@ type CompilerDeviceProperties struct {
 	Stem *string
 
 	IsSDKLibrary bool `blueprint:"mutated"`
+
+	// If true, generate the signature file of APK Signing Scheme V4, along side the signed APK file.
+	// Defaults to false.
+	V4_signature *bool
 }
 
 // Functionality common to Module and Import
@@ -566,7 +570,6 @@ var (
 	certificateTag        = dependencyTag{name: "certificate"}
 	instrumentationForTag = dependencyTag{name: "instrumentation_for"}
 	usesLibTag            = dependencyTag{name: "uses-library"}
-	usesLibCompatTag      = dependencyTag{name: "uses-library-compat"}
 	extraLintCheckTag     = dependencyTag{name: "extra-lint-check"}
 )
 
@@ -1490,7 +1493,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		args := map[string]string{
 			"jarArgs": "-P META-INF/services/ " + strings.Join(proptools.NinjaAndShellEscapeList(zipargs), " "),
 		}
-		if ctx.Config().IsEnvTrue("RBE_ZIP") {
+		if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_ZIP") {
 			rule = zipRE
 			args["implicits"] = strings.Join(services.Strings(), ",")
 		}
@@ -1611,6 +1614,9 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 
 		configurationName := j.ConfigurationName()
 		primary := configurationName == ctx.ModuleName()
+		// If the prebuilt is being used rather than the from source, skip this
+		// module to prevent duplicated classes
+		primary = primary && !j.IsReplacedByPrebuilt()
 
 		// Hidden API CSV generation and dex encoding
 		dexOutputFile = j.hiddenAPI.hiddenAPI(ctx, configurationName, primary, dexOutputFile, j.implementationJarFile,
@@ -1652,7 +1658,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 			if v := sdkSpec.version; v.isNumbered() {
 				return v.String()
 			} else {
-				return ctx.Config().DefaultAppTargetSdk()
+				return ctx.Config().DefaultAppTargetSdk(ctx).String()
 			}
 		}
 
@@ -1870,7 +1876,8 @@ func (j *Module) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Modu
 	return j.depIsInSameApex(ctx, dep)
 }
 
-func (j *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext, sdkVersion int) error {
+func (j *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
+	sdkVersion android.ApiLevel) error {
 	sdkSpec := j.minSdkVersion()
 	if !sdkSpec.specified() {
 		return fmt.Errorf("min_sdk_version is not specified")
@@ -1882,7 +1889,7 @@ func (j *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext, sdkVersi
 	if err != nil {
 		return err
 	}
-	if int(ver) > sdkVersion {
+	if ver.ApiLevel(ctx).GreaterThan(sdkVersion) {
 		return fmt.Errorf("newer SDK(%v)", ver)
 	}
 	return nil
@@ -1979,9 +1986,9 @@ func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	// added to the Android manifest.
 	j.exportedSdkLibs.MaybeAddLibraryPath(ctx, j.OptionalImplicitSdkLibrary(), j.DexJarBuildPath(), j.DexJarInstallPath())
 
-	// If this is a non-SDK uses-library, export itself.
-	if proptools.Bool(j.usesLibraryProperties.Is_uses_lib) {
-		j.exportedSdkLibs.AddLibraryPath(ctx, ctx.ModuleName(), j.DexJarBuildPath(), j.DexJarInstallPath())
+	// A non-SDK library may provide a <uses-library> (the name may be different from the module name).
+	if lib := proptools.String(j.usesLibraryProperties.Provides_uses_lib); lib != "" {
+		j.exportedSdkLibs.AddLibraryPath(ctx, lib, j.DexJarBuildPath(), j.DexJarInstallPath())
 	}
 
 	j.distFiles = j.GenerateTaggedDistFiles(ctx)
@@ -2681,6 +2688,13 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			return
 		}
 
+		configurationName := j.BaseModuleName()
+		primary := j.Prebuilt().UsePrebuilt()
+
+		// Hidden API CSV generation and dex encoding
+		dexOutputFile = j.hiddenAPI.hiddenAPI(ctx, configurationName, primary, dexOutputFile, outputFile,
+			proptools.Bool(j.dexProperties.Uncompress_dex))
+
 		j.dexJarFile = dexOutputFile
 	}
 }
@@ -2740,7 +2754,8 @@ func (j *Import) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Modu
 	return j.depIsInSameApex(ctx, dep)
 }
 
-func (j *Import) ShouldSupportSdkVersion(ctx android.BaseModuleContext, sdkVersion int) error {
+func (j *Import) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
+	sdkVersion android.ApiLevel) error {
 	// Do not check for prebuilts against the min_sdk_version of enclosing APEX
 	return nil
 }
@@ -2923,7 +2938,8 @@ func (j *DexImport) DexJarBuildPath() android.Path {
 	return j.dexJarFile
 }
 
-func (j *DexImport) ShouldSupportSdkVersion(ctx android.BaseModuleContext, sdkVersion int) error {
+func (j *DexImport) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
+	sdkVersion android.ApiLevel) error {
 	// we don't check prebuilt modules for sdk_version
 	return nil
 }

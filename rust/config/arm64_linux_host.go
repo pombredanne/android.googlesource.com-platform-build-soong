@@ -1,4 +1,4 @@
-// Copyright 2017 Google Inc. All rights reserved.
+// Copyright 2019 The Android Open Source Project
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,27 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package python
-
-// This file contains the module types for building Python library.
+package config
 
 import (
 	"android/soong/android"
 )
 
 func init() {
-	android.RegisterModuleType("python_library_host", PythonLibraryHostFactory)
-	android.RegisterModuleType("python_library", PythonLibraryFactory)
-}
-
-func PythonLibraryHostFactory() android.Module {
-	module := newModule(android.HostSupported, android.MultilibFirst)
-
-	return module.Init()
-}
-
-func PythonLibraryFactory() android.Module {
-	module := newModule(android.HostAndDeviceSupported, android.MultilibBoth)
-
-	return module.Init()
+	// Linux_cross-arm64 uses the same rust toolchain as the Android-arm64
+	registerToolchainFactory(android.LinuxBionic, android.Arm64, Arm64ToolchainFactory)
 }

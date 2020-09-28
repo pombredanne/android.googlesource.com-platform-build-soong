@@ -221,7 +221,6 @@ var (
 			ExecStrategy: "${config.REAbiDumperExecStrategy}",
 			Platform: map[string]string{
 				remoteexec.PoolKey:      "${config.RECXXPool}",
-				"InputRootAbsolutePath": android.AbsSrcDirForExistingUseCases(),
 			},
 		}, []string{"cFlags", "exportDirs"}, nil)
 
@@ -584,7 +583,7 @@ func TransformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles and
 			tidyFiles = append(tidyFiles, tidyFile)
 
 			rule := clangTidy
-			if ctx.Config().IsEnvTrue("RBE_CLANG_TIDY") {
+			if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_CLANG_TIDY") {
 				rule = clangTidyRE
 			}
 
@@ -610,7 +609,7 @@ func TransformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles and
 			sAbiDumpFiles = append(sAbiDumpFiles, sAbiDumpFile)
 
 			dumpRule := sAbiDump
-			if ctx.Config().IsEnvTrue("RBE_ABI_DUMPER") {
+			if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_ABI_DUMPER") {
 				dumpRule = sAbiDumpRE
 			}
 			ctx.Build(pctx, android.BuildParams{
@@ -745,7 +744,7 @@ func TransformObjToDynamicBinary(ctx android.ModuleContext,
 		"ldFlags":       flags.globalLdFlags + " " + flags.localLdFlags,
 		"crtEnd":        crtEnd.String(),
 	}
-	if ctx.Config().IsEnvTrue("RBE_CXX_LINKS") {
+	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_CXX_LINKS") {
 		rule = ldRE
 		args["implicitOutputs"] = strings.Join(implicitOutputs.Strings(), ",")
 		args["implicitInputs"] = strings.Join(deps.Strings(), ",")
@@ -789,7 +788,7 @@ func TransformDumpToLinkedDump(ctx android.ModuleContext, sAbiDumps android.Path
 		"arch":                ctx.Arch().ArchType.Name,
 		"exportedHeaderFlags": exportedHeaderFlags,
 	}
-	if ctx.Config().IsEnvTrue("RBE_ABI_LINKER") {
+	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_ABI_LINKER") {
 		rule = sAbiLinkRE
 		rbeImplicits := implicits.Strings()
 		for _, p := range strings.Split(exportedHeaderFlags, " ") {
@@ -912,7 +911,7 @@ func TransformObjsToObj(ctx android.ModuleContext, objFiles android.Paths,
 		"ldCmd":   ldCmd,
 		"ldFlags": flags.globalLdFlags + " " + flags.localLdFlags,
 	}
-	if ctx.Config().IsEnvTrue("RBE_CXX_LINKS") {
+	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_CXX_LINKS") {
 		rule = partialLdRE
 		args["inCommaList"] = strings.Join(objFiles.Strings(), ",")
 		args["implicitInputs"] = strings.Join(deps.Strings(), ",")

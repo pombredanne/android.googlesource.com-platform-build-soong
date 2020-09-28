@@ -38,6 +38,10 @@ type DexProperties struct {
 		// True if the module containing this has it set by default.
 		EnabledByDefault bool `blueprint:"mutated"`
 
+		// If true, runs R8 in Proguard compatibility mode (default).
+		// Otherwise, runs R8 in full mode.
+		Proguard_compatibility *bool
+
 		// If true, optimize for size by removing unused code.  Defaults to true for apps,
 		// false for libraries and tests.
 		Shrink *bool
@@ -113,7 +117,6 @@ var r8, r8RE = remoteexec.MultiCommandStaticRules(pctx, "r8",
 			`rm -f "$outDict" && rm -rf "${outUsageDir}" && ` +
 			`mkdir -p $$(dirname ${outUsage}) && ` +
 			`$r8Template${config.R8Cmd} ${config.DexFlags} -injars $in --output $outDir ` +
-			`--force-proguard-compatibility ` +
 			`--no-data-resources ` +
 			`-printmapping ${outDict} ` +
 			`-printusage ${outUsage} ` +
@@ -132,6 +135,7 @@ var r8, r8RE = remoteexec.MultiCommandStaticRules(pctx, "r8",
 		"$r8Template": &remoteexec.REParams{
 			Labels:          map[string]string{"type": "compile", "compiler": "r8"},
 			Inputs:          []string{"$implicits", "${config.R8Jar}"},
+			OutputFiles:     []string{"${outUsage}"},
 			ExecStrategy:    "${config.RER8ExecStrategy}",
 			ToolchainInputs: []string{"${config.JavaCmd}"},
 			Platform:        map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
@@ -230,6 +234,10 @@ func (d *dexer) r8Flags(ctx android.ModuleContext, flags javaBuilderFlags) (r8Fl
 
 	r8Flags = append(r8Flags, opt.Proguard_flags...)
 
+	if BoolDefault(opt.Proguard_compatibility, true) {
+		r8Flags = append(r8Flags, "--force-proguard-compatibility")
+	}
+
 	// TODO(ccross): Don't shrink app instrumentation tests by default.
 	if !Bool(opt.Shrink) {
 		r8Flags = append(r8Flags, "-dontshrink")
@@ -288,7 +296,7 @@ func (d *dexer) compileDex(ctx android.ModuleContext, flags javaBuilderFlags, mi
 			"outUsageZip": proguardUsageZip.String(),
 			"outDir":      outDir.String(),
 		}
-		if ctx.Config().IsEnvTrue("RBE_R8") {
+		if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_R8") {
 			rule = r8RE
 			args["implicits"] = strings.Join(r8Deps.Strings(), ",")
 		}
@@ -304,7 +312,7 @@ func (d *dexer) compileDex(ctx android.ModuleContext, flags javaBuilderFlags, mi
 	} else {
 		d8Flags, d8Deps := d8Flags(flags)
 		rule := d8
-		if ctx.Config().IsEnvTrue("RBE_D8") {
+		if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_D8") {
 			rule = d8RE
 		}
 		ctx.Build(pctx, android.BuildParams{

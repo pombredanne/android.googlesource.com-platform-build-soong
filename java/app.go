@@ -118,17 +118,17 @@ var TargetCpuAbi = map[string]string{
 }
 
 func SupportedAbis(ctx android.ModuleContext) []string {
-	abiName := func(archVar string, deviceArch string) string {
+	abiName := func(targetIdx int, deviceArch string) string {
 		if abi, found := TargetCpuAbi[deviceArch]; found {
 			return abi
 		}
-		ctx.ModuleErrorf("Invalid %s: %s", archVar, deviceArch)
+		ctx.ModuleErrorf("Target %d has invalid Arch: %s", targetIdx, deviceArch)
 		return "BAD_ABI"
 	}
 
-	result := []string{abiName("TARGET_ARCH", ctx.DeviceConfig().DeviceArch())}
-	if s := ctx.DeviceConfig().DeviceSecondaryArch(); s != "" {
-		result = append(result, abiName("TARGET_2ND_ARCH", s))
+	var result []string
+	for i, target := range ctx.Config().Targets[android.Android] {
+		result = append(result, abiName(i, target.Arch.ArchType.String()))
 	}
 	return result
 }
@@ -157,7 +157,7 @@ func (as *AndroidAppSet) GenerateAndroidBuildActions(ctx android.ModuleContext) 
 				"abis":              strings.Join(SupportedAbis(ctx), ","),
 				"allow-prereleased": strconv.FormatBool(proptools.Bool(as.properties.Prerelease)),
 				"screen-densities":  screenDensities,
-				"sdk-version":       ctx.Config().PlatformSdkVersion(),
+				"sdk-version":       ctx.Config().PlatformSdkVersion().String(),
 				"stem":              as.BaseModuleName(),
 				"apkcerts":          as.apkcertsFile.String(),
 				"partition":         as.PartitionTag(ctx.DeviceConfig()),
@@ -268,6 +268,9 @@ type overridableAppProperties struct {
 
 	// the logging parent of this app.
 	Logging_parent *string
+
+	// Whether to rename the package in resources to the override name rather than the base name. Defaults to true.
+	Rename_resources_package *bool
 }
 
 // runtime_resource_overlay properties that can be overridden by override_runtime_resource_overlay
@@ -433,7 +436,7 @@ func (a *AndroidApp) checkAppSdkVersions(ctx android.ModuleContext) {
 
 		if minSdkVersion, err := a.minSdkVersion().effectiveVersion(ctx); err == nil {
 			a.checkJniLibsSdkVersion(ctx, minSdkVersion)
-			android.CheckMinSdkVersion(a, ctx, int(minSdkVersion))
+			android.CheckMinSdkVersion(a, ctx, minSdkVersion.ApiLevel(ctx))
 		} else {
 			ctx.PropertyErrorf("min_sdk_version", "%s", err.Error())
 		}
@@ -505,8 +508,21 @@ func (a *AndroidApp) shouldEmbedJnis(ctx android.BaseModuleContext) bool {
 		!a.IsForPlatform() || a.appProperties.AlwaysPackageNativeLibs
 }
 
+func generateAaptRenamePackageFlags(packageName string, renameResourcesPackage bool) []string {
+	aaptFlags := []string{"--rename-manifest-package " + packageName}
+	if renameResourcesPackage {
+		// Required to rename the package name in the resources table.
+		aaptFlags = append(aaptFlags, "--rename-resources-package "+packageName)
+	}
+	return aaptFlags
+}
+
 func (a *AndroidApp) OverriddenManifestPackageName() string {
 	return a.overriddenManifestPackageName
+}
+
+func (a *AndroidApp) renameResourcesPackage() bool {
+	return proptools.BoolDefault(a.overridableAppProperties.Rename_resources_package, true)
 }
 
 func (a *AndroidApp) aaptBuildActions(ctx android.ModuleContext) {
@@ -541,7 +557,7 @@ func (a *AndroidApp) aaptBuildActions(ctx android.ModuleContext) {
 		if !overridden {
 			manifestPackageName = *a.overridableAppProperties.Package_name
 		}
-		aaptLinkFlags = append(aaptLinkFlags, "--rename-manifest-package "+manifestPackageName)
+		aaptLinkFlags = append(aaptLinkFlags, generateAaptRenamePackageFlags(manifestPackageName, a.renameResourcesPackage())...)
 		a.overriddenManifestPackageName = manifestPackageName
 	}
 
@@ -662,7 +678,7 @@ func (a *AndroidApp) noticeBuildActions(ctx android.ModuleContext) {
 		seenModules[child] = true
 
 		// Skip host modules.
-		if child.Target().Os.Class == android.Host || child.Target().Os.Class == android.HostCross {
+		if child.Target().Os.Class == android.Host {
 			return false
 		}
 
@@ -771,7 +787,7 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 
 	// Add implicit SDK libraries to <uses-library> list.
 	for _, usesLib := range android.SortedStringKeys(a.aapt.sdkLibraries) {
-		a.usesLibrary.addLib(usesLib, inList(usesLib, optionalUsesLibs))
+		a.usesLibrary.addLib(usesLib, inList(usesLib, dexpreopt.OptionalCompatUsesLibs))
 	}
 
 	// Check that the <uses-library> list is coherent with the manifest.
@@ -801,18 +817,32 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 
 	// Build a final signed app package.
 	packageFile := android.PathForModuleOut(ctx, a.installApkName+".apk")
+	v4SigningRequested := Bool(a.Module.deviceProperties.V4_signature)
+	var v4SignatureFile android.WritablePath = nil
+	if v4SigningRequested {
+		v4SignatureFile = android.PathForModuleOut(ctx, a.installApkName+".apk.idsig")
+	}
 	var lineageFile android.Path
 	if lineage := String(a.overridableAppProperties.Lineage); lineage != "" {
 		lineageFile = android.PathForModuleSrc(ctx, lineage)
 	}
-	CreateAndSignAppPackage(ctx, packageFile, a.exportPackage, jniJarFile, dexJarFile, certificates, apkDeps, lineageFile)
+	CreateAndSignAppPackage(ctx, packageFile, a.exportPackage, jniJarFile, dexJarFile, certificates, apkDeps, v4SignatureFile, lineageFile)
 	a.outputFile = packageFile
+	if v4SigningRequested {
+		a.extraOutputFiles = append(a.extraOutputFiles, v4SignatureFile)
+	}
 
 	for _, split := range a.aapt.splits {
 		// Sign the split APKs
 		packageFile := android.PathForModuleOut(ctx, a.installApkName+"_"+split.suffix+".apk")
-		CreateAndSignAppPackage(ctx, packageFile, split.path, nil, nil, certificates, apkDeps, lineageFile)
+		if v4SigningRequested {
+			v4SignatureFile = android.PathForModuleOut(ctx, a.installApkName+"_"+split.suffix+".apk.idsig")
+		}
+		CreateAndSignAppPackage(ctx, packageFile, split.path, nil, nil, certificates, apkDeps, v4SignatureFile, lineageFile)
 		a.extraOutputFiles = append(a.extraOutputFiles, packageFile)
+		if v4SigningRequested {
+			a.extraOutputFiles = append(a.extraOutputFiles, v4SignatureFile)
+		}
 	}
 
 	// Build an app bundle.
@@ -1528,7 +1558,7 @@ func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext
 		if lineage := String(a.properties.Lineage); lineage != "" {
 			lineageFile = android.PathForModuleSrc(ctx, lineage)
 		}
-		SignAppPackage(ctx, signed, dexOutput, certificates, lineageFile)
+		SignAppPackage(ctx, signed, dexOutput, certificates, nil, lineageFile)
 		a.outputFile = signed
 	} else {
 		alignedApk := android.PathForModuleOut(ctx, "zip-aligned", apkFilename)
@@ -1607,7 +1637,8 @@ func (a *AndroidAppImport) minSdkVersion() sdkSpec {
 	return sdkSpecFrom("")
 }
 
-func (j *AndroidAppImport) ShouldSupportSdkVersion(ctx android.BaseModuleContext, sdkVersion int) error {
+func (j *AndroidAppImport) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
+	sdkVersion android.ApiLevel) error {
 	// Do not check for prebuilts against the min_sdk_version of enclosing APEX
 	return nil
 }
@@ -1801,7 +1832,7 @@ func (r *RuntimeResourceOverlay) GenerateAndroidBuildActions(ctx android.ModuleC
 		if !overridden {
 			manifestPackageName = *r.overridableProperties.Package_name
 		}
-		aaptLinkFlags = append(aaptLinkFlags, "--rename-manifest-package "+manifestPackageName)
+		aaptLinkFlags = append(aaptLinkFlags, generateAaptRenamePackageFlags(manifestPackageName, false)...)
 	}
 	if r.overridableProperties.Target_package_name != nil {
 		aaptLinkFlags = append(aaptLinkFlags,
@@ -1817,7 +1848,7 @@ func (r *RuntimeResourceOverlay) GenerateAndroidBuildActions(ctx android.ModuleC
 	if lineage := String(r.properties.Lineage); lineage != "" {
 		lineageFile = android.PathForModuleSrc(ctx, lineage)
 	}
-	SignAppPackage(ctx, signed, r.aapt.exportPackage, certificates, lineageFile)
+	SignAppPackage(ctx, signed, r.aapt.exportPackage, certificates, nil, lineageFile)
 	r.certificate = certificates[0]
 
 	r.outputFile = signed
@@ -1883,8 +1914,10 @@ type UsesLibraryProperties struct {
 	// to true if either uses_libs or optional_uses_libs is set.  Will unconditionally default to true in the future.
 	Enforce_uses_libs *bool
 
-	// If the library itself is a uses-library (this is needed for non-SDK libraries).
-	Is_uses_lib *bool
+	// Optional name of the <uses-library> provided by this module. This is needed for non-SDK
+	// libraries, because SDK ones are automatically picked up by Soong. The <uses-library> name
+	// normally is the same as the module name, but there are exceptions.
+	Provides_uses_lib *string
 }
 
 // usesLibrary provides properties and helper functions for AndroidApp and AndroidAppImport to verify that the
@@ -1915,11 +1948,8 @@ func (u *usesLibrary) deps(ctx android.BottomUpMutatorContext, hasFrameworkLibs 
 		if hasFrameworkLibs {
 			// Dexpreopt needs paths to the dex jars of these libraries in order to construct
 			// class loader context for dex2oat. Add them as a dependency with a special tag.
-			ctx.AddVariationDependencies(nil, usesLibCompatTag,
-				"org.apache.http.legacy",
-				"android.hidl.base-V1.0-java",
-				"android.hidl.manager-V1.0-java")
-			ctx.AddVariationDependencies(nil, usesLibCompatTag, optionalUsesLibs...)
+			ctx.AddVariationDependencies(nil, usesLibTag, dexpreopt.CompatUsesLibs...)
+			ctx.AddVariationDependencies(nil, usesLibTag, dexpreopt.OptionalCompatUsesLibs...)
 		}
 	}
 }
@@ -1937,27 +1967,14 @@ func (u *usesLibrary) usesLibraryPaths(ctx android.ModuleContext) dexpreopt.Libr
 	usesLibPaths := make(dexpreopt.LibraryPaths)
 
 	if !ctx.Config().UnbundledBuild() {
-		ctx.VisitDirectDeps(func(m android.Module) {
-			tag := ctx.OtherModuleDependencyTag(m)
-			if tag == usesLibTag || tag == usesLibCompatTag {
-				dep := ctx.OtherModuleName(m)
-
-				if lib, ok := m.(Dependency); ok {
-					buildPath := lib.DexJarBuildPath()
-					installPath := lib.DexJarInstallPath()
-					if installPath == nil && tag == usesLibCompatTag {
-						// assume that compatibility libraries are in /system/framework
-						installPath = android.PathForModuleInstall(ctx, "framework", dep+".jar")
-					}
-					usesLibPaths.AddLibraryPath(ctx, dep, buildPath, installPath)
-
-				} else if ctx.Config().AllowMissingDependencies() {
-					ctx.AddMissingDependencies([]string{dep})
-
-				} else {
-					ctx.ModuleErrorf("module %q in uses_libs or optional_uses_libs must be "+
-						"a java library", dep)
-				}
+		ctx.VisitDirectDepsWithTag(usesLibTag, func(m android.Module) {
+			dep := ctx.OtherModuleName(m)
+			if lib, ok := m.(Dependency); ok {
+				usesLibPaths.AddLibraryPath(ctx, dep, lib.DexJarBuildPath(), lib.DexJarInstallPath())
+			} else if ctx.Config().AllowMissingDependencies() {
+				ctx.AddMissingDependencies([]string{dep})
+			} else {
+				ctx.ModuleErrorf("module %q in uses_libs or optional_uses_libs must be a java library", dep)
 			}
 		})
 	}

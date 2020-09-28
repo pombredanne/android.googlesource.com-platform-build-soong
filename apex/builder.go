@@ -21,7 +21,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 
 	"android/soong/android"
@@ -214,7 +213,8 @@ func (a *apexBundle) buildManifest(ctx android.ModuleContext, provideNativeLibs,
 		},
 	})
 
-	if a.minSdkVersion(ctx) == android.SdkVersion_Android10 {
+	minSdkVersion := a.minSdkVersion(ctx)
+	if minSdkVersion.EqualTo(android.SdkVersion_Android10) {
 		// b/143654022 Q apexd can't understand newly added keys in apex_manifest.json
 		// prepare stripped-down version so that APEX modules built from R+ can be installed to Q
 		a.manifestJsonOut = android.PathForModuleOut(ctx, "apex_manifest.json")
@@ -285,6 +285,10 @@ func (a *apexBundle) buildNoticeFiles(ctx android.ModuleContext, apexFileName st
 
 		return true
 	})
+
+	for _, fi := range a.filesInfo {
+		noticeFiles = append(noticeFiles, fi.noticeFiles...)
+	}
 
 	if len(noticeFiles) == 0 {
 		return android.NoticeOutputs{}
@@ -422,7 +426,8 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 	var emitCommands []string
 	imageContentFile := android.PathForModuleOut(ctx, "content.txt")
 	emitCommands = append(emitCommands, "echo ./apex_manifest.pb >> "+imageContentFile.String())
-	if a.minSdkVersion(ctx) == android.SdkVersion_Android10 {
+	minSdkVersion := a.minSdkVersion(ctx)
+	if minSdkVersion.EqualTo(android.SdkVersion_Android10) {
 		emitCommands = append(emitCommands, "echo ./apex_manifest.json >> "+imageContentFile.String())
 	}
 	for _, fi := range a.filesInfo {
@@ -528,12 +533,13 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			optFlags = append(optFlags, "--android_manifest "+androidManifestFile.String())
 		}
 
-		targetSdkVersion := ctx.Config().DefaultAppTargetSdk()
+		targetSdkVersion := ctx.Config().DefaultAppTargetSdk(ctx).String()
 		// TODO(b/157078772): propagate min_sdk_version to apexer.
-		minSdkVersion := ctx.Config().DefaultAppTargetSdk()
+		minSdkVersion := ctx.Config().DefaultAppTargetSdk(ctx).String()
 
-		if a.minSdkVersion(ctx) == android.SdkVersion_Android10 {
-			minSdkVersion = strconv.Itoa(a.minSdkVersion(ctx))
+		moduleMinSdkVersion := a.minSdkVersion(ctx)
+		if moduleMinSdkVersion.EqualTo(android.SdkVersion_Android10) {
+			minSdkVersion = moduleMinSdkVersion.String()
 		}
 
 		if java.UseApiFingerprint(ctx) {
@@ -562,7 +568,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			ctx.PropertyErrorf("test_only_no_hashtree", "not available")
 			return
 		}
-		if a.minSdkVersion(ctx) > android.SdkVersion_Android10 || a.testOnlyShouldSkipHashtreeGeneration() {
+		if moduleMinSdkVersion.GreaterThan(android.SdkVersion_Android10) || a.testOnlyShouldSkipHashtreeGeneration() {
 			// Apexes which are supposed to be installed in builtin dirs(/system, etc)
 			// don't need hashtree for activation. Therefore, by removing hashtree from
 			// apex bundle (filesystem image in it, to be specific), we can save storage.
@@ -579,7 +585,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			optFlags = append(optFlags, "--do_not_check_keyname")
 		}
 
-		if a.minSdkVersion(ctx) == android.SdkVersion_Android10 {
+		if moduleMinSdkVersion == android.SdkVersion_Android10 {
 			implicitInputs = append(implicitInputs, a.manifestJsonOut)
 			optFlags = append(optFlags, "--manifest_json "+a.manifestJsonOut.String())
 		}
@@ -652,7 +658,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		a.container_certificate_file,
 		a.container_private_key_file,
 	}
-	if ctx.Config().IsEnvTrue("RBE_SIGNAPK") {
+	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_SIGNAPK") {
 		rule = java.SignapkRE
 		args["implicits"] = strings.Join(implicits.Strings(), ",")
 		args["outCommaList"] = a.outputFile.String()
@@ -686,7 +692,7 @@ func (a *apexBundle) buildFlattenedApex(ctx android.ModuleContext) {
 	apexBundleName := a.Name()
 	a.outputFile = android.PathForModuleInstall(&factx, "apex", apexBundleName)
 
-	if a.installable() && a.GetOverriddenBy() == "" {
+	if a.installable() {
 		installPath := android.PathForModuleInstall(ctx, "apex", apexBundleName)
 		devicePath := android.InstallPathToOnDevicePath(ctx, installPath)
 		addFlattenedFileContextsInfos(ctx, apexBundleName+":"+devicePath+":"+a.fileContexts.String())

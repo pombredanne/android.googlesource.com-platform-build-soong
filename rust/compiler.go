@@ -146,8 +146,13 @@ func (compiler *baseCompiler) coverageOutputZipPath() android.OptionalPath {
 	panic("baseCompiler does not implement coverageOutputZipPath()")
 }
 
-func (compiler *baseCompiler) static() bool {
-	return false
+func (compiler *baseCompiler) staticStd(ctx *depsContext) bool {
+	// For devices, we always link stdlibs in as dylibs by default.
+	if ctx.Device() {
+		return false
+	} else {
+		return true
+	}
 }
 
 var _ compiler = (*baseCompiler)(nil)
@@ -216,20 +221,12 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 
 	if !Bool(compiler.Properties.No_stdlibs) {
 		for _, stdlib := range config.Stdlibs {
-			// If we're building for the primary host target, use the compiler's stdlibs
-			if ctx.Host() && ctx.TargetPrimary() {
+			// If we're building for the primary arch of the build host, use the compiler's stdlibs
+			if ctx.Target().Os == android.BuildOs && ctx.TargetPrimary() {
 				stdlib = stdlib + "_" + ctx.toolchain().RustTriple()
 			}
 
-			// For devices, we always link stdlibs in as dylibs except for ffi static libraries.
-			// (rustc does not support linking libstd as a dylib for ffi static libraries)
-			if ctx.Host() {
-				deps.Rustlibs = append(deps.Rustlibs, stdlib)
-			} else if ctx.RustModule().compiler.static() {
-				deps.Rlibs = append(deps.Rlibs, stdlib)
-			} else {
-				deps.Dylibs = append(deps.Dylibs, stdlib)
-			}
+			deps.Stdlibs = append(deps.Stdlibs, stdlib)
 		}
 	}
 	return deps

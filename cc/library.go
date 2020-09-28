@@ -19,8 +19,6 @@ import (
 	"io"
 	"path/filepath"
 	"regexp"
-	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -152,6 +150,8 @@ type LibraryMutatedProperties struct {
 	BuildStubs bool `blueprint:"mutated"`
 	// Version of the stubs lib
 	StubsVersion string `blueprint:"mutated"`
+	// List of all stubs versions associated with an implementation lib
+	AllStubsVersions []string `blueprint:"mutated"`
 }
 
 type FlagExporterProperties struct {
@@ -337,10 +337,6 @@ type libraryDecorator struct {
 
 	flagExporter
 	stripper Stripper
-
-	// If we're used as a whole_static_lib, our missing dependencies need
-	// to be given
-	wholeStaticMissingDeps []string
 
 	// For whole_static_libs
 	objects Objects
@@ -682,7 +678,6 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 }
 
 type libraryInterface interface {
-	getWholeStaticMissingDeps() []string
 	static() bool
 	shared() bool
 	objs() Objects
@@ -888,8 +883,6 @@ func (library *libraryDecorator) linkStatic(ctx ModuleContext,
 	TransformObjToStaticLib(ctx, library.objects.objFiles, deps.WholeStaticLibsFromPrebuilts, builderFlags, outputFile, objs.tidyFiles)
 
 	library.coverageOutputFile = TransformCoverageFilesToZip(ctx, library.objects, ctx.ModuleName())
-
-	library.wholeStaticMissingDeps = ctx.GetMissingDependencies()
 
 	ctx.CheckbuildFile(outputFile)
 
@@ -1180,10 +1173,6 @@ func (library *libraryDecorator) buildStatic() bool {
 func (library *libraryDecorator) buildShared() bool {
 	return library.MutatedProperties.BuildShared &&
 		BoolDefault(library.SharedProperties.Shared.Enabled, true)
-}
-
-func (library *libraryDecorator) getWholeStaticMissingDeps() []string {
-	return append([]string(nil), library.wholeStaticMissingDeps...)
 }
 
 func (library *libraryDecorator) objs() Objects {
@@ -1517,56 +1506,39 @@ func LinkageMutator(mctx android.BottomUpMutatorContext) {
 	}
 }
 
-var stubVersionsKey = android.NewOnceKey("stubVersions")
-
-// maps a module name to the list of stubs versions available for the module
-func stubsVersionsFor(config android.Config) map[string][]string {
-	return config.Once(stubVersionsKey, func() interface{} {
-		return make(map[string][]string)
-	}).(map[string][]string)
-}
-
-var stubsVersionsLock sync.Mutex
-
-func LatestStubsVersionFor(config android.Config, name string) string {
-	versions, ok := stubsVersionsFor(config)[name]
-	if ok && len(versions) > 0 {
-		// the versions are alreay sorted in ascending order
-		return versions[len(versions)-1]
-	}
-	return ""
-}
-
 func normalizeVersions(ctx android.BaseModuleContext, versions []string) {
-	numVersions := make([]int, len(versions))
+	var previous android.ApiLevel
 	for i, v := range versions {
-		numVer, err := android.ApiStrToNum(ctx, v)
+		ver, err := android.ApiLevelFromUser(ctx, v)
 		if err != nil {
 			ctx.PropertyErrorf("versions", "%s", err.Error())
 			return
 		}
-		numVersions[i] = numVer
-	}
-	if !sort.IsSorted(sort.IntSlice(numVersions)) {
-		ctx.PropertyErrorf("versions", "not sorted: %v", versions)
-	}
-	for i, v := range numVersions {
-		versions[i] = strconv.Itoa(v)
+		if i > 0 && ver.LessThanOrEqualTo(previous) {
+			ctx.PropertyErrorf("versions", "not sorted: %v", versions)
+		}
+		versions[i] = ver.String()
+		previous = ver
 	}
 }
 
 func createVersionVariations(mctx android.BottomUpMutatorContext, versions []string) {
-	// "" is for the non-stubs variant
-	versions = append([]string{""}, versions...)
+	// "" is for the non-stubs (implementation) variant.
+	variants := append([]string{""}, versions...)
 
-	modules := mctx.CreateLocalVariations(versions...)
+	modules := mctx.CreateLocalVariations(variants...)
 	for i, m := range modules {
-		if versions[i] != "" {
+		if variants[i] != "" {
 			m.(LinkableInterface).SetBuildStubs()
-			m.(LinkableInterface).SetStubsVersions(versions[i])
+			m.(LinkableInterface).SetStubsVersion(variants[i])
 		}
 	}
 	mctx.AliasVariation("")
+	latestVersion := ""
+	if len(versions) > 0 {
+		latestVersion = versions[len(versions)-1]
+	}
+	mctx.CreateAliasVariation("latest", latestVersion)
 }
 
 func VersionVariantAvailable(module interface {
@@ -1577,44 +1549,41 @@ func VersionVariantAvailable(module interface {
 	return !module.Host() && !module.InRamdisk() && !module.InRecovery()
 }
 
-// VersionMutator splits a module into the mandatory non-stubs variant
-// (which is unnamed) and zero or more stubs variants.
-func VersionMutator(mctx android.BottomUpMutatorContext) {
+// versionSelector normalizes the versions in the Stubs.Versions property into MutatedProperties.AllStubsVersions,
+// and propagates the value from implementation libraries to llndk libraries with the same name.
+func versionSelectorMutator(mctx android.BottomUpMutatorContext) {
 	if library, ok := mctx.Module().(LinkableInterface); ok && VersionVariantAvailable(library) {
 		if library.CcLibrary() && library.BuildSharedVariant() && len(library.StubsVersions()) > 0 &&
 			!library.IsSdkVariant() {
+
 			versions := library.StubsVersions()
 			normalizeVersions(mctx, versions)
 			if mctx.Failed() {
 				return
 			}
-
-			stubsVersionsLock.Lock()
-			defer stubsVersionsLock.Unlock()
-			// save the list of versions for later use
-			stubsVersionsFor(mctx.Config())[mctx.ModuleName()] = versions
-
-			createVersionVariations(mctx, versions)
+			// Set the versions on the pre-mutated module so they can be read by any llndk modules that
+			// depend on the implementation library and haven't been mutated yet.
+			library.SetAllStubsVersions(versions)
 			return
 		}
 
 		if c, ok := library.(*Module); ok && c.IsStubs() {
-			stubsVersionsLock.Lock()
-			defer stubsVersionsLock.Unlock()
-			// For LLNDK llndk_library, we borrow stubs.versions from its implementation library.
-			// Since llndk_library has dependency to its implementation library,
-			// we can safely access stubsVersionsFor() with its baseModuleName.
-			versions := stubsVersionsFor(mctx.Config())[c.BaseModuleName()]
-			// save the list of versions for later use
-			stubsVersionsFor(mctx.Config())[mctx.ModuleName()] = versions
-
-			createVersionVariations(mctx, versions)
-			return
+			// Get the versions from the implementation module.
+			impls := mctx.GetDirectDepsWithTag(llndkImplDep)
+			if len(impls) > 1 {
+				panic(fmt.Errorf("Expected single implmenetation library, got %d", len(impls)))
+			} else if len(impls) == 1 {
+				c.SetAllStubsVersions(impls[0].(*Module).AllStubsVersions())
+			}
 		}
+	}
+}
 
-		mctx.CreateLocalVariations("")
-		mctx.AliasVariation("")
-		return
+// versionMutator splits a module into the mandatory non-stubs variant
+// (which is unnamed) and zero or more stubs variants.
+func versionMutator(mctx android.BottomUpMutatorContext) {
+	if library, ok := mctx.Module().(LinkableInterface); ok && VersionVariantAvailable(library) {
+		createVersionVariations(mctx, library.AllStubsVersions())
 	}
 }
 

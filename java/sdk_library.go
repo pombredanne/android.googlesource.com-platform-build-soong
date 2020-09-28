@@ -575,9 +575,7 @@ func (paths *scopePaths) extractStubsSourceAndApiInfoFromApiStubsProvider(dep an
 type commonToSdkLibraryAndImportProperties struct {
 	// The naming scheme to use for the components that this module creates.
 	//
-	// If not specified then it defaults to "default". The other allowable value is
-	// "framework-modules" which matches the scheme currently used by framework modules
-	// for the equivalent components represented as separate Soong modules.
+	// If not specified then it defaults to "default".
 	//
 	// This is a temporary mechanism to simplify conversion from separate modules for each
 	// component that follow a different naming pattern to the default one.
@@ -621,8 +619,6 @@ func (c *commonToSdkLibraryAndImport) initCommonAfterDefaultsApplied(ctx android
 	switch schemeProperty {
 	case "default":
 		c.namingScheme = &defaultNamingScheme{}
-	case "framework-modules":
-		c.namingScheme = &frameworkModulesNamingScheme{}
 	default:
 		ctx.PropertyErrorf("naming_scheme", "expected 'default' but was %q", schemeProperty)
 		return false
@@ -1207,6 +1203,7 @@ func (module *SdkLibrary) createStubsSourcesAndApi(mctx android.DefaultableHookC
 		Sdk_version                      *string
 		System_modules                   *string
 		Libs                             []string
+		Output_javadoc_comments          *bool
 		Arg_files                        []string
 		Args                             *string
 		Java_version                     *string
@@ -1281,6 +1278,11 @@ func (module *SdkLibrary) createStubsSourcesAndApi(mctx android.DefaultableHookC
 		"Typo",
 	}
 	droidstubsArgs = append(droidstubsArgs, android.JoinWithPrefix(disabledWarnings, "--hide "))
+
+	// Output Javadoc comments for public scope.
+	if apiScope == apiScopePublic {
+		props.Output_javadoc_comments = proptools.BoolPtr(true)
+	}
 
 	// Add in scope specific arguments.
 	droidstubsArgs = append(droidstubsArgs, scopeSpecificDroidstubsArgs...)
@@ -1588,31 +1590,6 @@ func (s *defaultNamingScheme) apiModuleName(scope *apiScope, baseName string) st
 
 var _ sdkLibraryComponentNamingScheme = (*defaultNamingScheme)(nil)
 
-type frameworkModulesNamingScheme struct {
-}
-
-func (s *frameworkModulesNamingScheme) moduleSuffix(scope *apiScope) string {
-	suffix := scope.name
-	if scope == apiScopeModuleLib {
-		suffix = "module_libs_"
-	}
-	return suffix
-}
-
-func (s *frameworkModulesNamingScheme) stubsLibraryModuleName(scope *apiScope, baseName string) string {
-	return fmt.Sprintf("%s-stubs-%sapi", baseName, s.moduleSuffix(scope))
-}
-
-func (s *frameworkModulesNamingScheme) stubsSourceModuleName(scope *apiScope, baseName string) string {
-	return fmt.Sprintf("%s-stubs-srcs-%sapi", baseName, s.moduleSuffix(scope))
-}
-
-func (s *frameworkModulesNamingScheme) apiModuleName(scope *apiScope, baseName string) string {
-	return fmt.Sprintf("%s-api-%sapi", baseName, s.moduleSuffix(scope))
-}
-
-var _ sdkLibraryComponentNamingScheme = (*frameworkModulesNamingScheme)(nil)
-
 func moduleStubLinkType(name string) (stub bool, ret linkType) {
 	// This suffix-based approach is fragile and could potentially mis-trigger.
 	// TODO(b/155164730): Clean this up when modules no longer reference sdk_lib stubs directly.
@@ -1907,7 +1884,8 @@ func (module *SdkLibraryImport) DepIsInSameApex(mctx android.BaseModuleContext, 
 	return false
 }
 
-func (module *SdkLibraryImport) ShouldSupportSdkVersion(ctx android.BaseModuleContext, sdkVersion int) error {
+func (module *SdkLibraryImport) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
+	sdkVersion android.ApiLevel) error {
 	// we don't check prebuilt modules for sdk_version
 	return nil
 }
@@ -2107,7 +2085,8 @@ func (module *sdkLibraryXml) DepsMutator(ctx android.BottomUpMutatorContext) {
 	// do nothing
 }
 
-func (module *sdkLibraryXml) ShouldSupportSdkVersion(ctx android.BaseModuleContext, sdkVersion int) error {
+func (module *sdkLibraryXml) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
+	sdkVersion android.ApiLevel) error {
 	// sdkLibraryXml doesn't need to be checked separately because java_sdk_library is checked
 	return nil
 }

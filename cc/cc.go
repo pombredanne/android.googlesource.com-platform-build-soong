@@ -47,7 +47,8 @@ func RegisterCCBuildComponents(ctx android.RegistrationContext) {
 		ctx.BottomUp("link", LinkageMutator).Parallel()
 		ctx.BottomUp("ndk_api", NdkApiMutator).Parallel()
 		ctx.BottomUp("test_per_src", TestPerSrcMutator).Parallel()
-		ctx.BottomUp("version", VersionMutator).Parallel()
+		ctx.BottomUp("version_selector", versionSelectorMutator).Parallel()
+		ctx.BottomUp("version", versionMutator).Parallel()
 		ctx.BottomUp("begin", BeginMutator).Parallel()
 		ctx.BottomUp("sysprop_cc", SyspropMutator).Parallel()
 		ctx.BottomUp("vendor_snapshot", VendorSnapshotMutator).Parallel()
@@ -98,6 +99,9 @@ type Deps struct {
 
 	// Used for data dependencies adjacent to tests
 	DataLibs []string
+
+	// Used by DepsMutator to pass system_shared_libs information to check_elf_file.py.
+	SystemSharedLibs []string
 
 	StaticUnwinderIfLegacy bool
 
@@ -237,6 +241,9 @@ type BaseProperties struct {
 	PreventInstall            bool     `blueprint:"mutated"`
 	ApexesProvidingSharedLibs []string `blueprint:"mutated"`
 
+	// Set by DepsMutator.
+	AndroidMkSystemSharedLibs []string `blueprint:"mutated"`
+
 	ImageVariationPrefix string `blueprint:"mutated"`
 	VndkVersion          string `blueprint:"mutated"`
 	SubName              string `blueprint:"mutated"`
@@ -353,7 +360,7 @@ type ModuleContextIntf interface {
 	useClangLld(actx ModuleContext) bool
 	isForPlatform() bool
 	apexVariationName() string
-	apexSdkVersion() int
+	apexSdkVersion() android.ApiLevel
 	hasStubsVariants() bool
 	isStubs() bool
 	bootstrap() bool
@@ -614,7 +621,7 @@ type Module struct {
 	kytheFiles android.Paths
 
 	// For apex variants, this is set as apex.min_sdk_version
-	apexSdkVersion int
+	apexSdkVersion android.ApiLevel
 }
 
 func (c *Module) Toc() android.OptionalPath {
@@ -629,7 +636,7 @@ func (c *Module) Toc() android.OptionalPath {
 func (c *Module) ApiLevel() string {
 	if c.linker != nil {
 		if stub, ok := c.linker.(*stubDecorator); ok {
-			return stub.properties.ApiLevel
+			return stub.apiLevel.String()
 		}
 	}
 	panic(fmt.Errorf("ApiLevel() called on non-stub library module: %q", c.BaseModuleName()))
@@ -784,7 +791,28 @@ func (c *Module) BuildStubs() bool {
 	panic(fmt.Errorf("BuildStubs called on non-library module: %q", c.BaseModuleName()))
 }
 
-func (c *Module) SetStubsVersions(version string) {
+func (c *Module) SetAllStubsVersions(versions []string) {
+	if library, ok := c.linker.(*libraryDecorator); ok {
+		library.MutatedProperties.AllStubsVersions = versions
+		return
+	}
+	if llndk, ok := c.linker.(*llndkStubDecorator); ok {
+		llndk.libraryDecorator.MutatedProperties.AllStubsVersions = versions
+		return
+	}
+}
+
+func (c *Module) AllStubsVersions() []string {
+	if library, ok := c.linker.(*libraryDecorator); ok {
+		return library.MutatedProperties.AllStubsVersions
+	}
+	if llndk, ok := c.linker.(*llndkStubDecorator); ok {
+		return llndk.libraryDecorator.MutatedProperties.AllStubsVersions
+	}
+	return nil
+}
+
+func (c *Module) SetStubsVersion(version string) {
 	if c.linker != nil {
 		if library, ok := c.linker.(*libraryDecorator); ok {
 			library.MutatedProperties.StubsVersion = version
@@ -795,7 +823,7 @@ func (c *Module) SetStubsVersions(version string) {
 			return
 		}
 	}
-	panic(fmt.Errorf("SetStubsVersions called on non-library module: %q", c.BaseModuleName()))
+	panic(fmt.Errorf("SetStubsVersion called on non-library module: %q", c.BaseModuleName()))
 }
 
 func (c *Module) StubsVersion() string {
@@ -928,9 +956,9 @@ func (c *Module) Init() android.Module {
 		c.AddProperties(feature.props()...)
 	}
 
-	c.Prefer32(func(ctx android.BaseModuleContext, base *android.ModuleBase, class android.OsClass) bool {
+	c.Prefer32(func(ctx android.BaseModuleContext, base *android.ModuleBase, os android.OsType) bool {
 		// Windows builds always prefer 32-bit
-		return class == android.HostCross
+		return os == android.Windows
 	})
 	android.InitAndroidArchModule(c, c.hod, c.multilib)
 	android.InitApexModule(c)
@@ -1306,7 +1334,7 @@ func (ctx *moduleContextImpl) apexVariationName() string {
 	return ctx.mod.ApexVariationName()
 }
 
-func (ctx *moduleContextImpl) apexSdkVersion() int {
+func (ctx *moduleContextImpl) apexSdkVersion() android.ApiLevel {
 	return ctx.mod.apexSdkVersion
 }
 
@@ -1682,11 +1710,13 @@ func (c *Module) begin(ctx BaseModuleContext) {
 		feature.begin(ctx)
 	}
 	if ctx.useSdk() && c.IsSdkVariant() {
-		version, err := normalizeNdkApiLevel(ctx, ctx.sdkVersion(), ctx.Arch())
+		version, err := nativeApiLevelFromUser(ctx, ctx.sdkVersion())
 		if err != nil {
 			ctx.PropertyErrorf("sdk_version", err.Error())
+			c.Properties.Sdk_version = nil
+		} else {
+			c.Properties.Sdk_version = StringPtr(version.String())
 		}
-		c.Properties.Sdk_version = StringPtr(version)
 	}
 }
 
@@ -1814,6 +1844,8 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 	ctx.ctx = ctx
 
 	deps := c.deps(ctx)
+
+	c.Properties.AndroidMkSystemSharedLibs = deps.SystemSharedLibs
 
 	variantNdkLibs := []string{}
 	variantLateNdkLibs := []string{}
@@ -1994,18 +2026,20 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 			variations = append(variations, blueprint.Variation{Mutator: "version", Variation: version})
 			depTag.explicitlyVersioned = true
 		}
-		actx.AddVariationDependencies(variations, depTag, name)
+		deps := actx.AddVariationDependencies(variations, depTag, name)
 
 		// If the version is not specified, add dependency to all stubs libraries.
 		// The stubs library will be used when the depending module is built for APEX and
 		// the dependent module is not in the same APEX.
 		if version == "" && VersionVariantAvailable(c) {
-			for _, ver := range stubsVersionsFor(actx.Config())[name] {
-				// Note that depTag.ExplicitlyVersioned is false in this case.
-				actx.AddVariationDependencies([]blueprint.Variation{
-					{Mutator: "link", Variation: "shared"},
-					{Mutator: "version", Variation: ver},
-				}, depTag, name)
+			if dep, ok := deps[0].(*Module); ok {
+				for _, ver := range dep.AllStubsVersions() {
+					// Note that depTag.ExplicitlyVersioned is false in this case.
+					ctx.AddVariationDependencies([]blueprint.Variation{
+						{Mutator: "link", Variation: "shared"},
+						{Mutator: "version", Variation: ver},
+					}, depTag, name)
+				}
 			}
 		}
 	}
@@ -2291,7 +2325,7 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 	// For the dependency from platform to apex, use the latest stubs
 	c.apexSdkVersion = android.FutureApiLevel
 	if !c.IsForPlatform() {
-		c.apexSdkVersion = c.ApexProperties.Info.MinSdkVersion
+		c.apexSdkVersion = c.ApexProperties.Info.MinSdkVersion(ctx)
 	}
 
 	if android.InList("hwaddress", ctx.Config().SanitizeDevice()) {
@@ -2395,7 +2429,7 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 
 		if libDepTag, ok := depTag.(libraryDependencyTag); ok {
 			// Only use static unwinder for legacy (min_sdk_version = 29) apexes (b/144430859)
-			if libDepTag.staticUnwinder && c.apexSdkVersion > android.SdkVersion_Android10 {
+			if libDepTag.staticUnwinder && c.apexSdkVersion.GreaterThan(android.SdkVersion_Android10) {
 				return
 			}
 
@@ -2439,7 +2473,7 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 
 				// when to use (unspecified) stubs, check min_sdk_version and choose the right one
 				if useThisDep && depIsStubs && !libDepTag.explicitlyVersioned {
-					versionToUse, err := c.ChooseSdkVersion(ccDep.StubsVersions(), c.apexSdkVersion)
+					versionToUse, err := c.ChooseSdkVersion(ctx, ccDep.StubsVersions(), c.apexSdkVersion)
 					if err != nil {
 						ctx.OtherModuleErrorf(dep, err.Error())
 						return
@@ -2457,12 +2491,12 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 				if m, ok := ccDep.(*Module); ok && m.IsStubs() { // LLNDK
 					// by default, use current version of LLNDK
 					versionToUse := ""
-					versions := stubsVersionsFor(ctx.Config())[depName]
+					versions := m.AllStubsVersions()
 					if c.ApexVariationName() != "" && len(versions) > 0 {
 						// if this is for use_vendor apex && dep has stubsVersions
 						// apply the same rule of apex sdk enforcement to choose right version
 						var err error
-						versionToUse, err = c.ChooseSdkVersion(versions, c.apexSdkVersion)
+						versionToUse, err = c.ChooseSdkVersion(ctx, versions, c.apexSdkVersion)
 						if err != nil {
 							ctx.OtherModuleErrorf(dep, err.Error())
 							return
@@ -2533,17 +2567,20 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 					// in the context of proper cc.Modules.
 					if ccWholeStaticLib, ok := ccDep.(*Module); ok {
 						staticLib := ccWholeStaticLib.linker.(libraryInterface)
-						if missingDeps := staticLib.getWholeStaticMissingDeps(); missingDeps != nil {
-							postfix := " (required by " + ctx.OtherModuleName(dep) + ")"
-							for i := range missingDeps {
-								missingDeps[i] += postfix
-							}
-							ctx.AddMissingDependencies(missingDeps)
-						}
-						if _, ok := ccWholeStaticLib.linker.(prebuiltLinkerInterface); ok {
-							depPaths.WholeStaticLibsFromPrebuilts = append(depPaths.WholeStaticLibsFromPrebuilts, linkFile.Path())
+						if objs := staticLib.objs(); len(objs.objFiles) > 0 {
+							depPaths.WholeStaticLibObjs = depPaths.WholeStaticLibObjs.Append(objs)
 						} else {
-							depPaths.WholeStaticLibObjs = depPaths.WholeStaticLibObjs.Append(staticLib.objs())
+							// This case normally catches prebuilt static
+							// libraries, but it can also occur when
+							// AllowMissingDependencies is on and the
+							// dependencies has no sources of its own
+							// but has a whole_static_libs dependency
+							// on a missing library.  We want to depend
+							// on the .a file so that there is something
+							// in the dependency tree that contains the
+							// error rule for the missing transitive
+							// dependency.
+							depPaths.WholeStaticLibsFromPrebuilts = append(depPaths.WholeStaticLibsFromPrebuilts, linkFile.Path())
 						}
 					} else {
 						ctx.ModuleErrorf(
@@ -2986,21 +3023,8 @@ func (c *Module) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Modu
 	return true
 }
 
-// b/154667674: refactor this to handle "current" in a consistent way
-func decodeSdkVersionString(ctx android.BaseModuleContext, versionString string) (int, error) {
-	if versionString == "" {
-		return 0, fmt.Errorf("not specified")
-	}
-	if versionString == "current" {
-		if ctx.Config().PlatformSdkCodename() == "REL" {
-			return ctx.Config().PlatformSdkVersionInt(), nil
-		}
-		return android.FutureApiLevel, nil
-	}
-	return android.ApiStrToNum(ctx, versionString)
-}
-
-func (c *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext, sdkVersion int) error {
+func (c *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
+	sdkVersion android.ApiLevel) error {
 	// We ignore libclang_rt.* prebuilt libs since they declare sdk_version: 14(b/121358700)
 	if strings.HasPrefix(ctx.OtherModuleName(c), "libclang_rt") {
 		return nil
@@ -3024,11 +3048,17 @@ func (c *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext, sdkVersi
 		// non-SDK variant resets sdk_version, which works too.
 		minSdkVersion = c.SdkVersion()
 	}
-	ver, err := decodeSdkVersionString(ctx, minSdkVersion)
+	if minSdkVersion == "" {
+		return fmt.Errorf("neither min_sdk_version nor sdk_version specificed")
+	}
+	// Not using nativeApiLevelFromUser because the context here is not
+	// necessarily a native context.
+	ver, err := android.ApiLevelFromUser(ctx, minSdkVersion)
 	if err != nil {
 		return err
 	}
-	if ver > sdkVersion {
+
+	if ver.GreaterThan(sdkVersion) {
 		return fmt.Errorf("newer SDK(%v)", ver)
 	}
 	return nil
@@ -3117,13 +3147,6 @@ func squashRecoverySrcs(m *Module) {
 
 func (c *Module) IsSdkVariant() bool {
 	return c.Properties.IsSdkVariant || c.AlwaysSdk()
-}
-
-func getCurrentNdkPrebuiltVersion(ctx DepsContext) string {
-	if ctx.Config().PlatformSdkVersionInt() > config.NdkMaxPrebuiltVersionInt {
-		return strconv.Itoa(config.NdkMaxPrebuiltVersionInt)
-	}
-	return ctx.Config().PlatformSdkVersion()
 }
 
 func kytheExtractAllFactory() android.Singleton {
