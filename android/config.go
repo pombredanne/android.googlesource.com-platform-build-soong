@@ -21,7 +21,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -35,8 +34,15 @@ import (
 
 var Bool = proptools.Bool
 var String = proptools.String
+var StringDefault = proptools.StringDefault
 
-const FutureApiLevel = 10000
+const FutureApiLevelInt = 10000
+
+var FutureApiLevel = ApiLevel{
+	value:     "current",
+	number:    FutureApiLevelInt,
+	isPreview: true,
+}
 
 // The configuration file name
 const configFileName = "soong.config"
@@ -45,8 +51,9 @@ const productVariablesFileName = "soong.variables"
 // A FileConfigurableOptions contains options which can be configured by the
 // config file. These will be included in the config struct.
 type FileConfigurableOptions struct {
-	Mega_device *bool `json:",omitempty"`
-	Host_bionic *bool `json:",omitempty"`
+	Mega_device       *bool `json:",omitempty"`
+	Host_bionic       *bool `json:",omitempty"`
+	Host_bionic_arm64 *bool `json:",omitempty"`
 }
 
 func (f *FileConfigurableOptions) SetDefaultConfig() {
@@ -221,15 +228,17 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 
 	config := &config{
 		productVariables: productVariables{
-			DeviceName:                  stringPtr("test_device"),
-			Platform_sdk_version:        intPtr(30),
-			DeviceSystemSdkVersions:     []string{"14", "15"},
-			Platform_systemsdk_versions: []string{"29", "30"},
-			AAPTConfig:                  []string{"normal", "large", "xlarge", "hdpi", "xhdpi", "xxhdpi"},
-			AAPTPreferredConfig:         stringPtr("xhdpi"),
-			AAPTCharacteristics:         stringPtr("nosdcard"),
-			AAPTPrebuiltDPI:             []string{"xhdpi", "xxhdpi"},
-			UncompressPrivAppDex:        boolPtr(true),
+			DeviceName:                        stringPtr("test_device"),
+			Platform_sdk_version:              intPtr(30),
+			Platform_sdk_codename:             stringPtr("S"),
+			Platform_version_active_codenames: []string{"S"},
+			DeviceSystemSdkVersions:           []string{"14", "15"},
+			Platform_systemsdk_versions:       []string{"29", "30"},
+			AAPTConfig:                        []string{"normal", "large", "xlarge", "hdpi", "xhdpi", "xxhdpi"},
+			AAPTPreferredConfig:               stringPtr("xhdpi"),
+			AAPTCharacteristics:               stringPtr("nosdcard"),
+			AAPTPrebuiltDPI:                   []string{"xhdpi", "xxhdpi"},
+			UncompressPrivAppDex:              boolPtr(true),
 		},
 
 		buildDir:     buildDir,
@@ -259,10 +268,10 @@ func TestArchConfigNativeBridge(buildDir string, env map[string]string, bp strin
 	config := testConfig.config
 
 	config.Targets[Android] = []Target{
-		{Android, Arch{ArchType: X86_64, ArchVariant: "silvermont", Abi: []string{"arm64-v8a"}}, NativeBridgeDisabled, "", ""},
-		{Android, Arch{ArchType: X86, ArchVariant: "silvermont", Abi: []string{"armeabi-v7a"}}, NativeBridgeDisabled, "", ""},
-		{Android, Arch{ArchType: Arm64, ArchVariant: "armv8-a", Abi: []string{"arm64-v8a"}}, NativeBridgeEnabled, "x86_64", "arm64"},
-		{Android, Arch{ArchType: Arm, ArchVariant: "armv7-a-neon", Abi: []string{"armeabi-v7a"}}, NativeBridgeEnabled, "x86", "arm"},
+		{Android, Arch{ArchType: X86_64, ArchVariant: "silvermont", Abi: []string{"arm64-v8a"}}, NativeBridgeDisabled, "", "", false},
+		{Android, Arch{ArchType: X86, ArchVariant: "silvermont", Abi: []string{"armeabi-v7a"}}, NativeBridgeDisabled, "", "", false},
+		{Android, Arch{ArchType: Arm64, ArchVariant: "armv8-a", Abi: []string{"arm64-v8a"}}, NativeBridgeEnabled, "x86_64", "arm64", false},
+		{Android, Arch{ArchType: Arm, ArchVariant: "armv7-a-neon", Abi: []string{"armeabi-v7a"}}, NativeBridgeEnabled, "x86", "arm", false},
 	}
 
 	return testConfig
@@ -274,10 +283,10 @@ func TestArchConfigFuchsia(buildDir string, env map[string]string, bp string, fs
 
 	config.Targets = map[OsType][]Target{
 		Fuchsia: []Target{
-			{Fuchsia, Arch{ArchType: Arm64, ArchVariant: "", Abi: []string{"arm64-v8a"}}, NativeBridgeDisabled, "", ""},
+			{Fuchsia, Arch{ArchType: Arm64, ArchVariant: "", Abi: []string{"arm64-v8a"}}, NativeBridgeDisabled, "", "", false},
 		},
 		BuildOs: []Target{
-			{BuildOs, Arch{ArchType: X86_64}, NativeBridgeDisabled, "", ""},
+			{BuildOs, Arch{ArchType: X86_64}, NativeBridgeDisabled, "", "", false},
 		},
 	}
 
@@ -291,12 +300,12 @@ func TestArchConfig(buildDir string, env map[string]string, bp string, fs map[st
 
 	config.Targets = map[OsType][]Target{
 		Android: []Target{
-			{Android, Arch{ArchType: Arm64, ArchVariant: "armv8-a", Abi: []string{"arm64-v8a"}}, NativeBridgeDisabled, "", ""},
-			{Android, Arch{ArchType: Arm, ArchVariant: "armv7-a-neon", Abi: []string{"armeabi-v7a"}}, NativeBridgeDisabled, "", ""},
+			{Android, Arch{ArchType: Arm64, ArchVariant: "armv8-a", Abi: []string{"arm64-v8a"}}, NativeBridgeDisabled, "", "", false},
+			{Android, Arch{ArchType: Arm, ArchVariant: "armv7-a-neon", Abi: []string{"armeabi-v7a"}}, NativeBridgeDisabled, "", "", false},
 		},
 		BuildOs: []Target{
-			{BuildOs, Arch{ArchType: X86_64}, NativeBridgeDisabled, "", ""},
-			{BuildOs, Arch{ArchType: X86}, NativeBridgeDisabled, "", ""},
+			{BuildOs, Arch{ArchType: X86_64}, NativeBridgeDisabled, "", "", false},
+			{BuildOs, Arch{ArchType: X86}, NativeBridgeDisabled, "", "", false},
 		},
 	}
 
@@ -337,8 +346,8 @@ func NewConfig(srcDir, buildDir string, moduleListFile string) (Config, error) {
 		config: config,
 	}
 
-	// Sanity check the build and source directories. This won't catch strange
-	// configurations with symlinks, but at least checks the obvious cases.
+	// Soundness check of the build and source directories. This won't catch strange
+	// configurations with symlinks, but at least checks the obvious case.
 	absBuildDir, err := filepath.Abs(buildDir)
 	if err != nil {
 		return Config{}, err
@@ -613,12 +622,8 @@ func (c *config) PlatformVersionName() string {
 	return String(c.productVariables.Platform_version_name)
 }
 
-func (c *config) PlatformSdkVersionInt() int {
-	return *c.productVariables.Platform_sdk_version
-}
-
-func (c *config) PlatformSdkVersion() string {
-	return strconv.Itoa(c.PlatformSdkVersionInt())
+func (c *config) PlatformSdkVersion() ApiLevel {
+	return uncheckedFinalApiLevel(*c.productVariables.Platform_sdk_version)
 }
 
 func (c *config) PlatformSdkCodename() string {
@@ -641,23 +646,48 @@ func (c *config) PlatformBaseOS() string {
 	return String(c.productVariables.Platform_base_os)
 }
 
-func (c *config) MinSupportedSdkVersion() int {
-	return 16
+func (c *config) MinSupportedSdkVersion() ApiLevel {
+	return uncheckedFinalApiLevel(16)
 }
 
-func (c *config) DefaultAppTargetSdkInt() int {
-	if Bool(c.productVariables.Platform_sdk_final) {
-		return c.PlatformSdkVersionInt()
-	} else {
-		return FutureApiLevel
+func (c *config) FinalApiLevels() []ApiLevel {
+	var levels []ApiLevel
+	for i := 1; i <= c.PlatformSdkVersion().FinalOrFutureInt(); i++ {
+		levels = append(levels, uncheckedFinalApiLevel(i))
 	}
+	return levels
 }
 
-func (c *config) DefaultAppTargetSdk() string {
+func (c *config) PreviewApiLevels() []ApiLevel {
+	var levels []ApiLevel
+	for i, codename := range c.PlatformVersionActiveCodenames() {
+		levels = append(levels, ApiLevel{
+			value:     codename,
+			number:    i,
+			isPreview: true,
+		})
+	}
+	return levels
+}
+
+func (c *config) AllSupportedApiLevels() []ApiLevel {
+	var levels []ApiLevel
+	levels = append(levels, c.FinalApiLevels()...)
+	return append(levels, c.PreviewApiLevels()...)
+}
+
+func (c *config) DefaultAppTargetSdk(ctx EarlyModuleContext) ApiLevel {
 	if Bool(c.productVariables.Platform_sdk_final) {
 		return c.PlatformSdkVersion()
 	} else {
-		return c.PlatformSdkCodename()
+		codename := c.PlatformSdkCodename()
+		if codename == "" {
+			return NoneApiLevel
+		}
+		if codename == "REL" {
+			panic("Platform_sdk_codename should not be REL when Platform_sdk_final is true")
+		}
+		return ApiLevelOrPanic(ctx, codename)
 	}
 }
 
@@ -722,7 +752,7 @@ func (c *config) AllowMissingDependencies() bool {
 	return Bool(c.productVariables.Allow_missing_dependencies)
 }
 
-// Returns true if building without full platform sources.
+// Returns true if a full platform source tree cannot be assumed.
 func (c *config) UnbundledBuild() bool {
 	return Bool(c.productVariables.Unbundled_build)
 }
@@ -733,16 +763,13 @@ func (c *config) UnbundledBuildApps() bool {
 	return Bool(c.productVariables.Unbundled_build_apps)
 }
 
-func (c *config) UnbundledBuildUsePrebuiltSdks() bool {
-	return Bool(c.productVariables.Unbundled_build) && !Bool(c.productVariables.Unbundled_build_sdks_from_source)
+// Returns true if building modules against prebuilt SDKs.
+func (c *config) AlwaysUsePrebuiltSdks() bool {
+	return Bool(c.productVariables.Always_use_prebuilt_sdks)
 }
 
 func (c *config) Fuchsia() bool {
 	return Bool(c.productVariables.Fuchsia)
-}
-
-func (c *config) IsPdkBuild() bool {
-	return Bool(c.productVariables.Pdk)
 }
 
 func (c *config) MinimizeJavaDebugInfo() bool {
@@ -913,34 +940,6 @@ func (c *config) ModulesLoadedByPrivilegedModules() []string {
 	return c.productVariables.ModulesLoadedByPrivilegedModules
 }
 
-// Expected format for apexJarValue = <apex name>:<jar name>
-func SplitApexJarPair(ctx PathContext, str string) (string, string) {
-	pair := strings.SplitN(str, ":", 2)
-	if len(pair) == 2 {
-		return pair[0], pair[1]
-	} else {
-		reportPathErrorf(ctx, "malformed (apex, jar) pair: '%s', expected format: <apex>:<jar>", str)
-		return "error-apex", "error-jar"
-	}
-}
-
-func GetJarsFromApexJarPairs(ctx PathContext, apexJarPairs []string) []string {
-	modules := make([]string, len(apexJarPairs))
-	for i, p := range apexJarPairs {
-		_, jar := SplitApexJarPair(ctx, p)
-		modules[i] = jar
-	}
-	return modules
-}
-
-func (c *config) BootJars() []string {
-	ctx := NullPathContext{Config{
-		config: c,
-	}}
-	return append(GetJarsFromApexJarPairs(ctx, c.productVariables.BootJars),
-		GetJarsFromApexJarPairs(ctx, c.productVariables.UpdatableBootJars)...)
-}
-
 func (c *config) DexpreoptGlobalConfig(ctx PathContext) ([]byte, error) {
 	if c.productVariables.DexpreoptGlobalConfig == nil {
 		return nil, nil
@@ -987,6 +986,10 @@ func (c *deviceConfig) VendorPath() string {
 
 func (c *deviceConfig) VndkVersion() string {
 	return String(c.config.productVariables.DeviceVndkVersion)
+}
+
+func (c *deviceConfig) CurrentApiLevelForVendorModules() string {
+	return StringDefault(c.config.productVariables.DeviceCurrentApiLevelForVendorModules, "current")
 }
 
 func (c *deviceConfig) PlatformVndkVersion() string {
@@ -1252,10 +1255,6 @@ func (c *config) MissingUsesLibraries() []string {
 	return c.productVariables.MissingUsesLibraries
 }
 
-func (c *deviceConfig) BoardVndkRuntimeDisable() bool {
-	return Bool(c.config.productVariables.BoardVndkRuntimeDisable)
-}
-
 func (c *deviceConfig) DeviceArch() string {
 	return String(c.config.productVariables.DeviceArch)
 }
@@ -1274,4 +1273,190 @@ func (c *deviceConfig) DeviceSecondaryArchVariant() string {
 
 func (c *deviceConfig) BoardUsesRecoveryAsBoot() bool {
 	return Bool(c.config.productVariables.BoardUsesRecoveryAsBoot)
+}
+
+func (c *deviceConfig) BoardKernelBinaries() []string {
+	return c.config.productVariables.BoardKernelBinaries
+}
+
+func (c *deviceConfig) BoardKernelModuleInterfaceVersions() []string {
+	return c.config.productVariables.BoardKernelModuleInterfaceVersions
+}
+
+// The ConfiguredJarList struct provides methods for handling a list of (apex, jar) pairs.
+// Such lists are used in the build system for things like bootclasspath jars or system server jars.
+// The apex part is either an apex name, or a special names "platform" or "system_ext". Jar is a
+// module name. The pairs come from Make product variables as a list of colon-separated strings.
+//
+// Examples:
+//   - "com.android.art:core-oj"
+//   - "platform:framework"
+//   - "system_ext:foo"
+//
+type ConfiguredJarList struct {
+	apexes []string // A list of apex components.
+	jars   []string // A list of jar components.
+}
+
+// The length of the list.
+func (l *ConfiguredJarList) Len() int {
+	return len(l.jars)
+}
+
+// Apex component of idx-th pair on the list.
+func (l *ConfiguredJarList) apex(idx int) string {
+	return l.apexes[idx]
+}
+
+// Jar component of idx-th pair on the list.
+func (l *ConfiguredJarList) Jar(idx int) string {
+	return l.jars[idx]
+}
+
+// If the list contains a pair with the given jar.
+func (l *ConfiguredJarList) ContainsJar(jar string) bool {
+	return InList(jar, l.jars)
+}
+
+// If the list contains the given (apex, jar) pair.
+func (l *ConfiguredJarList) containsApexJarPair(apex, jar string) bool {
+	for i := 0; i < l.Len(); i++ {
+		if apex == l.apex(i) && jar == l.Jar(i) {
+			return true
+		}
+	}
+	return false
+}
+
+// Index of the first pair with the given jar on the list, or -1 if none.
+func (l *ConfiguredJarList) IndexOfJar(jar string) int {
+	return IndexList(jar, l.jars)
+}
+
+// Append an (apex, jar) pair to the list.
+func (l *ConfiguredJarList) Append(apex string, jar string) {
+	l.apexes = append(l.apexes, apex)
+	l.jars = append(l.jars, jar)
+}
+
+// Filter out sublist.
+func (l *ConfiguredJarList) RemoveList(list ConfiguredJarList) {
+	apexes := make([]string, 0, l.Len())
+	jars := make([]string, 0, l.Len())
+
+	for i, jar := range l.jars {
+		apex := l.apex(i)
+		if !list.containsApexJarPair(apex, jar) {
+			apexes = append(apexes, apex)
+			jars = append(jars, jar)
+		}
+	}
+
+	l.apexes = apexes
+	l.jars = jars
+}
+
+// A copy of itself.
+func (l *ConfiguredJarList) CopyOf() ConfiguredJarList {
+	return ConfiguredJarList{CopyOf(l.apexes), CopyOf(l.jars)}
+}
+
+// A copy of the list of strings containing jar components.
+func (l *ConfiguredJarList) CopyOfJars() []string {
+	return CopyOf(l.jars)
+}
+
+// A copy of the list of strings with colon-separated (apex, jar) pairs.
+func (l *ConfiguredJarList) CopyOfApexJarPairs() []string {
+	pairs := make([]string, 0, l.Len())
+
+	for i, jar := range l.jars {
+		apex := l.apex(i)
+		pairs = append(pairs, apex+":"+jar)
+	}
+
+	return pairs
+}
+
+// A list of build paths based on the given directory prefix.
+func (l *ConfiguredJarList) BuildPaths(ctx PathContext, dir OutputPath) WritablePaths {
+	paths := make(WritablePaths, l.Len())
+	for i, jar := range l.jars {
+		paths[i] = dir.Join(ctx, ModuleStem(jar)+".jar")
+	}
+	return paths
+}
+
+func ModuleStem(module string) string {
+	// b/139391334: the stem of framework-minus-apex is framework. This is hard coded here until we
+	// find a good way to query the stem of a module before any other mutators are run.
+	if module == "framework-minus-apex" {
+		return "framework"
+	}
+	return module
+}
+
+// A list of on-device paths.
+func (l *ConfiguredJarList) DevicePaths(cfg Config, ostype OsType) []string {
+	paths := make([]string, l.Len())
+	for i, jar := range l.jars {
+		apex := l.apexes[i]
+		name := ModuleStem(jar) + ".jar"
+
+		var subdir string
+		if apex == "platform" {
+			subdir = "system/framework"
+		} else if apex == "system_ext" {
+			subdir = "system_ext/framework"
+		} else {
+			subdir = filepath.Join("apex", apex, "javalib")
+		}
+
+		if ostype.Class == Host {
+			paths[i] = filepath.Join(cfg.Getenv("OUT_DIR"), "host", cfg.PrebuiltOS(), subdir, name)
+		} else {
+			paths[i] = filepath.Join("/", subdir, name)
+		}
+	}
+	return paths
+}
+
+// Expected format for apexJarValue = <apex name>:<jar name>
+func splitConfiguredJarPair(ctx PathContext, str string) (string, string) {
+	pair := strings.SplitN(str, ":", 2)
+	if len(pair) == 2 {
+		return pair[0], pair[1]
+	} else {
+		ReportPathErrorf(ctx, "malformed (apex, jar) pair: '%s', expected format: <apex>:<jar>", str)
+		return "error-apex", "error-jar"
+	}
+}
+
+func CreateConfiguredJarList(ctx PathContext, list []string) ConfiguredJarList {
+	apexes := make([]string, 0, len(list))
+	jars := make([]string, 0, len(list))
+
+	l := ConfiguredJarList{apexes, jars}
+
+	for _, apexjar := range list {
+		apex, jar := splitConfiguredJarPair(ctx, apexjar)
+		l.Append(apex, jar)
+	}
+
+	return l
+}
+
+func EmptyConfiguredJarList() ConfiguredJarList {
+	return ConfiguredJarList{}
+}
+
+var earlyBootJarsKey = NewOnceKey("earlyBootJars")
+
+func (c *config) BootJars() []string {
+	return c.Once(earlyBootJarsKey, func() interface{} {
+		ctx := NullPathContext{Config{c}}
+		list := CreateConfiguredJarList(ctx,
+			append(CopyOf(c.productVariables.BootJars), c.productVariables.UpdatableBootJars...))
+		return list.CopyOfJars()
+	}).([]string)
 }

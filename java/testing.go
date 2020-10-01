@@ -22,6 +22,8 @@ import (
 
 	"android/soong/android"
 	"android/soong/cc"
+	"android/soong/python"
+
 	"github.com/google/blueprint"
 )
 
@@ -42,6 +44,9 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 		"prebuilts/sdk/17/public/android.jar":                      nil,
 		"prebuilts/sdk/17/public/framework.aidl":                   nil,
 		"prebuilts/sdk/17/system/android.jar":                      nil,
+		"prebuilts/sdk/28/public/android.jar":                      nil,
+		"prebuilts/sdk/28/public/framework.aidl":                   nil,
+		"prebuilts/sdk/28/system/android.jar":                      nil,
 		"prebuilts/sdk/29/public/android.jar":                      nil,
 		"prebuilts/sdk/29/public/framework.aidl":                   nil,
 		"prebuilts/sdk/29/system/android.jar":                      nil,
@@ -50,6 +55,8 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 		"prebuilts/sdk/30/public/framework.aidl":                   nil,
 		"prebuilts/sdk/30/system/android.jar":                      nil,
 		"prebuilts/sdk/30/system/foo.jar":                          nil,
+		"prebuilts/sdk/30/module-lib/android.jar":                  nil,
+		"prebuilts/sdk/30/module-lib/foo.jar":                      nil,
 		"prebuilts/sdk/30/public/core-for-system-modules.jar":      nil,
 		"prebuilts/sdk/current/core/android.jar":                   nil,
 		"prebuilts/sdk/current/public/android.jar":                 nil,
@@ -83,14 +90,17 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 		"prebuilts/sdk/30/system/api/bar-removed.txt":              nil,
 		"prebuilts/sdk/30/test/api/bar-removed.txt":                nil,
 		"prebuilts/sdk/tools/core-lambda-stubs.jar":                nil,
-		"prebuilts/sdk/Android.bp":                                 []byte(`prebuilt_apis { name: "sdk", api_dirs: ["14", "28", "30", "current"],}`),
+		"prebuilts/sdk/Android.bp":                                 []byte(`prebuilt_apis { name: "sdk", api_dirs: ["14", "28", "30", "current"], imports_sdk_version: "none", imports_compile_dex:true,}`),
+
+		"bin.py": nil,
+		python.StubTemplateHost: []byte(`PYTHON_BINARY = '%interpreter%'
+		MAIN_FILE = '%main%'`),
 
 		// For java_sdk_library
-		"api/module-lib-current.txt":                        nil,
-		"api/module-lib-removed.txt":                        nil,
-		"api/system-server-current.txt":                     nil,
-		"api/system-server-removed.txt":                     nil,
-		"build/soong/scripts/gen-java-current-api-files.sh": nil,
+		"api/module-lib-current.txt":    nil,
+		"api/module-lib-removed.txt":    nil,
+		"api/system-server-current.txt": nil,
+		"api/system-server-removed.txt": nil,
 	}
 
 	cc.GatherRequiredFilesForTest(mockFS)
@@ -136,7 +146,8 @@ func GatherRequiredDepsForTest() string {
 				name: "%s",
 				srcs: ["a.java"],
 				sdk_version: "none",
-				system_modules: "legacy-core-platform-api-stubs-system-modules",
+				system_modules: "stable-core-platform-api-stubs-system-modules",
+				compile_dex: true,
 			}
 		`, extra)
 	}
@@ -146,7 +157,7 @@ func GatherRequiredDepsForTest() string {
 			name: "framework",
 			srcs: ["a.java"],
 			sdk_version: "none",
-			system_modules: "legacy-core-platform-api-stubs-system-modules",
+			system_modules: "stable-core-platform-api-stubs-system-modules",
 			aidl: {
 				export_include_dirs: ["framework/aidl"],
 			},
@@ -161,7 +172,7 @@ func GatherRequiredDepsForTest() string {
 			name: "android.hidl.base-V1.0-java",
 			srcs: ["a.java"],
 			sdk_version: "none",
-			system_modules: "legacy-core-platform-api-stubs-system-modules",
+			system_modules: "stable-core-platform-api-stubs-system-modules",
 			installable: true,
 		}
 
@@ -169,7 +180,7 @@ func GatherRequiredDepsForTest() string {
 			name: "android.hidl.manager-V1.0-java",
 			srcs: ["a.java"],
 			sdk_version: "none",
-			system_modules: "legacy-core-platform-api-stubs-system-modules",
+			system_modules: "stable-core-platform-api-stubs-system-modules",
 			installable: true,
 		}
 
@@ -177,7 +188,7 @@ func GatherRequiredDepsForTest() string {
 			name: "org.apache.http.legacy",
 			srcs: ["a.java"],
 			sdk_version: "none",
-			system_modules: "legacy-core-platform-api-stubs-system-modules",
+			system_modules: "stable-core-platform-api-stubs-system-modules",
 			installable: true,
 		}
 
@@ -185,7 +196,7 @@ func GatherRequiredDepsForTest() string {
 			name: "android.test.base",
 			srcs: ["a.java"],
 			sdk_version: "none",
-			system_modules: "legacy-core-platform-api-stubs-system-modules",
+			system_modules: "stable-core-platform-api-stubs-system-modules",
 			installable: true,
 		}
   
@@ -193,7 +204,7 @@ func GatherRequiredDepsForTest() string {
 			name: "android.test.mock",
 			srcs: ["a.java"],
 			sdk_version: "none",
-			system_modules: "legacy-core-platform-api-stubs-system-modules",
+			system_modules: "stable-core-platform-api-stubs-system-modules",
 			installable: true,
 		}
 	`

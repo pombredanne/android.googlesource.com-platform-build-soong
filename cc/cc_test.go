@@ -258,7 +258,8 @@ func checkVndkModule(t *testing.T, ctx *android.TestContext, name, subDir string
 	}
 }
 
-func checkSnapshot(t *testing.T, ctx *android.TestContext, singleton android.TestingSingleton, moduleName, snapshotFilename, subDir, variant string) {
+func checkSnapshotIncludeExclude(t *testing.T, ctx *android.TestContext, singleton android.TestingSingleton, moduleName, snapshotFilename, subDir, variant string, include bool) {
+	t.Helper()
 	mod, ok := ctx.ModuleForTests(moduleName, variant).Module().(android.OutputFileProducer)
 	if !ok {
 		t.Errorf("%q must have output\n", moduleName)
@@ -271,10 +272,25 @@ func checkSnapshot(t *testing.T, ctx *android.TestContext, singleton android.Tes
 	}
 	snapshotPath := filepath.Join(subDir, snapshotFilename)
 
-	out := singleton.Output(snapshotPath)
-	if out.Input.String() != outputFiles[0].String() {
-		t.Errorf("The input of snapshot %q must be %q, but %q", moduleName, out.Input.String(), outputFiles[0])
+	if include {
+		out := singleton.Output(snapshotPath)
+		if out.Input.String() != outputFiles[0].String() {
+			t.Errorf("The input of snapshot %q must be %q, but %q", moduleName, out.Input.String(), outputFiles[0])
+		}
+	} else {
+		out := singleton.MaybeOutput(snapshotPath)
+		if out.Rule != nil {
+			t.Errorf("There must be no rule for module %q output file %q", moduleName, outputFiles[0])
+		}
 	}
+}
+
+func checkSnapshot(t *testing.T, ctx *android.TestContext, singleton android.TestingSingleton, moduleName, snapshotFilename, subDir, variant string) {
+	checkSnapshotIncludeExclude(t, ctx, singleton, moduleName, snapshotFilename, subDir, variant, true)
+}
+
+func checkSnapshotExclude(t *testing.T, ctx *android.TestContext, singleton android.TestingSingleton, moduleName, snapshotFilename, subDir, variant string) {
+	checkSnapshotIncludeExclude(t, ctx, singleton, moduleName, snapshotFilename, subDir, variant, false)
 }
 
 func checkWriteFileOutput(t *testing.T, params android.TestingBuildParams, expected []string) {
@@ -539,7 +555,7 @@ func TestDataLibs(t *testing.T) {
 			data_libs: ["test_lib"],
 			gtest: false,
 		}
-  `
+ `
 
 	config := TestConfig(buildDir, android.Android, nil, bp, nil)
 	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
@@ -564,7 +580,7 @@ func TestDataLibs(t *testing.T) {
 	}
 
 	outputPath := outputFiles[0].String()
-	testBinaryPath := testBinary.dataPaths()[0].String()
+	testBinaryPath := testBinary.dataPaths()[0].SrcPath.String()
 
 	if !strings.HasSuffix(outputPath, "/main_test") {
 		t.Errorf("expected test output file to be 'main_test', but was '%s'", outputPath)
@@ -573,6 +589,53 @@ func TestDataLibs(t *testing.T) {
 	if !strings.HasSuffix(testBinaryPath, "/test_lib.so") {
 		t.Errorf("expected test data file to be 'test_lib.so', but was '%s'", testBinaryPath)
 		return
+	}
+}
+
+func TestDataLibsRelativeInstallPath(t *testing.T) {
+	bp := `
+		cc_test_library {
+			name: "test_lib",
+			srcs: ["test_lib.cpp"],
+			relative_install_path: "foo/bar/baz",
+			gtest: false,
+		}
+
+		cc_test {
+			name: "main_test",
+			data_libs: ["test_lib"],
+			gtest: false,
+		}
+ `
+
+	config := TestConfig(buildDir, android.Android, nil, bp, nil)
+	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
+	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
+	config.TestProductVariables.VndkUseCoreVariant = BoolPtr(true)
+
+	ctx := testCcWithConfig(t, config)
+	module := ctx.ModuleForTests("main_test", "android_arm_armv7-a-neon").Module()
+	testBinary := module.(*Module).linker.(*testBinary)
+	outputFiles, err := module.(android.OutputFileProducer).OutputFiles("")
+	if err != nil {
+		t.Fatalf("Expected cc_test to produce output files, error: %s", err)
+	}
+	if len(outputFiles) != 1 {
+		t.Errorf("expected exactly one output file. output files: [%s]", outputFiles)
+	}
+	if len(testBinary.dataPaths()) != 1 {
+		t.Errorf("expected exactly one test data file. test data files: [%s]", testBinary.dataPaths())
+	}
+
+	outputPath := outputFiles[0].String()
+
+	if !strings.HasSuffix(outputPath, "/main_test") {
+		t.Errorf("expected test output file to be 'main_test', but was '%s'", outputPath)
+	}
+	entries := android.AndroidMkEntriesForTest(t, config, "", module)[0]
+	if !strings.HasSuffix(entries.EntryMap["LOCAL_TEST_DATA"][0], ":test_lib.so:foo/bar/baz") {
+		t.Errorf("expected LOCAL_TEST_DATA to end with `:test_lib.so:foo/bar/baz`,"+
+			" but was '%s'", entries.EntryMap["LOCAL_TEST_DATA"][0])
 	}
 }
 
@@ -883,7 +946,7 @@ func TestDoubleLoadbleDep(t *testing.T) {
 	`)
 }
 
-func TestVendorSnapshot(t *testing.T) {
+func TestVendorSnapshotCapture(t *testing.T) {
 	bp := `
 	cc_library {
 		name: "libvndk",
@@ -966,17 +1029,25 @@ func TestVendorSnapshot(t *testing.T) {
 			filepath.Join(sharedDir, "libvendor_available.so.json"))
 
 		// For static libraries, all vendor:true and vendor_available modules (including VNDK) are captured.
+		// Also cfi variants are captured, except for prebuilts like toolchain_library
 		staticVariant := fmt.Sprintf("android_vendor.VER_%s_%s_static", archType, archVariant)
+		staticCfiVariant := fmt.Sprintf("android_vendor.VER_%s_%s_static_cfi", archType, archVariant)
 		staticDir := filepath.Join(snapshotVariantPath, archDir, "static")
 		checkSnapshot(t, ctx, snapshotSingleton, "libb", "libb.a", staticDir, staticVariant)
 		checkSnapshot(t, ctx, snapshotSingleton, "libvndk", "libvndk.a", staticDir, staticVariant)
+		checkSnapshot(t, ctx, snapshotSingleton, "libvndk", "libvndk.cfi.a", staticDir, staticCfiVariant)
 		checkSnapshot(t, ctx, snapshotSingleton, "libvendor", "libvendor.a", staticDir, staticVariant)
+		checkSnapshot(t, ctx, snapshotSingleton, "libvendor", "libvendor.cfi.a", staticDir, staticCfiVariant)
 		checkSnapshot(t, ctx, snapshotSingleton, "libvendor_available", "libvendor_available.a", staticDir, staticVariant)
+		checkSnapshot(t, ctx, snapshotSingleton, "libvendor_available", "libvendor_available.cfi.a", staticDir, staticCfiVariant)
 		jsonFiles = append(jsonFiles,
 			filepath.Join(staticDir, "libb.a.json"),
 			filepath.Join(staticDir, "libvndk.a.json"),
+			filepath.Join(staticDir, "libvndk.cfi.a.json"),
 			filepath.Join(staticDir, "libvendor.a.json"),
-			filepath.Join(staticDir, "libvendor_available.a.json"))
+			filepath.Join(staticDir, "libvendor.cfi.a.json"),
+			filepath.Join(staticDir, "libvendor_available.a.json"),
+			filepath.Join(staticDir, "libvendor_available.cfi.a.json"))
 
 		// For binary executables, all vendor:true and vendor_available modules are captured.
 		if archType == "arm64" {
@@ -1006,6 +1077,445 @@ func TestVendorSnapshot(t *testing.T) {
 			t.Errorf("%q expected but not found", jsonFile)
 		}
 	}
+}
+
+func TestVendorSnapshotUse(t *testing.T) {
+	frameworkBp := `
+	cc_library {
+		name: "libvndk",
+		vendor_available: true,
+		vndk: {
+			enabled: true,
+		},
+		nocrt: true,
+		compile_multilib: "64",
+	}
+
+	cc_library {
+		name: "libvendor",
+		vendor: true,
+		nocrt: true,
+		no_libcrt: true,
+		stl: "none",
+		system_shared_libs: [],
+		compile_multilib: "64",
+	}
+
+	cc_binary {
+		name: "bin",
+		vendor: true,
+		nocrt: true,
+		no_libcrt: true,
+		stl: "none",
+		system_shared_libs: [],
+		compile_multilib: "64",
+	}
+`
+
+	vndkBp := `
+	vndk_prebuilt_shared {
+		name: "libvndk",
+		version: "BOARD",
+		target_arch: "arm64",
+		vendor_available: true,
+		vndk: {
+			enabled: true,
+		},
+		arch: {
+			arm64: {
+				srcs: ["libvndk.so"],
+			},
+		},
+	}
+`
+
+	vendorProprietaryBp := `
+	cc_library {
+		name: "libvendor_without_snapshot",
+		vendor: true,
+		nocrt: true,
+		no_libcrt: true,
+		stl: "none",
+		system_shared_libs: [],
+		compile_multilib: "64",
+	}
+
+	cc_library_shared {
+		name: "libclient",
+		vendor: true,
+		nocrt: true,
+		no_libcrt: true,
+		stl: "none",
+		system_shared_libs: [],
+		shared_libs: ["libvndk"],
+		static_libs: ["libvendor", "libvendor_without_snapshot"],
+		compile_multilib: "64",
+	}
+
+	cc_binary {
+		name: "bin_without_snapshot",
+		vendor: true,
+		nocrt: true,
+		no_libcrt: true,
+		stl: "none",
+		system_shared_libs: [],
+		static_libs: ["libvndk"],
+		compile_multilib: "64",
+	}
+
+	vendor_snapshot_static {
+		name: "libvndk",
+		version: "BOARD",
+		target_arch: "arm64",
+		vendor: true,
+		arch: {
+			arm64: {
+				src: "libvndk.a",
+			},
+		},
+	}
+
+	vendor_snapshot_shared {
+		name: "libvendor",
+		version: "BOARD",
+		target_arch: "arm64",
+		vendor: true,
+		arch: {
+			arm64: {
+				src: "libvendor.so",
+			},
+		},
+	}
+
+	vendor_snapshot_static {
+		name: "libvendor",
+		version: "BOARD",
+		target_arch: "arm64",
+		vendor: true,
+		arch: {
+			arm64: {
+				src: "libvendor.a",
+			},
+		},
+	}
+
+	vendor_snapshot_binary {
+		name: "bin",
+		version: "BOARD",
+		target_arch: "arm64",
+		vendor: true,
+		arch: {
+			arm64: {
+				src: "bin",
+			},
+		},
+	}
+`
+	depsBp := GatherRequiredDepsForTest(android.Android)
+
+	mockFS := map[string][]byte{
+		"deps/Android.bp":      []byte(depsBp),
+		"framework/Android.bp": []byte(frameworkBp),
+		"vendor/Android.bp":    []byte(vendorProprietaryBp),
+		"vendor/libvndk.a":     nil,
+		"vendor/libvendor.a":   nil,
+		"vendor/libvendor.so":  nil,
+		"vendor/bin":           nil,
+		"vndk/Android.bp":      []byte(vndkBp),
+		"vndk/libvndk.so":      nil,
+	}
+
+	config := TestConfig(buildDir, android.Android, nil, "", mockFS)
+	config.TestProductVariables.DeviceVndkVersion = StringPtr("BOARD")
+	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
+	ctx := CreateTestContext()
+	ctx.Register(config)
+
+	_, errs := ctx.ParseFileList(".", []string{"deps/Android.bp", "framework/Android.bp", "vendor/Android.bp", "vndk/Android.bp"})
+	android.FailIfErrored(t, errs)
+	_, errs = ctx.PrepareBuildActions(config)
+	android.FailIfErrored(t, errs)
+
+	sharedVariant := "android_vendor.BOARD_arm64_armv8-a_shared"
+	staticVariant := "android_vendor.BOARD_arm64_armv8-a_static"
+	binaryVariant := "android_vendor.BOARD_arm64_armv8-a"
+
+	// libclient uses libvndk.vndk.BOARD.arm64, libvendor.vendor_static.BOARD.arm64, libvendor_without_snapshot
+	libclientLdRule := ctx.ModuleForTests("libclient", sharedVariant).Rule("ld")
+	libclientFlags := libclientLdRule.Args["libFlags"]
+
+	for _, input := range [][]string{
+		[]string{sharedVariant, "libvndk.vndk.BOARD.arm64"},
+		[]string{staticVariant, "libvendor.vendor_static.BOARD.arm64"},
+		[]string{staticVariant, "libvendor_without_snapshot"},
+	} {
+		outputPaths := getOutputPaths(ctx, input[0] /* variant */, []string{input[1]} /* module name */)
+		if !strings.Contains(libclientFlags, outputPaths[0].String()) {
+			t.Errorf("libflags for libclient must contain %#v, but was %#v", outputPaths[0], libclientFlags)
+		}
+	}
+
+	// bin_without_snapshot uses libvndk.vendor_static.BOARD.arm64
+	binWithoutSnapshotLdRule := ctx.ModuleForTests("bin_without_snapshot", binaryVariant).Rule("ld")
+	binWithoutSnapshotFlags := binWithoutSnapshotLdRule.Args["libFlags"]
+	libVndkStaticOutputPaths := getOutputPaths(ctx, staticVariant, []string{"libvndk.vendor_static.BOARD.arm64"})
+	if !strings.Contains(binWithoutSnapshotFlags, libVndkStaticOutputPaths[0].String()) {
+		t.Errorf("libflags for bin_without_snapshot must contain %#v, but was %#v",
+			libVndkStaticOutputPaths[0], binWithoutSnapshotFlags)
+	}
+
+	// libvendor.so is installed by libvendor.vendor_shared.BOARD.arm64
+	ctx.ModuleForTests("libvendor.vendor_shared.BOARD.arm64", sharedVariant).Output("libvendor.so")
+
+	// libvendor_without_snapshot.so is installed by libvendor_without_snapshot
+	ctx.ModuleForTests("libvendor_without_snapshot", sharedVariant).Output("libvendor_without_snapshot.so")
+
+	// bin is installed by bin.vendor_binary.BOARD.arm64
+	ctx.ModuleForTests("bin.vendor_binary.BOARD.arm64", binaryVariant).Output("bin")
+
+	// bin_without_snapshot is installed by bin_without_snapshot
+	ctx.ModuleForTests("bin_without_snapshot", binaryVariant).Output("bin_without_snapshot")
+
+	// libvendor and bin don't have vendor.BOARD variant
+	libvendorVariants := ctx.ModuleVariantsForTests("libvendor")
+	if inList(sharedVariant, libvendorVariants) {
+		t.Errorf("libvendor must not have variant %#v, but it does", sharedVariant)
+	}
+
+	binVariants := ctx.ModuleVariantsForTests("bin")
+	if inList(binaryVariant, binVariants) {
+		t.Errorf("bin must not have variant %#v, but it does", sharedVariant)
+	}
+}
+
+func TestVendorSnapshotSanitizer(t *testing.T) {
+	bp := `
+	vendor_snapshot_static {
+		name: "libsnapshot",
+		vendor: true,
+		target_arch: "arm64",
+		version: "BOARD",
+		arch: {
+			arm64: {
+				src: "libsnapshot.a",
+				cfi: {
+					src: "libsnapshot.cfi.a",
+				}
+			},
+		},
+	}
+`
+	config := TestConfig(buildDir, android.Android, nil, bp, nil)
+	config.TestProductVariables.DeviceVndkVersion = StringPtr("BOARD")
+	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
+	ctx := testCcWithConfig(t, config)
+
+	// Check non-cfi and cfi variant.
+	staticVariant := "android_vendor.BOARD_arm64_armv8-a_static"
+	staticCfiVariant := "android_vendor.BOARD_arm64_armv8-a_static_cfi"
+
+	staticModule := ctx.ModuleForTests("libsnapshot.vendor_static.BOARD.arm64", staticVariant).Module().(*Module)
+	assertString(t, staticModule.outputFile.Path().Base(), "libsnapshot.a")
+
+	staticCfiModule := ctx.ModuleForTests("libsnapshot.vendor_static.BOARD.arm64", staticCfiVariant).Module().(*Module)
+	assertString(t, staticCfiModule.outputFile.Path().Base(), "libsnapshot.cfi.a")
+}
+
+func assertExcludeFromVendorSnapshotIs(t *testing.T, c *Module, expected bool) {
+	t.Helper()
+	if c.ExcludeFromVendorSnapshot() != expected {
+		t.Errorf("expected %q ExcludeFromVendorSnapshot to be %t", c.String(), expected)
+	}
+}
+
+func TestVendorSnapshotExclude(t *testing.T) {
+
+	// This test verifies that the exclude_from_vendor_snapshot property
+	// makes its way from the Android.bp source file into the module data
+	// structure. It also verifies that modules are correctly included or
+	// excluded in the vendor snapshot based on their path (framework or
+	// vendor) and the exclude_from_vendor_snapshot property.
+
+	frameworkBp := `
+		cc_library_shared {
+			name: "libinclude",
+			srcs: ["src/include.cpp"],
+			vendor_available: true,
+		}
+		cc_library_shared {
+			name: "libexclude",
+			srcs: ["src/exclude.cpp"],
+			vendor: true,
+			exclude_from_vendor_snapshot: true,
+		}
+	`
+
+	vendorProprietaryBp := `
+		cc_library_shared {
+			name: "libvendor",
+			srcs: ["vendor.cpp"],
+			vendor: true,
+		}
+	`
+
+	depsBp := GatherRequiredDepsForTest(android.Android)
+
+	mockFS := map[string][]byte{
+		"deps/Android.bp":       []byte(depsBp),
+		"framework/Android.bp":  []byte(frameworkBp),
+		"framework/include.cpp": nil,
+		"framework/exclude.cpp": nil,
+		"device/Android.bp":     []byte(vendorProprietaryBp),
+		"device/vendor.cpp":     nil,
+	}
+
+	config := TestConfig(buildDir, android.Android, nil, "", mockFS)
+	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
+	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
+	ctx := CreateTestContext()
+	ctx.Register(config)
+
+	_, errs := ctx.ParseFileList(".", []string{"deps/Android.bp", "framework/Android.bp", "device/Android.bp"})
+	android.FailIfErrored(t, errs)
+	_, errs = ctx.PrepareBuildActions(config)
+	android.FailIfErrored(t, errs)
+
+	// Test an include and exclude framework module.
+	assertExcludeFromVendorSnapshotIs(t, ctx.ModuleForTests("libinclude", coreVariant).Module().(*Module), false)
+	assertExcludeFromVendorSnapshotIs(t, ctx.ModuleForTests("libinclude", vendorVariant).Module().(*Module), false)
+	assertExcludeFromVendorSnapshotIs(t, ctx.ModuleForTests("libexclude", vendorVariant).Module().(*Module), true)
+
+	// A vendor module is excluded, but by its path, not the
+	// exclude_from_vendor_snapshot property.
+	assertExcludeFromVendorSnapshotIs(t, ctx.ModuleForTests("libvendor", vendorVariant).Module().(*Module), false)
+
+	// Verify the content of the vendor snapshot.
+
+	snapshotDir := "vendor-snapshot"
+	snapshotVariantPath := filepath.Join(buildDir, snapshotDir, "arm64")
+	snapshotSingleton := ctx.SingletonForTests("vendor-snapshot")
+
+	var includeJsonFiles []string
+	var excludeJsonFiles []string
+
+	for _, arch := range [][]string{
+		[]string{"arm64", "armv8-a"},
+		[]string{"arm", "armv7-a-neon"},
+	} {
+		archType := arch[0]
+		archVariant := arch[1]
+		archDir := fmt.Sprintf("arch-%s-%s", archType, archVariant)
+
+		sharedVariant := fmt.Sprintf("android_vendor.VER_%s_%s_shared", archType, archVariant)
+		sharedDir := filepath.Join(snapshotVariantPath, archDir, "shared")
+
+		// Included modules
+		checkSnapshot(t, ctx, snapshotSingleton, "libinclude", "libinclude.so", sharedDir, sharedVariant)
+		includeJsonFiles = append(includeJsonFiles, filepath.Join(sharedDir, "libinclude.so.json"))
+
+		// Excluded modules
+		checkSnapshotExclude(t, ctx, snapshotSingleton, "libexclude", "libexclude.so", sharedDir, sharedVariant)
+		excludeJsonFiles = append(excludeJsonFiles, filepath.Join(sharedDir, "libexclude.so.json"))
+		checkSnapshotExclude(t, ctx, snapshotSingleton, "libvendor", "libvendor.so", sharedDir, sharedVariant)
+		excludeJsonFiles = append(excludeJsonFiles, filepath.Join(sharedDir, "libvendor.so.json"))
+	}
+
+	// Verify that each json file for an included module has a rule.
+	for _, jsonFile := range includeJsonFiles {
+		if snapshotSingleton.MaybeOutput(jsonFile).Rule == nil {
+			t.Errorf("include json file %q not found", jsonFile)
+		}
+	}
+
+	// Verify that each json file for an excluded module has no rule.
+	for _, jsonFile := range excludeJsonFiles {
+		if snapshotSingleton.MaybeOutput(jsonFile).Rule != nil {
+			t.Errorf("exclude json file %q found", jsonFile)
+		}
+	}
+}
+
+func TestVendorSnapshotExcludeInVendorProprietaryPathErrors(t *testing.T) {
+
+	// This test verifies that using the exclude_from_vendor_snapshot
+	// property on a module in a vendor proprietary path generates an
+	// error. These modules are already excluded, so we prohibit using the
+	// property in this way, which could add to confusion.
+
+	vendorProprietaryBp := `
+		cc_library_shared {
+			name: "libvendor",
+			srcs: ["vendor.cpp"],
+			vendor: true,
+			exclude_from_vendor_snapshot: true,
+		}
+	`
+
+	depsBp := GatherRequiredDepsForTest(android.Android)
+
+	mockFS := map[string][]byte{
+		"deps/Android.bp":   []byte(depsBp),
+		"device/Android.bp": []byte(vendorProprietaryBp),
+		"device/vendor.cpp": nil,
+	}
+
+	config := TestConfig(buildDir, android.Android, nil, "", mockFS)
+	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
+	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
+	ctx := CreateTestContext()
+	ctx.Register(config)
+
+	_, errs := ctx.ParseFileList(".", []string{"deps/Android.bp", "device/Android.bp"})
+	android.FailIfErrored(t, errs)
+
+	_, errs = ctx.PrepareBuildActions(config)
+	android.CheckErrorsAgainstExpectations(t, errs, []string{
+		`module "libvendor\{.+,image:vendor.+,arch:arm64_.+\}" in vendor proprietary path "device" may not use "exclude_from_vendor_snapshot: true"`,
+		`module "libvendor\{.+,image:vendor.+,arch:arm_.+\}" in vendor proprietary path "device" may not use "exclude_from_vendor_snapshot: true"`,
+	})
+}
+
+func TestVendorSnapshotExcludeWithVendorAvailable(t *testing.T) {
+
+	// This test verifies that using the exclude_from_vendor_snapshot
+	// property on a module that is vendor available generates an error. A
+	// vendor available module must be captured in the vendor snapshot and
+	// must not built from source when building the vendor image against
+	// the vendor snapshot.
+
+	frameworkBp := `
+		cc_library_shared {
+			name: "libinclude",
+			srcs: ["src/include.cpp"],
+			vendor_available: true,
+			exclude_from_vendor_snapshot: true,
+		}
+	`
+
+	depsBp := GatherRequiredDepsForTest(android.Android)
+
+	mockFS := map[string][]byte{
+		"deps/Android.bp":       []byte(depsBp),
+		"framework/Android.bp":  []byte(frameworkBp),
+		"framework/include.cpp": nil,
+	}
+
+	config := TestConfig(buildDir, android.Android, nil, "", mockFS)
+	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
+	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
+	ctx := CreateTestContext()
+	ctx.Register(config)
+
+	_, errs := ctx.ParseFileList(".", []string{"deps/Android.bp", "framework/Android.bp"})
+	android.FailIfErrored(t, errs)
+
+	_, errs = ctx.PrepareBuildActions(config)
+	android.CheckErrorsAgainstExpectations(t, errs, []string{
+		`module "libinclude\{.+,image:,arch:arm64_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
+		`module "libinclude\{.+,image:,arch:arm_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
+		`module "libinclude\{.+,image:vendor.+,arch:arm64_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
+		`module "libinclude\{.+,image:vendor.+,arch:arm_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
+	})
 }
 
 func TestDoubleLoadableDepError(t *testing.T) {
@@ -2515,6 +3025,7 @@ func TestStaticLibDepReorderingWithShared(t *testing.T) {
 }
 
 func checkEquals(t *testing.T, message string, expected, actual interface{}) {
+	t.Helper()
 	if !reflect.DeepEqual(actual, expected) {
 		t.Errorf(message+
 			"\nactual:   %v"+
@@ -2919,6 +3430,52 @@ func TestRecovery(t *testing.T) {
 	}
 }
 
+func TestDataLibsPrebuiltSharedTestLibrary(t *testing.T) {
+	bp := `
+		cc_prebuilt_test_library_shared {
+			name: "test_lib",
+			relative_install_path: "foo/bar/baz",
+			srcs: ["srcpath/dontusethispath/baz.so"],
+		}
+
+		cc_test {
+			name: "main_test",
+			data_libs: ["test_lib"],
+			gtest: false,
+		}
+ `
+
+	config := TestConfig(buildDir, android.Android, nil, bp, nil)
+	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
+	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
+	config.TestProductVariables.VndkUseCoreVariant = BoolPtr(true)
+
+	ctx := testCcWithConfig(t, config)
+	module := ctx.ModuleForTests("main_test", "android_arm_armv7-a-neon").Module()
+	testBinary := module.(*Module).linker.(*testBinary)
+	outputFiles, err := module.(android.OutputFileProducer).OutputFiles("")
+	if err != nil {
+		t.Fatalf("Expected cc_test to produce output files, error: %s", err)
+	}
+	if len(outputFiles) != 1 {
+		t.Errorf("expected exactly one output file. output files: [%s]", outputFiles)
+	}
+	if len(testBinary.dataPaths()) != 1 {
+		t.Errorf("expected exactly one test data file. test data files: [%s]", testBinary.dataPaths())
+	}
+
+	outputPath := outputFiles[0].String()
+
+	if !strings.HasSuffix(outputPath, "/main_test") {
+		t.Errorf("expected test output file to be 'main_test', but was '%s'", outputPath)
+	}
+	entries := android.AndroidMkEntriesForTest(t, config, "", module)[0]
+	if !strings.HasSuffix(entries.EntryMap["LOCAL_TEST_DATA"][0], ":test_lib.so:foo/bar/baz") {
+		t.Errorf("expected LOCAL_TEST_DATA to end with `:test_lib.so:foo/bar/baz`,"+
+			" but was '%s'", entries.EntryMap["LOCAL_TEST_DATA"][0])
+	}
+}
+
 func TestVersionedStubs(t *testing.T) {
 	ctx := testCc(t, `
 		cc_library_shared {
@@ -3222,4 +3779,47 @@ func TestProductVariableDefaults(t *testing.T) {
 	if !android.InList("-DBAR", libfoo.flags.Local.CppFlags) {
 		t.Errorf("expected -DBAR in cppflags, got %q", libfoo.flags.Local.CppFlags)
 	}
+}
+
+func TestEmptyWholeStaticLibsAllowMissingDependencies(t *testing.T) {
+	t.Parallel()
+	bp := `
+		cc_library_static {
+			name: "libfoo",
+			srcs: ["foo.c"],
+			whole_static_libs: ["libbar"],
+		}
+
+		cc_library_static {
+			name: "libbar",
+			whole_static_libs: ["libmissing"],
+		}
+	`
+
+	config := TestConfig(buildDir, android.Android, nil, bp, nil)
+	config.TestProductVariables.Allow_missing_dependencies = BoolPtr(true)
+
+	ctx := CreateTestContext()
+	ctx.SetAllowMissingDependencies(true)
+	ctx.Register(config)
+
+	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
+	android.FailIfErrored(t, errs)
+	_, errs = ctx.PrepareBuildActions(config)
+	android.FailIfErrored(t, errs)
+
+	libbar := ctx.ModuleForTests("libbar", "android_arm64_armv8-a_static").Output("libbar.a")
+	if g, w := libbar.Rule, android.ErrorRule; g != w {
+		t.Fatalf("Expected libbar rule to be %q, got %q", w, g)
+	}
+
+	if g, w := libbar.Args["error"], "missing dependencies: libmissing"; !strings.Contains(g, w) {
+		t.Errorf("Expected libbar error to contain %q, was %q", w, g)
+	}
+
+	libfoo := ctx.ModuleForTests("libfoo", "android_arm64_armv8-a_static").Output("libfoo.a")
+	if g, w := libfoo.Inputs.Strings(), libbar.Output.String(); !android.InList(w, g) {
+		t.Errorf("Expected libfoo.a to depend on %q, got %q", w, g)
+	}
+
 }

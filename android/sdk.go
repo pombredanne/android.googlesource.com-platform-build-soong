@@ -34,10 +34,8 @@ type RequiredSdks interface {
 	RequiredSdks() SdkRefs
 }
 
-// SdkAware is the interface that must be supported by any module to become a member of SDK or to be
-// built with SDK
-type SdkAware interface {
-	Module
+// Provided to improve code navigation with the IDE.
+type sdkAwareWithoutModule interface {
 	RequiredSdks
 
 	sdkBase() *SdkBase
@@ -46,6 +44,13 @@ type SdkAware interface {
 	ContainingSdk() SdkRef
 	MemberName() string
 	BuildWithSdks(sdks SdkRefs)
+}
+
+// SdkAware is the interface that must be supported by any module to become a member of SDK or to be
+// built with SDK
+type SdkAware interface {
+	Module
+	sdkAwareWithoutModule
 }
 
 // SdkRef refers to a version of an SDK
@@ -232,9 +237,25 @@ type BpPropertySet interface {
 	// * string
 	// * array of the above
 	// * bool
+	// For these types it is an error if multiple properties with the same name
+	// are added.
+	//
+	// * pointer to a struct
 	// * BpPropertySet
 	//
-	// It is an error if multiple properties with the same name are added.
+	// A pointer to a Blueprint-style property struct is first converted into a
+	// BpPropertySet by traversing the fields and adding their values as
+	// properties in a BpPropertySet. A field with a struct value is itself
+	// converted into a BpPropertySet before adding.
+	//
+	// Adding a BpPropertySet is done as follows:
+	// * If no property with the name exists then the BpPropertySet is added
+	//   directly to this property. Care must be taken to ensure that it does not
+	//   introduce a cycle.
+	// * If a property exists with the name and the current value is a
+	//   BpPropertySet then every property of the new BpPropertySet is added to
+	//   the existing BpPropertySet.
+	// * Otherwise, if a property exists with the name then it is an error.
 	AddProperty(name string, value interface{})
 
 	// Add a property with an associated tag
@@ -322,6 +343,12 @@ type SdkMemberType interface {
 	// SdkAware and be added with an SdkMemberTypeDependencyTag tag.
 	HasTransitiveSdkMembers() bool
 
+	// Return true if prebuilt host artifacts may be specific to the host OS. Only
+	// applicable to modules where HostSupported() is true. If this is true,
+	// snapshots will list each host OS variant explicitly and disable all other
+	// host OS'es.
+	IsHostOsDependent() bool
+
 	// Add dependencies from the SDK module to all the module variants the member
 	// type contributes to the SDK. `names` is the list of module names given in
 	// the member type property (as returned by SdkPropertyName()) in the SDK
@@ -384,6 +411,7 @@ type SdkMemberTypeBase struct {
 	PropertyName         string
 	SupportsSdk          bool
 	TransitiveSdkMembers bool
+	HostOsDependent      bool
 }
 
 func (b *SdkMemberTypeBase) SdkPropertyName() string {
@@ -396,6 +424,10 @@ func (b *SdkMemberTypeBase) UsableWithSdkAndSdkSnapshot() bool {
 
 func (b *SdkMemberTypeBase) HasTransitiveSdkMembers() bool {
 	return b.TransitiveSdkMembers
+}
+
+func (b *SdkMemberTypeBase) IsHostOsDependent() bool {
+	return b.HostOsDependent
 }
 
 // Encapsulates the information about registered SdkMemberTypes.
@@ -466,8 +498,7 @@ func RegisterSdkMemberType(memberType SdkMemberType) {
 
 // Base structure for all implementations of SdkMemberProperties.
 //
-// Contains common properties that apply across many different member types. These
-// are not affected by the optimization to extract common values.
+// Contains common properties that apply across many different member types.
 type SdkMemberPropertiesBase struct {
 	// The number of unique os types supported by the member variants.
 	//
@@ -489,9 +520,7 @@ type SdkMemberPropertiesBase struct {
 	Os OsType `sdk:"keep"`
 
 	// The setting to use for the compile_multilib property.
-	//
-	// This property is set after optimization so there is no point in trying to optimize it.
-	Compile_multilib string `sdk:"keep"`
+	Compile_multilib string `android:"arch_variant"`
 }
 
 // The os prefix to use for any file paths in the sdk.

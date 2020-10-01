@@ -17,6 +17,7 @@ package java
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"android/soong/android"
 )
@@ -67,12 +68,82 @@ type linter struct {
 	kotlinLanguageLevel string
 	outputs             lintOutputs
 	properties          LintProperties
+
+	reports android.Paths
+
+	buildModuleReportZip bool
 }
 
 type lintOutputs struct {
-	html android.ModuleOutPath
-	text android.ModuleOutPath
-	xml  android.ModuleOutPath
+	html android.Path
+	text android.Path
+	xml  android.Path
+
+	depSets LintDepSets
+}
+
+type lintOutputsIntf interface {
+	lintOutputs() *lintOutputs
+}
+
+type lintDepSetsIntf interface {
+	LintDepSets() LintDepSets
+}
+
+type LintDepSets struct {
+	HTML, Text, XML *android.DepSet
+}
+
+type LintDepSetsBuilder struct {
+	HTML, Text, XML *android.DepSetBuilder
+}
+
+func NewLintDepSetBuilder() LintDepSetsBuilder {
+	return LintDepSetsBuilder{
+		HTML: android.NewDepSetBuilder(android.POSTORDER),
+		Text: android.NewDepSetBuilder(android.POSTORDER),
+		XML:  android.NewDepSetBuilder(android.POSTORDER),
+	}
+}
+
+func (l LintDepSetsBuilder) Direct(html, text, xml android.Path) LintDepSetsBuilder {
+	l.HTML.Direct(html)
+	l.Text.Direct(text)
+	l.XML.Direct(xml)
+	return l
+}
+
+func (l LintDepSetsBuilder) Transitive(depSets LintDepSets) LintDepSetsBuilder {
+	if depSets.HTML != nil {
+		l.HTML.Transitive(depSets.HTML)
+	}
+	if depSets.Text != nil {
+		l.Text.Transitive(depSets.Text)
+	}
+	if depSets.XML != nil {
+		l.XML.Transitive(depSets.XML)
+	}
+	return l
+}
+
+func (l LintDepSetsBuilder) Build() LintDepSets {
+	return LintDepSets{
+		HTML: l.HTML.Build(),
+		Text: l.Text.Build(),
+		XML:  l.XML.Build(),
+	}
+}
+
+func (l *linter) LintDepSets() LintDepSets {
+	return l.outputs.depSets
+}
+
+var _ lintDepSetsIntf = (*linter)(nil)
+
+var _ lintOutputsIntf = (*linter)(nil)
+
+func (l *linter) lintOutputs() *lintOutputs {
+	return &l.outputs
 }
 
 func (l *linter) enabled() bool {
@@ -84,7 +155,16 @@ func (l *linter) deps(ctx android.BottomUpMutatorContext) {
 		return
 	}
 
-	ctx.AddFarVariationDependencies(ctx.Config().BuildOSCommonTarget.Variations(), extraLintCheckTag, l.properties.Lint.Extra_check_modules...)
+	extraCheckModules := l.properties.Lint.Extra_check_modules
+
+	if checkOnly := ctx.Config().Getenv("ANDROID_LINT_CHECK"); checkOnly != "" {
+		if checkOnlyModules := ctx.Config().Getenv("ANDROID_LINT_CHECK_EXTRA_MODULES"); checkOnlyModules != "" {
+			extraCheckModules = strings.Split(checkOnlyModules, ",")
+		}
+	}
+
+	ctx.AddFarVariationDependencies(ctx.Config().BuildOSCommonTarget.Variations(),
+		extraLintCheckTag, extraCheckModules...)
 }
 
 func (l *linter) writeLintProjectXML(ctx android.ModuleContext,
@@ -172,7 +252,7 @@ func (l *linter) writeLintProjectXML(ctx android.ModuleContext,
 	return projectXMLPath, configXMLPath, cacheDir, homeDir, deps
 }
 
-// generateManifest adds a command to the rule to write a dummy manifest cat contains the
+// generateManifest adds a command to the rule to write a simple manifest that contains the
 // minSdkVersion and targetSdkVersion for modules (like java_library) that don't have a manifest.
 func (l *linter) generateManifest(ctx android.ModuleContext, rule *android.RuleBuilder) android.Path {
 	manifestPath := android.PathForModuleOut(ctx, "lint", "AndroidManifest.xml")
@@ -213,15 +293,23 @@ func (l *linter) lint(ctx android.ModuleContext) {
 
 	projectXML, lintXML, cacheDir, homeDir, deps := l.writeLintProjectXML(ctx, rule)
 
-	l.outputs.html = android.PathForModuleOut(ctx, "lint-report.html")
-	l.outputs.text = android.PathForModuleOut(ctx, "lint-report.txt")
-	l.outputs.xml = android.PathForModuleOut(ctx, "lint-report.xml")
+	html := android.PathForModuleOut(ctx, "lint-report.html")
+	text := android.PathForModuleOut(ctx, "lint-report.txt")
+	xml := android.PathForModuleOut(ctx, "lint-report.xml")
+
+	depSetsBuilder := NewLintDepSetBuilder().Direct(html, text, xml)
+
+	ctx.VisitDirectDepsWithTag(staticLibTag, func(dep android.Module) {
+		if depLint, ok := dep.(lintDepSetsIntf); ok {
+			depSetsBuilder.Transitive(depLint.LintDepSets())
+		}
+	})
 
 	rule.Command().Text("rm -rf").Flag(cacheDir.String()).Flag(homeDir.String())
 	rule.Command().Text("mkdir -p").Flag(cacheDir.String()).Flag(homeDir.String())
 
 	var annotationsZipPath, apiVersionsXMLPath android.Path
-	if ctx.Config().UnbundledBuildUsePrebuiltSdks() {
+	if ctx.Config().AlwaysUsePrebuiltSdks() {
 		annotationsZipPath = android.PathForSource(ctx, "prebuilts/sdk/current/public/data/annotations.zip")
 		apiVersionsXMLPath = android.PathForSource(ctx, "prebuilts/sdk/current/public/data/api-versions.xml")
 	} else {
@@ -229,9 +317,9 @@ func (l *linter) lint(ctx android.ModuleContext) {
 		apiVersionsXMLPath = copiedAPIVersionsXmlPath(ctx)
 	}
 
-	rule.Command().
+	cmd := rule.Command().
 		Text("(").
-		Flag("JAVA_OPTS=-Xmx2048m").
+		Flag("JAVA_OPTS=-Xmx3072m").
 		FlagWithArg("ANDROID_SDK_HOME=", homeDir.String()).
 		FlagWithInput("SDK_ANNOTATIONS=", annotationsZipPath).
 		FlagWithInput("LINT_OPTS=-DLINT_API_DATABASE=", apiVersionsXMLPath).
@@ -240,33 +328,60 @@ func (l *linter) lint(ctx android.ModuleContext) {
 		Flag("--quiet").
 		FlagWithInput("--project ", projectXML).
 		FlagWithInput("--config ", lintXML).
-		FlagWithOutput("--html ", l.outputs.html).
-		FlagWithOutput("--text ", l.outputs.text).
-		FlagWithOutput("--xml ", l.outputs.xml).
+		FlagWithOutput("--html ", html).
+		FlagWithOutput("--text ", text).
+		FlagWithOutput("--xml ", xml).
 		FlagWithArg("--compile-sdk-version ", l.compileSdkVersion).
 		FlagWithArg("--java-language-level ", l.javaLanguageLevel).
 		FlagWithArg("--kotlin-language-level ", l.kotlinLanguageLevel).
 		FlagWithArg("--url ", fmt.Sprintf(".=.,%s=out", android.PathForOutput(ctx).String())).
 		Flag("--exitcode").
 		Flags(l.properties.Lint.Flags).
-		Implicits(deps).
-		Text("|| (").Text("cat").Input(l.outputs.text).Text("; exit 7)").
-		Text(")")
+		Implicits(deps)
+
+	if checkOnly := ctx.Config().Getenv("ANDROID_LINT_CHECK"); checkOnly != "" {
+		cmd.FlagWithArg("--check ", checkOnly)
+	}
+
+	cmd.Text("|| (").Text("cat").Input(text).Text("; exit 7)").Text(")")
 
 	rule.Command().Text("rm -rf").Flag(cacheDir.String()).Flag(homeDir.String())
 
 	rule.Build(pctx, ctx, "lint", "lint")
+
+	l.outputs = lintOutputs{
+		html: html,
+		text: text,
+		xml:  xml,
+
+		depSets: depSetsBuilder.Build(),
+	}
+
+	if l.buildModuleReportZip {
+		l.reports = BuildModuleLintReportZips(ctx, l.LintDepSets())
+	}
 }
 
-func (l *linter) lintOutputs() *lintOutputs {
-	return &l.outputs
-}
+func BuildModuleLintReportZips(ctx android.ModuleContext, depSets LintDepSets) android.Paths {
+	htmlList := depSets.HTML.ToSortedList()
+	textList := depSets.Text.ToSortedList()
+	xmlList := depSets.XML.ToSortedList()
 
-type lintOutputIntf interface {
-	lintOutputs() *lintOutputs
-}
+	if len(htmlList) == 0 && len(textList) == 0 && len(xmlList) == 0 {
+		return nil
+	}
 
-var _ lintOutputIntf = (*linter)(nil)
+	htmlZip := android.PathForModuleOut(ctx, "lint-report-html.zip")
+	lintZip(ctx, htmlList, htmlZip)
+
+	textZip := android.PathForModuleOut(ctx, "lint-report-text.zip")
+	lintZip(ctx, textList, textZip)
+
+	xmlZip := android.PathForModuleOut(ctx, "lint-report-xml.zip")
+	lintZip(ctx, xmlList, xmlZip)
+
+	return android.Paths{htmlZip, textZip, xmlZip}
+}
 
 type lintSingleton struct {
 	htmlZip android.WritablePath
@@ -280,7 +395,7 @@ func (l *lintSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 }
 
 func (l *lintSingleton) copyLintDependencies(ctx android.SingletonContext) {
-	if ctx.Config().UnbundledBuildUsePrebuiltSdks() {
+	if ctx.Config().AlwaysUsePrebuiltSdks() {
 		return
 	}
 
@@ -342,7 +457,7 @@ func (l *lintSingleton) generateLintReportZips(ctx android.SingletonContext) {
 			return
 		}
 
-		if l, ok := m.(lintOutputIntf); ok {
+		if l, ok := m.(lintOutputsIntf); ok {
 			outputs = append(outputs, l.lintOutputs())
 		}
 	})
@@ -353,21 +468,12 @@ func (l *lintSingleton) generateLintReportZips(ctx android.SingletonContext) {
 		var paths android.Paths
 
 		for _, output := range outputs {
-			paths = append(paths, get(output))
+			if p := get(output); p != nil {
+				paths = append(paths, p)
+			}
 		}
 
-		sort.Slice(paths, func(i, j int) bool {
-			return paths[i].String() < paths[j].String()
-		})
-
-		rule := android.NewRuleBuilder()
-
-		rule.Command().BuiltTool(ctx, "soong_zip").
-			FlagWithOutput("-o ", outputPath).
-			FlagWithArg("-C ", android.PathForIntermediates(ctx).String()).
-			FlagWithRspFileInputList("-l ", paths)
-
-		rule.Build(pctx, ctx, outputPath.Base(), outputPath.Base())
+		lintZip(ctx, paths, outputPath)
 	}
 
 	l.htmlZip = android.PathForOutput(ctx, "lint-report-html.zip")
@@ -393,4 +499,21 @@ var _ android.SingletonMakeVarsProvider = (*lintSingleton)(nil)
 func init() {
 	android.RegisterSingletonType("lint",
 		func() android.Singleton { return &lintSingleton{} })
+}
+
+func lintZip(ctx android.BuilderContext, paths android.Paths, outputPath android.WritablePath) {
+	paths = android.SortedUniquePaths(android.CopyOfPaths(paths))
+
+	sort.Slice(paths, func(i, j int) bool {
+		return paths[i].String() < paths[j].String()
+	})
+
+	rule := android.NewRuleBuilder()
+
+	rule.Command().BuiltTool(ctx, "soong_zip").
+		FlagWithOutput("-o ", outputPath).
+		FlagWithArg("-C ", android.PathForIntermediates(ctx).String()).
+		FlagWithRspFileInputList("-r ", paths)
+
+	rule.Build(pctx, ctx, outputPath.Base(), outputPath.Base())
 }

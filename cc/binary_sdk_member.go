@@ -29,7 +29,8 @@ func init() {
 
 var ccBinarySdkMemberType = &binarySdkMemberType{
 	SdkMemberTypeBase: android.SdkMemberTypeBase{
-		PropertyName: "native_binaries",
+		PropertyName:    "native_binaries",
+		HostOsDependent: true,
 	},
 }
 
@@ -43,11 +44,15 @@ func (mt *binarySdkMemberType) AddDependencies(mctx android.BottomUpMutatorConte
 		for _, target := range targets {
 			name, version := StubsLibNameAndVersion(lib)
 			if version == "" {
-				version = LatestStubsVersionFor(mctx.Config(), name)
+				version = "latest"
 			}
-			mctx.AddFarVariationDependencies(append(target.Variations(), []blueprint.Variation{
-				{Mutator: "version", Variation: version},
-			}...), dependencyTag, name)
+			variations := target.Variations()
+			if mctx.Device() {
+				variations = append(variations,
+					blueprint.Variation{Mutator: "image", Variation: android.CoreVariation},
+					blueprint.Variation{Mutator: "version", Variation: version})
+			}
+			mctx.AddFarVariationDependencies(variations, dependencyTag, name)
 		}
 	}
 }
@@ -140,10 +145,6 @@ func (p *nativeBinaryInfoProperties) PopulateFromVariant(ctx android.SdkMemberCo
 }
 
 func (p *nativeBinaryInfoProperties) AddToPropertySet(ctx android.SdkMemberContext, propertySet android.BpPropertySet) {
-	if p.Compile_multilib != "" {
-		propertySet.AddProperty("compile_multilib", p.Compile_multilib)
-	}
-
 	builder := ctx.SnapshotBuilder()
 	if p.outputFile != nil {
 		propertySet.AddProperty("srcs", []string{nativeBinaryPathFor(*p)})

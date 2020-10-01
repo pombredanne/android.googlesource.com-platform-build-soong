@@ -111,6 +111,7 @@ type BaseCompilerProperties struct {
 	Gnu_extensions *bool
 
 	Yacc *YaccProperties
+	Lex  *LexProperties
 
 	Aidl struct {
 		// list of directories that will be added to the aidl include paths.
@@ -189,8 +190,14 @@ type BaseCompilerProperties struct {
 	// Build and link with OpenMP
 	Openmp *bool `android:"arch_variant"`
 
+	// Deprecated.
 	// Adds __ANDROID_APEX_<APEX_MODULE_NAME>__ macro defined for apex variants in addition to __ANDROID_APEX__
 	Use_apex_name_macro *bool
+
+	// Adds two macros for apex variants in addition to __ANDROID_APEX__
+	// * __ANDROID_APEX_COM_ANDROID_FOO__
+	// * __ANDROID_APEX_NAME__="com.android.foo"
+	UseApexNameMacro bool `blueprint:"mutated"`
 }
 
 func NewBaseCompiler() *baseCompiler {
@@ -254,6 +261,10 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	return deps
 }
 
+func (compiler *baseCompiler) useApexNameMacro() bool {
+	return Bool(compiler.Properties.Use_apex_name_macro) || compiler.Properties.UseApexNameMacro
+}
+
 // Return true if the module is in the WarningAllowedProjects.
 func warningsAreAllowed(subdir string) bool {
 	subdir += "/"
@@ -289,6 +300,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	flags.Local.YasmFlags = append(flags.Local.YasmFlags, esc(compiler.Properties.Asflags)...)
 
 	flags.Yacc = compiler.Properties.Yacc
+	flags.Lex = compiler.Properties.Lex
 
 	// Include dir cflags
 	localIncludeDirs := android.PathsForModuleSrc(ctx, compiler.Properties.Local_include_dirs)
@@ -335,14 +347,21 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_RECOVERY__")
 	}
 
-	if ctx.apexName() != "" {
+	if ctx.apexVariationName() != "" {
 		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX__")
-		if Bool(compiler.Properties.Use_apex_name_macro) {
-			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX_"+makeDefineString(ctx.apexName())+"__")
+		if compiler.useApexNameMacro() {
+			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX_"+makeDefineString(ctx.apexVariationName())+"__")
+			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX_NAME__='\""+ctx.apexVariationName()+"\"'")
 		}
 		if ctx.Device() {
-			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_SDK_VERSION__="+strconv.Itoa(ctx.apexSdkVersion()))
+			flags.Global.CommonFlags = append(flags.Global.CommonFlags,
+				fmt.Sprintf("-D__ANDROID_SDK_VERSION__=%d",
+					ctx.apexSdkVersion().FinalOrFutureInt()))
 		}
+	}
+
+	if ctx.Target().NativeBridge == android.NativeBridgeEnabled {
+		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_NATIVE_BRIDGE__")
 	}
 
 	instructionSet := String(compiler.Properties.Instruction_set)
@@ -373,7 +392,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	if ctx.Os().Class == android.Device {
 		version := ctx.sdkVersion()
 		if version == "" || version == "current" {
-			target += strconv.Itoa(android.FutureApiLevel)
+			target += strconv.Itoa(android.FutureApiLevelInt)
 		} else {
 			target += version
 		}
@@ -556,16 +575,22 @@ func (compiler *baseCompiler) hasSrcExt(ext string) bool {
 	return false
 }
 
+func (compiler *baseCompiler) uniqueApexVariations() bool {
+	return compiler.useApexNameMacro()
+}
+
+var invalidDefineCharRegex = regexp.MustCompile("[^a-zA-Z0-9_]")
+
 // makeDefineString transforms a name of an APEX module into a value to be used as value for C define
 // For example, com.android.foo => COM_ANDROID_FOO
 func makeDefineString(name string) string {
-	return strings.ReplaceAll(strings.ToUpper(name), ".", "_")
+	return invalidDefineCharRegex.ReplaceAllString(strings.ToUpper(name), "_")
 }
 
 var gnuToCReplacer = strings.NewReplacer("gnu", "c")
 
 func ndkPathDeps(ctx ModuleContext) android.Paths {
-	if ctx.useSdk() {
+	if ctx.Module().(*Module).IsSdkVariant() {
 		// The NDK sysroot timestamp file depends on all the NDK sysroot files
 		// (headers and libraries).
 		return android.Paths{getNdkBaseTimestampFile(ctx)}

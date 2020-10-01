@@ -166,13 +166,14 @@ type productVariables struct {
 	Platform_min_supported_target_sdk_version *string  `json:",omitempty"`
 	Platform_base_os                          *string  `json:",omitempty"`
 
-	DeviceName              *string  `json:",omitempty"`
-	DeviceArch              *string  `json:",omitempty"`
-	DeviceArchVariant       *string  `json:",omitempty"`
-	DeviceCpuVariant        *string  `json:",omitempty"`
-	DeviceAbi               []string `json:",omitempty"`
-	DeviceVndkVersion       *string  `json:",omitempty"`
-	DeviceSystemSdkVersions []string `json:",omitempty"`
+	DeviceName                            *string  `json:",omitempty"`
+	DeviceArch                            *string  `json:",omitempty"`
+	DeviceArchVariant                     *string  `json:",omitempty"`
+	DeviceCpuVariant                      *string  `json:",omitempty"`
+	DeviceAbi                             []string `json:",omitempty"`
+	DeviceVndkVersion                     *string  `json:",omitempty"`
+	DeviceCurrentApiLevelForVendorModules *string  `json:",omitempty"`
+	DeviceSystemSdkVersions               []string `json:",omitempty"`
 
 	DeviceSecondaryArch        *string  `json:",omitempty"`
 	DeviceSecondaryArchVariant *string  `json:",omitempty"`
@@ -214,30 +215,29 @@ type productVariables struct {
 
 	AppsDefaultVersionName *string `json:",omitempty"`
 
-	Allow_missing_dependencies       *bool `json:",omitempty"`
-	Unbundled_build                  *bool `json:",omitempty"`
-	Unbundled_build_apps             *bool `json:",omitempty"`
-	Unbundled_build_sdks_from_source *bool `json:",omitempty"`
-	Malloc_not_svelte                *bool `json:",omitempty"`
-	Malloc_zero_contents             *bool `json:",omitempty"`
-	Malloc_pattern_fill_contents     *bool `json:",omitempty"`
-	Safestack                        *bool `json:",omitempty"`
-	HostStaticBinaries               *bool `json:",omitempty"`
-	Binder32bit                      *bool `json:",omitempty"`
-	UseGoma                          *bool `json:",omitempty"`
-	UseRBE                           *bool `json:",omitempty"`
-	UseRBEJAVAC                      *bool `json:",omitempty"`
-	UseRBER8                         *bool `json:",omitempty"`
-	UseRBED8                         *bool `json:",omitempty"`
-	Debuggable                       *bool `json:",omitempty"`
-	Eng                              *bool `json:",omitempty"`
-	Treble_linker_namespaces         *bool `json:",omitempty"`
-	Enforce_vintf_manifest           *bool `json:",omitempty"`
-	Pdk                              *bool `json:",omitempty"`
-	Uml                              *bool `json:",omitempty"`
-	Use_lmkd_stats_log               *bool `json:",omitempty"`
-	Arc                              *bool `json:",omitempty"`
-	MinimizeJavaDebugInfo            *bool `json:",omitempty"`
+	Allow_missing_dependencies   *bool `json:",omitempty"`
+	Unbundled_build              *bool `json:",omitempty"`
+	Unbundled_build_apps         *bool `json:",omitempty"`
+	Always_use_prebuilt_sdks     *bool `json:",omitempty"`
+	Malloc_not_svelte            *bool `json:",omitempty"`
+	Malloc_zero_contents         *bool `json:",omitempty"`
+	Malloc_pattern_fill_contents *bool `json:",omitempty"`
+	Safestack                    *bool `json:",omitempty"`
+	HostStaticBinaries           *bool `json:",omitempty"`
+	Binder32bit                  *bool `json:",omitempty"`
+	UseGoma                      *bool `json:",omitempty"`
+	UseRBE                       *bool `json:",omitempty"`
+	UseRBEJAVAC                  *bool `json:",omitempty"`
+	UseRBER8                     *bool `json:",omitempty"`
+	UseRBED8                     *bool `json:",omitempty"`
+	Debuggable                   *bool `json:",omitempty"`
+	Eng                          *bool `json:",omitempty"`
+	Treble_linker_namespaces     *bool `json:",omitempty"`
+	Enforce_vintf_manifest       *bool `json:",omitempty"`
+	Uml                          *bool `json:",omitempty"`
+	Use_lmkd_stats_log           *bool `json:",omitempty"`
+	Arc                          *bool `json:",omitempty"`
+	MinimizeJavaDebugInfo        *bool `json:",omitempty"`
 
 	Check_elf_files *bool `json:",omitempty"`
 
@@ -308,8 +308,6 @@ type productVariables struct {
 	BoardPlatPrivateSepolicyDirs []string `json:",omitempty"`
 	BoardSepolicyM4Defs          []string `json:",omitempty"`
 
-	BoardVndkRuntimeDisable *bool `json:",omitempty"`
-
 	VendorVars map[string]map[string]string `json:",omitempty"`
 
 	Ndk_abis               *bool `json:",omitempty"`
@@ -346,6 +344,9 @@ type productVariables struct {
 	InstallExtraFlattenedApexes *bool `json:",omitempty"`
 
 	BoardUsesRecoveryAsBoot *bool `json:",omitempty"`
+
+	BoardKernelBinaries                []string `json:",omitempty"`
+	BoardKernelModuleInterfaceVersions []string `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {
@@ -364,12 +365,12 @@ func (v *productVariables) SetDefaultConfig() {
 	*v = productVariables{
 		BuildNumberFile: stringPtr("build_number.txt"),
 
-		Platform_version_name:             stringPtr("Q"),
-		Platform_sdk_version:              intPtr(28),
-		Platform_sdk_codename:             stringPtr("Q"),
+		Platform_version_name:             stringPtr("S"),
+		Platform_sdk_version:              intPtr(30),
+		Platform_sdk_codename:             stringPtr("S"),
 		Platform_sdk_final:                boolPtr(false),
-		Platform_version_active_codenames: []string{"Q"},
-		Platform_vndk_version:             stringPtr("Q"),
+		Platform_version_active_codenames: []string{"S"},
+		Platform_vndk_version:             stringPtr("S"),
 
 		HostArch:                   stringPtr("x86_64"),
 		HostSecondaryArch:          stringPtr("x86"),

@@ -29,7 +29,9 @@ import (
 	"android/soong/java"
 )
 
-func testSdkContext(bp string, fs map[string][]byte) (*android.TestContext, android.Config) {
+func testSdkContext(bp string, fs map[string][]byte, extraOsTypes []android.OsType) (*android.TestContext, android.Config) {
+	extraOsTypes = append(extraOsTypes, android.Android, android.Windows)
+
 	bp = bp + `
 		apex_key {
 			name: "myapex.key",
@@ -41,7 +43,7 @@ func testSdkContext(bp string, fs map[string][]byte) (*android.TestContext, andr
 			name: "myapex.cert",
 			certificate: "myapex",
 		}
-	` + cc.GatherRequiredDepsForTest(android.Android, android.Windows)
+	` + cc.GatherRequiredDepsForTest(extraOsTypes...)
 
 	mockFS := map[string][]byte{
 		"build/make/target/product/security":           nil,
@@ -66,7 +68,16 @@ func testSdkContext(bp string, fs map[string][]byte) (*android.TestContext, andr
 	// Add windows as a default disable OS to test behavior when some OS variants
 	// are disabled.
 	config.Targets[android.Windows] = []android.Target{
-		{android.Windows, android.Arch{ArchType: android.X86_64}, android.NativeBridgeDisabled, "", ""},
+		{android.Windows, android.Arch{ArchType: android.X86_64}, android.NativeBridgeDisabled, "", "", true},
+	}
+
+	for _, extraOsType := range extraOsTypes {
+		switch extraOsType {
+		case android.LinuxBionic:
+			config.Targets[android.LinuxBionic] = []android.Target{
+				{android.LinuxBionic, android.Arch{ArchType: android.X86_64}, android.NativeBridgeDisabled, "", "", false},
+			}
+		}
 	}
 
 	ctx := android.NewTestArchContext()
@@ -78,14 +89,20 @@ func testSdkContext(bp string, fs map[string][]byte) (*android.TestContext, andr
 	android.RegisterAndroidMkBuildComponents(ctx)
 	android.SetInMakeForTests(config)
 	config.Targets[android.CommonOS] = []android.Target{
-		{android.CommonOS, android.Arch{ArchType: android.Common}, android.NativeBridgeDisabled, "", ""},
+		{android.CommonOS, android.Arch{ArchType: android.Common}, android.NativeBridgeDisabled, "", "", true},
 	}
 
 	// from android package
 	android.RegisterPackageBuildComponents(ctx)
+	ctx.RegisterModuleType("filegroup", android.FileGroupFactory)
 	ctx.PreArchMutators(android.RegisterVisibilityRuleChecker)
 	ctx.PreArchMutators(android.RegisterDefaultsPreArchMutators)
 	ctx.PreArchMutators(android.RegisterComponentsMutator)
+
+	android.RegisterPrebuiltMutators(ctx)
+
+	// Register these after the prebuilt mutators have been registered to match what
+	// happens at runtime.
 	ctx.PreArchMutators(android.RegisterVisibilityRuleGatherer)
 	ctx.PostDepsMutators(android.RegisterVisibilityRuleEnforcer)
 
@@ -117,9 +134,8 @@ func testSdkContext(bp string, fs map[string][]byte) (*android.TestContext, andr
 	return ctx, config
 }
 
-func testSdkWithFs(t *testing.T, bp string, fs map[string][]byte) *testSdkResult {
+func runTests(t *testing.T, ctx *android.TestContext, config android.Config) *testSdkResult {
 	t.Helper()
-	ctx, config := testSdkContext(bp, fs)
 	_, errs := ctx.ParseBlueprintsFiles(".")
 	android.FailIfErrored(t, errs)
 	_, errs = ctx.PrepareBuildActions(config)
@@ -131,9 +147,15 @@ func testSdkWithFs(t *testing.T, bp string, fs map[string][]byte) *testSdkResult
 	}
 }
 
+func testSdkWithFs(t *testing.T, bp string, fs map[string][]byte) *testSdkResult {
+	t.Helper()
+	ctx, config := testSdkContext(bp, fs, nil)
+	return runTests(t, ctx, config)
+}
+
 func testSdkError(t *testing.T, pattern, bp string) {
 	t.Helper()
-	ctx, config := testSdkContext(bp, nil)
+	ctx, config := testSdkContext(bp, nil, nil)
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	if len(errs) > 0 {
 		android.FailIfNoMatchingErrors(t, pattern, errs)
@@ -193,6 +215,22 @@ func (h *TestHelper) AssertDeepEquals(message string, expected interface{}, actu
 	h.t.Helper()
 	if !reflect.DeepEqual(actual, expected) {
 		h.t.Errorf("%s: expected %#v, actual %#v", message, expected, actual)
+	}
+}
+
+func (h *TestHelper) AssertPanic(message string, funcThatShouldPanic func()) {
+	h.t.Helper()
+	panicked := false
+	func() {
+		defer func() {
+			if x := recover(); x != nil {
+				panicked = true
+			}
+		}()
+		funcThatShouldPanic()
+	}()
+	if !panicked {
+		h.t.Error(message)
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 
 	"android/soong/android"
 	"android/soong/java"
+
 	"github.com/google/blueprint"
 
 	"github.com/google/blueprint/proptools"
@@ -39,9 +40,55 @@ var (
 		"abis", "allow-prereleased", "sdk-version")
 )
 
+type prebuilt interface {
+	isForceDisabled() bool
+	InstallFilename() string
+}
+
+type prebuiltCommon struct {
+	prebuilt   android.Prebuilt
+	properties prebuiltCommonProperties
+}
+
+type prebuiltCommonProperties struct {
+	ForceDisable bool `blueprint:"mutated"`
+}
+
+func (p *prebuiltCommon) Prebuilt() *android.Prebuilt {
+	return &p.prebuilt
+}
+
+func (p *prebuiltCommon) isForceDisabled() bool {
+	return p.properties.ForceDisable
+}
+
+func (p *prebuiltCommon) checkForceDisable(ctx android.ModuleContext) bool {
+	// If the device is configured to use flattened APEX, force disable the prebuilt because
+	// the prebuilt is a non-flattened one.
+	forceDisable := ctx.Config().FlattenApex()
+
+	// Force disable the prebuilts when we are doing unbundled build. We do unbundled build
+	// to build the prebuilts themselves.
+	forceDisable = forceDisable || ctx.Config().UnbundledBuild()
+
+	// Force disable the prebuilts when coverage is enabled.
+	forceDisable = forceDisable || ctx.DeviceConfig().NativeCoverageEnabled()
+	forceDisable = forceDisable || ctx.Config().IsEnvTrue("EMMA_INSTRUMENT")
+
+	// b/137216042 don't use prebuilts when address sanitizer is on
+	forceDisable = forceDisable || android.InList("address", ctx.Config().SanitizeDevice()) ||
+		android.InList("hwaddress", ctx.Config().SanitizeDevice())
+
+	if forceDisable && p.prebuilt.SourceExists() {
+		p.properties.ForceDisable = true
+		return true
+	}
+	return false
+}
+
 type Prebuilt struct {
 	android.ModuleBase
-	prebuilt android.Prebuilt
+	prebuiltCommon
 
 	properties PrebuiltProperties
 
@@ -57,8 +104,7 @@ type Prebuilt struct {
 
 type PrebuiltProperties struct {
 	// the path to the prebuilt .apex file to import.
-	Source       string `blueprint:"mutated"`
-	ForceDisable bool   `blueprint:"mutated"`
+	Source string `blueprint:"mutated"`
 
 	Src  *string
 	Arch struct {
@@ -93,10 +139,6 @@ func (p *Prebuilt) installable() bool {
 	return p.properties.Installable == nil || proptools.Bool(p.properties.Installable)
 }
 
-func (p *Prebuilt) isForceDisabled() bool {
-	return p.properties.ForceDisable
-}
-
 func (p *Prebuilt) OutputFiles(tag string) (android.Paths, error) {
 	switch tag {
 	case "":
@@ -110,12 +152,8 @@ func (p *Prebuilt) InstallFilename() string {
 	return proptools.StringDefault(p.properties.Filename, p.BaseModuleName()+imageApexSuffix)
 }
 
-func (p *Prebuilt) Prebuilt() *android.Prebuilt {
-	return &p.prebuilt
-}
-
 func (p *Prebuilt) Name() string {
-	return p.prebuilt.Name(p.ModuleBase.Name())
+	return p.prebuiltCommon.prebuilt.Name(p.ModuleBase.Name())
 }
 
 // prebuilt_apex imports an `.apex` file into the build graph as if it was built with apex.
@@ -128,27 +166,6 @@ func PrebuiltFactory() android.Module {
 }
 
 func (p *Prebuilt) DepsMutator(ctx android.BottomUpMutatorContext) {
-	// If the device is configured to use flattened APEX, force disable the prebuilt because
-	// the prebuilt is a non-flattened one.
-	forceDisable := ctx.Config().FlattenApex()
-
-	// Force disable the prebuilts when we are doing unbundled build. We do unbundled build
-	// to build the prebuilts themselves.
-	forceDisable = forceDisable || ctx.Config().UnbundledBuild()
-
-	// Force disable the prebuilts when coverage is enabled.
-	forceDisable = forceDisable || ctx.DeviceConfig().NativeCoverageEnabled()
-	forceDisable = forceDisable || ctx.Config().IsEnvTrue("EMMA_INSTRUMENT")
-
-	// b/137216042 don't use prebuilts when address sanitizer is on
-	forceDisable = forceDisable || android.InList("address", ctx.Config().SanitizeDevice()) ||
-		android.InList("hwaddress", ctx.Config().SanitizeDevice())
-
-	if forceDisable && p.prebuilt.SourceExists() {
-		p.properties.ForceDisable = true
-		return
-	}
-
 	// This is called before prebuilt_select and prebuilt_postdeps mutators
 	// The mutators requires that src to be set correctly for each arch so that
 	// arch variants are disabled when src is not provided for the arch.
@@ -177,10 +194,6 @@ func (p *Prebuilt) DepsMutator(ctx android.BottomUpMutatorContext) {
 }
 
 func (p *Prebuilt) GenerateAndroidBuildActions(ctx android.ModuleContext) {
-	if p.properties.ForceDisable {
-		return
-	}
-
 	// TODO(jungjw): Check the key validity.
 	p.inputApex = p.Prebuilt().SingleSourcePath(ctx)
 	p.installDir = android.PathForModuleInstall(ctx, "apex")
@@ -194,6 +207,12 @@ func (p *Prebuilt) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		Input:  p.inputApex,
 		Output: p.outputApex,
 	})
+
+	if p.prebuiltCommon.checkForceDisable(ctx) {
+		p.SkipInstall()
+		return
+	}
+
 	if p.installable() {
 		ctx.InstallFile(p.installDir, p.installFilename, p.inputApex)
 	}
@@ -227,7 +246,7 @@ func (p *Prebuilt) AndroidMkEntries() []android.AndroidMkEntries {
 
 type ApexSet struct {
 	android.ModuleBase
-	prebuilt android.Prebuilt
+	prebuiltCommon
 
 	properties ApexSetProperties
 
@@ -238,6 +257,9 @@ type ApexSet struct {
 	// list of commands to create symlinks for backward compatibility.
 	// these commands will be attached as LOCAL_POST_INSTALL_CMD
 	compatSymlinks []string
+
+	hostRequired        []string
+	postInstallCommands []string
 }
 
 type ApexSetProperties struct {
@@ -270,12 +292,8 @@ func (a *ApexSet) InstallFilename() string {
 	return proptools.StringDefault(a.properties.Filename, a.BaseModuleName()+imageApexSuffix)
 }
 
-func (a *ApexSet) Prebuilt() *android.Prebuilt {
-	return &a.prebuilt
-}
-
 func (a *ApexSet) Name() string {
-	return a.prebuilt.Name(a.ModuleBase.Name())
+	return a.prebuiltCommon.prebuilt.Name(a.ModuleBase.Name())
 }
 
 func (a *ApexSet) Overrides() []string {
@@ -297,7 +315,7 @@ func (a *ApexSet) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		ctx.ModuleErrorf("filename should end in %s for apex_set", imageApexSuffix)
 	}
 
-	apexSet := a.prebuilt.SingleSourcePath(ctx)
+	apexSet := a.prebuiltCommon.prebuilt.SingleSourcePath(ctx)
 	a.outputApex = android.PathForModuleOut(ctx, a.installFilename)
 	ctx.Build(pctx,
 		android.BuildParams{
@@ -308,9 +326,15 @@ func (a *ApexSet) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			Args: map[string]string{
 				"abis":              strings.Join(java.SupportedAbis(ctx), ","),
 				"allow-prereleased": strconv.FormatBool(proptools.Bool(a.properties.Prerelease)),
-				"sdk-version":       ctx.Config().PlatformSdkVersion(),
+				"sdk-version":       ctx.Config().PlatformSdkVersion().String(),
 			},
 		})
+
+	if a.prebuiltCommon.checkForceDisable(ctx) {
+		a.SkipInstall()
+		return
+	}
+
 	a.installDir = android.PathForModuleInstall(ctx, "apex")
 	if a.installable() {
 		ctx.InstallFile(a.installDir, a.installFilename, a.outputApex)
@@ -322,21 +346,43 @@ func (a *ApexSet) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	for _, overridden := range a.properties.Overrides {
 		a.compatSymlinks = append(a.compatSymlinks, makeCompatSymlinks(overridden, ctx)...)
 	}
+
+	if ctx.Config().InstallExtraFlattenedApexes() {
+		// flattened apex should be in /system_ext/apex
+		flattenedApexDir := android.PathForModuleInstall(&systemExtContext{ctx}, "apex", a.BaseModuleName())
+		a.postInstallCommands = append(a.postInstallCommands,
+			fmt.Sprintf("$(HOST_OUT_EXECUTABLES)/deapexer --debugfs_path $(HOST_OUT_EXECUTABLES)/debugfs extract %s %s",
+				a.outputApex.String(),
+				flattenedApexDir.ToMakePath().String(),
+			))
+		a.hostRequired = []string{"deapexer", "debugfs"}
+	}
+}
+
+type systemExtContext struct {
+	android.ModuleContext
+}
+
+func (*systemExtContext) SystemExtSpecific() bool {
+	return true
 }
 
 func (a *ApexSet) AndroidMkEntries() []android.AndroidMkEntries {
 	return []android.AndroidMkEntries{android.AndroidMkEntries{
-		Class:      "ETC",
-		OutputFile: android.OptionalPathForPath(a.outputApex),
-		Include:    "$(BUILD_PREBUILT)",
+		Class:         "ETC",
+		OutputFile:    android.OptionalPathForPath(a.outputApex),
+		Include:       "$(BUILD_PREBUILT)",
+		Host_required: a.hostRequired,
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
 			func(entries *android.AndroidMkEntries) {
 				entries.SetString("LOCAL_MODULE_PATH", a.installDir.ToMakePath().String())
 				entries.SetString("LOCAL_MODULE_STEM", a.installFilename)
 				entries.SetBoolIfTrue("LOCAL_UNINSTALLABLE_MODULE", !a.installable())
 				entries.AddStrings("LOCAL_OVERRIDES_MODULES", a.properties.Overrides...)
-				if len(a.compatSymlinks) > 0 {
-					entries.SetString("LOCAL_POST_INSTALL_CMD", strings.Join(a.compatSymlinks, " && "))
+				postInstallCommands := append([]string{}, a.postInstallCommands...)
+				postInstallCommands = append(postInstallCommands, a.compatSymlinks...)
+				if len(postInstallCommands) > 0 {
+					entries.SetString("LOCAL_POST_INSTALL_CMD", strings.Join(postInstallCommands, " && "))
 				}
 			},
 		},

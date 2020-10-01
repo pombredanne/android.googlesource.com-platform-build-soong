@@ -56,6 +56,7 @@ func init() {
 	AddNeverAllowRules(createJavaDeviceForHostRules()...)
 	AddNeverAllowRules(createCcSdkVariantRules()...)
 	AddNeverAllowRules(createUncompressDexRules()...)
+	AddNeverAllowRules(createMakefileGoalRules()...)
 }
 
 // Add a NeverAllow rule to the set of rules to apply.
@@ -193,11 +194,12 @@ func createCcSdkVariantRules() []Rule {
 		// This sometimes works because the APEX modules that contain derive_sdk and
 		// derive_sdk_prefer32 suppress the platform installation rules, but fails when
 		// the APEX modules contain the SDK variant and the platform variant still exists.
-		"frameworks/base/apex/sdkextensions/derive_sdk",
+		"packages/modules/SdkExtensions/derive_sdk",
 		// These are for apps and shouldn't be used by non-SDK variant modules.
 		"prebuilts/ndk",
 		"tools/test/graphicsbenchmark/apps/sample_app",
 		"tools/test/graphicsbenchmark/functional_tests/java",
+		"vendor/xts/gts-tests/hostsidetests/gamedevicecert/apps/javatests",
 	}
 
 	platformVariantPropertiesAllowedList := []string{
@@ -231,6 +233,15 @@ func createUncompressDexRules() []Rule {
 	}
 }
 
+func createMakefileGoalRules() []Rule {
+	return []Rule{
+		NeverAllow().
+			ModuleType("makefile_goal").
+			WithoutMatcher("product_out_path", Regexp("^boot[0-9a-zA-Z.-]*[.]img$")).
+			Because("Only boot images may be imported as a makefile goal."),
+	}
+}
+
 func neverallowMutator(ctx BottomUpMutatorContext) {
 	m, ok := ctx.Module().(Module)
 	if !ok {
@@ -261,6 +272,10 @@ func neverallowMutator(ctx BottomUpMutatorContext) {
 		}
 
 		if !n.appliesToDirectDeps(ctx) {
+			continue
+		}
+
+		if !n.appliesToBootclasspathJar(ctx) {
 			continue
 		}
 
@@ -322,6 +337,18 @@ func (m *regexMatcher) String() string {
 	return ".regexp(" + m.re.String() + ")"
 }
 
+type notInListMatcher struct {
+	allowed []string
+}
+
+func (m *notInListMatcher) Test(value string) bool {
+	return !InList(value, m.allowed)
+}
+
+func (m *notInListMatcher) String() string {
+	return ".not-in-list(" + strings.Join(m.allowed, ",") + ")"
+}
+
 type isSetMatcher struct{}
 
 func (m *isSetMatcher) Test(value string) bool {
@@ -353,6 +380,8 @@ type Rule interface {
 
 	NotModuleType(types ...string) Rule
 
+	BootclasspathJar() Rule
+
 	With(properties, value string) Rule
 
 	WithMatcher(properties string, matcher ValueMatcher) Rule
@@ -380,6 +409,8 @@ type rule struct {
 
 	props       []ruleProperty
 	unlessProps []ruleProperty
+
+	onlyBootclasspathJar bool
 }
 
 // Create a new NeverAllow rule.
@@ -455,6 +486,11 @@ func (r *rule) Because(reason string) Rule {
 	return r
 }
 
+func (r *rule) BootclasspathJar() Rule {
+	r.onlyBootclasspathJar = true
+	return r
+}
+
 func (r *rule) String() string {
 	s := "neverallow"
 	for _, v := range r.paths {
@@ -480,6 +516,9 @@ func (r *rule) String() string {
 	}
 	for _, v := range r.osClasses {
 		s += " os:" + v.String()
+	}
+	if r.onlyBootclasspathJar {
+		s += " inBcp"
 	}
 	if len(r.reason) != 0 {
 		s += " which is restricted because " + r.reason
@@ -507,6 +546,14 @@ func (r *rule) appliesToDirectDeps(ctx BottomUpMutatorContext) bool {
 	})
 
 	return matches
+}
+
+func (r *rule) appliesToBootclasspathJar(ctx BottomUpMutatorContext) bool {
+	if !r.onlyBootclasspathJar {
+		return true
+	}
+
+	return InList(ctx.ModuleName(), ctx.Config().BootJars())
 }
 
 func (r *rule) appliesToOsClass(osClass OsClass) bool {
@@ -543,6 +590,10 @@ func Regexp(re string) ValueMatcher {
 		panic(err)
 	}
 	return &regexMatcher{r}
+}
+
+func NotInList(allowed []string) ValueMatcher {
+	return &notInListMatcher{allowed}
 }
 
 // assorted utils

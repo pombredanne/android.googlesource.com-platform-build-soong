@@ -107,6 +107,45 @@ func (a *AndroidMkEntries) SetPath(name string, path Path) {
 	a.EntryMap[name] = []string{path.String()}
 }
 
+func (a *AndroidMkEntries) SetOptionalPath(name string, path OptionalPath) {
+	if path.Valid() {
+		a.SetPath(name, path.Path())
+	}
+}
+
+func (a *AndroidMkEntries) AddPath(name string, path Path) {
+	if _, ok := a.EntryMap[name]; !ok {
+		a.entryOrder = append(a.entryOrder, name)
+	}
+	a.EntryMap[name] = append(a.EntryMap[name], path.String())
+}
+
+func (a *AndroidMkEntries) AddOptionalPath(name string, path OptionalPath) {
+	if path.Valid() {
+		a.AddPath(name, path.Path())
+	}
+}
+
+func (a *AndroidMkEntries) SetPaths(name string, paths Paths) {
+	if _, ok := a.EntryMap[name]; !ok {
+		a.entryOrder = append(a.entryOrder, name)
+	}
+	a.EntryMap[name] = paths.Strings()
+}
+
+func (a *AndroidMkEntries) SetOptionalPaths(name string, paths Paths) {
+	if len(paths) > 0 {
+		a.SetPaths(name, paths)
+	}
+}
+
+func (a *AndroidMkEntries) AddPaths(name string, paths Paths) {
+	if _, ok := a.EntryMap[name]; !ok {
+		a.entryOrder = append(a.entryOrder, name)
+	}
+	a.EntryMap[name] = append(a.EntryMap[name], paths.Strings()...)
+}
+
 func (a *AndroidMkEntries) SetBoolIfTrue(name string, flag bool) {
 	if flag {
 		if _, ok := a.EntryMap[name]; !ok {
@@ -144,12 +183,15 @@ func (a *AndroidMkEntries) GetDistForGoals(mod blueprint.Module) []string {
 	name := amod.BaseModuleName()
 
 	var ret []string
+	var availableTaggedDists TaggedDistFiles
 
-	availableTaggedDists := TaggedDistFiles{}
-	if a.DistFiles != nil && len(a.DistFiles[""]) > 0 {
+	if a.DistFiles != nil {
 		availableTaggedDists = a.DistFiles
 	} else if a.OutputFile.Valid() {
 		availableTaggedDists = MakeDefaultDistFiles(a.OutputFile.Path())
+	} else {
+		// Nothing dist-able for this module.
+		return nil
 	}
 
 	// Iterate over this module's dist structs, merged from the dist and dists properties.
@@ -262,15 +304,16 @@ func (a *AndroidMkEntries) fillInEntries(config Config, bpPath string, mod bluep
 	host := false
 	switch amod.Os().Class {
 	case Host:
-		// Make cannot identify LOCAL_MODULE_HOST_ARCH:= common.
-		if amod.Arch().ArchType != Common {
-			a.SetString("LOCAL_MODULE_HOST_ARCH", archStr)
-		}
-		host = true
-	case HostCross:
-		// Make cannot identify LOCAL_MODULE_HOST_CROSS_ARCH:= common.
-		if amod.Arch().ArchType != Common {
-			a.SetString("LOCAL_MODULE_HOST_CROSS_ARCH", archStr)
+		if amod.Target().HostCross {
+			// Make cannot identify LOCAL_MODULE_HOST_CROSS_ARCH:= common.
+			if amod.Arch().ArchType != Common {
+				a.SetString("LOCAL_MODULE_HOST_CROSS_ARCH", archStr)
+			}
+		} else {
+			// Make cannot identify LOCAL_MODULE_HOST_ARCH:= common.
+			if amod.Arch().ArchType != Common {
+				a.SetString("LOCAL_MODULE_HOST_ARCH", archStr)
+			}
 		}
 		host = true
 	case Device:
@@ -317,9 +360,11 @@ func (a *AndroidMkEntries) fillInEntries(config Config, bpPath string, mod bluep
 	if amod.ArchSpecific() {
 		switch amod.Os().Class {
 		case Host:
-			prefix = "HOST_"
-		case HostCross:
-			prefix = "HOST_CROSS_"
+			if amod.Target().HostCross {
+				prefix = "HOST_CROSS_"
+			} else {
+				prefix = "HOST_"
+			}
 		case Device:
 			prefix = "TARGET_"
 
@@ -521,9 +566,11 @@ func translateAndroidModule(ctx SingletonContext, w io.Writer, mod blueprint.Mod
 	if amod.ArchSpecific() {
 		switch amod.Os().Class {
 		case Host:
-			prefix = "HOST_"
-		case HostCross:
-			prefix = "HOST_CROSS_"
+			if amod.Target().HostCross {
+				prefix = "HOST_CROSS_"
+			} else {
+				prefix = "HOST_"
+			}
 		case Device:
 			prefix = "TARGET_"
 
@@ -591,4 +638,22 @@ func shouldSkipAndroidMkProcessing(module *ModuleBase) bool {
 		module.commonProperties.SkipInstall ||
 		// Make does not understand LinuxBionic
 		module.Os() == LinuxBionic
+}
+
+func AndroidMkDataPaths(data []DataPath) []string {
+	var testFiles []string
+	for _, d := range data {
+		rel := d.SrcPath.Rel()
+		path := d.SrcPath.String()
+		if !strings.HasSuffix(path, rel) {
+			panic(fmt.Errorf("path %q does not end with %q", path, rel))
+		}
+		path = strings.TrimSuffix(path, rel)
+		testFileString := path + ":" + rel
+		if len(d.RelativeInstallPath) > 0 {
+			testFileString += ":" + d.RelativeInstallPath
+		}
+		testFiles = append(testFiles, testFileString)
+	}
+	return testFiles
 }

@@ -16,6 +16,7 @@ package cc
 
 import (
 	"android/soong/android"
+	"path/filepath"
 )
 
 func init() {
@@ -26,6 +27,7 @@ func RegisterPrebuiltBuildComponents(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("cc_prebuilt_library", PrebuiltLibraryFactory)
 	ctx.RegisterModuleType("cc_prebuilt_library_shared", PrebuiltSharedLibraryFactory)
 	ctx.RegisterModuleType("cc_prebuilt_library_static", PrebuiltStaticLibraryFactory)
+	ctx.RegisterModuleType("cc_prebuilt_test_library_shared", PrebuiltSharedTestLibraryFactory)
 	ctx.RegisterModuleType("cc_prebuilt_object", prebuiltObjectFactory)
 	ctx.RegisterModuleType("cc_prebuilt_binary", prebuiltBinaryFactory)
 }
@@ -124,9 +126,10 @@ func (p *prebuiltLibraryLinker) link(ctx ModuleContext,
 			outputFile := android.PathForModuleOut(ctx, libName)
 			var implicits android.Paths
 
-			if p.needsStrip(ctx) {
+			if p.stripper.NeedsStrip(ctx) {
+				stripFlags := flagsToStripFlags(flags)
 				stripped := android.PathForModuleOut(ctx, "stripped", libName)
-				p.stripExecutableOrSharedLib(ctx, in, stripped, builderFlags)
+				p.stripper.StripExecutableOrSharedLib(ctx, in, stripped, stripFlags)
 				in = stripped
 			}
 
@@ -198,10 +201,6 @@ func (p *prebuiltLibraryLinker) disablePrebuilt() {
 	p.properties.Srcs = nil
 }
 
-func (p *prebuiltLibraryLinker) skipInstall(mod *Module) {
-	mod.ModuleBase.SkipInstall()
-}
-
 func NewPrebuiltLibrary(hod android.HostOrDeviceSupported) (*Module, *libraryDecorator) {
 	module, library := NewLibrary(hod)
 	module.compiler = nil
@@ -210,7 +209,6 @@ func NewPrebuiltLibrary(hod android.HostOrDeviceSupported) (*Module, *libraryDec
 		libraryDecorator: library,
 	}
 	module.linker = prebuilt
-	module.installer = prebuilt
 
 	module.AddProperties(&prebuilt.properties)
 
@@ -240,6 +238,16 @@ func PrebuiltLibraryFactory() android.Module {
 // listed in the srcs property in the device's directory.
 func PrebuiltSharedLibraryFactory() android.Module {
 	module, _ := NewPrebuiltSharedLibrary(android.HostAndDeviceSupported)
+	return module.Init()
+}
+
+// cc_prebuilt_test_library_shared installs a precompiled shared library
+// to be used as a data dependency of a test-related module (such as cc_test, or
+// cc_test_library).
+func PrebuiltSharedTestLibraryFactory() android.Module {
+	module, library := NewPrebuiltLibrary(android.HostAndDeviceSupported)
+	library.BuildOnlyShared()
+	library.baseInstaller = NewTestInstaller()
 	return module.Init()
 }
 
@@ -317,35 +325,73 @@ func prebuiltObjectFactory() android.Module {
 type prebuiltBinaryLinker struct {
 	*binaryDecorator
 	prebuiltLinker
+
+	toolPath android.OptionalPath
 }
 
 var _ prebuiltLinkerInterface = (*prebuiltBinaryLinker)(nil)
+
+func (p *prebuiltBinaryLinker) hostToolPath() android.OptionalPath {
+	return p.toolPath
+}
 
 func (p *prebuiltBinaryLinker) link(ctx ModuleContext,
 	flags Flags, deps PathDeps, objs Objects) android.Path {
 	// TODO(ccross): verify shared library dependencies
 	if len(p.properties.Srcs) > 0 {
-		builderFlags := flagsToBuilderFlags(flags)
-
 		fileName := p.getStem(ctx) + flags.Toolchain.ExecutableSuffix()
 		in := p.Prebuilt.SingleSourcePath(ctx)
-
+		outputFile := android.PathForModuleOut(ctx, fileName)
 		p.unstrippedOutputFile = in
 
-		if p.needsStrip(ctx) {
-			stripped := android.PathForModuleOut(ctx, "stripped", fileName)
-			p.stripExecutableOrSharedLib(ctx, in, stripped, builderFlags)
-			in = stripped
-		}
+		if ctx.Host() {
+			// Host binaries are symlinked to their prebuilt source locations. That
+			// way they are executed directly from there so the linker resolves their
+			// shared library dependencies relative to that location (using
+			// $ORIGIN/../lib(64):$ORIGIN/lib(64) as RUNPATH). This way the prebuilt
+			// repository can supply the expected versions of the shared libraries
+			// without interference from what is in the out tree.
 
-		// Copy binaries to a name matching the final installed name
-		outputFile := android.PathForModuleOut(ctx, fileName)
-		ctx.Build(pctx, android.BuildParams{
-			Rule:        android.CpExecutable,
-			Description: "prebuilt",
-			Output:      outputFile,
-			Input:       in,
-		})
+			// These shared lib paths may point to copies of the libs in
+			// .intermediates, which isn't where the binary will load them from, but
+			// it's fine for dependency tracking. If a library dependency is updated,
+			// the symlink will get a new timestamp, along with any installed symlinks
+			// handled in make.
+			sharedLibPaths := deps.EarlySharedLibs
+			sharedLibPaths = append(sharedLibPaths, deps.SharedLibs...)
+			sharedLibPaths = append(sharedLibPaths, deps.LateSharedLibs...)
+
+			var fromPath = in.String()
+			if !filepath.IsAbs(fromPath) {
+				fromPath = "$$PWD/" + fromPath
+			}
+
+			ctx.Build(pctx, android.BuildParams{
+				Rule:      android.Symlink,
+				Output:    outputFile,
+				Input:     in,
+				Implicits: sharedLibPaths,
+				Args: map[string]string{
+					"fromPath": fromPath,
+				},
+			})
+
+			p.toolPath = android.OptionalPathForPath(outputFile)
+		} else {
+			if p.stripper.NeedsStrip(ctx) {
+				stripped := android.PathForModuleOut(ctx, "stripped", fileName)
+				p.stripper.StripExecutableOrSharedLib(ctx, in, stripped, flagsToStripFlags(flags))
+				in = stripped
+			}
+
+			// Copy binaries to a name matching the final installed name
+			ctx.Build(pctx, android.BuildParams{
+				Rule:        android.CpExecutable,
+				Description: "prebuilt",
+				Output:      outputFile,
+				Input:       in,
+			})
+		}
 
 		return outputFile
 	}
@@ -372,6 +418,7 @@ func NewPrebuiltBinary(hod android.HostOrDeviceSupported) (*Module, *binaryDecor
 		binaryDecorator: binary,
 	}
 	module.linker = prebuilt
+	module.installer = prebuilt
 
 	module.AddProperties(&prebuilt.properties)
 

@@ -36,7 +36,9 @@ func (a *apexBundle) AndroidMk() android.AndroidMkData {
 	return a.androidMkForType()
 }
 
-func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, moduleDir string) []string {
+func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, moduleDir string,
+	apexAndroidMkData android.AndroidMkData) []string {
+
 	// apexBundleName comes from the 'name' property; apexName comes from 'apex_name' property.
 	// An apex is installed to /system/apex/<apexBundleName> and is activated at /apex/<apexName>
 	// In many cases, the two names are the same, but could be different in general.
@@ -47,6 +49,11 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 	// to install symbol files in $(PRODUCT_OUT}/apex.
 	// And if apexType is flattened, run this function to install files in $(PRODUCT_OUT}/system/apex.
 	if !a.primaryApexType && apexType != flattenedApex {
+		return moduleNames
+	}
+
+	// b/162366062. Prevent GKI APEXes to emit make rules to avoid conflicts.
+	if strings.HasPrefix(apexName, "com.android.gki.") && apexType != flattenedApex {
 		return moduleNames
 	}
 
@@ -82,9 +89,9 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 
 		var moduleName string
 		if linkToSystemLib {
-			moduleName = fi.moduleName
+			moduleName = fi.androidMkModuleName
 		} else {
-			moduleName = fi.moduleName + "." + apexBundleName + a.suffix
+			moduleName = fi.androidMkModuleName + "." + apexBundleName + a.suffix
 		}
 
 		if !android.InList(moduleName, moduleNames) {
@@ -103,11 +110,15 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 			fmt.Fprintln(w, "LOCAL_PATH :=", moduleDir)
 		}
 		fmt.Fprintln(w, "LOCAL_MODULE :=", moduleName)
+		if fi.module != nil && fi.module.Owner() != "" {
+			fmt.Fprintln(w, "LOCAL_MODULE_OWNER :=", fi.module.Owner())
+		}
 		// /apex/<apex_name>/{lib|framework|...}
 		pathWhenActivated := filepath.Join("$(PRODUCT_OUT)", "apex", apexName, fi.installDir)
+		var modulePath string
 		if apexType == flattenedApex {
 			// /system/apex/<name>/{lib|framework|...}
-			modulePath := filepath.Join(a.installDir.ToMakePath().String(), apexBundleName, fi.installDir)
+			modulePath = filepath.Join(a.installDir.ToMakePath().String(), apexBundleName, fi.installDir)
 			fmt.Fprintln(w, "LOCAL_MODULE_PATH :=", modulePath)
 			if a.primaryApexType && !symbolFilesNotNeeded {
 				fmt.Fprintln(w, "LOCAL_SOONG_SYMBOL_PATH :=", pathWhenActivated)
@@ -115,22 +126,23 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 			if len(fi.symlinks) > 0 {
 				fmt.Fprintln(w, "LOCAL_MODULE_SYMLINKS :=", strings.Join(fi.symlinks, " "))
 			}
-			newDataPaths := []android.Path{}
+			newDataPaths := []android.DataPath{}
 			for _, path := range fi.dataPaths {
-				dataOutPath := modulePath + ":" + path.Rel()
+				dataOutPath := modulePath + ":" + path.SrcPath.Rel()
 				if ok := seenDataOutPaths[dataOutPath]; !ok {
 					newDataPaths = append(newDataPaths, path)
 					seenDataOutPaths[dataOutPath] = true
 				}
 			}
 			if len(newDataPaths) > 0 {
-				fmt.Fprintln(w, "LOCAL_TEST_DATA :=", strings.Join(cc.AndroidMkDataPaths(newDataPaths), " "))
+				fmt.Fprintln(w, "LOCAL_TEST_DATA :=", strings.Join(android.AndroidMkDataPaths(newDataPaths), " "))
 			}
 
 			if fi.module != nil && len(fi.module.NoticeFiles()) > 0 {
 				fmt.Fprintln(w, "LOCAL_NOTICE_FILE :=", strings.Join(fi.module.NoticeFiles().Strings(), " "))
 			}
 		} else {
+			modulePath = pathWhenActivated
 			fmt.Fprintln(w, "LOCAL_MODULE_PATH :=", pathWhenActivated)
 
 			// For non-flattend APEXes, the merged notice file is attached to the APEX itself.
@@ -145,13 +157,14 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 			host := false
 			switch fi.module.Target().Os.Class {
 			case android.Host:
-				if fi.module.Target().Arch.ArchType != android.Common {
-					fmt.Fprintln(w, "LOCAL_MODULE_HOST_ARCH :=", archStr)
-				}
-				host = true
-			case android.HostCross:
-				if fi.module.Target().Arch.ArchType != android.Common {
-					fmt.Fprintln(w, "LOCAL_MODULE_HOST_CROSS_ARCH :=", archStr)
+				if fi.module.Target().HostCross {
+					if fi.module.Target().Arch.ArchType != android.Common {
+						fmt.Fprintln(w, "LOCAL_MODULE_HOST_CROSS_ARCH :=", archStr)
+					}
+				} else {
+					if fi.module.Target().Arch.ArchType != android.Common {
+						fmt.Fprintln(w, "LOCAL_MODULE_HOST_ARCH :=", archStr)
+					}
 				}
 				host = true
 			case android.Device:
@@ -193,8 +206,13 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 			// we need to remove the suffix from LOCAL_MODULE_STEM, otherwise
 			// we will have foo.apk.apk
 			fmt.Fprintln(w, "LOCAL_MODULE_STEM :=", strings.TrimSuffix(fi.Stem(), ".apk"))
-			if app, ok := fi.module.(*java.AndroidApp); ok && len(app.JniCoverageOutputs()) > 0 {
-				fmt.Fprintln(w, "LOCAL_PREBUILT_COVERAGE_ARCHIVE :=", strings.Join(app.JniCoverageOutputs().Strings(), " "))
+			if app, ok := fi.module.(*java.AndroidApp); ok {
+				if jniCoverageOutputs := app.JniCoverageOutputs(); len(jniCoverageOutputs) > 0 {
+					fmt.Fprintln(w, "LOCAL_PREBUILT_COVERAGE_ARCHIVE :=", strings.Join(jniCoverageOutputs.Strings(), " "))
+				}
+				if jniLibSymbols := app.JNISymbolsInstalls(modulePath); len(jniLibSymbols) > 0 {
+					fmt.Fprintln(w, "LOCAL_SOONG_JNI_LIBS_SYMBOLS :=", jniLibSymbols.String())
+				}
 			}
 			fmt.Fprintln(w, "include $(BUILD_SYSTEM)/soong_app_prebuilt.mk")
 		case appSet:
@@ -202,7 +220,7 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 			if !ok {
 				panic(fmt.Sprintf("Expected %s to be AndroidAppSet", fi.module))
 			}
-			fmt.Fprintln(w, "LOCAL_APK_SET_MASTER_FILE :=", as.MasterFile())
+			fmt.Fprintln(w, "LOCAL_APK_SET_INSTALL_FILE :=", as.InstallFile())
 			fmt.Fprintln(w, "LOCAL_APKCERTS_FILE :=", as.APKCertsFile().String())
 			fmt.Fprintln(w, "include $(BUILD_SYSTEM)/soong_android_app_set.mk")
 		case nativeSharedLib, nativeExecutable, nativeTest:
@@ -221,6 +239,17 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 			fmt.Fprintln(w, "LOCAL_MODULE_STEM :=", fi.Stem())
 			if fi.builtFile == a.manifestPbOut && apexType == flattenedApex {
 				if a.primaryApexType {
+					// To install companion files (init_rc, vintf_fragments)
+					// Copy some common properties of apexBundle to apex_manifest
+					commonProperties := []string{
+						"LOCAL_INIT_RC", "LOCAL_VINTF_FRAGMENTS",
+					}
+					for _, name := range commonProperties {
+						if value, ok := apexAndroidMkData.Entries.EntryMap[name]; ok {
+							fmt.Fprintln(w, name+" := "+strings.Join(value, " "))
+						}
+					}
+
 					// Make apex_manifest.pb module for this APEX to override all other
 					// modules in the APEXes being overridden by this APEX
 					var patterns []string
@@ -243,9 +272,9 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 		}
 
 		// m <module_name> will build <module_name>.<apex_name> as well.
-		if fi.moduleName != moduleName && a.primaryApexType {
-			fmt.Fprintln(w, ".PHONY: "+fi.moduleName)
-			fmt.Fprintln(w, fi.moduleName+": "+moduleName)
+		if fi.androidMkModuleName != moduleName && a.primaryApexType {
+			fmt.Fprintf(w, ".PHONY: %s\n", fi.androidMkModuleName)
+			fmt.Fprintf(w, "%s: %s\n", fi.androidMkModuleName, moduleName)
 		}
 	}
 	return moduleNames
@@ -279,7 +308,7 @@ func (a *apexBundle) androidMkForType() android.AndroidMkData {
 			apexType := a.properties.ApexType
 			if a.installable() {
 				apexName := proptools.StringDefault(a.properties.Apex_name, name)
-				moduleNames = a.androidMkForFiles(w, name, apexName, moduleDir)
+				moduleNames = a.androidMkForFiles(w, name, apexName, moduleDir, data)
 			}
 
 			if apexType == flattenedApex {
@@ -345,6 +374,10 @@ func (a *apexBundle) androidMkForType() android.AndroidMkData {
 
 				if apexType == imageApex {
 					fmt.Fprintln(w, "ALL_MODULES.$(my_register_name).BUNDLE :=", a.bundleModuleFile.String())
+				}
+				if len(a.lintReports) > 0 {
+					fmt.Fprintln(w, "ALL_MODULES.$(my_register_name).LINT_REPORTS :=",
+						strings.Join(a.lintReports.Strings(), " "))
 				}
 
 				if a.installedFilesFile != nil {

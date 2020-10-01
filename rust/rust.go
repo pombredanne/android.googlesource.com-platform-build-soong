@@ -23,6 +23,7 @@ import (
 
 	"android/soong/android"
 	"android/soong/cc"
+	cc_config "android/soong/cc/config"
 	"android/soong/rust/config"
 )
 
@@ -39,9 +40,11 @@ func init() {
 	android.RegisterModuleType("rust_defaults", defaultsFactory)
 	android.PreDepsMutators(func(ctx android.RegisterMutatorsContext) {
 		ctx.BottomUp("rust_libraries", LibraryMutator).Parallel()
+		ctx.BottomUp("rust_stdlinkage", LibstdMutator).Parallel()
 		ctx.BottomUp("rust_begin", BeginMutator).Parallel()
 	})
 	pctx.Import("android/soong/rust/config")
+	pctx.ImportAs("cc_config", "android/soong/cc/config")
 }
 
 type Flags struct {
@@ -61,9 +64,11 @@ type BaseProperties struct {
 	AndroidMkProcMacroLibs []string
 	AndroidMkSharedLibs    []string
 	AndroidMkStaticLibs    []string
-	SubName                string `blueprint:"mutated"`
-	PreventInstall         bool
-	HideFromMake           bool
+
+	SubName string `blueprint:"mutated"`
+
+	PreventInstall bool
+	HideFromMake   bool
 }
 
 type Module struct {
@@ -79,8 +84,26 @@ type Module struct {
 	coverage         *coverage
 	clippy           *clippy
 	cachedToolchain  config.Toolchain
-	subAndroidMkOnce map[subAndroidMkProvider]bool
-	outputFile       android.OptionalPath
+	sourceProvider   SourceProvider
+	subAndroidMkOnce map[SubAndroidMkProvider]bool
+
+	outputFile android.OptionalPath
+}
+
+func (mod *Module) OutputFiles(tag string) (android.Paths, error) {
+	switch tag {
+	case "":
+		if mod.sourceProvider != nil && (mod.compiler == nil || mod.compiler.Disabled()) {
+			return mod.sourceProvider.Srcs(), nil
+		} else {
+			if mod.outputFile.Valid() {
+				return android.Paths{mod.outputFile.Path()}, nil
+			}
+			return android.Paths{}, nil
+		}
+	default:
+		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
+	}
 }
 
 var _ android.ImageInterface = (*Module)(nil)
@@ -120,12 +143,8 @@ func (mod *Module) SelectedStl() string {
 
 func (mod *Module) NonCcVariants() bool {
 	if mod.compiler != nil {
-		if library, ok := mod.compiler.(libraryInterface); ok {
-			if library.buildRlib() || library.buildDylib() {
-				return true
-			} else {
-				return false
-			}
+		if _, ok := mod.compiler.(libraryInterface); ok {
+			return false
 		}
 	}
 	panic(fmt.Errorf("NonCcVariants called on non-library module: %q", mod.BaseModuleName()))
@@ -141,16 +160,16 @@ func (mod *Module) Static() bool {
 			return library.static()
 		}
 	}
-	panic(fmt.Errorf("Static called on non-library module: %q", mod.BaseModuleName()))
+	return false
 }
 
 func (mod *Module) Shared() bool {
 	if mod.compiler != nil {
 		if library, ok := mod.compiler.(libraryInterface); ok {
-			return library.static()
+			return library.shared()
 		}
 	}
-	panic(fmt.Errorf("Shared called on non-library module: %q", mod.BaseModuleName()))
+	return false
 }
 
 func (mod *Module) Toc() android.OptionalPath {
@@ -218,6 +237,7 @@ type Deps struct {
 	Dylibs     []string
 	Rlibs      []string
 	Rustlibs   []string
+	Stdlibs    []string
 	ProcMacros []string
 	SharedLibs []string
 	StaticLibs []string
@@ -226,14 +246,21 @@ type Deps struct {
 }
 
 type PathDeps struct {
-	DyLibs     RustLibraries
-	RLibs      RustLibraries
-	SharedLibs android.Paths
-	StaticLibs android.Paths
-	ProcMacros RustLibraries
-	linkDirs   []string
-	depFlags   []string
+	DyLibs      RustLibraries
+	RLibs       RustLibraries
+	SharedLibs  android.Paths
+	StaticLibs  android.Paths
+	ProcMacros  RustLibraries
+	linkDirs    []string
+	depFlags    []string
+	linkObjects []string
 	//ReexportedDeps android.Paths
+
+	// Used by bindgen modules which call clang
+	depClangFlags         []string
+	depIncludePaths       android.Paths
+	depGeneratedHeaders   android.Paths
+	depSystemIncludePaths android.Paths
 
 	coverageFiles android.Paths
 
@@ -259,22 +286,30 @@ type compiler interface {
 	crateName() string
 
 	inData() bool
-	install(ctx ModuleContext, path android.Path)
+	install(ctx ModuleContext)
 	relativeInstallPath() string
 
 	nativeCoverage() bool
+
+	Disabled() bool
+	SetDisabled()
+
+	stdLinkage(ctx *depsContext) RustLinkage
 }
 
 type exportedFlagsProducer interface {
 	exportedLinkDirs() []string
 	exportedDepFlags() []string
+	exportedLinkObjects() []string
 	exportLinkDirs(...string)
 	exportDepFlags(...string)
+	exportLinkObjects(...string)
 }
 
 type flagExporter struct {
-	depFlags []string
-	linkDirs []string
+	depFlags    []string
+	linkDirs    []string
+	linkObjects []string
 }
 
 func (flagExporter *flagExporter) exportedLinkDirs() []string {
@@ -285,6 +320,10 @@ func (flagExporter *flagExporter) exportedDepFlags() []string {
 	return flagExporter.depFlags
 }
 
+func (flagExporter *flagExporter) exportedLinkObjects() []string {
+	return flagExporter.linkObjects
+}
+
 func (flagExporter *flagExporter) exportLinkDirs(dirs ...string) {
 	flagExporter.linkDirs = android.FirstUniqueStrings(append(flagExporter.linkDirs, dirs...))
 }
@@ -293,12 +332,17 @@ func (flagExporter *flagExporter) exportDepFlags(flags ...string) {
 	flagExporter.depFlags = android.FirstUniqueStrings(append(flagExporter.depFlags, flags...))
 }
 
+func (flagExporter *flagExporter) exportLinkObjects(flags ...string) {
+	flagExporter.linkObjects = android.FirstUniqueStrings(append(flagExporter.linkObjects, flags...))
+}
+
 var _ exportedFlagsProducer = (*flagExporter)(nil)
 
 func NewFlagExporter() *flagExporter {
 	return &flagExporter{
-		depFlags: []string{},
-		linkDirs: []string{},
+		depFlags:    []string{},
+		linkDirs:    []string{},
+		linkObjects: []string{},
 	}
 }
 
@@ -348,6 +392,7 @@ func DefaultsFactory(props ...interface{}) android.Module {
 		&LibraryCompilerProperties{},
 		&ProcMacroCompilerProperties{},
 		&PrebuiltProperties{},
+		&SourceProviderProperties{},
 		&TestProperties{},
 		&cc.CoverageProperties{},
 		&ClippyProperties{},
@@ -372,7 +417,9 @@ func (mod *Module) CcLibrary() bool {
 
 func (mod *Module) CcLibraryInterface() bool {
 	if mod.compiler != nil {
-		if _, ok := mod.compiler.(libraryInterface); ok {
+		// use build{Static,Shared}() instead of {static,shared}() here because this might be called before
+		// VariantIs{Static,Shared} is set.
+		if lib, ok := mod.compiler.(libraryInterface); ok && (lib.buildShared() || lib.buildStatic()) {
 			return true
 		}
 	}
@@ -412,12 +459,20 @@ func (mod *Module) SetBuildStubs() {
 	panic("SetBuildStubs not yet implemented for rust modules")
 }
 
-func (mod *Module) SetStubsVersions(string) {
-	panic("SetStubsVersions not yet implemented for rust modules")
+func (mod *Module) SetStubsVersion(string) {
+	panic("SetStubsVersion not yet implemented for rust modules")
 }
 
 func (mod *Module) StubsVersion() string {
-	panic("SetStubsVersions not yet implemented for rust modules")
+	panic("StubsVersion not yet implemented for rust modules")
+}
+
+func (mod *Module) SetAllStubsVersions([]string) {
+	panic("SetAllStubsVersions not yet implemented for rust modules")
+}
+
+func (mod *Module) AllStubsVersions() []string {
+	return nil
 }
 
 func (mod *Module) BuildStaticVariant() bool {
@@ -507,25 +562,13 @@ func (mod *Module) Init() android.Module {
 	if mod.clippy != nil {
 		mod.AddProperties(mod.clippy.props()...)
 	}
+	if mod.sourceProvider != nil {
+		mod.AddProperties(mod.sourceProvider.SourceProviderProps()...)
+	}
 
 	android.InitAndroidArchModule(mod, mod.hod, mod.multilib)
 
 	android.InitDefaultableModule(mod)
-
-	// Explicitly disable unsupported targets.
-	android.AddLoadHook(mod, func(ctx android.LoadHookContext) {
-		disableTargets := struct {
-			Target struct {
-				Linux_bionic struct {
-					Enabled *bool
-				}
-			}
-		}{}
-		disableTargets.Target.Linux_bionic.Enabled = proptools.BoolPtr(false)
-
-		ctx.AppendProperties(&disableTargets)
-	})
-
 	return mod
 }
 
@@ -609,6 +652,10 @@ func (mod *Module) toolchain(ctx android.BaseModuleContext) config.Toolchain {
 	return mod.cachedToolchain
 }
 
+func (mod *Module) ccToolchain(ctx android.BaseModuleContext) cc_config.Toolchain {
+	return cc_config.FindToolchain(ctx.Os(), ctx.Arch())
+}
+
 func (d *Defaults) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 }
 
@@ -639,11 +686,33 @@ func (mod *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 		flags, deps = mod.clippy.flags(ctx, flags, deps)
 	}
 
-	if mod.compiler != nil {
+	// SourceProvider needs to call GenerateSource() before compiler calls
+	// compile() so it can provide the source. A SourceProvider has
+	// multiple variants (e.g. source, rlib, dylib). Only the "source"
+	// variant is responsible for effectively generating the source. The
+	// remaining variants relies on the "source" variant output.
+	if mod.sourceProvider != nil {
+		if mod.compiler.(libraryInterface).source() {
+			mod.sourceProvider.GenerateSource(ctx, deps)
+			mod.sourceProvider.setSubName(ctx.ModuleSubDir())
+			if lib, ok := mod.compiler.(*libraryDecorator); ok {
+				lib.flagExporter.linkDirs = nil
+				lib.flagExporter.linkObjects = nil
+				lib.flagExporter.depFlags = nil
+			}
+		} else {
+			sourceMod := actx.GetDirectDepWithTag(mod.Name(), sourceDepTag)
+			sourceLib := sourceMod.(*Module).compiler.(*libraryDecorator)
+			mod.sourceProvider.setOutputFile(sourceLib.sourceProvider.Srcs()[0])
+		}
+	}
+
+	if mod.compiler != nil && !mod.compiler.Disabled() {
 		outputFile := mod.compiler.compile(ctx, flags, deps)
+
 		mod.outputFile = android.OptionalPathForPath(outputFile)
-		if !mod.Properties.PreventInstall {
-			mod.compiler.install(ctx, mod.outputFile.Path())
+		if mod.outputFile.Valid() && !mod.Properties.PreventInstall {
+			mod.compiler.install(ctx)
 		}
 	}
 }
@@ -653,6 +722,9 @@ func (mod *Module) deps(ctx DepsContext) Deps {
 
 	if mod.compiler != nil {
 		deps = mod.compiler.compilerDeps(ctx, deps)
+	}
+	if mod.sourceProvider != nil {
+		deps = mod.sourceProvider.SourceProviderDeps(ctx, deps)
 	}
 
 	if mod.coverage != nil {
@@ -678,10 +750,12 @@ type dependencyTag struct {
 }
 
 var (
-	rlibDepTag       = dependencyTag{name: "rlibTag", library: true}
-	dylibDepTag      = dependencyTag{name: "dylib", library: true}
-	procMacroDepTag  = dependencyTag{name: "procMacro", proc_macro: true}
-	testPerSrcDepTag = dependencyTag{name: "rust_unit_tests"}
+	customBindgenDepTag = dependencyTag{name: "customBindgenTag"}
+	rlibDepTag          = dependencyTag{name: "rlibTag", library: true}
+	dylibDepTag         = dependencyTag{name: "dylib", library: true}
+	procMacroDepTag     = dependencyTag{name: "procMacro", proc_macro: true}
+	testPerSrcDepTag    = dependencyTag{name: "rust_unit_tests"}
+	sourceDepTag        = dependencyTag{name: "source"}
 )
 
 type autoDep struct {
@@ -690,12 +764,14 @@ type autoDep struct {
 }
 
 var (
-	rlibAutoDep  = autoDep{variation: "rlib", depTag: rlibDepTag}
-	dylibAutoDep = autoDep{variation: "dylib", depTag: dylibDepTag}
+	rlibVariation  = "rlib"
+	dylibVariation = "dylib"
+	rlibAutoDep    = autoDep{variation: rlibVariation, depTag: rlibDepTag}
+	dylibAutoDep   = autoDep{variation: dylibVariation, depTag: dylibDepTag}
 )
 
 type autoDeppable interface {
-	autoDep() autoDep
+	autoDep(ctx BaseModuleContext) autoDep
 }
 
 func (mod *Module) begin(ctx BaseModuleContext) {
@@ -712,17 +788,14 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 	directProcMacroDeps := []*Module{}
 	directSharedLibDeps := [](cc.LinkableInterface){}
 	directStaticLibDeps := [](cc.LinkableInterface){}
+	directSrcProvidersDeps := []*Module{}
+	directSrcDeps := [](android.SourceFileProducer){}
 
 	ctx.VisitDirectDeps(func(dep android.Module) {
 		depName := ctx.OtherModuleName(dep)
 		depTag := ctx.OtherModuleDependencyTag(dep)
-		if rustDep, ok := dep.(*Module); ok {
+		if rustDep, ok := dep.(*Module); ok && !rustDep.CcLibraryInterface() {
 			//Handle Rust Modules
-
-			linkFile := rustDep.outputFile
-			if !linkFile.Valid() {
-				ctx.ModuleErrorf("Invalid output file when adding dep %q to %q", depName, ctx.ModuleName())
-			}
 
 			switch depTag {
 			case dylibDepTag:
@@ -734,35 +807,59 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 				directDylibDeps = append(directDylibDeps, rustDep)
 				mod.Properties.AndroidMkDylibs = append(mod.Properties.AndroidMkDylibs, depName)
 			case rlibDepTag:
+
 				rlib, ok := rustDep.compiler.(libraryInterface)
 				if !ok || !rlib.rlib() {
-					ctx.ModuleErrorf("mod %q not an rlib library", depName)
+					ctx.ModuleErrorf("mod %q not an rlib library", depName+rustDep.Properties.SubName)
 					return
 				}
 				depPaths.coverageFiles = append(depPaths.coverageFiles, rustDep.CoverageFiles()...)
 				directRlibDeps = append(directRlibDeps, rustDep)
-				mod.Properties.AndroidMkRlibs = append(mod.Properties.AndroidMkRlibs, depName)
+				mod.Properties.AndroidMkRlibs = append(mod.Properties.AndroidMkRlibs, depName+rustDep.Properties.SubName)
 			case procMacroDepTag:
 				directProcMacroDeps = append(directProcMacroDeps, rustDep)
 				mod.Properties.AndroidMkProcMacroLibs = append(mod.Properties.AndroidMkProcMacroLibs, depName)
+			case android.SourceDepTag:
+				// Since these deps are added in path_properties.go via AddDependencies, we need to ensure the correct
+				// OS/Arch variant is used.
+				var helper string
+				if ctx.Host() {
+					helper = "missing 'host_supported'?"
+				} else {
+					helper = "device module defined?"
+				}
+
+				if dep.Target().Os != ctx.Os() {
+					ctx.ModuleErrorf("OS mismatch on dependency %q (%s)", dep.Name(), helper)
+					return
+				} else if dep.Target().Arch.ArchType != ctx.Arch().ArchType {
+					ctx.ModuleErrorf("Arch mismatch on dependency %q (%s)", dep.Name(), helper)
+					return
+				}
+				directSrcProvidersDeps = append(directSrcProvidersDeps, rustDep)
 			}
 
-			//Append the dependencies exportedDirs
-			if lib, ok := rustDep.compiler.(exportedFlagsProducer); ok {
+			//Append the dependencies exportedDirs, except for proc-macros which target a different arch/OS
+			if lib, ok := rustDep.compiler.(exportedFlagsProducer); ok && depTag != procMacroDepTag {
 				depPaths.linkDirs = append(depPaths.linkDirs, lib.exportedLinkDirs()...)
 				depPaths.depFlags = append(depPaths.depFlags, lib.exportedDepFlags()...)
+				depPaths.linkObjects = append(depPaths.linkObjects, lib.exportedLinkObjects()...)
 			}
 
 			if depTag == dylibDepTag || depTag == rlibDepTag || depTag == procMacroDepTag {
+				linkFile := rustDep.outputFile
+				if !linkFile.Valid() {
+					ctx.ModuleErrorf("Invalid output file when adding dep %q to %q",
+						depName, ctx.ModuleName())
+					return
+				}
 				linkDir := linkPathFromFilePath(linkFile.Path())
 				if lib, ok := mod.compiler.(exportedFlagsProducer); ok {
 					lib.exportLinkDirs(linkDir)
 				}
 			}
 
-		}
-
-		if ccDep, ok := dep.(cc.LinkableInterface); ok {
+		} else if ccDep, ok := dep.(cc.LinkableInterface); ok {
 			//Handle C dependencies
 			if _, ok := ccDep.(*Module); !ok {
 				if ccDep.Module().Target().Os != ctx.Os() {
@@ -774,42 +871,57 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 					return
 				}
 			}
+			linkObject := ccDep.OutputFile()
+			linkPath := linkPathFromFilePath(linkObject.Path())
 
-			linkFile := ccDep.OutputFile()
-			linkPath := linkPathFromFilePath(linkFile.Path())
-			libName := libNameFromFilePath(linkFile.Path())
-			depFlag := "-l" + libName
-
-			if !linkFile.Valid() {
+			if !linkObject.Valid() {
 				ctx.ModuleErrorf("Invalid output file when adding dep %q to %q", depName, ctx.ModuleName())
 			}
 
 			exportDep := false
-			switch depTag {
-			case cc.StaticDepTag:
-				depFlag = "-lstatic=" + libName
+			switch {
+			case cc.IsStaticDepTag(depTag):
 				depPaths.linkDirs = append(depPaths.linkDirs, linkPath)
-				depPaths.depFlags = append(depPaths.depFlags, depFlag)
+				depPaths.linkObjects = append(depPaths.linkObjects, linkObject.String())
+				depPaths.depIncludePaths = append(depPaths.depIncludePaths, ccDep.IncludeDirs()...)
+				if mod, ok := ccDep.(*cc.Module); ok {
+					depPaths.depSystemIncludePaths = append(depPaths.depSystemIncludePaths, mod.ExportedSystemIncludeDirs()...)
+					depPaths.depClangFlags = append(depPaths.depClangFlags, mod.ExportedFlags()...)
+					depPaths.depGeneratedHeaders = append(depPaths.depGeneratedHeaders, mod.ExportedGeneratedHeaders()...)
+				}
 				depPaths.coverageFiles = append(depPaths.coverageFiles, ccDep.CoverageFiles()...)
 				directStaticLibDeps = append(directStaticLibDeps, ccDep)
 				mod.Properties.AndroidMkStaticLibs = append(mod.Properties.AndroidMkStaticLibs, depName)
-			case cc.SharedDepTag:
-				depFlag = "-ldylib=" + libName
+			case cc.IsSharedDepTag(depTag):
 				depPaths.linkDirs = append(depPaths.linkDirs, linkPath)
-				depPaths.depFlags = append(depPaths.depFlags, depFlag)
+				depPaths.linkObjects = append(depPaths.linkObjects, linkObject.String())
+				depPaths.depIncludePaths = append(depPaths.depIncludePaths, ccDep.IncludeDirs()...)
+				if mod, ok := ccDep.(*cc.Module); ok {
+					depPaths.depSystemIncludePaths = append(depPaths.depSystemIncludePaths, mod.ExportedSystemIncludeDirs()...)
+					depPaths.depClangFlags = append(depPaths.depClangFlags, mod.ExportedFlags()...)
+					depPaths.depGeneratedHeaders = append(depPaths.depGeneratedHeaders, mod.ExportedGeneratedHeaders()...)
+				}
 				directSharedLibDeps = append(directSharedLibDeps, ccDep)
 				mod.Properties.AndroidMkSharedLibs = append(mod.Properties.AndroidMkSharedLibs, depName)
 				exportDep = true
-			case cc.CrtBeginDepTag:
-				depPaths.CrtBegin = linkFile
-			case cc.CrtEndDepTag:
-				depPaths.CrtEnd = linkFile
+			case depTag == cc.CrtBeginDepTag:
+				depPaths.CrtBegin = linkObject
+			case depTag == cc.CrtEndDepTag:
+				depPaths.CrtEnd = linkObject
 			}
 
 			// Make sure these dependencies are propagated
 			if lib, ok := mod.compiler.(exportedFlagsProducer); ok && exportDep {
 				lib.exportLinkDirs(linkPath)
-				lib.exportDepFlags(depFlag)
+				lib.exportLinkObjects(linkObject.String())
+			}
+		}
+
+		if srcDep, ok := dep.(android.SourceFileProducer); ok {
+			switch depTag {
+			case android.SourceDepTag:
+				// These are usually genrules which don't have per-target variants.
+				directSrcDeps = append(directSrcDeps, srcDep)
 			}
 		}
 	})
@@ -837,16 +949,29 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 		sharedLibDepFiles = append(sharedLibDepFiles, dep.OutputFile().Path())
 	}
 
+	var srcProviderDepFiles android.Paths
+	for _, dep := range directSrcProvidersDeps {
+		srcs, _ := dep.OutputFiles("")
+		srcProviderDepFiles = append(srcProviderDepFiles, srcs...)
+	}
+	for _, dep := range directSrcDeps {
+		srcs := dep.Srcs()
+		srcProviderDepFiles = append(srcProviderDepFiles, srcs...)
+	}
+
 	depPaths.RLibs = append(depPaths.RLibs, rlibDepFiles...)
 	depPaths.DyLibs = append(depPaths.DyLibs, dylibDepFiles...)
 	depPaths.SharedLibs = append(depPaths.SharedLibs, sharedLibDepFiles...)
 	depPaths.StaticLibs = append(depPaths.StaticLibs, staticLibDepFiles...)
 	depPaths.ProcMacros = append(depPaths.ProcMacros, procMacroDepFiles...)
+	depPaths.SrcDeps = append(depPaths.SrcDeps, srcProviderDepFiles...)
 
 	// Dedup exported flags from dependencies
 	depPaths.linkDirs = android.FirstUniqueStrings(depPaths.linkDirs)
 	depPaths.depFlags = android.FirstUniqueStrings(depPaths.depFlags)
-	depPaths.SrcDeps = android.FirstUniquePaths(depPaths.SrcDeps)
+	depPaths.depClangFlags = android.FirstUniqueStrings(depPaths.depClangFlags)
+	depPaths.depIncludePaths = android.FirstUniquePaths(depPaths.depIncludePaths)
+	depPaths.depSystemIncludePaths = android.FirstUniquePaths(depPaths.depSystemIncludePaths)
 
 	return depPaths
 }
@@ -860,14 +985,6 @@ func (mod *Module) InstallInData() bool {
 
 func linkPathFromFilePath(filepath android.Path) string {
 	return strings.Split(filepath.String(), filepath.Base())[0]
-}
-
-func libNameFromFilePath(filepath android.Path) string {
-	libName := strings.TrimSuffix(filepath.Base(), filepath.Ext())
-	if strings.HasPrefix(libName, "lib") {
-		libName = libName[3:]
-	}
-	return libName
 }
 
 func (mod *Module) DepsMutator(actx android.BottomUpMutatorContext) {
@@ -885,40 +1002,72 @@ func (mod *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 		commonDepVariations = append(commonDepVariations,
 			blueprint.Variation{Mutator: "image", Variation: android.CoreVariation})
 	}
+
+	stdLinkage := "dylib-std"
+	if mod.compiler.stdLinkage(ctx) == RlibLinkage {
+		stdLinkage = "rlib-std"
+	}
+
+	rlibDepVariations := commonDepVariations
+	if lib, ok := mod.compiler.(libraryInterface); !ok || !lib.sysroot() {
+		rlibDepVariations = append(rlibDepVariations,
+			blueprint.Variation{Mutator: "rust_stdlinkage", Variation: stdLinkage})
+	}
+
 	actx.AddVariationDependencies(
-		append(commonDepVariations, []blueprint.Variation{
-			{Mutator: "rust_libraries", Variation: "rlib"},
-			{Mutator: "link", Variation: ""}}...),
+		append(rlibDepVariations, []blueprint.Variation{
+			{Mutator: "rust_libraries", Variation: rlibVariation}}...),
 		rlibDepTag, deps.Rlibs...)
 	actx.AddVariationDependencies(
 		append(commonDepVariations, []blueprint.Variation{
-			{Mutator: "rust_libraries", Variation: "dylib"},
-			{Mutator: "link", Variation: ""}}...),
+			{Mutator: "rust_libraries", Variation: dylibVariation}}...),
 		dylibDepTag, deps.Dylibs...)
 
-	if deps.Rustlibs != nil {
-		autoDep := mod.compiler.(autoDeppable).autoDep()
-		actx.AddVariationDependencies(
-			append(commonDepVariations, []blueprint.Variation{
-				{Mutator: "rust_libraries", Variation: autoDep.variation},
-				{Mutator: "link", Variation: ""}}...),
-			autoDep.depTag, deps.Rustlibs...)
+	if deps.Rustlibs != nil && !mod.compiler.Disabled() {
+		autoDep := mod.compiler.(autoDeppable).autoDep(ctx)
+		if autoDep.depTag == rlibDepTag {
+			actx.AddVariationDependencies(
+				append(rlibDepVariations, blueprint.Variation{Mutator: "rust_libraries", Variation: autoDep.variation}),
+				autoDep.depTag, deps.Rustlibs...)
+		} else {
+			actx.AddVariationDependencies(
+				append(commonDepVariations, blueprint.Variation{Mutator: "rust_libraries", Variation: autoDep.variation}),
+				autoDep.depTag, deps.Rustlibs...)
+		}
 	}
-
+	if deps.Stdlibs != nil {
+		if mod.compiler.stdLinkage(ctx) == RlibLinkage {
+			actx.AddVariationDependencies(
+				append(commonDepVariations, blueprint.Variation{Mutator: "rust_libraries", Variation: "rlib"}),
+				rlibDepTag, deps.Stdlibs...)
+		} else {
+			actx.AddVariationDependencies(
+				append(commonDepVariations, blueprint.Variation{Mutator: "rust_libraries", Variation: "dylib"}),
+				dylibDepTag, deps.Stdlibs...)
+		}
+	}
 	actx.AddVariationDependencies(append(commonDepVariations,
 		blueprint.Variation{Mutator: "link", Variation: "shared"}),
-		cc.SharedDepTag, deps.SharedLibs...)
+		cc.SharedDepTag(), deps.SharedLibs...)
 	actx.AddVariationDependencies(append(commonDepVariations,
 		blueprint.Variation{Mutator: "link", Variation: "static"}),
-		cc.StaticDepTag, deps.StaticLibs...)
+		cc.StaticDepTag(), deps.StaticLibs...)
 
+	crtVariations := append(cc.GetCrtVariations(ctx, mod), commonDepVariations...)
 	if deps.CrtBegin != "" {
-		actx.AddVariationDependencies(commonDepVariations, cc.CrtBeginDepTag, deps.CrtBegin)
+		actx.AddVariationDependencies(crtVariations, cc.CrtBeginDepTag, deps.CrtBegin)
 	}
 	if deps.CrtEnd != "" {
-		actx.AddVariationDependencies(commonDepVariations, cc.CrtEndDepTag, deps.CrtEnd)
+		actx.AddVariationDependencies(crtVariations, cc.CrtEndDepTag, deps.CrtEnd)
 	}
 
+	if mod.sourceProvider != nil {
+		if bindgen, ok := mod.sourceProvider.(*bindgenDecorator); ok &&
+			bindgen.Properties.Custom_bindgen != "" {
+			actx.AddFarVariationDependencies(ctx.Config().BuildOSTarget.Variations(), customBindgenDepTag,
+				bindgen.Properties.Custom_bindgen)
+		}
+	}
 	// proc_macros are compiler plugins, and so we need the host arch variant as a dependendcy.
 	actx.AddFarVariationDependencies(ctx.Config().BuildOSTarget.Variations(), procMacroDepTag, deps.ProcMacros...)
 }
@@ -947,14 +1096,20 @@ func (mod *Module) Name() string {
 	return name
 }
 
+func (mod *Module) disableClippy() {
+	if mod.clippy != nil {
+		mod.clippy.Properties.Clippy_lints = proptools.StringPtr("none")
+	}
+}
+
 var _ android.HostToolProvider = (*Module)(nil)
 
 func (mod *Module) HostToolPath() android.OptionalPath {
 	if !mod.Host() {
 		return android.OptionalPath{}
 	}
-	if _, ok := mod.compiler.(*binaryDecorator); ok {
-		return mod.outputFile
+	if binary, ok := mod.compiler.(*binaryDecorator); ok {
+		return android.OptionalPathForPath(binary.baseCompiler.path)
 	}
 	return android.OptionalPath{}
 }
@@ -963,3 +1118,5 @@ var Bool = proptools.Bool
 var BoolDefault = proptools.BoolDefault
 var String = proptools.String
 var StringPtr = proptools.StringPtr
+
+var _ android.OutputFileProducer = (*Module)(nil)
