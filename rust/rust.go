@@ -221,6 +221,10 @@ func (mod *Module) IsSdkVariant() bool {
 	return false
 }
 
+func (mod *Module) SplitPerApiLevel() bool {
+	return false
+}
+
 func (mod *Module) ToolchainLibrary() bool {
 	return false
 }
@@ -294,7 +298,7 @@ type compiler interface {
 	Disabled() bool
 	SetDisabled()
 
-	staticStd(ctx *depsContext) bool
+	stdLinkage(ctx *depsContext) RustLinkage
 }
 
 type exportedFlagsProducer interface {
@@ -387,6 +391,7 @@ func DefaultsFactory(props ...interface{}) android.Module {
 	module.AddProperties(props...)
 	module.AddProperties(
 		&BaseProperties{},
+		&BindgenProperties{},
 		&BaseCompilerProperties{},
 		&BinaryCompilerProperties{},
 		&LibraryCompilerProperties{},
@@ -395,6 +400,7 @@ func DefaultsFactory(props ...interface{}) android.Module {
 		&SourceProviderProperties{},
 		&TestProperties{},
 		&cc.CoverageProperties{},
+		&cc.RustBindgenClangProperties{},
 		&ClippyProperties{},
 	)
 
@@ -993,17 +999,14 @@ func (mod *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 	}
 
 	deps := mod.deps(ctx)
-	commonDepVariations := []blueprint.Variation{}
-	if cc.VersionVariantAvailable(mod) {
-		commonDepVariations = append(commonDepVariations,
-			blueprint.Variation{Mutator: "version", Variation: ""})
-	}
+	var commonDepVariations []blueprint.Variation
 	if !mod.Host() {
 		commonDepVariations = append(commonDepVariations,
 			blueprint.Variation{Mutator: "image", Variation: android.CoreVariation})
 	}
+
 	stdLinkage := "dylib-std"
-	if mod.compiler.staticStd(ctx) {
+	if mod.compiler.stdLinkage(ctx) == RlibLinkage {
 		stdLinkage = "rlib-std"
 	}
 
@@ -1035,7 +1038,7 @@ func (mod *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 		}
 	}
 	if deps.Stdlibs != nil {
-		if mod.compiler.staticStd(ctx) {
+		if mod.compiler.stdLinkage(ctx) == RlibLinkage {
 			actx.AddVariationDependencies(
 				append(commonDepVariations, blueprint.Variation{Mutator: "rust_libraries", Variation: "rlib"}),
 				rlibDepTag, deps.Stdlibs...)
@@ -1052,7 +1055,7 @@ func (mod *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 		blueprint.Variation{Mutator: "link", Variation: "static"}),
 		cc.StaticDepTag(), deps.StaticLibs...)
 
-	crtVariations := append(cc.GetCrtVariations(ctx, mod), commonDepVariations...)
+	crtVariations := cc.GetCrtVariations(ctx, mod)
 	if deps.CrtBegin != "" {
 		actx.AddVariationDependencies(crtVariations, cc.CrtBeginDepTag, deps.CrtBegin)
 	}

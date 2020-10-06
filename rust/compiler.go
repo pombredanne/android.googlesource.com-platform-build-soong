@@ -24,6 +24,14 @@ import (
 	"android/soong/rust/config"
 )
 
+type RustLinkage int
+
+const (
+	DefaultLinkage RustLinkage = iota
+	RlibLinkage
+	DylibLinkage
+)
+
 func (compiler *baseCompiler) edition() string {
 	return proptools.StringDefault(compiler.Properties.Edition, config.DefaultEdition)
 }
@@ -146,12 +154,12 @@ func (compiler *baseCompiler) coverageOutputZipPath() android.OptionalPath {
 	panic("baseCompiler does not implement coverageOutputZipPath()")
 }
 
-func (compiler *baseCompiler) staticStd(ctx *depsContext) bool {
+func (compiler *baseCompiler) stdLinkage(ctx *depsContext) RustLinkage {
 	// For devices, we always link stdlibs in as dylibs by default.
 	if ctx.Device() {
-		return false
+		return DylibLinkage
 	} else {
-		return true
+		return RlibLinkage
 	}
 }
 
@@ -232,11 +240,18 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	return deps
 }
 
-func bionicDeps(deps Deps) Deps {
-	deps.SharedLibs = append(deps.SharedLibs, "liblog")
-	deps.SharedLibs = append(deps.SharedLibs, "libc")
-	deps.SharedLibs = append(deps.SharedLibs, "libm")
-	deps.SharedLibs = append(deps.SharedLibs, "libdl")
+func bionicDeps(deps Deps, static bool) Deps {
+	bionicLibs := []string{}
+	bionicLibs = append(bionicLibs, "liblog")
+	bionicLibs = append(bionicLibs, "libc")
+	bionicLibs = append(bionicLibs, "libm")
+	bionicLibs = append(bionicLibs, "libdl")
+
+	if static {
+		deps.StaticLibs = append(deps.StaticLibs, bionicLibs...)
+	} else {
+		deps.SharedLibs = append(deps.SharedLibs, bionicLibs...)
+	}
 
 	//TODO(b/141331117) libstd requires libgcc on Android
 	deps.StaticLibs = append(deps.StaticLibs, "libgcc")

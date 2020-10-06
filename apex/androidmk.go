@@ -135,7 +135,7 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 				}
 			}
 			if len(newDataPaths) > 0 {
-				fmt.Fprintln(w, "LOCAL_TEST_DATA :=", strings.Join(cc.AndroidMkDataPaths(newDataPaths), " "))
+				fmt.Fprintln(w, "LOCAL_TEST_DATA :=", strings.Join(android.AndroidMkDataPaths(newDataPaths), " "))
 			}
 
 			if fi.module != nil && len(fi.module.NoticeFiles()) > 0 {
@@ -264,6 +264,10 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 						postInstallCommands = append(postInstallCommands, a.compatSymlinks...)
 					}
 				}
+
+				// File_contexts of flattened APEXes should be merged into file_contexts.bin
+				fmt.Fprintln(w, "LOCAL_FILE_CONTEXTS :=", a.fileContexts)
+
 				if len(postInstallCommands) > 0 {
 					fmt.Fprintln(w, "LOCAL_POST_INSTALL_CMD :=", strings.Join(postInstallCommands, " && "))
 				}

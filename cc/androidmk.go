@@ -33,7 +33,7 @@ var (
 )
 
 type AndroidMkContext interface {
-	Name() string
+	BaseModuleName() string
 	Target() android.Target
 	subAndroidMk(*android.AndroidMkEntries, interface{})
 	Arch() android.Arch
@@ -156,24 +156,6 @@ func (c *Module) AndroidMkEntries() []android.AndroidMkEntries {
 	return []android.AndroidMkEntries{entries}
 }
 
-func AndroidMkDataPaths(data []android.DataPath) []string {
-	var testFiles []string
-	for _, d := range data {
-		rel := d.SrcPath.Rel()
-		path := d.SrcPath.String()
-		if !strings.HasSuffix(path, rel) {
-			panic(fmt.Errorf("path %q does not end with %q", path, rel))
-		}
-		path = strings.TrimSuffix(path, rel)
-		testFileString := path + ":" + rel
-		if len(d.RelativeInstallPath) > 0 {
-			testFileString += ":" + d.RelativeInstallPath
-		}
-		testFiles = append(testFiles, testFileString)
-	}
-	return testFiles
-}
-
 func androidMkWriteExtraTestConfigs(extraTestConfigs android.Paths, entries *android.AndroidMkEntries) {
 	if len(extraTestConfigs) > 0 {
 		entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
@@ -183,7 +165,7 @@ func androidMkWriteExtraTestConfigs(extraTestConfigs android.Paths, entries *and
 }
 
 func androidMkWriteTestData(data []android.DataPath, ctx AndroidMkContext, entries *android.AndroidMkEntries) {
-	testFiles := AndroidMkDataPaths(data)
+	testFiles := android.AndroidMkDataPaths(data)
 	if len(testFiles) > 0 {
 		entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
 			entries.AddStrings("LOCAL_TEST_DATA", testFiles...)
@@ -296,7 +278,7 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 		})
 	}
 	if len(library.Properties.Stubs.Versions) > 0 &&
-		android.DirectlyInAnyApex(ctx, ctx.Name()) && !ctx.InRamdisk() && !ctx.InRecovery() && !ctx.UseVndk() &&
+		android.DirectlyInAnyApex(ctx, ctx.BaseModuleName()) && !ctx.InRamdisk() && !ctx.InRecovery() && !ctx.UseVndk() &&
 		!ctx.static() {
 		if library.buildStubs() && library.isLatestStubVersion() {
 			// reference the latest version via its name without suffix when it is provided by apex

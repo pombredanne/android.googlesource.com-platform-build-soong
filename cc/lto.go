@@ -45,8 +45,6 @@ type LTOProperties struct {
 		Thin  *bool `android:"arch_variant"`
 	} `android:"arch_variant"`
 
-	GlobalThin *bool `blueprint:"mutated"`
-
 	// Dep properties indicate that this module needs to be built with LTO
 	// since it is an object dependency of an LTO module.
 	FullDep bool `blueprint:"mutated"`
@@ -71,7 +69,13 @@ func (lto *lto) begin(ctx BaseModuleContext) {
 	if ctx.Config().IsEnvTrue("DISABLE_LTO") {
 		lto.Properties.Lto.Never = boolPtr(true)
 	} else if ctx.Config().IsEnvTrue("GLOBAL_THINLTO") {
-		lto.Properties.GlobalThin = boolPtr(true)
+		staticLib := ctx.static() && !ctx.staticBinary()
+		hostBin := ctx.Host()
+		if !staticLib && !hostBin {
+			if !lto.Never() && !lto.FullLTO() {
+				lto.Properties.Lto.Thin = boolPtr(true)
+			}
+		}
 	}
 }
 
@@ -133,7 +137,7 @@ func (lto *lto) flags(ctx BaseModuleContext, flags Flags) Flags {
 
 // Can be called with a null receiver
 func (lto *lto) LTO() bool {
-	if lto == nil || lto.Disabled() {
+	if lto == nil || lto.Never() {
 		return false
 	}
 
@@ -145,18 +149,12 @@ func (lto *lto) FullLTO() bool {
 }
 
 func (lto *lto) ThinLTO() bool {
-	if Bool(lto.Properties.GlobalThin) {
-		if !lto.Disabled() && !lto.FullLTO() {
-			return true
-		}
-	}
-
 	return Bool(lto.Properties.Lto.Thin)
 }
 
 // Is lto.never explicitly set to true?
-func (lto *lto) Disabled() bool {
-	return lto.Properties.Lto.Never != nil && *lto.Properties.Lto.Never
+func (lto *lto) Never() bool {
+	return Bool(lto.Properties.Lto.Never)
 }
 
 // Propagate lto requirements down from binaries
@@ -184,7 +182,7 @@ func ltoDepsMutator(mctx android.TopDownMutatorContext) {
 			}
 
 			if dep, ok := dep.(*Module); ok && dep.lto != nil &&
-				!dep.lto.Disabled() {
+				!dep.lto.Never() {
 				if full && !dep.lto.FullLTO() {
 					dep.lto.Properties.FullDep = true
 				}

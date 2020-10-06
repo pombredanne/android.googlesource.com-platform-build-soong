@@ -19,7 +19,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/bootstrap"
@@ -565,7 +564,6 @@ func makeApexAvailableBaseline() map[string][]string {
 		"libdebuggerd_handler_fallback",
 		"libdexfile_external_headers",
 		"libdexfile_support",
-		"libdexfile_support_static",
 		"libdl_static",
 		"libjemalloc5",
 		"liblinker_main",
@@ -744,12 +742,6 @@ func init() {
 	android.PreDepsMutators(RegisterPreDepsMutators)
 	android.PostDepsMutators(RegisterPostDepsMutators)
 
-	android.RegisterMakeVarsProvider(pctx, func(ctx android.MakeVarsContext) {
-		apexFileContextsInfos := apexFileContextsInfos(ctx.Config())
-		sort.Strings(*apexFileContextsInfos)
-		ctx.Strict("APEX_FILE_CONTEXTS_INFOS", strings.Join(*apexFileContextsInfos, " "))
-	})
-
 	android.AddNeverAllowRules(createApexPermittedPackagesRules(qModulesPackages())...)
 	android.AddNeverAllowRules(createApexPermittedPackagesRules(rModulesPackages())...)
 }
@@ -915,24 +907,6 @@ func apexMutator(mctx android.BottomUpMutatorContext) {
 		mctx.CreateVariations(apexBundleName)
 	}
 
-}
-
-var (
-	apexFileContextsInfosKey   = android.NewOnceKey("apexFileContextsInfosKey")
-	apexFileContextsInfosMutex sync.Mutex
-)
-
-func apexFileContextsInfos(config android.Config) *[]string {
-	return config.Once(apexFileContextsInfosKey, func() interface{} {
-		return &[]string{}
-	}).(*[]string)
-}
-
-func addFlattenedFileContextsInfos(ctx android.BaseModuleContext, fileContextsInfo string) {
-	apexFileContextsInfosMutex.Lock()
-	defer apexFileContextsInfosMutex.Unlock()
-	apexFileContextsInfos := apexFileContextsInfos(ctx.Config())
-	*apexFileContextsInfos = append(*apexFileContextsInfos, fileContextsInfo)
 }
 
 func apexFlattenedMutator(mctx android.BottomUpMutatorContext) {
@@ -1499,6 +1473,12 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 		}
 	}
 	for i, target := range targets {
+		if target.HostCross {
+			// Don't include artifats for the host cross targets because there is no way
+			// for us to run those artifacts natively on host
+			continue
+		}
+
 		// When multilib.* is omitted for native_shared_libs/jni_libs/tests, it implies
 		// multilib.both
 		addDependenciesForNativeModules(ctx,
