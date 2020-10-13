@@ -102,6 +102,10 @@ func testContext() *android.TestContext {
 
 	dexpreopt.RegisterToolModulesForTest(ctx)
 
+	ctx.PostDepsMutators(func(ctx android.RegisterMutatorsContext) {
+		ctx.TopDown("propagate_rro_enforcement", propagateRROEnforcementMutator).Parallel()
+	})
+
 	return ctx
 }
 
@@ -177,7 +181,6 @@ func moduleToPath(name string) string {
 }
 
 func TestJavaLinkType(t *testing.T) {
-	t.Parallel()
 	testJava(t, `
 		java_library {
 			name: "foo",
@@ -266,7 +269,6 @@ func TestJavaLinkType(t *testing.T) {
 }
 
 func TestSimple(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_library {
 			name: "foo",
@@ -311,7 +313,6 @@ func TestSimple(t *testing.T) {
 }
 
 func TestExportedPlugins(t *testing.T) {
-	t.Parallel()
 	type Result struct {
 		library    string
 		processors string
@@ -395,7 +396,6 @@ func TestExportedPlugins(t *testing.T) {
 }
 
 func TestSdkVersionByPartition(t *testing.T) {
-	t.Parallel()
 	testJavaError(t, "sdk_version must have a value when the module is located at vendor or product", `
 		java_library {
 			name: "foo",
@@ -431,7 +431,6 @@ func TestSdkVersionByPartition(t *testing.T) {
 }
 
 func TestArchSpecific(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_library {
 			name: "foo",
@@ -451,7 +450,6 @@ func TestArchSpecific(t *testing.T) {
 }
 
 func TestBinary(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_library_host {
 			name: "foo",
@@ -480,7 +478,6 @@ func TestBinary(t *testing.T) {
 }
 
 func TestHostBinaryNoJavaDebugInfoOverride(t *testing.T) {
-	t.Parallel()
 	bp := `
 		java_library {
 			name: "target_library",
@@ -516,7 +513,6 @@ func TestHostBinaryNoJavaDebugInfoOverride(t *testing.T) {
 }
 
 func TestPrebuilts(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_library {
 			name: "foo",
@@ -612,7 +608,6 @@ func assertDeepEquals(t *testing.T, message string, expected interface{}, actual
 }
 
 func TestJavaSdkLibraryImport(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_library {
 			name: "foo",
@@ -669,7 +664,6 @@ func TestJavaSdkLibraryImport(t *testing.T) {
 }
 
 func TestJavaSdkLibraryImport_WithSource(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_sdk_library {
 			name: "sdklib",
@@ -709,7 +703,6 @@ func TestJavaSdkLibraryImport_WithSource(t *testing.T) {
 }
 
 func TestJavaSdkLibraryImport_Preferred(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_sdk_library {
 			name: "sdklib",
@@ -747,7 +740,6 @@ func TestJavaSdkLibraryImport_Preferred(t *testing.T) {
 }
 
 func TestDefaults(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_defaults {
 			name: "defaults",
@@ -823,7 +815,6 @@ func TestDefaults(t *testing.T) {
 }
 
 func TestResources(t *testing.T) {
-	t.Parallel()
 	var table = []struct {
 		name  string
 		prop  string
@@ -930,7 +921,6 @@ func TestResources(t *testing.T) {
 }
 
 func TestIncludeSrcs(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJavaWithFS(t, `
 		java_library {
 			name: "foo",
@@ -998,7 +988,6 @@ func TestIncludeSrcs(t *testing.T) {
 }
 
 func TestGeneratedSources(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJavaWithFS(t, `
 		java_library {
 			name: "foo",
@@ -1035,7 +1024,6 @@ func TestGeneratedSources(t *testing.T) {
 }
 
 func TestTurbine(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_library {
 			name: "foo",
@@ -1085,7 +1073,6 @@ func TestTurbine(t *testing.T) {
 }
 
 func TestSharding(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_library {
 			name: "bar",
@@ -1104,7 +1091,6 @@ func TestSharding(t *testing.T) {
 }
 
 func TestDroiddoc(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJavaWithFS(t, `
 		droiddoc_exported_dir {
 		    name: "droiddoc-templates-sdk",
@@ -1183,7 +1169,6 @@ func TestDroiddoc(t *testing.T) {
 }
 
 func TestDroiddocArgsAndFlagsCausesError(t *testing.T) {
-	t.Parallel()
 	testJavaError(t, "flags is set. Cannot set args", `
 		droiddoc_exported_dir {
 		    name: "droiddoc-templates-sdk",
@@ -1230,7 +1215,6 @@ func TestDroiddocArgsAndFlagsCausesError(t *testing.T) {
 }
 
 func TestDroidstubs(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJavaWithFS(t, `
 		droiddoc_exported_dir {
 		    name: "droiddoc-templates-sdk",
@@ -1287,7 +1271,6 @@ func TestDroidstubs(t *testing.T) {
 }
 
 func TestDroidstubsWithSystemModules(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		droidstubs {
 		    name: "stubs-source-system-modules",
@@ -1347,7 +1330,6 @@ func checkSystemModulesUseByDroidstubs(t *testing.T, ctx *android.TestContext, m
 }
 
 func TestJarGenrules(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_library {
 			name: "foo",
@@ -1402,7 +1384,6 @@ func TestJarGenrules(t *testing.T) {
 }
 
 func TestExcludeFileGroupInSrcs(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_library {
 			name: "foo",
@@ -1429,7 +1410,6 @@ func TestExcludeFileGroupInSrcs(t *testing.T) {
 }
 
 func TestJavaLibrary(t *testing.T) {
-	t.Parallel()
 	config := testConfig(nil, "", map[string][]byte{
 		"libcore/Android.bp": []byte(`
 				java_library {
@@ -1467,7 +1447,6 @@ func TestJavaImport(t *testing.T) {
 }
 
 func TestJavaSdkLibrary(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		droiddoc_exported_dir {
 			name: "droiddoc-templates-sdk",
@@ -1605,8 +1584,40 @@ func TestJavaSdkLibrary(t *testing.T) {
 	}
 }
 
+func TestJavaSdkLibrary_StubOrImplOnlyLibs(t *testing.T) {
+	ctx, _ := testJava(t, `
+		java_sdk_library {
+			name: "sdk_lib",
+			srcs: ["a.java"],
+			impl_only_libs: ["foo"],
+			stub_only_libs: ["bar"],
+		}
+		java_library {
+			name: "foo",
+			srcs: ["a.java"],
+			sdk_version: "current",
+		}
+		java_library {
+			name: "bar",
+			srcs: ["a.java"],
+			sdk_version: "current",
+		}
+		`)
+
+	for _, implName := range []string{"sdk_lib", "sdk_lib.impl"} {
+		implJavacCp := ctx.ModuleForTests(implName, "android_common").Rule("javac").Args["classpath"]
+		if !strings.Contains(implJavacCp, "/foo.jar") || strings.Contains(implJavacCp, "/bar.jar") {
+			t.Errorf("%v javac classpath %v does not contain foo and not bar", implName, implJavacCp)
+		}
+	}
+	stubName := apiScopePublic.stubsLibraryModuleName("sdk_lib")
+	stubsJavacCp := ctx.ModuleForTests(stubName, "android_common").Rule("javac").Args["classpath"]
+	if strings.Contains(stubsJavacCp, "/foo.jar") || !strings.Contains(stubsJavacCp, "/bar.jar") {
+		t.Errorf("stubs javac classpath %v does not contain bar and not foo", stubsJavacCp)
+	}
+}
+
 func TestJavaSdkLibrary_DoNotAccessImplWhenItIsNotBuilt(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_sdk_library {
 			name: "foo",
@@ -1632,7 +1643,6 @@ func TestJavaSdkLibrary_DoNotAccessImplWhenItIsNotBuilt(t *testing.T) {
 }
 
 func TestJavaSdkLibrary_UseSourcesFromAnotherSdkLibrary(t *testing.T) {
-	t.Parallel()
 	testJava(t, `
 		java_sdk_library {
 			name: "foo",
@@ -1651,7 +1661,6 @@ func TestJavaSdkLibrary_UseSourcesFromAnotherSdkLibrary(t *testing.T) {
 }
 
 func TestJavaSdkLibrary_AccessOutputFiles_MissingScope(t *testing.T) {
-	t.Parallel()
 	testJavaError(t, `"foo" does not provide api scope system`, `
 		java_sdk_library {
 			name: "foo",
@@ -1670,7 +1679,6 @@ func TestJavaSdkLibrary_AccessOutputFiles_MissingScope(t *testing.T) {
 }
 
 func TestJavaSdkLibrary_Deps(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_sdk_library {
 			name: "sdklib",
@@ -1693,7 +1701,6 @@ func TestJavaSdkLibrary_Deps(t *testing.T) {
 }
 
 func TestJavaSdkLibraryImport_AccessOutputFiles(t *testing.T) {
-	t.Parallel()
 	testJava(t, `
 		java_sdk_library_import {
 			name: "foo",
@@ -1717,7 +1724,6 @@ func TestJavaSdkLibraryImport_AccessOutputFiles(t *testing.T) {
 }
 
 func TestJavaSdkLibraryImport_AccessOutputFiles_Invalid(t *testing.T) {
-	t.Parallel()
 	bp := `
 		java_sdk_library_import {
 			name: "foo",
@@ -1766,7 +1772,6 @@ func TestJavaSdkLibraryImport_AccessOutputFiles_Invalid(t *testing.T) {
 }
 
 func TestJavaSdkLibrary_InvalidScopes(t *testing.T) {
-	t.Parallel()
 	testJavaError(t, `module "foo": enabled api scope "system" depends on disabled scope "public"`, `
 		java_sdk_library {
 			name: "foo",
@@ -1785,7 +1790,6 @@ func TestJavaSdkLibrary_InvalidScopes(t *testing.T) {
 }
 
 func TestJavaSdkLibrary_SdkVersion_ForScope(t *testing.T) {
-	t.Parallel()
 	testJava(t, `
 		java_sdk_library {
 			name: "foo",
@@ -1800,7 +1804,6 @@ func TestJavaSdkLibrary_SdkVersion_ForScope(t *testing.T) {
 }
 
 func TestJavaSdkLibrary_ModuleLib(t *testing.T) {
-	t.Parallel()
 	testJava(t, `
 		java_sdk_library {
 			name: "foo",
@@ -1817,7 +1820,6 @@ func TestJavaSdkLibrary_ModuleLib(t *testing.T) {
 }
 
 func TestJavaSdkLibrary_SystemServer(t *testing.T) {
-	t.Parallel()
 	testJava(t, `
 		java_sdk_library {
 			name: "foo",
@@ -1834,7 +1836,6 @@ func TestJavaSdkLibrary_SystemServer(t *testing.T) {
 }
 
 func TestJavaSdkLibrary_MissingScope(t *testing.T) {
-	t.Parallel()
 	testJavaError(t, `requires api scope module-lib from foo but it only has \[\] available`, `
 		java_sdk_library {
 			name: "foo",
@@ -1854,7 +1855,6 @@ func TestJavaSdkLibrary_MissingScope(t *testing.T) {
 }
 
 func TestJavaSdkLibrary_FallbackScope(t *testing.T) {
-	t.Parallel()
 	testJava(t, `
 		java_sdk_library {
 			name: "foo",
@@ -1875,7 +1875,6 @@ func TestJavaSdkLibrary_FallbackScope(t *testing.T) {
 }
 
 func TestJavaSdkLibrary_DefaultToStubs(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_sdk_library {
 			name: "foo",
@@ -1951,7 +1950,6 @@ func (ctx *mockContext) PropertyErrorf(property, format string, args ...interfac
 }
 
 func TestCompilerFlags(t *testing.T) {
-	t.Parallel()
 	for _, testCase := range compilerFlagsTestCases {
 		ctx := &mockContext{result: true}
 		CheckKotlincFlags(ctx, []string{testCase.in})
@@ -1982,7 +1980,6 @@ func checkPatchModuleFlag(t *testing.T, ctx *android.TestContext, moduleName str
 }
 
 func TestPatchModule(t *testing.T) {
-	t.Parallel()
 	t.Run("Java language level 8", func(t *testing.T) {
 		// Test with legacy javac -source 1.8 -target 1.8
 		bp := `
@@ -2048,7 +2045,6 @@ func TestPatchModule(t *testing.T) {
 }
 
 func TestJavaSystemModules(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_system_modules {
 			name: "system-modules",
@@ -2083,7 +2079,6 @@ func TestJavaSystemModules(t *testing.T) {
 }
 
 func TestJavaSystemModulesImport(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_system_modules_import {
 			name: "system-modules",
@@ -2114,7 +2109,6 @@ func TestJavaSystemModulesImport(t *testing.T) {
 }
 
 func TestJavaLibraryWithSystemModules(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_library {
 		    name: "lib-with-source-system-modules",
@@ -2171,7 +2165,6 @@ func checkBootClasspathForSystemModule(t *testing.T, ctx *android.TestContext, m
 }
 
 func TestAidlExportIncludeDirsFromImports(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		java_library {
 			name: "foo",
@@ -2196,7 +2189,6 @@ func TestAidlExportIncludeDirsFromImports(t *testing.T) {
 }
 
 func TestDataNativeBinaries(t *testing.T) {
-	t.Parallel()
 	ctx, config := testJava(t, `
 		java_test_host {
 			name: "foo",

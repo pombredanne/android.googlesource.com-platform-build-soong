@@ -67,7 +67,6 @@ func testApp(t *testing.T, bp string) *android.TestContext {
 }
 
 func TestApp(t *testing.T) {
-	t.Parallel()
 	for _, moduleType := range []string{"android_app", "android_library"} {
 		t.Run(moduleType, func(t *testing.T) {
 			ctx := testApp(t, moduleType+` {
@@ -114,7 +113,6 @@ func TestApp(t *testing.T) {
 }
 
 func TestAppSplits(t *testing.T) {
-	t.Parallel()
 	ctx := testApp(t, `
 				android_app {
 					name: "foo",
@@ -144,7 +142,6 @@ func TestAppSplits(t *testing.T) {
 }
 
 func TestAndroidAppSet(t *testing.T) {
-	t.Parallel()
 	ctx, config := testJava(t, `
 		android_app_set {
 			name: "foo",
@@ -173,7 +170,6 @@ func TestAndroidAppSet(t *testing.T) {
 }
 
 func TestAndroidAppSet_Variants(t *testing.T) {
-	t.Parallel()
 	bp := `
 		android_app_set {
 			name: "foo",
@@ -239,7 +235,6 @@ func TestAndroidAppSet_Variants(t *testing.T) {
 }
 
 func TestPlatformAPIs(t *testing.T) {
-	t.Parallel()
 	testJava(t, `
 		android_app {
 			name: "foo",
@@ -274,7 +269,6 @@ func TestPlatformAPIs(t *testing.T) {
 }
 
 func TestAndroidAppLinkType(t *testing.T) {
-	t.Parallel()
 	testJava(t, `
 		android_app {
 			name: "foo",
@@ -364,7 +358,6 @@ func TestAndroidAppLinkType(t *testing.T) {
 }
 
 func TestUpdatableApps(t *testing.T) {
-	t.Parallel()
 	testCases := []struct {
 		name          string
 		bp            string
@@ -486,7 +479,6 @@ func TestUpdatableApps(t *testing.T) {
 }
 
 func TestUpdatableApps_TransitiveDepsShouldSetMinSdkVersion(t *testing.T) {
-	t.Parallel()
 	testJavaError(t, `module "bar".*: should support min_sdk_version\(29\)`, cc.GatherRequiredDepsForTest(android.Android)+`
 		android_app {
 			name: "foo",
@@ -505,7 +497,6 @@ func TestUpdatableApps_TransitiveDepsShouldSetMinSdkVersion(t *testing.T) {
 }
 
 func TestUpdatableApps_JniLibsShouldShouldSupportMinSdkVersion(t *testing.T) {
-	t.Parallel()
 	testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
 		android_app {
 			name: "foo",
@@ -526,7 +517,6 @@ func TestUpdatableApps_JniLibsShouldShouldSupportMinSdkVersion(t *testing.T) {
 }
 
 func TestUpdatableApps_JniLibShouldBeBuiltAgainstMinSdkVersion(t *testing.T) {
-	t.Parallel()
 	bp := cc.GatherRequiredDepsForTest(android.Android) + `
 		android_app {
 			name: "foo",
@@ -581,7 +571,6 @@ func TestUpdatableApps_JniLibShouldBeBuiltAgainstMinSdkVersion(t *testing.T) {
 }
 
 func TestUpdatableApps_ErrorIfJniLibDoesntSupportMinSdkVersion(t *testing.T) {
-	t.Parallel()
 	bp := cc.GatherRequiredDepsForTest(android.Android) + `
 		android_app {
 			name: "foo",
@@ -602,7 +591,6 @@ func TestUpdatableApps_ErrorIfJniLibDoesntSupportMinSdkVersion(t *testing.T) {
 }
 
 func TestUpdatableApps_ErrorIfDepSdkVersionIsHigher(t *testing.T) {
-	t.Parallel()
 	bp := cc.GatherRequiredDepsForTest(android.Android) + `
 		android_app {
 			name: "foo",
@@ -632,7 +620,6 @@ func TestUpdatableApps_ErrorIfDepSdkVersionIsHigher(t *testing.T) {
 }
 
 func TestResourceDirs(t *testing.T) {
-	t.Parallel()
 	testCases := []struct {
 		name      string
 		prop      string
@@ -692,7 +679,6 @@ func TestResourceDirs(t *testing.T) {
 }
 
 func TestLibraryAssets(t *testing.T) {
-	t.Parallel()
 	bp := `
 			android_app {
 				name: "foo",
@@ -794,7 +780,6 @@ func TestLibraryAssets(t *testing.T) {
 }
 
 func TestAndroidResources(t *testing.T) {
-	t.Parallel()
 	testCases := []struct {
 		name                       string
 		enforceRROTargets          []string
@@ -863,19 +848,17 @@ func TestAndroidResources(t *testing.T) {
 				"lib": {
 					buildDir + "/.intermediates/lib2/android_common/package-res.apk",
 					"lib/res/res/values/strings.xml",
-					"device/vendor/blah/overlay/lib/res/values/strings.xml",
 				},
 			},
 
 			rroDirs: map[string][]string{
 				"foo": {
 					"device:device/vendor/blah/overlay/foo/res",
-					// Enforce RRO on "foo" could imply RRO on static dependencies, but for now it doesn't.
-					// "device/vendor/blah/overlay/lib/res",
 					"product:product/vendor/blah/overlay/foo/res",
+					"device:device/vendor/blah/overlay/lib/res",
 				},
 				"bar": nil,
-				"lib": nil,
+				"lib": {"device:device/vendor/blah/overlay/lib/res"},
 			},
 		},
 		{
@@ -1085,7 +1068,6 @@ func checkSdkVersion(t *testing.T, config android.Config, expectedSdkVersion str
 }
 
 func TestAppSdkVersion(t *testing.T) {
-	t.Parallel()
 	testCases := []struct {
 		name                  string
 		sdkVersion            string
@@ -1168,7 +1150,6 @@ func TestAppSdkVersion(t *testing.T) {
 }
 
 func TestVendorAppSdkVersion(t *testing.T) {
-	t.Parallel()
 	testCases := []struct {
 		name                                  string
 		sdkVersion                            string
@@ -1232,7 +1213,6 @@ func TestVendorAppSdkVersion(t *testing.T) {
 }
 
 func TestJNIABI(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
 		cc_library {
 			name: "libjni",
@@ -1307,7 +1287,6 @@ func TestJNIABI(t *testing.T) {
 }
 
 func TestAppSdkVersionByPartition(t *testing.T) {
-	t.Parallel()
 	testJavaError(t, "sdk_version must have a value when the module is located at vendor or product", `
 		android_app {
 			name: "foo",
@@ -1346,7 +1325,6 @@ func TestAppSdkVersionByPartition(t *testing.T) {
 }
 
 func TestJNIPackaging(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
 		cc_library {
 			name: "libjni",
@@ -1438,7 +1416,6 @@ func TestJNIPackaging(t *testing.T) {
 }
 
 func TestJNISDK(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
 		cc_library {
 			name: "libjni",
@@ -1556,7 +1533,6 @@ func TestJNISDK(t *testing.T) {
 }
 
 func TestCertificates(t *testing.T) {
-	t.Parallel()
 	testCases := []struct {
 		name                string
 		bp                  string
@@ -1677,7 +1653,6 @@ func TestCertificates(t *testing.T) {
 }
 
 func TestRequestV4SigningFlag(t *testing.T) {
-	t.Parallel()
 	testCases := []struct {
 		name     string
 		bp       string
@@ -1738,7 +1713,6 @@ func TestRequestV4SigningFlag(t *testing.T) {
 }
 
 func TestPackageNameOverride(t *testing.T) {
-	t.Parallel()
 	testCases := []struct {
 		name                string
 		bp                  string
@@ -1804,7 +1778,6 @@ func TestPackageNameOverride(t *testing.T) {
 }
 
 func TestInstrumentationTargetOverridden(t *testing.T) {
-	t.Parallel()
 	bp := `
 		android_app {
 			name: "foo",
@@ -1834,7 +1807,6 @@ func TestInstrumentationTargetOverridden(t *testing.T) {
 }
 
 func TestOverrideAndroidApp(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		android_app {
 			name: "foo",
@@ -2036,7 +2008,6 @@ func TestOverrideAndroidApp(t *testing.T) {
 }
 
 func TestOverrideAndroidAppDependency(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		android_app {
 			name: "foo",
@@ -2079,7 +2050,6 @@ func TestOverrideAndroidAppDependency(t *testing.T) {
 }
 
 func TestOverrideAndroidTest(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		android_app {
 			name: "foo",
@@ -2176,7 +2146,6 @@ func TestOverrideAndroidTest(t *testing.T) {
 }
 
 func TestAndroidTest_FixTestConfig(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		android_app {
 			name: "foo",
@@ -2258,7 +2227,6 @@ func TestAndroidTest_FixTestConfig(t *testing.T) {
 }
 
 func TestAndroidAppImport(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		android_app_import {
 			name: "foo",
@@ -2288,7 +2256,6 @@ func TestAndroidAppImport(t *testing.T) {
 }
 
 func TestAndroidAppImport_NoDexPreopt(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		android_app_import {
 			name: "foo",
@@ -2310,7 +2277,6 @@ func TestAndroidAppImport_NoDexPreopt(t *testing.T) {
 }
 
 func TestAndroidAppImport_Presigned(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		android_app_import {
 			name: "foo",
@@ -2339,7 +2305,6 @@ func TestAndroidAppImport_Presigned(t *testing.T) {
 }
 
 func TestAndroidAppImport_SigningLineage(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 	  android_app_import {
 			name: "foo",
@@ -2361,7 +2326,6 @@ func TestAndroidAppImport_SigningLineage(t *testing.T) {
 }
 
 func TestAndroidAppImport_DefaultDevCert(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		android_app_import {
 			name: "foo",
@@ -2391,7 +2355,6 @@ func TestAndroidAppImport_DefaultDevCert(t *testing.T) {
 }
 
 func TestAndroidAppImport_DpiVariants(t *testing.T) {
-	t.Parallel()
 	bp := `
 		android_app_import {
 			name: "foo",
@@ -2470,7 +2433,6 @@ func TestAndroidAppImport_DpiVariants(t *testing.T) {
 }
 
 func TestAndroidAppImport_Filename(t *testing.T) {
-	t.Parallel()
 	ctx, config := testJava(t, `
 		android_app_import {
 			name: "foo",
@@ -2518,7 +2480,6 @@ func TestAndroidAppImport_Filename(t *testing.T) {
 }
 
 func TestAndroidAppImport_ArchVariants(t *testing.T) {
-	t.Parallel()
 	// The test config's target arch is ARM64.
 	testCases := []struct {
 		name     string
@@ -2582,7 +2543,6 @@ func TestAndroidAppImport_ArchVariants(t *testing.T) {
 }
 
 func TestAndroidTestImport(t *testing.T) {
-	t.Parallel()
 	ctx, config := testJava(t, `
 		android_test_import {
 			name: "foo",
@@ -2611,7 +2571,6 @@ func TestAndroidTestImport(t *testing.T) {
 }
 
 func TestAndroidTestImport_NoJinUncompressForPresigned(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		android_test_import {
 			name: "foo",
@@ -2649,7 +2608,6 @@ func TestAndroidTestImport_NoJinUncompressForPresigned(t *testing.T) {
 }
 
 func TestAndroidTestImport_Preprocessed(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		android_test_import {
 			name: "foo",
@@ -2686,7 +2644,6 @@ func TestAndroidTestImport_Preprocessed(t *testing.T) {
 }
 
 func TestStl(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, cc.GatherRequiredDepsForTest(android.Android)+`
 		cc_library {
 			name: "libjni",
@@ -2750,7 +2707,6 @@ func TestStl(t *testing.T) {
 }
 
 func TestUsesLibraries(t *testing.T) {
-	t.Parallel()
 	bp := `
 		java_sdk_library {
 			name: "foo",
@@ -2875,7 +2831,6 @@ func TestUsesLibraries(t *testing.T) {
 }
 
 func TestCodelessApp(t *testing.T) {
-	t.Parallel()
 	testCases := []struct {
 		name   string
 		bp     string
@@ -2952,7 +2907,6 @@ func TestCodelessApp(t *testing.T) {
 }
 
 func TestEmbedNotice(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJavaWithFS(t, cc.GatherRequiredDepsForTest(android.Android)+`
 		android_app {
 			name: "foo",
@@ -3062,7 +3016,6 @@ func TestEmbedNotice(t *testing.T) {
 }
 
 func TestUncompressDex(t *testing.T) {
-	t.Parallel()
 	testCases := []struct {
 		name string
 		bp   string
@@ -3190,7 +3143,6 @@ func checkAapt2LinkFlag(t *testing.T, aapt2Flags, flagName, expectedValue string
 }
 
 func TestRuntimeResourceOverlay(t *testing.T) {
-	t.Parallel()
 	fs := map[string][]byte{
 		"baz/res/res/values/strings.xml": nil,
 		"bar/res/res/values/strings.xml": nil,
@@ -3295,7 +3247,6 @@ func TestRuntimeResourceOverlay(t *testing.T) {
 }
 
 func TestRuntimeResourceOverlay_JavaDefaults(t *testing.T) {
-	t.Parallel()
 	ctx, config := testJava(t, `
 		java_defaults {
 			name: "rro_defaults",
@@ -3355,7 +3306,6 @@ func TestRuntimeResourceOverlay_JavaDefaults(t *testing.T) {
 }
 
 func TestOverrideRuntimeResourceOverlay(t *testing.T) {
-	t.Parallel()
 	ctx, _ := testJava(t, `
 		runtime_resource_overlay {
 			name: "foo_overlay",
@@ -3428,5 +3378,116 @@ func TestOverrideRuntimeResourceOverlay(t *testing.T) {
 		checkAapt2LinkFlag(t, aapt2Flags, "rename-manifest-package", expected.packageFlag)
 		checkAapt2LinkFlag(t, aapt2Flags, "rename-resources-package", "")
 		checkAapt2LinkFlag(t, aapt2Flags, "rename-overlay-target-package", expected.targetPackageFlag)
+	}
+}
+
+func TestEnforceRRO_propagatesToDependencies(t *testing.T) {
+	testCases := []struct {
+		name                    string
+		enforceRROTargets       []string
+		enforceRROExemptTargets []string
+		rroDirs                 map[string][]string
+	}{
+		{
+			name:                    "no RRO",
+			enforceRROTargets:       nil,
+			enforceRROExemptTargets: nil,
+			rroDirs: map[string][]string{
+				"foo": nil,
+				"bar": nil,
+			},
+		},
+		{
+			name:                    "enforce RRO on all",
+			enforceRROTargets:       []string{"*"},
+			enforceRROExemptTargets: nil,
+			rroDirs: map[string][]string{
+				"foo": {"product/vendor/blah/overlay/lib2/res"},
+				"bar": {"product/vendor/blah/overlay/lib2/res"},
+			},
+		},
+		{
+			name:                    "enforce RRO on foo",
+			enforceRROTargets:       []string{"foo"},
+			enforceRROExemptTargets: nil,
+			rroDirs: map[string][]string{
+				"foo": {"product/vendor/blah/overlay/lib2/res"},
+				"bar": {"product/vendor/blah/overlay/lib2/res"},
+			},
+		},
+		{
+			name:                    "enforce RRO on foo, bar exempted",
+			enforceRROTargets:       []string{"foo"},
+			enforceRROExemptTargets: []string{"bar"},
+			rroDirs: map[string][]string{
+				"foo": {"product/vendor/blah/overlay/lib2/res"},
+				"bar": nil,
+			},
+		},
+	}
+
+	productResourceOverlays := []string{
+		"product/vendor/blah/overlay",
+	}
+
+	fs := map[string][]byte{
+		"lib2/res/values/strings.xml":                             nil,
+		"product/vendor/blah/overlay/lib2/res/values/strings.xml": nil,
+	}
+
+	bp := `
+			android_app {
+				name: "foo",
+				sdk_version: "current",
+				resource_dirs: [],
+				static_libs: ["lib"],
+			}
+
+			android_app {
+				name: "bar",
+				sdk_version: "current",
+				resource_dirs: [],
+				static_libs: ["lib"],
+			}
+
+			android_library {
+				name: "lib",
+				sdk_version: "current",
+				resource_dirs: [],
+				static_libs: ["lib2"],
+			}
+
+			android_library {
+				name: "lib2",
+				sdk_version: "current",
+				resource_dirs: ["lib2/res"],
+			}
+		`
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			config := testAppConfig(nil, bp, fs)
+			config.TestProductVariables.ProductResourceOverlays = productResourceOverlays
+			if testCase.enforceRROTargets != nil {
+				config.TestProductVariables.EnforceRROTargets = testCase.enforceRROTargets
+			}
+			if testCase.enforceRROExemptTargets != nil {
+				config.TestProductVariables.EnforceRROExemptedTargets = testCase.enforceRROExemptTargets
+			}
+
+			ctx := testContext()
+			run(t, ctx, config)
+
+			modules := []string{"foo", "bar"}
+			for _, moduleName := range modules {
+				module := ctx.ModuleForTests(moduleName, "android_common")
+				mkEntries := android.AndroidMkEntriesForTest(t, config, "", module.Module())[0]
+				actualRRODirs := mkEntries.EntryMap["LOCAL_SOONG_PRODUCT_RRO_DIRS"]
+				if !reflect.DeepEqual(actualRRODirs, testCase.rroDirs[moduleName]) {
+					t.Errorf("exected %s LOCAL_SOONG_PRODUCT_RRO_DIRS entry: %v\ngot:%q",
+						moduleName, testCase.rroDirs[moduleName], actualRRODirs)
+				}
+			}
+		})
 	}
 }

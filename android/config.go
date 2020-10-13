@@ -85,14 +85,17 @@ type config struct {
 	// Only available on configs created by TestConfig
 	TestProductVariables *productVariables
 
+	BazelContext BazelContext
+
 	PrimaryBuilder           string
 	ConfigFileName           string
 	ProductVariablesFileName string
 
-	Targets             map[OsType][]Target
-	BuildOSTarget       Target // the Target for tools run on the build machine
-	BuildOSCommonTarget Target // the Target for common (java) tools run on the build machine
-	AndroidCommonTarget Target // the Target for common modules for the Android device
+	Targets                  map[OsType][]Target
+	BuildOSTarget            Target // the Target for tools run on the build machine
+	BuildOSCommonTarget      Target // the Target for common (java) tools run on the build machine
+	AndroidCommonTarget      Target // the Target for common modules for the Android device
+	AndroidFirstDeviceTarget Target // the first Target for modules for the Android device
 
 	// multilibConflicts for an ArchType is true if there is earlier configured device architecture with the same
 	// multilib value.
@@ -248,6 +251,8 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 		// Set testAllowNonExistentPaths so that test contexts don't need to specify every path
 		// passed to PathForSource or PathForModuleSrc.
 		testAllowNonExistentPaths: true,
+
+		BazelContext: noopBazelContext{},
 	}
 	config.deviceConfig = &deviceConfig{
 		config: config,
@@ -316,12 +321,27 @@ func TestArchConfig(buildDir string, env map[string]string, bp string, fs map[st
 	config.BuildOSTarget = config.Targets[BuildOs][0]
 	config.BuildOSCommonTarget = getCommonTargets(config.Targets[BuildOs])[0]
 	config.AndroidCommonTarget = getCommonTargets(config.Targets[Android])[0]
+	config.AndroidFirstDeviceTarget = firstTarget(config.Targets[Android], "lib64", "lib32")[0]
 	config.TestProductVariables.DeviceArch = proptools.StringPtr("arm64")
 	config.TestProductVariables.DeviceArchVariant = proptools.StringPtr("armv8-a")
 	config.TestProductVariables.DeviceSecondaryArch = proptools.StringPtr("arm")
 	config.TestProductVariables.DeviceSecondaryArchVariant = proptools.StringPtr("armv7-a-neon")
 
 	return testConfig
+}
+
+// Returns a config object which is "reset" for another bootstrap run.
+// Only per-run data is reset. Data which needs to persist across multiple
+// runs in the same program execution is carried over (such as Bazel context
+// or environment deps).
+func ConfigForAdditionalRun(c Config) (Config, error) {
+	newConfig, err := NewConfig(c.srcDir, c.buildDir, c.moduleListFile)
+	if err != nil {
+		return Config{}, err
+	}
+	newConfig.BazelContext = c.BazelContext
+	newConfig.envDeps = c.envDeps
+	return newConfig, nil
 }
 
 // New creates a new Config object.  The srcDir argument specifies the path to
@@ -411,6 +431,7 @@ func NewConfig(srcDir, buildDir string, moduleListFile string) (Config, error) {
 	config.BuildOSCommonTarget = getCommonTargets(config.Targets[BuildOs])[0]
 	if len(config.Targets[Android]) > 0 {
 		config.AndroidCommonTarget = getCommonTargets(config.Targets[Android])[0]
+		config.AndroidFirstDeviceTarget = firstTarget(config.Targets[Android], "lib64", "lib32")[0]
 	}
 
 	if err := config.fromEnv(); err != nil {
@@ -425,6 +446,10 @@ func NewConfig(srcDir, buildDir string, moduleListFile string) (Config, error) {
 		Bool(config.productVariables.GcovCoverage) ||
 			Bool(config.productVariables.ClangCoverage))
 
+	config.BazelContext, err = NewBazelContext(config)
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{config}, nil
 }
 
@@ -916,6 +941,10 @@ func (c *config) EnforceRROForModule(name string) bool {
 	return false
 }
 
+func (c *config) EnforceRROExemptedForModule(name string) bool {
+	return InList(name, c.productVariables.EnforceRROExemptedTargets)
+}
+
 func (c *config) EnforceRROExcludedOverlay(path string) bool {
 	excluded := c.productVariables.EnforceRROExcludedOverlays
 	if len(excluded) > 0 {
@@ -1116,12 +1145,12 @@ func (c *deviceConfig) OdmSepolicyDirs() []string {
 	return c.config.productVariables.BoardOdmSepolicyDirs
 }
 
-func (c *deviceConfig) PlatPublicSepolicyDirs() []string {
-	return c.config.productVariables.BoardPlatPublicSepolicyDirs
+func (c *deviceConfig) SystemExtPublicSepolicyDirs() []string {
+	return c.config.productVariables.SystemExtPublicSepolicyDirs
 }
 
-func (c *deviceConfig) PlatPrivateSepolicyDirs() []string {
-	return c.config.productVariables.BoardPlatPrivateSepolicyDirs
+func (c *deviceConfig) SystemExtPrivateSepolicyDirs() []string {
+	return c.config.productVariables.SystemExtPrivateSepolicyDirs
 }
 
 func (c *deviceConfig) SepolicyM4Defs() []string {
