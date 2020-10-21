@@ -614,6 +614,33 @@ func (a *ModuleBase) ProductServicesSpecific() bool {
 	return Bool(a.commonProperties.Product_services_specific)
 }
 
+func (m *ModuleBase) PartitionTag(config DeviceConfig) string {
+	partition := "system"
+	if m.SocSpecific() {
+		// A SoC-specific module could be on the vendor partition at
+		// "vendor" or the system partition at "system/vendor".
+		if config.VendorPath() == "vendor" {
+			partition = "vendor"
+		}
+	} else if m.DeviceSpecific() {
+		// A device-specific module could be on the odm partition at
+		// "odm", the vendor partition at "vendor/odm", or the system
+		// partition at "system/vendor/odm".
+		if config.OdmPath() == "odm" {
+			partition = "odm"
+		} else if strings.HasPrefix(config.OdmPath(), "vendor/") {
+			partition = "vendor"
+		}
+	} else if m.ProductSpecific() {
+		// A product-specific module could be on the product partition
+		// at "product" or the system partition at "system/product".
+		if config.ProductPath() == "product" {
+			partition = "product"
+		}
+	}
+	return partition
+}
+
 func (a *ModuleBase) Enabled() bool {
 	if a.commonProperties.Enabled == nil {
 		return !a.Os().DefaultDisabled
@@ -973,6 +1000,12 @@ func (a *androidModuleContext) Variable(pctx PackageContext, name, value string)
 
 func (a *androidModuleContext) Rule(pctx PackageContext, name string, params blueprint.RuleParams,
 	argNames ...string) blueprint.Rule {
+
+	if (a.config.UseGoma() || a.config.UseRBE()) && params.Pool == nil {
+		// When USE_GOMA=true or USE_RBE=true are set and the rule is not supported by goma/RBE, restrict
+		// jobs to the local parallelism value
+		params.Pool = localPool
+	}
 
 	rule := a.ModuleContext.Rule(pctx.PackageContext, name, params, argNames...)
 

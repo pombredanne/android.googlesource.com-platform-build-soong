@@ -17,7 +17,8 @@ package metrics
 import (
 	"io/ioutil"
 	"os"
-	"strconv"
+	"runtime"
+	"time"
 
 	"android/soong/ui/metrics/metrics_proto"
 
@@ -25,11 +26,13 @@ import (
 )
 
 const (
-	RunSetupTool = "setup"
-	RunKati      = "kati"
-	RunSoong     = "soong"
-	PrimaryNinja = "ninja"
-	TestRun      = "test"
+	PrimaryNinja    = "ninja"
+	RunKati         = "kati"
+	RunSetupTool    = "setup"
+	RunShutdownTool = "shutdown"
+	RunSoong        = "soong"
+	TestRun         = "test"
+	Total           = "total"
 )
 
 type Metrics struct {
@@ -59,6 +62,10 @@ func (m *Metrics) SetTimeMetrics(perf metrics_proto.PerfInfo) {
 	default:
 		// ignored
 	}
+}
+
+func (m *Metrics) BuildConfig(b *metrics_proto.BuildConfig) {
+	m.metrics.BuildConfig = b
 }
 
 func (m *Metrics) SetMetadataMetrics(metadata map[string]string) {
@@ -94,8 +101,6 @@ func (m *Metrics) SetMetadataMetrics(metadata map[string]string) {
 			m.metrics.HostArch = m.getArch(v)
 		case "HOST_2ND_ARCH":
 			m.metrics.Host_2NdArch = m.getArch(v)
-		case "HOST_OS":
-			m.metrics.HostOs = proto.String(v)
 		case "HOST_OS_EXTRA":
 			m.metrics.HostOsExtra = proto.String(v)
 		case "HOST_CROSS_OS":
@@ -127,14 +132,8 @@ func (m *Metrics) getArch(arch string) *metrics_proto.MetricsBase_ARCH {
 	}
 }
 
-func (m *Metrics) SetBuildDateTime(date_time string) {
-	if date_time != "" {
-		date_time_timestamp, err := strconv.ParseInt(date_time, 10, 64)
-		if err != nil {
-			panic(err)
-		}
-		m.metrics.BuildDateTimestamp = &date_time_timestamp
-	}
+func (m *Metrics) SetBuildDateTime(buildTimestamp time.Time) {
+	m.metrics.BuildDateTimestamp = proto.Int64(buildTimestamp.UnixNano() / int64(time.Second))
 }
 
 func (m *Metrics) Serialize() (data []byte, err error) {
@@ -142,7 +141,13 @@ func (m *Metrics) Serialize() (data []byte, err error) {
 }
 
 // exports the output to the file at outputPath
-func (m *Metrics) Dump(outputPath string) (err error) {
+func (m *Metrics) Dump(outputPath string) error {
+	// ignore the error if the hostname could not be retrieved as it
+	// is not a critical metric to extract.
+	if hostname, err := os.Hostname(); err == nil {
+		m.metrics.Hostname = proto.String(hostname)
+	}
+	m.metrics.HostOs = proto.String(runtime.GOOS)
 	data, err := m.Serialize()
 	if err != nil {
 		return err

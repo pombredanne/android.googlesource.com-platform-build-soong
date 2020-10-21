@@ -714,6 +714,26 @@ func (c *config) UseGoma() bool {
 	return Bool(c.productVariables.UseGoma)
 }
 
+func (c *config) UseRBE() bool {
+	return Bool(c.productVariables.UseRBE)
+}
+
+func (c *config) UseRBEJAVAC() bool {
+	return Bool(c.productVariables.UseRBEJAVAC)
+}
+
+func (c *config) UseRBER8() bool {
+	return Bool(c.productVariables.UseRBER8)
+}
+
+func (c *config) UseRBED8() bool {
+	return Bool(c.productVariables.UseRBED8)
+}
+
+func (c *config) UseRemoteBuild() bool {
+	return c.UseGoma() || c.UseRBE()
+}
+
 func (c *config) RunErrorProne() bool {
 	return c.IsEnvTrue("RUN_ERROR_PRONE")
 }
@@ -1052,4 +1072,12 @@ func (c *config) ProductHiddenAPIStubsTest() []string {
 
 func (c *deviceConfig) TargetFSConfigGen() []string {
 	return c.config.productVariables.TargetFSConfigGen
+}
+
+func (c *deviceConfig) DeviceArch() string {
+	return String(c.config.productVariables.DeviceArch)
+}
+
+func (c *deviceConfig) DeviceSecondaryArch() string {
+	return String(c.config.productVariables.DeviceSecondaryArch)
 }
