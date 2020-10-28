@@ -110,6 +110,9 @@ type LibraryProperties struct {
 
 	// Inject boringssl hash into the shared library.  This is only intended for use by external/boringssl.
 	Inject_bssl_hash *bool `android:"arch_variant"`
+
+	// If this is an LLNDK library, the name of the equivalent llndk_library module.
+	Llndk_stubs *string
 }
 
 type StaticProperties struct {
@@ -695,6 +698,8 @@ type versionedInterface interface {
 	stubsVersions(ctx android.BaseMutatorContext) []string
 	setAllStubsVersions([]string)
 	allStubsVersions() []string
+
+	implementationModuleName(name string) string
 }
 
 var _ libraryInterface = (*libraryDecorator)(nil)
@@ -827,6 +832,13 @@ func (library *libraryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		deps.StaticLibs = removeListFromList(deps.StaticLibs, library.baseLinker.Properties.Target.Ramdisk.Exclude_static_libs)
 		deps.ReexportSharedLibHeaders = removeListFromList(deps.ReexportSharedLibHeaders, library.baseLinker.Properties.Target.Ramdisk.Exclude_shared_libs)
 		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, library.baseLinker.Properties.Target.Ramdisk.Exclude_static_libs)
+	}
+	if ctx.inVendorRamdisk() {
+		deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, library.baseLinker.Properties.Target.Vendor_ramdisk.Exclude_static_libs)
+		deps.SharedLibs = removeListFromList(deps.SharedLibs, library.baseLinker.Properties.Target.Vendor_ramdisk.Exclude_shared_libs)
+		deps.StaticLibs = removeListFromList(deps.StaticLibs, library.baseLinker.Properties.Target.Vendor_ramdisk.Exclude_static_libs)
+		deps.ReexportSharedLibHeaders = removeListFromList(deps.ReexportSharedLibHeaders, library.baseLinker.Properties.Target.Vendor_ramdisk.Exclude_shared_libs)
+		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, library.baseLinker.Properties.Target.Vendor_ramdisk.Exclude_static_libs)
 	}
 
 	return deps
@@ -1194,7 +1206,8 @@ func (library *libraryDecorator) link(ctx ModuleContext,
 			isVendor := ctx.useVndk()
 			isOwnerPlatform := Bool(library.Properties.Sysprop.Platform)
 
-			if !ctx.inRamdisk() && !ctx.inRecovery() && (isProduct || (isOwnerPlatform == isVendor)) {
+			if !ctx.inRamdisk() && !ctx.inVendorRamdisk() && !ctx.inRecovery() &&
+				(isProduct || (isOwnerPlatform == isVendor)) {
 				dir = android.PathForModuleGen(ctx, "sysprop/public", "include")
 			}
 		}
@@ -1205,7 +1218,7 @@ func (library *libraryDecorator) link(ctx ModuleContext,
 	}
 
 	if library.buildStubs() && !library.skipAPIDefine {
-		library.reexportFlags("-D" + versioningMacroName(ctx.baseModuleName()) + "=" + library.stubsVersion())
+		library.reexportFlags("-D" + versioningMacroName(ctx.Module().(*Module).ImplementationModuleName(ctx)) + "=" + library.stubsVersion())
 	}
 
 	library.flagExporter.setProvider(ctx)
@@ -1246,16 +1259,20 @@ func (library *libraryDecorator) installSymlinkToRuntimeApex(ctx ModuleContext, 
 func (library *libraryDecorator) install(ctx ModuleContext, file android.Path) {
 	if library.shared() {
 		if ctx.Device() && ctx.useVndk() {
-			if ctx.isVndkSp() {
-				library.baseInstaller.subDir = "vndk-sp"
-			} else if ctx.isVndk() {
+			// set subDir for VNDK extensions
+			if ctx.isVndkExt() {
+				if ctx.isVndkSp() {
+					library.baseInstaller.subDir = "vndk-sp"
+				} else {
+					library.baseInstaller.subDir = "vndk"
+				}
+			}
+
+			// In some cases we want to use core variant for VNDK-Core libs
+			if ctx.isVndk() && !ctx.isVndkSp() && !ctx.isVndkExt() {
 				mayUseCoreVariant := true
 
 				if ctx.mustUseVendorVariant() {
-					mayUseCoreVariant = false
-				}
-
-				if ctx.isVndkExt() {
 					mayUseCoreVariant = false
 				}
 
@@ -1269,15 +1286,12 @@ func (library *libraryDecorator) install(ctx ModuleContext, file android.Path) {
 						library.useCoreVariant = true
 					}
 				}
-				library.baseInstaller.subDir = "vndk"
 			}
 
-			// Append a version to vndk or vndk-sp directories on the system partition.
+			// do not install vndk libs
+			// vndk libs are packaged into VNDK APEX
 			if ctx.isVndk() && !ctx.isVndkExt() {
-				vndkVersion := ctx.DeviceConfig().PlatformVndkVersion()
-				if vndkVersion != "current" && vndkVersion != "" {
-					library.baseInstaller.subDir += "-" + vndkVersion
-				}
+				return
 			}
 		} else if len(library.Properties.Stubs.Versions) > 0 && !ctx.Host() && ctx.directlyInAnyApex() {
 			// Bionic libraries (e.g. libc.so) is installed to the bootstrap subdirectory.
@@ -1285,7 +1299,7 @@ func (library *libraryDecorator) install(ctx ModuleContext, file android.Path) {
 			// runtime APEX.
 			translatedArch := ctx.Target().NativeBridge == android.NativeBridgeEnabled
 			if InstallToBootstrap(ctx.baseModuleName(), ctx.Config()) && !library.buildStubs() &&
-				!translatedArch && !ctx.inRamdisk() && !ctx.inRecovery() {
+				!translatedArch && !ctx.inRamdisk() && !ctx.inVendorRamdisk() && !ctx.inRecovery() {
 				if ctx.Device() {
 					library.installSymlinkToRuntimeApex(ctx, file)
 				}
@@ -1300,7 +1314,7 @@ func (library *libraryDecorator) install(ctx ModuleContext, file android.Path) {
 	}
 
 	if Bool(library.Properties.Static_ndk_lib) && library.static() &&
-		!ctx.useVndk() && !ctx.inRamdisk() && !ctx.inRecovery() && ctx.Device() &&
+		!ctx.useVndk() && !ctx.inRamdisk() && !ctx.inVendorRamdisk() && !ctx.inRecovery() && ctx.Device() &&
 		library.baseLinker.sanitize.isUnsanitizedVariant() &&
 		!library.buildStubs() && ctx.sdkVersion() == "" {
 		installPath := getNdkSysrootBase(ctx).Join(
@@ -1356,6 +1370,10 @@ func (library *libraryDecorator) BuildOnlyShared() {
 func (library *libraryDecorator) HeaderOnly() {
 	library.MutatedProperties.BuildShared = false
 	library.MutatedProperties.BuildStatic = false
+}
+
+func (library *libraryDecorator) implementationModuleName(name string) string {
+	return name
 }
 
 func (library *libraryDecorator) buildStubs() bool {
@@ -1634,14 +1652,16 @@ func createPerApiVersionVariations(mctx android.BottomUpMutatorContext, minSdkVe
 func CanBeOrLinkAgainstVersionVariants(module interface {
 	Host() bool
 	InRamdisk() bool
+	InVendorRamdisk() bool
 	InRecovery() bool
 }) bool {
-	return !module.Host() && !module.InRamdisk() && !module.InRecovery()
+	return !module.Host() && !module.InRamdisk() && !module.InVendorRamdisk() && !module.InRecovery()
 }
 
 func CanBeVersionVariant(module interface {
 	Host() bool
 	InRamdisk() bool
+	InVendorRamdisk() bool
 	InRecovery() bool
 	CcLibraryInterface() bool
 	Shared() bool

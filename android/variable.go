@@ -90,6 +90,11 @@ type variableProperties struct {
 			Required        []string
 			Host_required   []string
 			Target_required []string
+			Strip           struct {
+				All                          *bool
+				Keep_symbols                 *bool
+				Keep_symbols_and_debug_frame *bool
+			}
 		}
 
 		// eng is true for -eng builds, and can be used to turn on additionaly heavyweight debugging
@@ -244,8 +249,8 @@ type productVariables struct {
 	UncompressPrivAppDex             *bool    `json:",omitempty"`
 	ModulesLoadedByPrivilegedModules []string `json:",omitempty"`
 
-	BootJars          []string `json:",omitempty"`
-	UpdatableBootJars []string `json:",omitempty"`
+	BootJars          ConfiguredJarList `json:",omitempty"`
+	UpdatableBootJars ConfiguredJarList `json:",omitempty"`
 
 	IntegerOverflowExcludePaths []string `json:",omitempty"`
 
@@ -347,6 +352,8 @@ type productVariables struct {
 
 	BoardKernelBinaries                []string `json:",omitempty"`
 	BoardKernelModuleInterfaceVersions []string `json:",omitempty"`
+
+	BoardMoveRecoveryResourcesToVendorBoot *bool `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {

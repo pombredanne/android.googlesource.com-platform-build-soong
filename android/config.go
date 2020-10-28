@@ -1312,6 +1312,10 @@ func (c *deviceConfig) BoardKernelModuleInterfaceVersions() []string {
 	return c.config.productVariables.BoardKernelModuleInterfaceVersions
 }
 
+func (c *deviceConfig) BoardMoveRecoveryResourcesToVendorBoot() bool {
+	return Bool(c.config.productVariables.BoardMoveRecoveryResourcesToVendorBoot)
+}
+
 // The ConfiguredJarList struct provides methods for handling a list of (apex, jar) pairs.
 // Such lists are used in the build system for things like bootclasspath jars or system server jars.
 // The apex part is either an apex name, or a special names "platform" or "system_ext". Jar is a
@@ -1332,11 +1336,6 @@ func (l *ConfiguredJarList) Len() int {
 	return len(l.jars)
 }
 
-// Apex component of idx-th pair on the list.
-func (l *ConfiguredJarList) apex(idx int) string {
-	return l.apexes[idx]
-}
-
 // Jar component of idx-th pair on the list.
 func (l *ConfiguredJarList) Jar(idx int) string {
 	return l.jars[idx]
@@ -1350,7 +1349,7 @@ func (l *ConfiguredJarList) ContainsJar(jar string) bool {
 // If the list contains the given (apex, jar) pair.
 func (l *ConfiguredJarList) containsApexJarPair(apex, jar string) bool {
 	for i := 0; i < l.Len(); i++ {
-		if apex == l.apex(i) && jar == l.Jar(i) {
+		if apex == l.apexes[i] && jar == l.jars[i] {
 			return true
 		}
 	}
@@ -1362,32 +1361,43 @@ func (l *ConfiguredJarList) IndexOfJar(jar string) int {
 	return IndexList(jar, l.jars)
 }
 
+func copyAndAppend(list []string, item string) []string {
+	// Create the result list to be 1 longer than the input.
+	result := make([]string, len(list)+1)
+
+	// Copy the whole input list into the result.
+	count := copy(result, list)
+
+	// Insert the extra item at the end.
+	result[count] = item
+
+	return result
+}
+
 // Append an (apex, jar) pair to the list.
-func (l *ConfiguredJarList) Append(apex string, jar string) {
-	l.apexes = append(l.apexes, apex)
-	l.jars = append(l.jars, jar)
+func (l *ConfiguredJarList) Append(apex string, jar string) ConfiguredJarList {
+	// Create a copy of the backing arrays before appending to avoid sharing backing
+	// arrays that are mutated across instances.
+	apexes := copyAndAppend(l.apexes, apex)
+	jars := copyAndAppend(l.jars, jar)
+
+	return ConfiguredJarList{apexes, jars}
 }
 
 // Filter out sublist.
-func (l *ConfiguredJarList) RemoveList(list ConfiguredJarList) {
+func (l *ConfiguredJarList) RemoveList(list ConfiguredJarList) ConfiguredJarList {
 	apexes := make([]string, 0, l.Len())
 	jars := make([]string, 0, l.Len())
 
 	for i, jar := range l.jars {
-		apex := l.apex(i)
+		apex := l.apexes[i]
 		if !list.containsApexJarPair(apex, jar) {
 			apexes = append(apexes, apex)
 			jars = append(jars, jar)
 		}
 	}
 
-	l.apexes = apexes
-	l.jars = jars
-}
-
-// A copy of itself.
-func (l *ConfiguredJarList) CopyOf() ConfiguredJarList {
-	return ConfiguredJarList{CopyOf(l.apexes), CopyOf(l.jars)}
+	return ConfiguredJarList{apexes, jars}
 }
 
 // A copy of the list of strings containing jar components.
@@ -1400,7 +1410,7 @@ func (l *ConfiguredJarList) CopyOfApexJarPairs() []string {
 	pairs := make([]string, 0, l.Len())
 
 	for i, jar := range l.jars {
-		apex := l.apex(i)
+		apex := l.apexes[i]
 		pairs = append(pairs, apex+":"+jar)
 	}
 
@@ -1414,6 +1424,26 @@ func (l *ConfiguredJarList) BuildPaths(ctx PathContext, dir OutputPath) Writable
 		paths[i] = dir.Join(ctx, ModuleStem(jar)+".jar")
 	}
 	return paths
+}
+
+// Called when loading configuration from JSON into a configuration structure.
+func (l *ConfiguredJarList) UnmarshalJSON(b []byte) error {
+	// Try and unmarshal into a []string each item of which contains a pair
+	// <apex>:<jar>.
+	var list []string
+	err := json.Unmarshal(b, &list)
+	if err != nil {
+		// Did not work so return
+		return err
+	}
+
+	apexes, jars, err := splitListOfPairsIntoPairOfLists(list)
+	if err != nil {
+		return err
+	}
+	l.apexes = apexes
+	l.jars = jars
+	return nil
 }
 
 func ModuleStem(module string) string {
@@ -1450,29 +1480,49 @@ func (l *ConfiguredJarList) DevicePaths(cfg Config, ostype OsType) []string {
 	return paths
 }
 
+func (l *ConfiguredJarList) String() string {
+	var pairs []string
+	for i := 0; i < l.Len(); i++ {
+		pairs = append(pairs, l.apexes[i]+":"+l.jars[i])
+	}
+	return strings.Join(pairs, ",")
+}
+
+func splitListOfPairsIntoPairOfLists(list []string) ([]string, []string, error) {
+	// Now we need to populate this list by splitting each item in the slice of
+	// pairs and appending them to the appropriate list of apexes or jars.
+	apexes := make([]string, len(list))
+	jars := make([]string, len(list))
+
+	for i, apexjar := range list {
+		apex, jar, err := splitConfiguredJarPair(apexjar)
+		if err != nil {
+			return nil, nil, err
+		}
+		apexes[i] = apex
+		jars[i] = jar
+	}
+
+	return apexes, jars, nil
+}
+
 // Expected format for apexJarValue = <apex name>:<jar name>
-func splitConfiguredJarPair(ctx PathContext, str string) (string, string) {
+func splitConfiguredJarPair(str string) (string, string, error) {
 	pair := strings.SplitN(str, ":", 2)
 	if len(pair) == 2 {
-		return pair[0], pair[1]
+		return pair[0], pair[1], nil
 	} else {
-		ReportPathErrorf(ctx, "malformed (apex, jar) pair: '%s', expected format: <apex>:<jar>", str)
-		return "error-apex", "error-jar"
+		return "error-apex", "error-jar", fmt.Errorf("malformed (apex, jar) pair: '%s', expected format: <apex>:<jar>", str)
 	}
 }
 
-func CreateConfiguredJarList(ctx PathContext, list []string) ConfiguredJarList {
-	apexes := make([]string, 0, len(list))
-	jars := make([]string, 0, len(list))
-
-	l := ConfiguredJarList{apexes, jars}
-
-	for _, apexjar := range list {
-		apex, jar := splitConfiguredJarPair(ctx, apexjar)
-		l.Append(apex, jar)
+func CreateTestConfiguredJarList(list []string) ConfiguredJarList {
+	apexes, jars, err := splitListOfPairsIntoPairOfLists(list)
+	if err != nil {
+		panic(err)
 	}
 
-	return l
+	return ConfiguredJarList{apexes, jars}
 }
 
 func EmptyConfiguredJarList() ConfiguredJarList {
@@ -1483,9 +1533,8 @@ var earlyBootJarsKey = NewOnceKey("earlyBootJars")
 
 func (c *config) BootJars() []string {
 	return c.Once(earlyBootJarsKey, func() interface{} {
-		ctx := NullPathContext{Config{c}}
-		list := CreateConfiguredJarList(ctx,
-			append(CopyOf(c.productVariables.BootJars), c.productVariables.UpdatableBootJars...))
-		return list.CopyOfJars()
+		list := c.productVariables.BootJars.CopyOfJars()
+		list = append(list, c.productVariables.UpdatableBootJars.CopyOfJars()...)
+		return list
 	}).([]string)
 }

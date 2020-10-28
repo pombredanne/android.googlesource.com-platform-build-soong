@@ -103,6 +103,7 @@ func testCcErrorWithConfig(t *testing.T, pattern string, config android.Config) 
 }
 
 func testCcError(t *testing.T, pattern string, bp string) {
+	t.Helper()
 	config := TestConfig(buildDir, android.Android, nil, bp, nil)
 	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
 	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
@@ -111,6 +112,7 @@ func testCcError(t *testing.T, pattern string, bp string) {
 }
 
 func testCcErrorProductVndk(t *testing.T, pattern string, bp string) {
+	t.Helper()
 	config := TestConfig(buildDir, android.Android, nil, bp, nil)
 	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
 	config.TestProductVariables.ProductVndkVersion = StringPtr("current")
@@ -388,10 +390,12 @@ func TestVndk(t *testing.T) {
 
 	ctx := testCcWithConfig(t, config)
 
-	checkVndkModule(t, ctx, "libvndk", "vndk-VER", false, "", vendorVariant)
-	checkVndkModule(t, ctx, "libvndk_private", "vndk-VER", false, "", vendorVariant)
-	checkVndkModule(t, ctx, "libvndk_sp", "vndk-sp-VER", true, "", vendorVariant)
-	checkVndkModule(t, ctx, "libvndk_sp_private", "vndk-sp-VER", true, "", vendorVariant)
+	// subdir == "" because VNDK libs are not supposed to be installed separately.
+	// They are installed as part of VNDK APEX instead.
+	checkVndkModule(t, ctx, "libvndk", "", false, "", vendorVariant)
+	checkVndkModule(t, ctx, "libvndk_private", "", false, "", vendorVariant)
+	checkVndkModule(t, ctx, "libvndk_sp", "", true, "", vendorVariant)
+	checkVndkModule(t, ctx, "libvndk_sp_private", "", true, "", vendorVariant)
 
 	// Check VNDK snapshot output.
 
@@ -846,10 +850,11 @@ func TestDoubleLoadbleDep(t *testing.T) {
 		cc_library {
 			name: "libllndk",
 			shared_libs: ["libdoubleloadable"],
+			llndk_stubs: "libllndk.llndk",
 		}
 
 		llndk_library {
-			name: "libllndk",
+			name: "libllndk.llndk",
 			symbol_file: "",
 		}
 
@@ -867,10 +872,11 @@ func TestDoubleLoadbleDep(t *testing.T) {
 		cc_library {
 			name: "libllndk",
 			shared_libs: ["libvndksp"],
+			llndk_stubs: "libllndk.llndk",
 		}
 
 		llndk_library {
-			name: "libllndk",
+			name: "libllndk.llndk",
 			symbol_file: "",
 		}
 
@@ -924,10 +930,11 @@ func TestDoubleLoadbleDep(t *testing.T) {
 		cc_library {
 			name: "libllndk",
 			shared_libs: ["libcoreonly"],
+			llndk_stubs: "libllndk.llndk",
 		}
 
 		llndk_library {
-			name: "libllndk",
+			name: "libllndk.llndk",
 			symbol_file: "",
 		}
 
@@ -1548,10 +1555,11 @@ func TestDoubleLoadableDepError(t *testing.T) {
 		cc_library {
 			name: "libllndk",
 			shared_libs: ["libnondoubleloadable"],
+			llndk_stubs: "libllndk.llndk",
 		}
 
 		llndk_library {
-			name: "libllndk",
+			name: "libllndk.llndk",
 			symbol_file: "",
 		}
 
@@ -1570,10 +1578,11 @@ func TestDoubleLoadableDepError(t *testing.T) {
 			name: "libllndk",
 			no_libcrt: true,
 			shared_libs: ["libnondoubleloadable"],
+			llndk_stubs: "libllndk.llndk",
 		}
 
 		llndk_library {
-			name: "libllndk",
+			name: "libllndk.llndk",
 			symbol_file: "",
 		}
 
@@ -1642,10 +1651,11 @@ func TestDoubleLoadableDepError(t *testing.T) {
 		cc_library {
 			name: "libllndk",
 			shared_libs: ["libcoreonly"],
+			llndk_stubs: "libllndk.llndk",
 		}
 
 		llndk_library {
-			name: "libllndk",
+			name: "libllndk.llndk",
 			symbol_file: "",
 		}
 
@@ -1657,6 +1667,35 @@ func TestDoubleLoadableDepError(t *testing.T) {
 		// indirect dependency of LLNDK
 		cc_library {
 			name: "libvendoravailable",
+			vendor_available: true,
+		}
+	`)
+}
+
+func TestCheckVndkMembershipBeforeDoubleLoadable(t *testing.T) {
+	testCcError(t, "module \"libvndksp\" variant .*: .*: VNDK-SP must only depend on VNDK-SP", `
+		cc_library {
+			name: "libvndksp",
+			shared_libs: ["libanothervndksp"],
+			vendor_available: true,
+			vndk: {
+				enabled: true,
+				support_system_process: true,
+			}
+		}
+
+		cc_library {
+			name: "libllndk",
+			shared_libs: ["libanothervndksp"],
+		}
+
+		llndk_library {
+			name: "libllndk",
+			symbol_file: "",
+		}
+
+		cc_library {
+			name: "libanothervndksp",
 			vendor_available: true,
 		}
 	`)
@@ -2386,9 +2425,10 @@ func TestEnforceProductVndkVersion(t *testing.T) {
 	bp := `
 		cc_library {
 			name: "libllndk",
+			llndk_stubs: "libllndk.llndk",
 		}
 		llndk_library {
-			name: "libllndk",
+			name: "libllndk.llndk",
 			symbol_file: "",
 		}
 		cc_library {
@@ -2452,8 +2492,8 @@ func TestEnforceProductVndkVersion(t *testing.T) {
 
 	ctx := testCcWithConfig(t, config)
 
-	checkVndkModule(t, ctx, "libvndk", "vndk-VER", false, "", productVariant)
-	checkVndkModule(t, ctx, "libvndk_sp", "vndk-sp-VER", true, "", productVariant)
+	checkVndkModule(t, ctx, "libvndk", "", false, "", productVariant)
+	checkVndkModule(t, ctx, "libvndk_sp", "", true, "", productVariant)
 }
 
 func TestEnforceProductVndkVersionErrors(t *testing.T) {
@@ -2589,16 +2629,18 @@ func TestMakeLinkType(t *testing.T) {
 		}
 		cc_library {
 			name: "libllndk",
+			llndk_stubs: "libllndk.llndk",
 		}
 		llndk_library {
-			name: "libllndk",
+			name: "libllndk.llndk",
 			symbol_file: "",
 		}
 		cc_library {
 			name: "libllndkprivate",
+			llndk_stubs: "libllndkprivate.llndk",
 		}
 		llndk_library {
-			name: "libllndkprivate",
+			name: "libllndkprivate.llndk",
 			vendor_available: false,
 			symbol_file: "",
 		}`
@@ -3012,9 +3054,10 @@ func TestLlndkLibrary(t *testing.T) {
 	cc_library {
 		name: "libllndk",
 		stubs: { versions: ["1", "2"] },
+		llndk_stubs: "libllndk.llndk",
 	}
 	llndk_library {
-		name: "libllndk",
+		name: "libllndk.llndk",
 	}
 	`)
 	actual := ctx.ModuleVariantsForTests("libllndk.llndk")
@@ -3042,9 +3085,14 @@ func TestLlndkHeaders(t *testing.T) {
 		export_include_dirs: ["my_include"],
 	}
 	llndk_library {
-		name: "libllndk",
+		name: "libllndk.llndk",
 		export_llndk_headers: ["libllndk_headers"],
 	}
+	cc_library {
+		name: "libllndk",
+		llndk_stubs: "libllndk.llndk",
+	}
+
 	cc_library {
 		name: "libvendor",
 		shared_libs: ["libllndk"],
