@@ -62,8 +62,8 @@ type VndkProperties struct {
 		// declared as a VNDK or VNDK-SP module. The vendor variant
 		// will be installed in /system instead of /vendor partition.
 		//
-		// `vendor_available` must be explicitly set to either true or
-		// false together with `vndk: {enabled: true}`.
+		// `vendor_available` and `product_available` must be explicitly
+		// set to either true or false together with `vndk: {enabled: true}`.
 		Enabled *bool
 
 		// declared as a VNDK-SP module, which is a subset of VNDK.
@@ -129,13 +129,16 @@ func (vndk *vndkdep) typeName() string {
 	return "native:vendor:vndkspext"
 }
 
+// VNDK link type check from a module with UseVndk() == true.
 func (vndk *vndkdep) vndkCheckLinkType(ctx android.BaseModuleContext, to *Module, tag blueprint.DependencyTag) {
 	if to.linker == nil {
 		return
 	}
 	if !vndk.isVndk() {
-		// Non-VNDK modules (those installed to /vendor, /product, or /system/product) can't depend
-		// on modules marked with vendor_available: false.
+		// Non-VNDK modules those installed to /vendor or /system/vendor
+		// can't depend on modules marked with vendor_available: false;
+		// or those installed to /product or /system/product can't depend
+		// on modules marked with product_available: false.
 		violation := false
 		if lib, ok := to.linker.(*llndkStubDecorator); ok && !Bool(lib.Properties.Vendor_available) {
 			violation = true
@@ -174,6 +177,7 @@ func (vndk *vndkdep) vndkCheckLinkType(ctx android.BaseModuleContext, to *Module
 				to.Name())
 			return
 		}
+		// TODO(b/150902910): vndk-ext for product must check product_available.
 		if !Bool(to.VendorProperties.Vendor_available) {
 			ctx.ModuleErrorf(
 				"`extends` refers module %q which does not have `vendor_available: true`",
@@ -313,7 +317,7 @@ func processVndkLibrary(mctx android.BottomUpMutatorContext, m *Module) {
 		panic(err)
 	}
 
-	if m.HasStubsVariants() && name != "libz" {
+	if lib := m.library; lib != nil && lib.hasStubsVariants() && name != "libz" {
 		// b/155456180 libz is the ONLY exception here. We don't want to make
 		// libz an LLNDK library because we in general can't guarantee that
 		// libz will behave consistently especially about the compression.
@@ -338,6 +342,8 @@ func processVndkLibrary(mctx android.BottomUpMutatorContext, m *Module) {
 	} else {
 		vndkCoreLibraries(mctx.Config())[name] = filename
 	}
+	// As `vendor_available` and `product_available` has the same value for VNDK modules,
+	// we don't need to check both values.
 	if !Bool(m.VendorProperties.Vendor_available) {
 		vndkPrivateLibraries(mctx.Config())[name] = filename
 	}
@@ -481,14 +487,7 @@ func (txt *vndkLibrariesTxt) GenerateAndroidBuildActions(ctx android.ModuleConte
 	}
 
 	txt.outputFile = android.PathForModuleOut(ctx, filename).OutputPath
-	ctx.Build(pctx, android.BuildParams{
-		Rule:        android.WriteFile,
-		Output:      txt.outputFile,
-		Description: "Writing " + txt.outputFile.String(),
-		Args: map[string]string{
-			"content": strings.Join(list, "\\n"),
-		},
-	})
+	android.WriteFileRule(ctx, txt.outputFile, strings.Join(list, "\n"))
 
 	installPath := android.PathForModuleInstall(ctx, "etc")
 	ctx.InstallFile(installPath, filename, txt.outputFile)
@@ -819,14 +818,7 @@ func (c *vndkSnapshotSingleton) buildVndkLibrariesTxtFiles(ctx android.Singleton
 	merged = append(merged, addPrefix(filterOutLibClangRt(vndkcore), "VNDK-core: ")...)
 	merged = append(merged, addPrefix(vndkprivate, "VNDK-private: ")...)
 	c.vndkLibrariesFile = android.PathForOutput(ctx, "vndk", "vndk.libraries.txt")
-	ctx.Build(pctx, android.BuildParams{
-		Rule:        android.WriteFile,
-		Output:      c.vndkLibrariesFile,
-		Description: "Writing " + c.vndkLibrariesFile.String(),
-		Args: map[string]string{
-			"content": strings.Join(merged, "\\n"),
-		},
-	})
+	android.WriteFileRule(ctx, c.vndkLibrariesFile, strings.Join(merged, "\n"))
 }
 
 func (c *vndkSnapshotSingleton) MakeVars(ctx android.MakeVarsContext) {

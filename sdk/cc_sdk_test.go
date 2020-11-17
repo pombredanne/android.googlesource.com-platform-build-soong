@@ -109,6 +109,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_sdkmember@current",
     sdk_member_name: "sdkmember",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     host_supported: true,
     installable: false,
     stl: "none",
@@ -131,6 +132,7 @@ cc_prebuilt_library_shared {
     name: "sdkmember",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     host_supported: true,
     stl: "none",
     compile_multilib: "64",
@@ -353,6 +355,7 @@ cc_prebuilt_object {
     name: "mysdk_crtobj@current",
     sdk_member_name: "crtobj",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     stl: "none",
     compile_multilib: "both",
     sanitize: {
@@ -372,6 +375,7 @@ cc_prebuilt_object {
     name: "crtobj",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     stl: "none",
     compile_multilib: "both",
     sanitize: {
@@ -464,7 +468,6 @@ func TestSnapshotWithCcSharedLibraryCommonProperties(t *testing.T) {
 				arm64: {
 					export_system_include_dirs: ["arm64/include"],
 					sanitize: {
-						hwaddress: true,
 						integer_overflow: false,
 					},
 				},
@@ -481,6 +484,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_mynativelib@current",
     sdk_member_name: "mynativelib",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     installable: false,
     stl: "none",
     compile_multilib: "both",
@@ -496,7 +500,6 @@ cc_prebuilt_library_shared {
             srcs: ["arm64/lib/mynativelib.so"],
             export_system_include_dirs: ["arm64/include/arm64/include"],
             sanitize: {
-                hwaddress: true,
                 integer_overflow: false,
             },
         },
@@ -513,6 +516,7 @@ cc_prebuilt_library_shared {
     name: "mynativelib",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     stl: "none",
     compile_multilib: "both",
     export_include_dirs: ["include/include"],
@@ -527,7 +531,6 @@ cc_prebuilt_library_shared {
             srcs: ["arm64/lib/mynativelib.so"],
             export_system_include_dirs: ["arm64/include/arm64/include"],
             sanitize: {
-                hwaddress: true,
                 integer_overflow: false,
             },
         },
@@ -548,7 +551,7 @@ sdk_snapshot {
 `),
 		checkAllCopyRules(`
 include/Test.h -> include/include/Test.h
-.intermediates/mynativelib/android_arm64_armv8-a_shared_hwasan/mynativelib.so -> arm64/lib/mynativelib.so
+.intermediates/mynativelib/android_arm64_armv8-a_shared/mynativelib.so -> arm64/lib/mynativelib.so
 arm64/include/Arm64Test.h -> arm64/include/arm64/include/Arm64Test.h
 .intermediates/mynativelib/android_arm_armv7-a-neon_shared/mynativelib.so -> arm/lib/mynativelib.so`),
 	)
@@ -578,6 +581,7 @@ cc_prebuilt_binary {
     name: "mymodule_exports_mynativebinary@current",
     sdk_member_name: "mynativebinary",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     installable: false,
     compile_multilib: "both",
     arch: {
@@ -594,6 +598,7 @@ cc_prebuilt_binary {
     name: "mynativebinary",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     compile_multilib: "both",
     arch: {
         arm64: {
@@ -657,6 +662,7 @@ cc_prebuilt_binary {
     name: "myexports_mynativebinary@current",
     sdk_member_name: "mynativebinary",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     installable: false,
@@ -690,6 +696,7 @@ cc_prebuilt_binary {
     name: "mynativebinary",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     stl: "none",
@@ -805,6 +812,7 @@ cc_prebuilt_binary {
     name: "myexports_mynativebinary@current",
     sdk_member_name: "mynativebinary",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     installable: false,
@@ -825,6 +833,7 @@ cc_prebuilt_binary {
     name: "mynativebinary",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     stl: "none",
@@ -844,6 +853,7 @@ cc_prebuilt_library_shared {
     name: "myexports_mynativelib@current",
     sdk_member_name: "mynativelib",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     installable: false,
@@ -864,6 +874,7 @@ cc_prebuilt_library_shared {
     name: "mynativelib",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     stl: "none",
@@ -936,6 +947,7 @@ cc_prebuilt_binary {
     name: "mymodule_exports_linker@current",
     sdk_member_name: "linker",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     installable: false,
@@ -962,6 +974,7 @@ cc_prebuilt_binary {
     name: "linker",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     stl: "none",
@@ -1170,6 +1183,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_mynativelib@current",
     sdk_member_name: "mynativelib",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     installable: false,
     stl: "none",
     compile_multilib: "both",
@@ -1191,6 +1205,7 @@ cc_prebuilt_library_shared {
     name: "mynativelib",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     stl: "none",
     compile_multilib: "both",
     shared_libs: [
@@ -1211,6 +1226,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_myothernativelib@current",
     sdk_member_name: "myothernativelib",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     installable: false,
     stl: "none",
     compile_multilib: "both",
@@ -1229,6 +1245,7 @@ cc_prebuilt_library_shared {
     name: "myothernativelib",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     stl: "none",
     compile_multilib: "both",
     system_shared_libs: ["libm"],
@@ -1246,6 +1263,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_mysystemnativelib@current",
     sdk_member_name: "mysystemnativelib",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     installable: false,
     stl: "none",
     compile_multilib: "both",
@@ -1263,6 +1281,7 @@ cc_prebuilt_library_shared {
     name: "mysystemnativelib",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     stl: "none",
     compile_multilib: "both",
     arch: {
@@ -1330,6 +1349,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_mynativelib@current",
     sdk_member_name: "mynativelib",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     installable: false,
@@ -1358,6 +1378,7 @@ cc_prebuilt_library_shared {
     name: "mynativelib",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     sdk_version: "minimum",
@@ -1452,6 +1473,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_mynativelib@current",
     sdk_member_name: "mynativelib",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     installable: false,
@@ -1485,6 +1507,7 @@ cc_prebuilt_library_shared {
     name: "mynativelib",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     stl: "none",
@@ -1575,6 +1598,7 @@ cc_prebuilt_library_static {
     name: "myexports_mynativelib@current",
     sdk_member_name: "mynativelib",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     installable: false,
     stl: "none",
     compile_multilib: "both",
@@ -1595,6 +1619,7 @@ cc_prebuilt_library_static {
     name: "mynativelib",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     stl: "none",
     compile_multilib: "both",
     export_include_dirs: ["include/include"],
@@ -1663,6 +1688,7 @@ cc_prebuilt_library_static {
     name: "myexports_mynativelib@current",
     sdk_member_name: "mynativelib",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     installable: false,
@@ -1690,6 +1716,7 @@ cc_prebuilt_library_static {
     name: "mynativelib",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     stl: "none",
@@ -1772,6 +1799,7 @@ cc_prebuilt_library {
     name: "myexports_mynativelib@current",
     sdk_member_name: "mynativelib",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     installable: false,
     recovery_available: true,
     vendor_available: true,
@@ -1802,6 +1830,7 @@ cc_prebuilt_library {
     name: "mynativelib",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     recovery_available: true,
     vendor_available: true,
     stl: "none",
@@ -1880,6 +1909,7 @@ cc_prebuilt_library_static {
     name: "myexports_mynativelib@current",
     sdk_member_name: "mynativelib",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     installable: false,
@@ -1902,6 +1932,7 @@ cc_prebuilt_library_static {
     name: "mynativelib",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     stl: "none",
@@ -1967,6 +1998,7 @@ cc_prebuilt_library_headers {
     name: "mysdk_mynativeheaders@current",
     sdk_member_name: "mynativeheaders",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     stl: "none",
     compile_multilib: "both",
     export_include_dirs: ["include/include"],
@@ -1976,6 +2008,7 @@ cc_prebuilt_library_headers {
     name: "mynativeheaders",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     stl: "none",
     compile_multilib: "both",
     export_include_dirs: ["include/include"],
@@ -2019,6 +2052,7 @@ cc_prebuilt_library_headers {
     name: "mysdk_mynativeheaders@current",
     sdk_member_name: "mynativeheaders",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     stl: "none",
@@ -2041,6 +2075,7 @@ cc_prebuilt_library_headers {
     name: "mynativeheaders",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     stl: "none",
@@ -2116,6 +2151,7 @@ cc_prebuilt_library_headers {
     name: "mysdk_mynativeheaders@current",
     sdk_member_name: "mynativeheaders",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     host_supported: true,
     stl: "none",
     compile_multilib: "both",
@@ -2143,6 +2179,7 @@ cc_prebuilt_library_headers {
     name: "mynativeheaders",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     host_supported: true,
     stl: "none",
     compile_multilib: "both",
@@ -2223,6 +2260,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_sslnil@current",
     sdk_member_name: "sslnil",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     installable: false,
     compile_multilib: "both",
     arch: {
@@ -2239,6 +2277,7 @@ cc_prebuilt_library_shared {
     name: "sslnil",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     compile_multilib: "both",
     arch: {
         arm64: {
@@ -2254,6 +2293,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_sslempty@current",
     sdk_member_name: "sslempty",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     installable: false,
     compile_multilib: "both",
     system_shared_libs: [],
@@ -2271,6 +2311,7 @@ cc_prebuilt_library_shared {
     name: "sslempty",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     compile_multilib: "both",
     system_shared_libs: [],
     arch: {
@@ -2287,6 +2328,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_sslnonempty@current",
     sdk_member_name: "sslnonempty",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     installable: false,
     compile_multilib: "both",
     system_shared_libs: ["mysdk_sslnil@current"],
@@ -2304,6 +2346,7 @@ cc_prebuilt_library_shared {
     name: "sslnonempty",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     compile_multilib: "both",
     system_shared_libs: ["sslnil"],
     arch: {
@@ -2353,6 +2396,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_sslvariants@current",
     sdk_member_name: "sslvariants",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     host_supported: true,
     installable: false,
     compile_multilib: "both",
@@ -2384,6 +2428,7 @@ cc_prebuilt_library_shared {
     name: "sslvariants",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     host_supported: true,
     compile_multilib: "both",
     target: {
@@ -2459,6 +2504,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_stubslib@current",
     sdk_member_name: "stubslib",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     installable: false,
     compile_multilib: "both",
     stubs: {
@@ -2482,6 +2528,7 @@ cc_prebuilt_library_shared {
     name: "stubslib",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     compile_multilib: "both",
     stubs: {
         versions: [
@@ -2540,6 +2587,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_stubslib@current",
     sdk_member_name: "stubslib",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     host_supported: true,
     installable: false,
     compile_multilib: "both",
@@ -2575,6 +2623,7 @@ cc_prebuilt_library_shared {
     name: "stubslib",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     host_supported: true,
     compile_multilib: "both",
     stubs: {
@@ -2648,6 +2697,7 @@ cc_prebuilt_library_shared {
     name: "mysdk_mylib@current",
     sdk_member_name: "mylib",
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     host_supported: true,
     installable: false,
     unique_host_soname: true,
@@ -2677,6 +2727,7 @@ cc_prebuilt_library_shared {
     name: "mylib",
     prefer: false,
     visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     host_supported: true,
     unique_host_soname: true,
     compile_multilib: "both",
@@ -2725,5 +2776,79 @@ sdk_snapshot {
 .intermediates/mylib/linux_glibc_x86_64_shared/mylib-host.so -> linux_glibc/x86_64/lib/mylib-host.so
 .intermediates/mylib/linux_glibc_x86_shared/mylib-host.so -> linux_glibc/x86/lib/mylib-host.so
 `),
+	)
+}
+
+func TestNoSanitizerMembers(t *testing.T) {
+	result := testSdkWithCc(t, `
+		sdk {
+			name: "mysdk",
+			native_shared_libs: ["mynativelib"],
+		}
+
+		cc_library_shared {
+			name: "mynativelib",
+			srcs: ["Test.cpp"],
+			export_include_dirs: ["include"],
+			arch: {
+				arm64: {
+					export_system_include_dirs: ["arm64/include"],
+					sanitize: {
+						hwaddress: true,
+					},
+				},
+			},
+		}
+	`)
+
+	result.CheckSnapshot("mysdk", "",
+		checkAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+cc_prebuilt_library_shared {
+    name: "mysdk_mynativelib@current",
+    sdk_member_name: "mynativelib",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
+    installable: false,
+    compile_multilib: "both",
+    export_include_dirs: ["include/include"],
+    arch: {
+        arm64: {
+            export_system_include_dirs: ["arm64/include/arm64/include"],
+        },
+        arm: {
+            srcs: ["arm/lib/mynativelib.so"],
+        },
+    },
+}
+
+cc_prebuilt_library_shared {
+    name: "mynativelib",
+    prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
+    compile_multilib: "both",
+    export_include_dirs: ["include/include"],
+    arch: {
+        arm64: {
+            export_system_include_dirs: ["arm64/include/arm64/include"],
+        },
+        arm: {
+            srcs: ["arm/lib/mynativelib.so"],
+        },
+    },
+}
+
+sdk_snapshot {
+    name: "mysdk@current",
+    visibility: ["//visibility:public"],
+    native_shared_libs: ["mysdk_mynativelib@current"],
+}
+`),
+		checkAllCopyRules(`
+include/Test.h -> include/include/Test.h
+arm64/include/Arm64Test.h -> arm64/include/arm64/include/Arm64Test.h
+.intermediates/mynativelib/android_arm_armv7-a-neon_shared/mynativelib.so -> arm/lib/mynativelib.so`),
 	)
 }

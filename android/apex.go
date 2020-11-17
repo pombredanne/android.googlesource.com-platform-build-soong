@@ -67,6 +67,15 @@ func (i ApexInfo) IsForPlatform() bool {
 	return i.ApexVariationName == ""
 }
 
+func (i ApexInfo) InApex(apex string) bool {
+	for _, a := range i.InApexes {
+		if a == apex {
+			return true
+		}
+	}
+	return false
+}
+
 // ApexTestForInfo stores the contents of APEXes for which this module is a test and thus has
 // access to APEX internals.
 type ApexTestForInfo struct {
@@ -589,36 +598,22 @@ func (d *ApexBundleDepsInfo) BuildDepsInfoLists(ctx ModuleContext, minSdkVersion
 	var fullContent strings.Builder
 	var flatContent strings.Builder
 
-	fmt.Fprintf(&fullContent, "%s(minSdkVersion:%s):\\n", ctx.ModuleName(), minSdkVersion)
+	fmt.Fprintf(&fullContent, "%s(minSdkVersion:%s):\n", ctx.ModuleName(), minSdkVersion)
 	for _, key := range FirstUniqueStrings(SortedStringKeys(depInfos)) {
 		info := depInfos[key]
 		toName := fmt.Sprintf("%s(minSdkVersion:%s)", info.To, info.MinSdkVersion)
 		if info.IsExternal {
 			toName = toName + " (external)"
 		}
-		fmt.Fprintf(&fullContent, "  %s <- %s\\n", toName, strings.Join(SortedUniqueStrings(info.From), ", "))
-		fmt.Fprintf(&flatContent, "%s\\n", toName)
+		fmt.Fprintf(&fullContent, "  %s <- %s\n", toName, strings.Join(SortedUniqueStrings(info.From), ", "))
+		fmt.Fprintf(&flatContent, "%s\n", toName)
 	}
 
 	d.fullListPath = PathForModuleOut(ctx, "depsinfo", "fulllist.txt").OutputPath
-	ctx.Build(pctx, BuildParams{
-		Rule:        WriteFile,
-		Description: "Full Dependency Info",
-		Output:      d.fullListPath,
-		Args: map[string]string{
-			"content": fullContent.String(),
-		},
-	})
+	WriteFileRule(ctx, d.fullListPath, fullContent.String())
 
 	d.flatListPath = PathForModuleOut(ctx, "depsinfo", "flatlist.txt").OutputPath
-	ctx.Build(pctx, BuildParams{
-		Rule:        WriteFile,
-		Description: "Flat Dependency Info",
-		Output:      d.flatListPath,
-		Args: map[string]string{
-			"content": flatContent.String(),
-		},
-	})
+	WriteFileRule(ctx, d.flatListPath, flatContent.String())
 }
 
 // TODO(b/158059172): remove minSdkVersion allowlist

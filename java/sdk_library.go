@@ -673,6 +673,11 @@ func (c *commonToSdkLibraryAndImport) apiModuleName(apiScope *apiScope) string {
 	return c.namingScheme.apiModuleName(apiScope, c.moduleBase.BaseModuleName())
 }
 
+// If the SDK library is a shared library.
+func (c *commonToSdkLibraryAndImport) IsSharedLibrary() bool {
+	return c.sharedLibrary()
+}
+
 // The component names for different outputs of the java_sdk_library.
 //
 // They are similar to the names used for the child modules it creates
@@ -918,6 +923,9 @@ type SdkLibraryDependency interface {
 	// jars for the stubs. The latter should only be needed when generating JavaDoc as otherwise
 	// they are identical to the corresponding header jars.
 	SdkImplementationJars(ctx android.BaseModuleContext, sdkVersion sdkSpec) android.Paths
+
+	// If the SDK library is a shared library.
+	IsSharedLibrary() bool
 }
 
 type SdkLibrary struct {
@@ -2292,10 +2300,11 @@ func (s *sdkLibrarySdkMemberProperties) AddToPropertySet(ctx android.SdkMemberCo
 			scopeSet.AddProperty("jars", jars)
 
 			// Merge the stubs source jar into the snapshot zip so that when it is unpacked
-			// the source files are also unpacked.
+			// the source files are also unpacked. Use a glob so that if the directory is missing
+			// (because there are no stubs sources for this scope) it will not fail.
 			snapshotRelativeDir := filepath.Join(scopeDir, ctx.Name()+"_stub_sources")
 			ctx.SnapshotBuilder().UnzipToSnapshot(properties.StubsSrcJar, snapshotRelativeDir)
-			scopeSet.AddProperty("stub_srcs", []string{snapshotRelativeDir})
+			scopeSet.AddProperty("stub_srcs", []string{snapshotRelativeDir + "/**/*.java"})
 
 			if properties.CurrentApiFile != nil {
 				currentApiSnapshotPath := filepath.Join(scopeDir, ctx.Name()+".txt")

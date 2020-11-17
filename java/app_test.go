@@ -59,7 +59,7 @@ func testAppConfig(env map[string]string, bp string, fs map[string][]byte) andro
 func testApp(t *testing.T, bp string) *android.TestContext {
 	config := testAppConfig(nil, bp, nil)
 
-	ctx := testContext()
+	ctx := testContext(config)
 
 	run(t, ctx, config)
 
@@ -220,7 +220,7 @@ func TestAndroidAppSet_Variants(t *testing.T) {
 		config.TestProductVariables.AAPTPrebuiltDPI = test.aaptPrebuiltDPI
 		config.TestProductVariables.Platform_sdk_version = &test.sdkVersion
 		config.Targets[android.Android] = test.targets
-		ctx := testContext()
+		ctx := testContext(config)
 		run(t, ctx, config)
 		module := ctx.ModuleForTests("foo", "android_common")
 		const packedSplitApks = "foo.zip"
@@ -657,7 +657,7 @@ func TestResourceDirs(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			config := testConfig(nil, fmt.Sprintf(bp, testCase.prop), fs)
-			ctx := testContext()
+			ctx := testContext(config)
 			run(t, ctx, config)
 
 			module := ctx.ModuleForTests("foo", "android_common")
@@ -973,7 +973,7 @@ func TestAndroidResources(t *testing.T) {
 				config.TestProductVariables.EnforceRROExcludedOverlays = testCase.enforceRROExcludedOverlays
 			}
 
-			ctx := testContext()
+			ctx := testContext(config)
 			run(t, ctx, config)
 
 			resourceListToFiles := func(module android.TestingModule, list []string) (files []string) {
@@ -1039,7 +1039,7 @@ func TestAndroidResources(t *testing.T) {
 }
 
 func checkSdkVersion(t *testing.T, config android.Config, expectedSdkVersion string) {
-	ctx := testContext()
+	ctx := testContext(config)
 
 	run(t, ctx, config)
 
@@ -1633,7 +1633,7 @@ func TestCertificates(t *testing.T) {
 			if test.certificateOverride != "" {
 				config.TestProductVariables.CertificateOverrides = []string{test.certificateOverride}
 			}
-			ctx := testContext()
+			ctx := testContext(config)
 
 			run(t, ctx, config)
 			foo := ctx.ModuleForTests("foo", "android_common")
@@ -1698,7 +1698,7 @@ func TestRequestV4SigningFlag(t *testing.T) {
 	for _, test := range testCases {
 		t.Run(test.name, func(t *testing.T) {
 			config := testAppConfig(nil, test.bp, nil)
-			ctx := testContext()
+			ctx := testContext(config)
 
 			run(t, ctx, config)
 			foo := ctx.ModuleForTests("foo", "android_common")
@@ -1758,7 +1758,7 @@ func TestPackageNameOverride(t *testing.T) {
 			if test.packageNameOverride != "" {
 				config.TestProductVariables.PackageNameOverrides = []string{test.packageNameOverride}
 			}
-			ctx := testContext()
+			ctx := testContext(config)
 
 			run(t, ctx, config)
 			foo := ctx.ModuleForTests("foo", "android_common")
@@ -1793,7 +1793,7 @@ func TestInstrumentationTargetOverridden(t *testing.T) {
 		`
 	config := testAppConfig(nil, bp, nil)
 	config.TestProductVariables.ManifestPackageNameOverrides = []string{"foo:org.dandroid.bp"}
-	ctx := testContext()
+	ctx := testContext(config)
 
 	run(t, ctx, config)
 
@@ -2416,7 +2416,7 @@ func TestAndroidAppImport_DpiVariants(t *testing.T) {
 		config := testAppConfig(nil, bp, nil)
 		config.TestProductVariables.AAPTPreferredConfig = test.aaptPreferredConfig
 		config.TestProductVariables.AAPTPrebuiltDPI = test.aaptPrebuiltDPI
-		ctx := testContext()
+		ctx := testContext(config)
 
 		run(t, ctx, config)
 
@@ -2777,7 +2777,7 @@ func TestUsesLibraries(t *testing.T) {
 	config := testAppConfig(nil, bp, nil)
 	config.TestProductVariables.MissingUsesLibraries = []string{"baz"}
 
-	ctx := testContext()
+	ctx := testContext(config)
 
 	run(t, ctx, config)
 
@@ -2812,48 +2812,51 @@ func TestUsesLibraries(t *testing.T) {
 		t.Errorf("wanted %q in %q", w, cmd)
 	}
 
-	// Test that all present libraries are preopted, including implicit SDK dependencies, possibly stubs.
+	// Test that all present libraries are preopted, including implicit SDK dependencies, possibly stubs
 	cmd = app.Rule("dexpreopt").RuleParams.Command
-	w := `--target-classpath-for-sdk any` +
-		` /system/framework/foo.jar` +
-		`:/system/framework/quuz.jar` +
-		`:/system/framework/qux.jar` +
-		`:/system/framework/runtime-library.jar` +
-		`:/system/framework/bar.jar `
+	w := `--target-context-for-sdk any ` +
+		`PCL[/system/framework/qux.jar]#` +
+		`PCL[/system/framework/quuz.jar]#` +
+		`PCL[/system/framework/foo.jar]#` +
+		`PCL[/system/framework/bar.jar]#` +
+		`PCL[/system/framework/runtime-library.jar]`
 	if !strings.Contains(cmd, w) {
 		t.Errorf("wanted %q in %q", w, cmd)
 	}
 
 	// Test conditional context for target SDK version 28.
-	if w := `--target-classpath-for-sdk 28` +
-		` /system/framework/org.apache.http.legacy.jar `; !strings.Contains(cmd, w) {
+	if w := `--target-context-for-sdk 28` +
+		` PCL[/system/framework/org.apache.http.legacy.jar] `; !strings.Contains(cmd, w) {
 		t.Errorf("wanted %q in %q", w, cmd)
 	}
 
 	// Test conditional context for target SDK version 29.
-	if w := `--target-classpath-for-sdk 29` +
-		` /system/framework/android.hidl.base-V1.0-java.jar` +
-		`:/system/framework/android.hidl.manager-V1.0-java.jar `; !strings.Contains(cmd, w) {
+	if w := `--target-context-for-sdk 29` +
+		` PCL[/system/framework/android.hidl.base-V1.0-java.jar]` +
+		`#PCL[/system/framework/android.hidl.manager-V1.0-java.jar] `; !strings.Contains(cmd, w) {
 		t.Errorf("wanted %q in %q", w, cmd)
 	}
 
 	// Test conditional context for target SDK version 30.
-	if w := `--target-classpath-for-sdk 30` +
-		` /system/framework/android.test.base.jar `; !strings.Contains(cmd, w) {
+	// "android.test.mock" is absent because "android.test.runner" is not used.
+	if w := `--target-context-for-sdk 30` +
+		` PCL[/system/framework/android.test.base.jar] `; !strings.Contains(cmd, w) {
 		t.Errorf("wanted %q in %q", w, cmd)
 	}
 
 	cmd = prebuilt.Rule("dexpreopt").RuleParams.Command
-	if w := `--target-classpath-for-sdk any` +
-		` /system/framework/foo.jar` +
-		`:/system/framework/android.test.runner.jar` +
-		`:/system/framework/bar.jar `; !strings.Contains(cmd, w) {
+	if w := `--target-context-for-sdk any` +
+		` PCL[/system/framework/foo.jar]` +
+		`#PCL[/system/framework/android.test.runner.jar]` +
+		`#PCL[/system/framework/bar.jar] `; !strings.Contains(cmd, w) {
 		t.Errorf("wanted %q in %q", w, cmd)
 	}
 
 	// Test conditional context for target SDK version 30.
-	if w := `--target-classpath-for-sdk 30` +
-		` /system/framework/android.test.base.jar `; !strings.Contains(cmd, w) {
+	// "android.test.mock" is present because "android.test.runner" is used.
+	if w := `--target-context-for-sdk 30` +
+		` PCL[/system/framework/android.test.base.jar]` +
+		`#PCL[/system/framework/android.test.mock.jar] `; !strings.Contains(cmd, w) {
 		t.Errorf("wanted %q in %q", w, cmd)
 	}
 }
@@ -3126,7 +3129,7 @@ func TestUncompressDex(t *testing.T) {
 			config.TestProductVariables.Always_use_prebuilt_sdks = proptools.BoolPtr(true)
 		}
 
-		ctx := testContext()
+		ctx := testContext(config)
 
 		run(t, ctx, config)
 
@@ -3206,7 +3209,7 @@ func TestRuntimeResourceOverlay(t *testing.T) {
 		}
 		`
 	config := testAppConfig(nil, bp, fs)
-	ctx := testContext()
+	ctx := testContext(config)
 	run(t, ctx, config)
 
 	m := ctx.ModuleForTests("foo", "android_common")
@@ -3503,7 +3506,7 @@ func TestEnforceRRO_propagatesToDependencies(t *testing.T) {
 				config.TestProductVariables.EnforceRROExemptedTargets = testCase.enforceRROExemptTargets
 			}
 
-			ctx := testContext()
+			ctx := testContext(config)
 			run(t, ctx, config)
 
 			modules := []string{"foo", "bar"}

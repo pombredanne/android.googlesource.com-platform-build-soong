@@ -70,9 +70,9 @@ func testConfig(env map[string]string, bp string, fs map[string][]byte) android.
 	return config
 }
 
-func testContext() *android.TestContext {
+func testContext(config android.Config) *android.TestContext {
 
-	ctx := android.NewTestArchContext()
+	ctx := android.NewTestArchContext(config)
 	RegisterJavaBuildComponents(ctx)
 	RegisterAppBuildComponents(ctx)
 	RegisterAARBuildComponents(ctx)
@@ -115,7 +115,7 @@ func run(t *testing.T, ctx *android.TestContext, config android.Config) {
 	pathCtx := android.PathContextForTesting(config)
 	dexpreopt.SetTestGlobalConfig(config, dexpreopt.GlobalConfigForTests(pathCtx))
 
-	ctx.Register(config)
+	ctx.Register()
 	_, errs := ctx.ParseBlueprintsFiles("Android.bp")
 	android.FailIfErrored(t, errs)
 	_, errs = ctx.PrepareBuildActions(config)
@@ -129,12 +129,12 @@ func testJavaError(t *testing.T, pattern string, bp string) (*android.TestContex
 
 func testJavaErrorWithConfig(t *testing.T, pattern string, config android.Config) (*android.TestContext, android.Config) {
 	t.Helper()
-	ctx := testContext()
+	ctx := testContext(config)
 
 	pathCtx := android.PathContextForTesting(config)
 	dexpreopt.SetTestGlobalConfig(config, dexpreopt.GlobalConfigForTests(pathCtx))
 
-	ctx.Register(config)
+	ctx.Register()
 	_, errs := ctx.ParseBlueprintsFiles("Android.bp")
 	if len(errs) > 0 {
 		android.FailIfNoMatchingErrors(t, pattern, errs)
@@ -163,7 +163,7 @@ func testJava(t *testing.T, bp string) (*android.TestContext, android.Config) {
 
 func testJavaWithConfig(t *testing.T, config android.Config) (*android.TestContext, android.Config) {
 	t.Helper()
-	ctx := testContext()
+	ctx := testContext(config)
 	run(t, ctx, config)
 
 	return ctx, config
@@ -1440,7 +1440,7 @@ func TestJavaLibrary(t *testing.T) {
 				}
 `),
 	})
-	ctx := testContext()
+	ctx := testContext(config)
 	run(t, ctx, config)
 }
 
@@ -1458,7 +1458,7 @@ func TestJavaImport(t *testing.T) {
 				}
 `),
 	})
-	ctx := testContext()
+	ctx := testContext(config)
 	run(t, ctx, config)
 }
 
@@ -1593,8 +1593,8 @@ func TestJavaSdkLibrary(t *testing.T) {
 	// test if baz has exported SDK lib names foo and bar to qux
 	qux := ctx.ModuleForTests("qux", "android_common")
 	if quxLib, ok := qux.Module().(*Library); ok {
-		sdkLibs := android.SortedStringKeys(quxLib.ExportedSdkLibs())
-		if w := []string{"bar", "foo", "fred", "quuz"}; !reflect.DeepEqual(w, sdkLibs) {
+		sdkLibs := quxLib.ClassLoaderContexts().UsesLibs()
+		if w := []string{"foo", "bar", "fred", "quuz"}; !reflect.DeepEqual(w, sdkLibs) {
 			t.Errorf("qux should export %q but exports %q", w, sdkLibs)
 		}
 	}
@@ -2046,7 +2046,14 @@ func TestPatchModule(t *testing.T) {
 
 			java_library {
 				name: "baz",
-				srcs: ["c.java"],
+				srcs: [
+					"c.java",
+					// Tests for b/150878007
+					"dir/d.java",
+					"dir2/e.java",
+					"dir2/f.java",
+					"nested/dir/g.java"
+				],
 				patch_module: "java.base",
 			}
 		`
@@ -2055,7 +2062,8 @@ func TestPatchModule(t *testing.T) {
 		checkPatchModuleFlag(t, ctx, "foo", "")
 		expected := "java.base=.:" + buildDir
 		checkPatchModuleFlag(t, ctx, "bar", expected)
-		expected = "java.base=" + strings.Join([]string{".", buildDir, moduleToPath("ext"), moduleToPath("framework")}, ":")
+		expected = "java.base=" + strings.Join([]string{
+			".", buildDir, "dir", "dir2", "nested", moduleToPath("ext"), moduleToPath("framework")}, ":")
 		checkPatchModuleFlag(t, ctx, "baz", expected)
 	})
 }

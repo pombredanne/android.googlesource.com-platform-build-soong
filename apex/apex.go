@@ -63,7 +63,6 @@ var (
 	testTag        = dependencyTag{name: "test", payload: true}
 	keyTag         = dependencyTag{name: "key"}
 	certificateTag = dependencyTag{name: "certificate"}
-	usesTag        = dependencyTag{name: "uses"}
 	androidAppTag  = dependencyTag{name: "androidApp", payload: true}
 	rroTag         = dependencyTag{name: "rro", payload: true}
 	bpfTag         = dependencyTag{name: "bpf", payload: true}
@@ -276,8 +275,6 @@ func makeApexAvailableBaseline() map[string][]string {
 		"libc_malloc_debug_backtrace",
 		"libcamera_client",
 		"libcamera_metadata",
-		"libdexfile_external_headers",
-		"libdexfile_support",
 		"libdvr_headers",
 		"libexpat",
 		"libfifo",
@@ -304,10 +301,6 @@ func makeApexAvailableBaseline() map[string][]string {
 		"libmp4extractor",
 		"libmpeg2extractor",
 		"libnativebase_headers",
-		"libnativebridge-headers",
-		"libnativebridge_lazy",
-		"libnativeloader-headers",
-		"libnativeloader_lazy",
 		"libnativewindow_headers",
 		"libnblog",
 		"liboggextractor",
@@ -431,7 +424,6 @@ func makeApexAvailableBaseline() map[string][]string {
 		"libcodec2_soft_vp9dec",
 		"libcodec2_soft_vp9enc",
 		"libcodec2_vndk",
-		"libdexfile_support",
 		"libdvr_headers",
 		"libfmq",
 		"libfmq",
@@ -454,8 +446,6 @@ func makeApexAvailableBaseline() map[string][]string {
 		"libmedia_headers",
 		"libmpeg2dec",
 		"libnativebase_headers",
-		"libnativebridge_lazy",
-		"libnativeloader_lazy",
 		"libnativewindow_headers",
 		"libpdx_headers",
 		"libscudo_wrapper",
@@ -563,8 +553,6 @@ func makeApexAvailableBaseline() map[string][]string {
 		"libdebuggerd_common_headers",
 		"libdebuggerd_handler_core",
 		"libdebuggerd_handler_fallback",
-		"libdexfile_external_headers",
-		"libdexfile_support",
 		"libdl_static",
 		"libjemalloc5",
 		"liblinker_main",
@@ -775,7 +763,6 @@ func RegisterPostDepsMutators(ctx android.RegisterMutatorsContext) {
 	ctx.BottomUp("apex", apexMutator).Parallel()
 	ctx.BottomUp("apex_directly_in_any", apexDirectlyInAnyMutator).Parallel()
 	ctx.BottomUp("apex_flattened", apexFlattenedMutator).Parallel()
-	ctx.BottomUp("apex_uses", apexUsesMutator).Parallel()
 	ctx.BottomUp("mark_platform_availability", markPlatformAvailability).Parallel()
 }
 
@@ -1018,12 +1005,6 @@ func apexFlattenedMutator(mctx android.BottomUpMutatorContext) {
 	}
 }
 
-func apexUsesMutator(mctx android.BottomUpMutatorContext) {
-	if ab, ok := mctx.Module().(*apexBundle); ok {
-		mctx.AddFarVariationDependencies(nil, usesTag, ab.properties.Uses...)
-	}
-}
-
 var (
 	useVendorAllowListKey = android.NewOnceKey("useVendorAllowList")
 )
@@ -1142,12 +1123,6 @@ type apexBundleProperties struct {
 	PreventInstall bool `blueprint:"mutated"`
 
 	HideFromMake bool `blueprint:"mutated"`
-
-	// Indicates this APEX provides C++ shared libaries to other APEXes. Default: false.
-	Provide_cpp_shared_libs *bool
-
-	// List of providing APEXes' names so that this APEX can depend on provided shared libraries.
-	Uses []string
 
 	// package format of this apex variant; could be non-flattened, flattened, or zip.
 	// imageApex, zipApex or flattened
@@ -1488,6 +1463,8 @@ type apexBundle struct {
 	lintReports android.Paths
 
 	payloadFsType fsType
+
+	distFiles android.TaggedDistFiles
 }
 
 func addDependenciesForNativeModules(ctx android.BottomUpMutatorContext,
@@ -2190,30 +2167,6 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	var provideNativeLibs []string
 	var requireNativeLibs []string
 
-	// Check if "uses" requirements are met with dependent apexBundles
-	var providedNativeSharedLibs []string
-	useVendor := proptools.Bool(a.properties.Use_vendor)
-	ctx.VisitDirectDepsBlueprint(func(m blueprint.Module) {
-		if ctx.OtherModuleDependencyTag(m) != usesTag {
-			return
-		}
-		otherName := ctx.OtherModuleName(m)
-		other, ok := m.(*apexBundle)
-		if !ok {
-			ctx.PropertyErrorf("uses", "%q is not a provider", otherName)
-			return
-		}
-		if proptools.Bool(other.properties.Use_vendor) != useVendor {
-			ctx.PropertyErrorf("use_vendor", "%q has different value of use_vendor", otherName)
-			return
-		}
-		if !proptools.Bool(other.properties.Provide_cpp_shared_libs) {
-			ctx.PropertyErrorf("uses", "%q does not provide native_shared_libs", otherName)
-			return
-		}
-		providedNativeSharedLibs = append(providedNativeSharedLibs, other.properties.Native_shared_libs...)
-	})
-
 	var filesInfo []apexFile
 	// TODO(jiyong) do this using WalkPayloadDeps
 	ctx.WalkDepsBlueprint(func(child, parent blueprint.Module) bool {
@@ -2361,11 +2314,6 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 				// tags used below are private (e.g. `cc.sharedDepTag`).
 				if cc.IsSharedDepTag(depTag) || cc.IsRuntimeDepTag(depTag) {
 					if cc, ok := child.(*cc.Module); ok {
-						if android.InList(cc.Name(), providedNativeSharedLibs) {
-							// If we're using a shared library which is provided from other APEX,
-							// don't include it in this APEX
-							return false
-						}
 						if cc.UseVndk() && proptools.Bool(a.properties.Use_vndk_as_stable) && cc.IsVndk() {
 							requireNativeLibs = append(requireNativeLibs, ":vndk")
 							return false
@@ -2533,6 +2481,8 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	a.buildApexDependencyInfo(ctx)
 
 	a.buildLintReports(ctx)
+
+	a.distFiles = a.GenerateTaggedDistFiles(ctx)
 }
 
 // Enforce that Java deps of the apex are using stable SDKs to compile

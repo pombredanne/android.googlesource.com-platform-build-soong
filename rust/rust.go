@@ -133,14 +133,6 @@ func (mod *Module) ExtraImageVariations(android.BaseModuleContext) []string {
 func (c *Module) SetImageVariation(ctx android.BaseModuleContext, variant string, module android.Module) {
 }
 
-func (mod *Module) BuildStubs() bool {
-	return false
-}
-
-func (mod *Module) HasStubsVariants() bool {
-	return false
-}
-
 func (mod *Module) SelectedStl() string {
 	return ""
 }
@@ -152,10 +144,6 @@ func (mod *Module) NonCcVariants() bool {
 		}
 	}
 	panic(fmt.Errorf("NonCcVariants called on non-library module: %q", mod.BaseModuleName()))
-}
-
-func (mod *Module) ApiLevel() string {
-	panic(fmt.Errorf("Called ApiLevel on Rust module %q; stubs libraries are not yet supported.", mod.BaseModuleName()))
 }
 
 func (mod *Module) Static() bool {
@@ -233,18 +221,6 @@ func (mod *Module) SplitPerApiLevel() bool {
 	return false
 }
 
-func (mod *Module) ToolchainLibrary() bool {
-	return false
-}
-
-func (mod *Module) NdkPrebuiltStl() bool {
-	return false
-}
-
-func (mod *Module) StubDecorator() bool {
-	return false
-}
-
 type Deps struct {
 	Dylibs     []string
 	Rlibs      []string
@@ -253,6 +229,7 @@ type Deps struct {
 	ProcMacros []string
 	SharedLibs []string
 	StaticLibs []string
+	HeaderLibs []string
 
 	CrtBegin, CrtEnd string
 }
@@ -466,26 +443,6 @@ func (mod *Module) SetShared() {
 	panic(fmt.Errorf("SetShared called on non-library module: %q", mod.BaseModuleName()))
 }
 
-func (mod *Module) SetBuildStubs() {
-	panic("SetBuildStubs not yet implemented for rust modules")
-}
-
-func (mod *Module) SetStubsVersion(string) {
-	panic("SetStubsVersion not yet implemented for rust modules")
-}
-
-func (mod *Module) StubsVersion() string {
-	panic("StubsVersion not yet implemented for rust modules")
-}
-
-func (mod *Module) SetAllStubsVersions([]string) {
-	panic("SetAllStubsVersions not yet implemented for rust modules")
-}
-
-func (mod *Module) AllStubsVersions() []string {
-	return nil
-}
-
 func (mod *Module) BuildStaticVariant() bool {
 	if mod.compiler != nil {
 		if library, ok := mod.compiler.(libraryInterface); ok {
@@ -506,16 +463,6 @@ func (mod *Module) BuildSharedVariant() bool {
 
 func (mod *Module) Module() android.Module {
 	return mod
-}
-
-func (mod *Module) StubsVersions(ctx android.BaseMutatorContext) []string {
-	// For now, Rust has no stubs versions.
-	if mod.compiler != nil {
-		if _, ok := mod.compiler.(libraryInterface); ok {
-			return []string{}
-		}
-	}
-	panic(fmt.Errorf("StubsVersions called on non-library module: %q", mod.BaseModuleName()))
 }
 
 func (mod *Module) OutputFile() android.OptionalPath {
@@ -892,6 +839,11 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 				directSharedLibDeps = append(directSharedLibDeps, ccDep)
 				mod.Properties.AndroidMkSharedLibs = append(mod.Properties.AndroidMkSharedLibs, depName)
 				exportDep = true
+			case cc.IsHeaderDepTag(depTag):
+				exportedInfo := ctx.OtherModuleProvider(dep, cc.FlagExporterInfoProvider).(cc.FlagExporterInfo)
+				depPaths.depIncludePaths = append(depPaths.depIncludePaths, exportedInfo.IncludeDirs...)
+				depPaths.depSystemIncludePaths = append(depPaths.depSystemIncludePaths, exportedInfo.SystemIncludeDirs...)
+				depPaths.depGeneratedHeaders = append(depPaths.depGeneratedHeaders, exportedInfo.GeneratedHeaders...)
 			case depTag == cc.CrtBeginDepTag:
 				depPaths.CrtBegin = linkObject
 			case depTag == cc.CrtEndDepTag:
@@ -1036,6 +988,8 @@ func (mod *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 	actx.AddVariationDependencies(append(commonDepVariations,
 		blueprint.Variation{Mutator: "link", Variation: "static"}),
 		cc.StaticDepTag(), deps.StaticLibs...)
+
+	actx.AddVariationDependencies(nil, cc.HeaderDepTag(), deps.HeaderLibs...)
 
 	crtVariations := cc.GetCrtVariations(ctx, mod)
 	if deps.CrtBegin != "" {

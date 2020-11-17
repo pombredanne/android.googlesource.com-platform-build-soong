@@ -41,12 +41,13 @@ type configImpl struct {
 	buildDateTime string
 
 	// From the arguments
-	parallel   int
-	keepGoing  int
-	verbose    bool
-	checkbuild bool
-	dist       bool
-	skipMake   bool
+	parallel       int
+	keepGoing      int
+	verbose        bool
+	checkbuild     bool
+	dist           bool
+	skipMake       bool
+	skipSoongTests bool
 
 	// From the product config
 	katiArgs        []string
@@ -270,6 +271,16 @@ func NewConfig(ctx Context, args ...string) Config {
 	if ret.UseRBE() {
 		for k, v := range getRBEVars(ctx, Config{ret}) {
 			ret.environ.Set(k, v)
+		}
+	}
+
+	bpd := shared.BazelMetricsDir(ret.OutDir())
+	if err := os.RemoveAll(bpd); err != nil {
+		ctx.Fatalf("Unable to remove bazel profile directory %q: %v", bpd, err)
+	}
+	if ret.UseBazel() {
+		if err := os.MkdirAll(bpd, 0777); err != nil {
+			ctx.Fatalf("Failed to create bazel profile directory %q: %v", bpd, err)
 		}
 	}
 
@@ -526,6 +537,8 @@ func (c *configImpl) parseArgs(ctx Context, args []string) {
 			c.verbose = true
 		} else if arg == "--skip-make" {
 			c.skipMake = true
+		} else if arg == "--skip-soong-tests" {
+			c.skipSoongTests = true
 		} else if len(arg) > 0 && arg[0] == '-' {
 			parseArgNum := func(def int) int {
 				if len(arg) > 2 {
@@ -829,6 +842,16 @@ func (c *configImpl) StartGoma() bool {
 
 func (c *configImpl) UseRBE() bool {
 	if v, ok := c.environ.Get("USE_RBE"); ok {
+		v = strings.TrimSpace(v)
+		if v != "" && v != "false" {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *configImpl) UseBazel() bool {
+	if v, ok := c.environ.Get("USE_BAZEL"); ok {
 		v = strings.TrimSpace(v)
 		if v != "" && v != "false" {
 			return true

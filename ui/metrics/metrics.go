@@ -18,6 +18,7 @@ import (
 	"io/ioutil"
 	"os"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/golang/protobuf/proto"
@@ -31,6 +32,7 @@ const (
 	RunSetupTool    = "setup"
 	RunShutdownTool = "shutdown"
 	RunSoong        = "soong"
+	RunBazel        = "bazel"
 	TestRun         = "test"
 	Total           = "total"
 )
@@ -52,17 +54,14 @@ func (m *Metrics) SetTimeMetrics(perf soong_metrics_proto.PerfInfo) {
 	switch perf.GetName() {
 	case RunKati:
 		m.metrics.KatiRuns = append(m.metrics.KatiRuns, &perf)
-		break
 	case RunSoong:
 		m.metrics.SoongRuns = append(m.metrics.SoongRuns, &perf)
-		break
+	case RunBazel:
+		m.metrics.BazelRuns = append(m.metrics.BazelRuns, &perf)
 	case PrimaryNinja:
 		m.metrics.NinjaRuns = append(m.metrics.NinjaRuns, &perf)
-		break
 	case Total:
 		m.metrics.Total = &perf
-	default:
-		// ignored
 	}
 }
 
@@ -79,13 +78,10 @@ func (m *Metrics) SetMetadataMetrics(metadata map[string]string) {
 		switch k {
 		case "BUILD_ID":
 			m.metrics.BuildId = proto.String(v)
-			break
 		case "PLATFORM_VERSION_CODENAME":
 			m.metrics.PlatformVersionCodename = proto.String(v)
-			break
 		case "TARGET_PRODUCT":
 			m.metrics.TargetProduct = proto.String(v)
-			break
 		case "TARGET_BUILD_VARIANT":
 			switch v {
 			case "user":
@@ -94,8 +90,6 @@ func (m *Metrics) SetMetadataMetrics(metadata map[string]string) {
 				m.metrics.TargetBuildVariant = soong_metrics_proto.MetricsBase_USERDEBUG.Enum()
 			case "eng":
 				m.metrics.TargetBuildVariant = soong_metrics_proto.MetricsBase_ENG.Enum()
-			default:
-				// ignored
 			}
 		case "TARGET_ARCH":
 			m.metrics.TargetArch = m.getArch(v)
@@ -117,8 +111,6 @@ func (m *Metrics) SetMetadataMetrics(metadata map[string]string) {
 			m.metrics.HostCross_2NdArch = proto.String(v)
 		case "OUT_DIR":
 			m.metrics.OutDir = proto.String(v)
-		default:
-			// ignored
 		}
 	}
 }
@@ -140,6 +132,10 @@ func (m *Metrics) getArch(arch string) *soong_metrics_proto.MetricsBase_Arch {
 
 func (m *Metrics) SetBuildDateTime(buildTimestamp time.Time) {
 	m.metrics.BuildDateTimestamp = proto.Int64(buildTimestamp.UnixNano() / int64(time.Second))
+}
+
+func (m *Metrics) SetBuildCommand(cmd []string) {
+	m.metrics.BuildCommand = proto.String(strings.Join(cmd, " "))
 }
 
 // exports the output to the file at outputPath
