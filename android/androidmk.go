@@ -72,6 +72,7 @@ type AndroidMkEntriesProvider interface {
 type AndroidMkEntries struct {
 	Class           string
 	SubName         string
+	OverrideName    string
 	DistFiles       TaggedDistFiles
 	OutputFile      OptionalPath
 	Disabled        bool
@@ -176,23 +177,83 @@ func (a *AndroidMkEntries) AddStrings(name string, value ...string) {
 	a.EntryMap[name] = append(a.EntryMap[name], value...)
 }
 
-// Compute the list of Make strings to declare phone goals and dist-for-goals
-// calls from the module's dist and dists properties.
-func (a *AndroidMkEntries) GetDistForGoals(mod blueprint.Module) []string {
+// The contributions to the dist.
+type distContributions struct {
+	// List of goals and the dist copy instructions.
+	copiesForGoals []*copiesForGoals
+}
+
+// getCopiesForGoals returns a copiesForGoals into which copy instructions that
+// must be processed when building one or more of those goals can be added.
+func (d *distContributions) getCopiesForGoals(goals string) *copiesForGoals {
+	copiesForGoals := &copiesForGoals{goals: goals}
+	d.copiesForGoals = append(d.copiesForGoals, copiesForGoals)
+	return copiesForGoals
+}
+
+// Associates a list of dist copy instructions with a set of goals for which they
+// should be run.
+type copiesForGoals struct {
+	// goals are a space separated list of build targets that will trigger the
+	// copy instructions.
+	goals string
+
+	// A list of instructions to copy a module's output files to somewhere in the
+	// dist directory.
+	copies []distCopy
+}
+
+// Adds a copy instruction.
+func (d *copiesForGoals) addCopyInstruction(from Path, dest string) {
+	d.copies = append(d.copies, distCopy{from, dest})
+}
+
+// Instruction on a path that must be copied into the dist.
+type distCopy struct {
+	// The path to copy from.
+	from Path
+
+	// The destination within the dist directory to copy to.
+	dest string
+}
+
+// Compute the contributions that the module makes to the dist.
+func (a *AndroidMkEntries) getDistContributions(mod blueprint.Module) *distContributions {
 	amod := mod.(Module).base()
 	name := amod.BaseModuleName()
 
-	var ret []string
+	// Collate the set of associated tag/paths available for copying to the dist.
+	// Start with an empty (nil) set.
 	var availableTaggedDists TaggedDistFiles
 
+	// Then merge in any that are provided explicitly by the module.
 	if a.DistFiles != nil {
-		availableTaggedDists = a.DistFiles
-	} else if a.OutputFile.Valid() {
-		availableTaggedDists = MakeDefaultDistFiles(a.OutputFile.Path())
-	} else {
+		// Merge the DistFiles into the set.
+		availableTaggedDists = availableTaggedDists.merge(a.DistFiles)
+	}
+
+	// If no paths have been provided for the DefaultDistTag and the output file is
+	// valid then add that as the default dist path.
+	if _, ok := availableTaggedDists[DefaultDistTag]; !ok && a.OutputFile.Valid() {
+		availableTaggedDists = availableTaggedDists.addPathsForTag(DefaultDistTag, a.OutputFile.Path())
+	}
+
+	// If the distFiles created by GenerateTaggedDistFiles contains paths for the
+	// DefaultDistTag then that takes priority so delete any existing paths.
+	if _, ok := amod.distFiles[DefaultDistTag]; ok {
+		delete(availableTaggedDists, DefaultDistTag)
+	}
+
+	// Finally, merge the distFiles created by GenerateTaggedDistFiles.
+	availableTaggedDists = availableTaggedDists.merge(amod.distFiles)
+
+	if len(availableTaggedDists) == 0 {
 		// Nothing dist-able for this module.
 		return nil
 	}
+
+	// Collate the contributions this module makes to the dist.
+	distContributions := &distContributions{}
 
 	// Iterate over this module's dist structs, merged from the dist and dists properties.
 	for _, dist := range amod.Dists() {
@@ -203,7 +264,7 @@ func (a *AndroidMkEntries) GetDistForGoals(mod blueprint.Module) []string {
 		var tag string
 		if dist.Tag == nil {
 			// If the dist struct does not specify a tag, use the default output files tag.
-			tag = ""
+			tag = DefaultDistTag
 		} else {
 			tag = *dist.Tag
 		}
@@ -217,15 +278,15 @@ func (a *AndroidMkEntries) GetDistForGoals(mod blueprint.Module) []string {
 		}
 
 		if len(tagPaths) > 1 && (dist.Dest != nil || dist.Suffix != nil) {
-			errorMessage := "Cannot apply dest/suffix for more than one dist " +
-				"file for %s goals in module %s. The list of dist files, " +
+			errorMessage := "%s: Cannot apply dest/suffix for more than one dist " +
+				"file for %q goals tag %q in module %s. The list of dist files, " +
 				"which should have a single element, is:\n%s"
-			panic(fmt.Errorf(errorMessage, goals, name, tagPaths))
+			panic(fmt.Errorf(errorMessage, mod, goals, tag, name, tagPaths))
 		}
 
-		ret = append(ret, fmt.Sprintf(".PHONY: %s\n", goals))
+		copiesForGoals := distContributions.getCopiesForGoals(goals)
 
-		// Create dist-for-goals calls for each path in the dist'd files.
+		// Iterate over each path adding a copy instruction to copiesForGoals
 		for _, path := range tagPaths {
 			// It's possible that the Path is nil from errant modules. Be defensive here.
 			if path == nil {
@@ -260,19 +321,48 @@ func (a *AndroidMkEntries) GetDistForGoals(mod blueprint.Module) []string {
 				}
 			}
 
+			copiesForGoals.addCopyInstruction(path, dest)
+		}
+	}
+
+	return distContributions
+}
+
+// generateDistContributionsForMake generates make rules that will generate the
+// dist according to the instructions in the supplied distContribution.
+func generateDistContributionsForMake(distContributions *distContributions) []string {
+	var ret []string
+	for _, d := range distContributions.copiesForGoals {
+		ret = append(ret, fmt.Sprintf(".PHONY: %s\n", d.goals))
+		// Create dist-for-goals calls for each of the copy instructions.
+		for _, c := range d.copies {
 			ret = append(
 				ret,
-				fmt.Sprintf("$(call dist-for-goals,%s,%s:%s)\n", goals, path.String(), dest))
+				fmt.Sprintf("$(call dist-for-goals,%s,%s:%s)\n", d.goals, c.from.String(), c.dest))
 		}
 	}
 
 	return ret
 }
 
+// Compute the list of Make strings to declare phony goals and dist-for-goals
+// calls from the module's dist and dists properties.
+func (a *AndroidMkEntries) GetDistForGoals(mod blueprint.Module) []string {
+	distContributions := a.getDistContributions(mod)
+	if distContributions == nil {
+		return nil
+	}
+
+	return generateDistContributionsForMake(distContributions)
+}
+
 func (a *AndroidMkEntries) fillInEntries(config Config, bpPath string, mod blueprint.Module) {
 	a.EntryMap = make(map[string][]string)
 	amod := mod.(Module).base()
 	name := amod.BaseModuleName()
+	if a.OverrideName != "" {
+		name = a.OverrideName
+	}
 
 	if a.Include == "" {
 		a.Include = "$(BUILD_PREBUILT)"
@@ -304,15 +394,16 @@ func (a *AndroidMkEntries) fillInEntries(config Config, bpPath string, mod bluep
 	host := false
 	switch amod.Os().Class {
 	case Host:
-		// Make cannot identify LOCAL_MODULE_HOST_ARCH:= common.
-		if amod.Arch().ArchType != Common {
-			a.SetString("LOCAL_MODULE_HOST_ARCH", archStr)
-		}
-		host = true
-	case HostCross:
-		// Make cannot identify LOCAL_MODULE_HOST_CROSS_ARCH:= common.
-		if amod.Arch().ArchType != Common {
-			a.SetString("LOCAL_MODULE_HOST_CROSS_ARCH", archStr)
+		if amod.Target().HostCross {
+			// Make cannot identify LOCAL_MODULE_HOST_CROSS_ARCH:= common.
+			if amod.Arch().ArchType != Common {
+				a.SetString("LOCAL_MODULE_HOST_CROSS_ARCH", archStr)
+			}
+		} else {
+			// Make cannot identify LOCAL_MODULE_HOST_ARCH:= common.
+			if amod.Arch().ArchType != Common {
+				a.SetString("LOCAL_MODULE_HOST_ARCH", archStr)
+			}
 		}
 		host = true
 	case Device:
@@ -359,9 +450,11 @@ func (a *AndroidMkEntries) fillInEntries(config Config, bpPath string, mod bluep
 	if amod.ArchSpecific() {
 		switch amod.Os().Class {
 		case Host:
-			prefix = "HOST_"
-		case HostCross:
-			prefix = "HOST_CROSS_"
+			if amod.Target().HostCross {
+				prefix = "HOST_CROSS_"
+			} else {
+				prefix = "HOST_"
+			}
 		case Device:
 			prefix = "TARGET_"
 
@@ -410,7 +503,7 @@ func AndroidMkSingleton() Singleton {
 type androidMkSingleton struct{}
 
 func (c *androidMkSingleton) GenerateBuildActions(ctx SingletonContext) {
-	if !ctx.Config().EmbeddedInMake() {
+	if !ctx.Config().KatiEnabled() {
 		return
 	}
 
@@ -563,9 +656,11 @@ func translateAndroidModule(ctx SingletonContext, w io.Writer, mod blueprint.Mod
 	if amod.ArchSpecific() {
 		switch amod.Os().Class {
 		case Host:
-			prefix = "HOST_"
-		case HostCross:
-			prefix = "HOST_CROSS_"
+			if amod.Target().HostCross {
+				prefix = "HOST_CROSS_"
+			} else {
+				prefix = "HOST_"
+			}
 		case Device:
 			prefix = "TARGET_"
 
@@ -633,4 +728,22 @@ func shouldSkipAndroidMkProcessing(module *ModuleBase) bool {
 		module.commonProperties.SkipInstall ||
 		// Make does not understand LinuxBionic
 		module.Os() == LinuxBionic
+}
+
+func AndroidMkDataPaths(data []DataPath) []string {
+	var testFiles []string
+	for _, d := range data {
+		rel := d.SrcPath.Rel()
+		path := d.SrcPath.String()
+		if !strings.HasSuffix(path, rel) {
+			panic(fmt.Errorf("path %q does not end with %q", path, rel))
+		}
+		path = strings.TrimSuffix(path, rel)
+		testFileString := path + ":" + rel
+		if len(d.RelativeInstallPath) > 0 {
+			testFileString += ":" + d.RelativeInstallPath
+		}
+		testFiles = append(testFiles, testFileString)
+	}
+	return testFiles
 }

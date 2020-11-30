@@ -33,11 +33,9 @@ type dexpreopter struct {
 	isTest              bool
 	isPresignedPrebuilt bool
 
-	manifestFile     android.Path
-	usesLibs         []string
-	optionalUsesLibs []string
-	enforceUsesLibs  bool
-	libraryPaths     dexpreopt.LibraryPaths
+	manifestFile        android.Path
+	enforceUsesLibs     bool
+	classLoaderContexts dexpreopt.ClassLoaderContextMap
 
 	builtInstalled string
 }
@@ -94,7 +92,7 @@ func (d *dexpreopter) dexpreoptDisabled(ctx android.BaseModuleContext) bool {
 	}
 
 	// Don't preopt APEX variant module
-	if am, ok := ctx.Module().(android.ApexModule); ok && !am.IsForPlatform() {
+	if apexInfo := ctx.Provider(android.ApexInfoProvider).(android.ApexInfo); !apexInfo.IsForPlatform() {
 		return true
 	}
 
@@ -193,10 +191,8 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 		ProfileIsTextListing: profileIsTextListing,
 		ProfileBootListing:   profileBootListing,
 
-		EnforceUsesLibraries:  d.enforceUsesLibs,
-		OptionalUsesLibraries: d.optionalUsesLibs,
-		UsesLibraries:         d.usesLibs,
-		LibraryPaths:          d.libraryPaths,
+		EnforceUsesLibraries: d.enforceUsesLibs,
+		ClassLoaderContexts:  d.classLoaderContexts,
 
 		Archs:                   archs,
 		DexPreoptImages:         images,

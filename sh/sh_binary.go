@@ -66,7 +66,18 @@ type shBinaryProperties struct {
 	Symlinks []string `android:"arch_variant"`
 
 	// Make this module available when building for ramdisk.
+	// On device without a dedicated recovery partition, the module is only
+	// available after switching root into
+	// /first_stage_ramdisk. To expose the module before switching root, install
+	// the recovery variant instead.
 	Ramdisk_available *bool
+
+	// Make this module available when building for vendor ramdisk.
+	// On device without a dedicated recovery partition, the module is only
+	// available after switching root into
+	// /first_stage_ramdisk. To expose the module before switching root, install
+	// the recovery variant instead.
+	Vendor_ramdisk_available *bool
 
 	// Make this module available when building for recovery.
 	Recovery_available *bool
@@ -176,6 +187,10 @@ func (s *ShBinary) RamdiskVariantNeeded(ctx android.BaseModuleContext) bool {
 	return proptools.Bool(s.properties.Ramdisk_available) || s.ModuleBase.InstallInRamdisk()
 }
 
+func (s *ShBinary) VendorRamdiskVariantNeeded(ctx android.BaseModuleContext) bool {
+	return proptools.Bool(s.properties.Vendor_ramdisk_available) || s.ModuleBase.InstallInVendorRamdisk()
+}
+
 func (s *ShBinary) RecoveryVariantNeeded(ctx android.BaseModuleContext) bool {
 	return proptools.Bool(s.properties.Recovery_available) || s.ModuleBase.InstallInRecovery()
 }
@@ -261,7 +276,7 @@ func (s *ShTest) DepsMutator(ctx android.BottomUpMutatorContext) {
 	ctx.AddFarVariationDependencies(append(ctx.Target().Variations(), sharedLibVariations...),
 		shTestDataLibsTag, s.testProperties.Data_libs...)
 	if ctx.Target().Os.Class == android.Host && len(ctx.Config().Targets[android.Android]) > 0 {
-		deviceVariations := ctx.Config().Targets[android.Android][0].Variations()
+		deviceVariations := ctx.Config().AndroidFirstDeviceTarget.Variations()
 		ctx.AddFarVariationDependencies(deviceVariations, shTestDataDeviceBinsTag, s.testProperties.Data_device_bins...)
 		ctx.AddFarVariationDependencies(append(deviceVariations, sharedLibVariations...),
 			shTestDataDeviceLibsTag, s.testProperties.Data_device_libs...)
@@ -312,6 +327,15 @@ func (s *ShTest) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	} else {
 		options := []tradefed.Option{{Name: "force-root", Value: "false"}}
 		configs = append(configs, tradefed.Object{"target_preparer", "com.android.tradefed.targetprep.RootTargetPreparer", options})
+	}
+	if len(s.testProperties.Data_device_bins) > 0 {
+		moduleName := s.Name()
+		remoteDir := "/data/local/tests/unrestricted/" + moduleName + "/"
+		options := []tradefed.Option{{Name: "cleanup", Value: "true"}}
+		for _, bin := range s.testProperties.Data_device_bins {
+			options = append(options, tradefed.Option{Name: "push-file", Key: bin, Value: remoteDir + bin})
+		}
+		configs = append(configs, tradefed.Object{"target_preparer", "com.android.tradefed.targetprep.PushFilePreparer", options})
 	}
 	s.testConfig = tradefed.AutoGenShellTestConfig(ctx, s.testProperties.Test_config,
 		s.testProperties.Test_config_template, s.testProperties.Test_suites, configs, s.testProperties.Auto_gen_config, s.outputFilePath.Base())

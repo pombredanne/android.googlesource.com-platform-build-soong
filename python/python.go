@@ -34,7 +34,7 @@ func init() {
 }
 
 func RegisterPythonPreDepsMutators(ctx android.RegisterMutatorsContext) {
-	ctx.BottomUp("version_split", versionSplitMutator()).Parallel()
+	ctx.BottomUp("python_version", versionSplitMutator()).Parallel()
 }
 
 // the version properties that apply to python libraries and binaries.
@@ -86,6 +86,9 @@ type BaseProperties struct {
 	// the test. the file extension can be arbitrary except for (.py).
 	Data []string `android:"path,arch_variant"`
 
+	// list of java modules that provide data that should be installed alongside the test.
+	Java_data []string
+
 	// list of the Python libraries compatible both with Python2 and Python3.
 	Libs []string `android:"arch_variant"`
 
@@ -101,6 +104,13 @@ type BaseProperties struct {
 	// this property name is hidden from users' perspectives, and soong will populate it during
 	// runtime.
 	Actual_version string `blueprint:"mutated"`
+
+	// true, if the module is required to be built with actual_version.
+	Enabled *bool `blueprint:"mutated"`
+
+	// true, if the binary is required to be built with embedded launcher.
+	// TODO(nanzhang): Remove this flag when embedded Python3 is supported later.
+	Embedded_launcher *bool `blueprint:"mutated"`
 }
 
 type pathMapping struct {
@@ -187,7 +197,7 @@ func (p *Module) GetSrcsZip() android.Path {
 
 var _ PythonDependency = (*Module)(nil)
 
-var _ android.AndroidMkDataProvider = (*Module)(nil)
+var _ android.AndroidMkEntriesProvider = (*Module)(nil)
 
 func (p *Module) Init() android.Module {
 
@@ -207,10 +217,17 @@ type dependencyTag struct {
 	name string
 }
 
+type installDependencyTag struct {
+	blueprint.BaseDependencyTag
+	android.InstallAlwaysNeededDependencyTag
+	name string
+}
+
 var (
 	pythonLibTag         = dependencyTag{name: "pythonLib"}
+	javaDataTag          = dependencyTag{name: "javaData"}
 	launcherTag          = dependencyTag{name: "launcher"}
-	launcherSharedLibTag = dependencyTag{name: "launcherSharedLib"}
+	launcherSharedLibTag = installDependencyTag{name: "launcherSharedLib"}
 	pyIdentifierRegexp   = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_-]*$`)
 	pyExt                = ".py"
 	protoExt             = ".proto"
@@ -228,23 +245,31 @@ func versionSplitMutator() func(android.BottomUpMutatorContext) {
 	return func(mctx android.BottomUpMutatorContext) {
 		if base, ok := mctx.Module().(*Module); ok {
 			versionNames := []string{}
+			versionProps := []VersionProperties{}
 			// PY3 is first so that we alias the PY3 variant rather than PY2 if both
 			// are available
 			if !(base.properties.Version.Py3.Enabled != nil &&
 				*(base.properties.Version.Py3.Enabled) == false) {
 				versionNames = append(versionNames, pyVersion3)
+				versionProps = append(versionProps, base.properties.Version.Py3)
 			}
 			if base.properties.Version.Py2.Enabled != nil &&
 				*(base.properties.Version.Py2.Enabled) == true {
 				versionNames = append(versionNames, pyVersion2)
+				versionProps = append(versionProps, base.properties.Version.Py2)
 			}
-			modules := mctx.CreateVariations(versionNames...)
+			modules := mctx.CreateLocalVariations(versionNames...)
 			if len(versionNames) > 0 {
 				mctx.AliasVariation(versionNames[0])
 			}
 			for i, v := range versionNames {
 				// set the actual version for Python module.
 				modules[i].(*Module).properties.Actual_version = v
+				// append versioned properties for the Python module
+				err := proptools.AppendMatchingProperties([]interface{}{&modules[i].(*Module).properties}, &versionProps[i], nil)
+				if err != nil {
+					panic(err)
+				}
 			}
 		}
 	}
@@ -270,15 +295,8 @@ func (p *Module) OutputFiles(tag string) (android.Paths, error) {
 	}
 }
 
-func (p *Module) isEmbeddedLauncherEnabled(actual_version string) bool {
-	switch actual_version {
-	case pyVersion2:
-		return Bool(p.properties.Version.Py2.Embedded_launcher)
-	case pyVersion3:
-		return Bool(p.properties.Version.Py3.Embedded_launcher)
-	}
-
-	return false
+func (p *Module) isEmbeddedLauncherEnabled() bool {
+	return Bool(p.properties.Embedded_launcher)
 }
 
 func hasSrcExt(srcs []string, ext string) bool {
@@ -292,34 +310,26 @@ func hasSrcExt(srcs []string, ext string) bool {
 }
 
 func (p *Module) hasSrcExt(ctx android.BottomUpMutatorContext, ext string) bool {
-	if hasSrcExt(p.properties.Srcs, protoExt) {
-		return true
-	}
-	switch p.properties.Actual_version {
-	case pyVersion2:
-		return hasSrcExt(p.properties.Version.Py2.Srcs, protoExt)
-	case pyVersion3:
-		return hasSrcExt(p.properties.Version.Py3.Srcs, protoExt)
-	default:
-		panic(fmt.Errorf("unknown Python Actual_version: %q for module: %q.",
-			p.properties.Actual_version, ctx.ModuleName()))
-	}
+	return hasSrcExt(p.properties.Srcs, ext)
 }
 
 func (p *Module) DepsMutator(ctx android.BottomUpMutatorContext) {
 	android.ProtoDeps(ctx, &p.protoProperties)
 
-	if p.hasSrcExt(ctx, protoExt) && p.Name() != "libprotobuf-python" {
-		ctx.AddVariationDependencies(nil, pythonLibTag, "libprotobuf-python")
+	versionVariation := []blueprint.Variation{
+		{"python_version", p.properties.Actual_version},
 	}
+
+	if p.hasSrcExt(ctx, protoExt) && p.Name() != "libprotobuf-python" {
+		ctx.AddVariationDependencies(versionVariation, pythonLibTag, "libprotobuf-python")
+	}
+	ctx.AddVariationDependencies(versionVariation, pythonLibTag, android.LastUniqueStrings(p.properties.Libs)...)
+
 	switch p.properties.Actual_version {
 	case pyVersion2:
-		ctx.AddVariationDependencies(nil, pythonLibTag,
-			uniqueLibs(ctx, p.properties.Libs, "version.py2.libs",
-				p.properties.Version.Py2.Libs)...)
 
-		if p.bootstrapper != nil && p.isEmbeddedLauncherEnabled(pyVersion2) {
-			ctx.AddVariationDependencies(nil, pythonLibTag, "py2-stdlib")
+		if p.bootstrapper != nil && p.isEmbeddedLauncherEnabled() {
+			ctx.AddVariationDependencies(versionVariation, pythonLibTag, "py2-stdlib")
 
 			launcherModule := "py2-launcher"
 			if p.bootstrapper.autorun() {
@@ -332,6 +342,7 @@ func (p *Module) DepsMutator(ctx android.BottomUpMutatorContext) {
 			// cannot read the property at this stage and it will be too late to add
 			// dependencies later.
 			ctx.AddFarVariationDependencies(ctx.Target().Variations(), launcherSharedLibTag, "libsqlite")
+			ctx.AddFarVariationDependencies(ctx.Target().Variations(), launcherSharedLibTag, "libc++")
 
 			if ctx.Target().Os.Bionic() {
 				ctx.AddFarVariationDependencies(ctx.Target().Variations(), launcherSharedLibTag,
@@ -340,12 +351,9 @@ func (p *Module) DepsMutator(ctx android.BottomUpMutatorContext) {
 		}
 
 	case pyVersion3:
-		ctx.AddVariationDependencies(nil, pythonLibTag,
-			uniqueLibs(ctx, p.properties.Libs, "version.py3.libs",
-				p.properties.Version.Py3.Libs)...)
 
-		if p.bootstrapper != nil && p.isEmbeddedLauncherEnabled(pyVersion3) {
-			ctx.AddVariationDependencies(nil, pythonLibTag, "py3-stdlib")
+		if p.bootstrapper != nil && p.isEmbeddedLauncherEnabled() {
+			ctx.AddVariationDependencies(versionVariation, pythonLibTag, "py3-stdlib")
 
 			launcherModule := "py3-launcher"
 			if p.bootstrapper.autorun() {
@@ -373,34 +381,11 @@ func (p *Module) DepsMutator(ctx android.BottomUpMutatorContext) {
 		panic(fmt.Errorf("unknown Python Actual_version: %q for module: %q.",
 			p.properties.Actual_version, ctx.ModuleName()))
 	}
-}
 
-// check "libs" duplicates from current module dependencies.
-func uniqueLibs(ctx android.BottomUpMutatorContext,
-	commonLibs []string, versionProp string, versionLibs []string) []string {
-	set := make(map[string]string)
-	ret := []string{}
-
-	// deps from "libs" property.
-	for _, l := range commonLibs {
-		if _, found := set[l]; found {
-			ctx.PropertyErrorf("libs", "%q has duplicates within libs.", l)
-		} else {
-			set[l] = "libs"
-			ret = append(ret, l)
-		}
-	}
-	// deps from "version.pyX.libs" property.
-	for _, l := range versionLibs {
-		if _, found := set[l]; found {
-			ctx.PropertyErrorf(versionProp, "%q has duplicates within %q.", set[l])
-		} else {
-			set[l] = versionProp
-			ret = append(ret, l)
-		}
-	}
-
-	return ret
+	// Emulate the data property for java_data but with the arch variation overridden to "common"
+	// so that it can point to java modules.
+	javaDataVariation := []blueprint.Variation{{"arch", android.Common.String()}}
+	ctx.AddVariationDependencies(javaDataVariation, javaDataTag, p.properties.Java_data...)
 }
 
 func (p *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
@@ -410,11 +395,7 @@ func (p *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	if p.bootstrapper != nil {
 		p.walkTransitiveDeps(ctx)
 		embeddedLauncher := false
-		if p.properties.Actual_version == pyVersion2 {
-			embeddedLauncher = p.isEmbeddedLauncherEnabled(pyVersion2)
-		} else {
-			embeddedLauncher = p.isEmbeddedLauncherEnabled(pyVersion3)
-		}
+		embeddedLauncher = p.isEmbeddedLauncherEnabled()
 		p.installSource = p.bootstrapper.bootstrap(ctx, p.properties.Actual_version,
 			embeddedLauncher, p.srcsPathMappings, p.srcsZip, p.depsSrcsZips)
 	}
@@ -439,17 +420,6 @@ func (p *Module) GeneratePythonBuildActions(ctx android.ModuleContext) {
 	// expand python files from "srcs" property.
 	srcs := p.properties.Srcs
 	exclude_srcs := p.properties.Exclude_srcs
-	switch p.properties.Actual_version {
-	case pyVersion2:
-		srcs = append(srcs, p.properties.Version.Py2.Srcs...)
-		exclude_srcs = append(exclude_srcs, p.properties.Version.Py2.Exclude_srcs...)
-	case pyVersion3:
-		srcs = append(srcs, p.properties.Version.Py3.Srcs...)
-		exclude_srcs = append(exclude_srcs, p.properties.Version.Py3.Exclude_srcs...)
-	default:
-		panic(fmt.Errorf("unknown Python Actual_version: %q for module: %q.",
-			p.properties.Actual_version, ctx.ModuleName()))
-	}
 	expandedSrcs := android.PathsForModuleSrcExcludes(ctx, srcs, exclude_srcs)
 	requiresSrcs := true
 	if p.bootstrapper != nil && !p.bootstrapper.autorun() {
@@ -461,6 +431,11 @@ func (p *Module) GeneratePythonBuildActions(ctx android.ModuleContext) {
 
 	// expand data files from "data" property.
 	expandedData := android.PathsForModuleSrc(ctx, p.properties.Data)
+
+	// Emulate the data property for java_data dependencies.
+	for _, javaData := range ctx.GetDirectDepsWithTag(javaDataTag) {
+		expandedData = append(expandedData, android.OutputFilesForModule(ctx, javaData, "")...)
+	}
 
 	// sanitize pkg_path.
 	pkgPath := String(p.properties.Pkg_path)

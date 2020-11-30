@@ -25,12 +25,12 @@ import (
 
 func testConfigWithBootJars(bp string, bootJars []string) android.Config {
 	config := testConfig(nil, bp, nil)
-	config.TestProductVariables.BootJars = bootJars
+	config.TestProductVariables.BootJars = android.CreateTestConfiguredJarList(bootJars)
 	return config
 }
 
-func testContextWithHiddenAPI() *android.TestContext {
-	ctx := testContext()
+func testContextWithHiddenAPI(config android.Config) *android.TestContext {
+	ctx := testContext(config)
 	ctx.RegisterSingletonType("hiddenapi", hiddenAPISingletonFactory)
 	return ctx
 }
@@ -38,7 +38,7 @@ func testContextWithHiddenAPI() *android.TestContext {
 func testHiddenAPIWithConfig(t *testing.T, config android.Config) *android.TestContext {
 	t.Helper()
 
-	ctx := testContextWithHiddenAPI()
+	ctx := testContextWithHiddenAPI(config)
 
 	run(t, ctx, config)
 	return ctx

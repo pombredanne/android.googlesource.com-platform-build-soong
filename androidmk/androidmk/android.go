@@ -214,6 +214,8 @@ func init() {
 
 			"LOCAL_PRIVATE_PLATFORM_APIS": "platform_apis",
 			"LOCAL_JETIFIER_ENABLED":      "jetifier",
+
+			"LOCAL_IS_UNIT_TEST": "unit_test",
 		})
 }
 
@@ -953,8 +955,7 @@ var prebuiltTypes = map[string]string{
 var soongModuleTypes = map[string]bool{}
 
 var includePathToModule = map[string]string{
-	"test/vts/tools/build/Android.host_config.mk": "vts_config",
-	// The rest will be populated dynamically in androidScope below
+	// The content will be populated dynamically in androidScope below
 }
 
 func mapIncludePath(path string) (string, bool) {

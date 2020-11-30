@@ -18,6 +18,7 @@ import (
 	"fmt"
 
 	"android/soong/android"
+	"android/soong/genrule"
 )
 
 func init() {
@@ -161,10 +162,9 @@ func stubFlagsRule(ctx android.SingletonContext) {
 				// For a java lib included in an APEX, only take the one built for
 				// the platform variant, and skip the variants for APEXes.
 				// Otherwise, the hiddenapi tool will complain about duplicated classes
-				if a, ok := module.(android.ApexModule); ok {
-					if android.InAnyApex(module.Name()) && !a.IsForPlatform() {
-						return
-					}
+				apexInfo := ctx.ModuleProvider(module, android.ApexInfoProvider).(android.ApexInfo)
+				if !apexInfo.IsForPlatform() {
+					return
 				}
 
 				bootDexJars = append(bootDexJars, jar)
@@ -211,43 +211,30 @@ func stubFlagsRule(ctx android.SingletonContext) {
 	rule.Build(pctx, ctx, "hiddenAPIStubFlagsFile", "hiddenapi stub flags")
 }
 
-func moduleForGreyListRemovedApis(ctx android.SingletonContext, module android.Module) bool {
-	switch ctx.ModuleName(module) {
-	case "api-stubs-docs", "system-api-stubs-docs", "android.car-stubs-docs", "android.car-system-stubs-docs":
-		return true
-	default:
-		return false
-	}
-}
-
 // flagsRule creates a rule to build hiddenapi-flags.csv out of flags.csv files generated for boot image modules and
 // the unsupported API.
 func flagsRule(ctx android.SingletonContext) android.Path {
 	var flagsCSV android.Paths
-	var greylistRemovedApis android.Paths
+	var combinedRemovedApis android.Path
 
 	ctx.VisitAllModules(func(module android.Module) {
 		if h, ok := module.(hiddenAPIIntf); ok {
 			if csv := h.flagsCSV(); csv != nil {
 				flagsCSV = append(flagsCSV, csv)
 			}
-		} else if ds, ok := module.(*Droidstubs); ok {
-			// Track @removed public and system APIs via corresponding droidstubs targets.
-			// These APIs are not present in the stubs, however, we have to keep allowing access
-			// to them at runtime.
-			if moduleForGreyListRemovedApis(ctx, module) {
-				greylistRemovedApis = append(greylistRemovedApis, ds.removedDexApiFile)
+		} else if g, ok := module.(*genrule.Module); ok {
+			if ctx.ModuleName(module) == "combined-removed-dex" {
+				if len(g.GeneratedSourceFiles()) != 1 || combinedRemovedApis != nil {
+					ctx.Errorf("Expected 1 combined-removed-dex module that generates 1 output file.")
+				}
+				combinedRemovedApis = g.GeneratedSourceFiles()[0]
 			}
 		}
 	})
 
-	combinedRemovedApis := android.PathForOutput(ctx, "hiddenapi", "combined-removed-dex.txt")
-	ctx.Build(pctx, android.BuildParams{
-		Rule:        android.Cat,
-		Inputs:      greylistRemovedApis,
-		Output:      combinedRemovedApis,
-		Description: "Combine removed apis for " + combinedRemovedApis.String(),
-	})
+	if combinedRemovedApis == nil {
+		ctx.Errorf("Failed to find combined-removed-dex.")
+	}
 
 	rule := android.NewRuleBuilder()
 
@@ -262,17 +249,19 @@ func flagsRule(ctx android.SingletonContext) android.Path {
 		Inputs(flagsCSV).
 		FlagWithInput("--unsupported ",
 			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-unsupported.txt")).
-		FlagWithInput("--unsupported-ignore-conflicts ", combinedRemovedApis).
+		FlagWithInput("--unsupported ", combinedRemovedApis).Flag("--ignore-conflicts ").FlagWithArg("--tag ", "removed").
 		FlagWithInput("--max-target-q ",
 			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-max-target-q.txt")).
 		FlagWithInput("--max-target-p ",
 			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-max-target-p.txt")).
-		FlagWithInput("--max-target-o-ignore-conflicts ",
-			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-max-target-o.txt")).
+		FlagWithInput("--max-target-o ", android.PathForSource(
+			ctx, "frameworks/base/config/hiddenapi-max-target-o.txt")).Flag("--ignore-conflicts ").FlagWithArg("--tag ", "lo-prio").
 		FlagWithInput("--blocked ",
 			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-force-blocked.txt")).
-		FlagWithInput("--unsupported-packages ",
-			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-unsupported-packages.txt")).
+		FlagWithInput("--blocked ",
+			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-temp-blocklist.txt")).
+		FlagWithInput("--unsupported ", android.PathForSource(
+			ctx, "frameworks/base/config/hiddenapi-unsupported-packages.txt")).Flag("--packages ").
 		FlagWithOutput("--output ", tempPath)
 
 	commitChangeForRestat(rule, tempPath, outputPath)

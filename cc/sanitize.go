@@ -139,56 +139,65 @@ func (t sanitizerType) incompatibleWithCfi() bool {
 	return t == asan || t == fuzzer || t == hwasan
 }
 
-type SanitizeProperties struct {
-	// enable AddressSanitizer, ThreadSanitizer, or UndefinedBehaviorSanitizer
-	Sanitize struct {
-		Never *bool `android:"arch_variant"`
+type SanitizeUserProps struct {
+	Never *bool `android:"arch_variant"`
 
-		// main sanitizers
-		Address   *bool `android:"arch_variant"`
-		Thread    *bool `android:"arch_variant"`
-		Hwaddress *bool `android:"arch_variant"`
+	// main sanitizers
+	Address   *bool `android:"arch_variant"`
+	Thread    *bool `android:"arch_variant"`
+	Hwaddress *bool `android:"arch_variant"`
 
-		// local sanitizers
+	// local sanitizers
+	Undefined        *bool    `android:"arch_variant"`
+	All_undefined    *bool    `android:"arch_variant"`
+	Misc_undefined   []string `android:"arch_variant"`
+	Fuzzer           *bool    `android:"arch_variant"`
+	Safestack        *bool    `android:"arch_variant"`
+	Cfi              *bool    `android:"arch_variant"`
+	Integer_overflow *bool    `android:"arch_variant"`
+	Scudo            *bool    `android:"arch_variant"`
+	Scs              *bool    `android:"arch_variant"`
+
+	// A modifier for ASAN and HWASAN for write only instrumentation
+	Writeonly *bool `android:"arch_variant"`
+
+	// Sanitizers to run in the diagnostic mode (as opposed to the release mode).
+	// Replaces abort() on error with a human-readable error message.
+	// Address and Thread sanitizers always run in diagnostic mode.
+	Diag struct {
 		Undefined        *bool    `android:"arch_variant"`
-		All_undefined    *bool    `android:"arch_variant"`
-		Misc_undefined   []string `android:"arch_variant"`
-		Fuzzer           *bool    `android:"arch_variant"`
-		Safestack        *bool    `android:"arch_variant"`
 		Cfi              *bool    `android:"arch_variant"`
 		Integer_overflow *bool    `android:"arch_variant"`
-		Scudo            *bool    `android:"arch_variant"`
-		Scs              *bool    `android:"arch_variant"`
+		Misc_undefined   []string `android:"arch_variant"`
+		No_recover       []string
+	}
 
-		// A modifier for ASAN and HWASAN for write only instrumentation
-		Writeonly *bool `android:"arch_variant"`
+	// Sanitizers to run with flag configuration specified
+	Config struct {
+		// Enables CFI support flags for assembly-heavy libraries
+		Cfi_assembly_support *bool `android:"arch_variant"`
+	}
 
-		// Sanitizers to run in the diagnostic mode (as opposed to the release mode).
-		// Replaces abort() on error with a human-readable error message.
-		// Address and Thread sanitizers always run in diagnostic mode.
-		Diag struct {
-			Undefined        *bool    `android:"arch_variant"`
-			Cfi              *bool    `android:"arch_variant"`
-			Integer_overflow *bool    `android:"arch_variant"`
-			Misc_undefined   []string `android:"arch_variant"`
-			No_recover       []string
-		}
+	// value to pass to -fsanitize-recover=
+	Recover []string
 
-		// value to pass to -fsanitize-recover=
-		Recover []string
+	// value to pass to -fsanitize-blacklist
+	Blocklist *string
+}
 
-		// value to pass to -fsanitize-blacklist
-		Blocklist *string
-	} `android:"arch_variant"`
-
-	SanitizerEnabled  bool     `blueprint:"mutated"`
-	SanitizeDep       bool     `blueprint:"mutated"`
-	MinimalRuntimeDep bool     `blueprint:"mutated"`
-	BuiltinsDep       bool     `blueprint:"mutated"`
-	UbsanRuntimeDep   bool     `blueprint:"mutated"`
-	InSanitizerDir    bool     `blueprint:"mutated"`
-	Sanitizers        []string `blueprint:"mutated"`
-	DiagSanitizers    []string `blueprint:"mutated"`
+type SanitizeProperties struct {
+	// Enable AddressSanitizer, ThreadSanitizer, UndefinedBehaviorSanitizer, and
+	// others. Please see SanitizerUserProps in build/soong/cc/sanitize.go for
+	// details.
+	Sanitize          SanitizeUserProps `android:"arch_variant"`
+	SanitizerEnabled  bool              `blueprint:"mutated"`
+	SanitizeDep       bool              `blueprint:"mutated"`
+	MinimalRuntimeDep bool              `blueprint:"mutated"`
+	BuiltinsDep       bool              `blueprint:"mutated"`
+	UbsanRuntimeDep   bool              `blueprint:"mutated"`
+	InSanitizerDir    bool              `blueprint:"mutated"`
+	Sanitizers        []string          `blueprint:"mutated"`
+	DiagSanitizers    []string          `blueprint:"mutated"`
 }
 
 type sanitize struct {
@@ -373,8 +382,8 @@ func (sanitize *sanitize) begin(ctx BaseModuleContext) {
 	}
 
 	// HWASan ramdisk (which is built from recovery) goes over some bootloader limit.
-	// Keep libc instrumented so that ramdisk / recovery can run hwasan-instrumented code if necessary.
-	if (ctx.inRamdisk() || ctx.inRecovery()) && !strings.HasPrefix(ctx.ModuleDir(), "bionic/libc") {
+	// Keep libc instrumented so that ramdisk / vendor_ramdisk / recovery can run hwasan-instrumented code if necessary.
+	if (ctx.inRamdisk() || ctx.inVendorRamdisk() || ctx.inRecovery()) && !strings.HasPrefix(ctx.ModuleDir(), "bionic/libc") {
 		s.Hwaddress = nil
 	}
 
@@ -540,6 +549,9 @@ func (sanitize *sanitize) flags(ctx ModuleContext, flags Flags) Flags {
 
 		flags.Local.CFlags = append(flags.Local.CFlags, cfiCflags...)
 		flags.Local.AsFlags = append(flags.Local.AsFlags, cfiAsflags...)
+		if Bool(sanitize.Properties.Sanitize.Config.Cfi_assembly_support) {
+			flags.Local.CFlags = append(flags.Local.CFlags, "-fno-sanitize-cfi-canonical-jump-tables")
+		}
 		// Only append the default visibility flag if -fvisibility has not already been set
 		// to hidden.
 		if !inList("-fvisibility=hidden", flags.Local.CFlags) {
@@ -844,7 +856,7 @@ func sanitizerRuntimeDepsMutator(mctx android.TopDownMutatorContext) {
 				return true
 			}
 
-			if p, ok := d.linker.(*vendorSnapshotLibraryDecorator); ok {
+			if p, ok := d.linker.(*snapshotLibraryDecorator); ok {
 				if Bool(p.properties.Sanitize_minimal_dep) {
 					c.sanitize.Properties.MinimalRuntimeDep = true
 				}
@@ -1037,7 +1049,7 @@ func sanitizerRuntimeMutator(mctx android.BottomUpMutatorContext) {
 				if c.Device() {
 					variations = append(variations, c.ImageVariation())
 				}
-				mctx.AddFarVariationDependencies(variations, depTag, runtimeLibrary)
+				c.addSharedLibDependenciesWithVersions(mctx, variations, depTag, runtimeLibrary, "", true)
 			}
 			// static lib does not have dependency to the runtime library. The
 			// dependency will be added to the executables or shared libs using

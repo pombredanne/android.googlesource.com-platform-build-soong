@@ -49,6 +49,14 @@ type ApiLevel struct {
 	isPreview bool
 }
 
+func (this ApiLevel) FinalOrFutureInt() int {
+	if this.IsPreview() {
+		return FutureApiLevelInt
+	} else {
+		return this.number
+	}
+}
+
 // Returns the canonical name for this API level. For a finalized API level
 // this will be the API number as a string. For a preview API level this
 // will be the codename, or "current".
@@ -119,13 +127,6 @@ func uncheckedFinalApiLevel(num int) ApiLevel {
 	}
 }
 
-// TODO: Merge with FutureApiLevel
-var CurrentApiLevel = ApiLevel{
-	value:     "current",
-	number:    10000,
-	isPreview: true,
-}
-
 var NoneApiLevel = ApiLevel{
 	value: "(no version)",
 	// Not 0 because we don't want this to compare equal with the first preview.
@@ -151,7 +152,7 @@ var FirstNonLibAndroidSupportVersion = uncheckedFinalApiLevel(21)
 // * "30" -> "30"
 // * "R" -> "30"
 // * "S" -> "S"
-func ReplaceFinalizedCodenames(ctx EarlyModuleContext, raw string) string {
+func ReplaceFinalizedCodenames(ctx PathContext, raw string) string {
 	num, ok := getFinalCodenamesMap(ctx.Config())[raw]
 	if !ok {
 		return raw
@@ -174,13 +175,13 @@ func ReplaceFinalizedCodenames(ctx EarlyModuleContext, raw string) string {
 //
 // Inputs that are not "current", known previews, or convertible to an integer
 // will return an error.
-func ApiLevelFromUser(ctx EarlyModuleContext, raw string) (ApiLevel, error) {
+func ApiLevelFromUser(ctx PathContext, raw string) (ApiLevel, error) {
 	if raw == "" {
 		panic("API level string must be non-empty")
 	}
 
 	if raw == "current" {
-		return CurrentApiLevel, nil
+		return FutureApiLevel, nil
 	}
 
 	for _, preview := range ctx.Config().PreviewApiLevels() {
@@ -202,7 +203,7 @@ func ApiLevelFromUser(ctx EarlyModuleContext, raw string) (ApiLevel, error) {
 // Converts an API level string `raw` into an ApiLevel in the same method as
 // `ApiLevelFromUser`, but the input is assumed to have no errors and any errors
 // will panic instead of returning an error.
-func ApiLevelOrPanic(ctx EarlyModuleContext, raw string) ApiLevel {
+func ApiLevelOrPanic(ctx PathContext, raw string) ApiLevel {
 	value, err := ApiLevelFromUser(ctx, raw)
 	if err != nil {
 		panic(err.Error())
@@ -224,14 +225,7 @@ func createApiLevelsJson(ctx SingletonContext, file WritablePath,
 		ctx.Errorf(err.Error())
 	}
 
-	ctx.Build(pctx, BuildParams{
-		Rule:        WriteFile,
-		Description: "generate " + file.Base(),
-		Output:      file,
-		Args: map[string]string{
-			"content": string(jsonStr[:]),
-		},
-	})
+	WriteFileRule(ctx, file, string(jsonStr))
 }
 
 func GetApiLevelsJson(ctx PathContext) WritablePath {
@@ -261,8 +255,19 @@ func getFinalCodenamesMap(config Config) map[string]int {
 			"R":     30,
 		}
 
+		// TODO: Differentiate "current" and "future".
+		// The code base calls it FutureApiLevel, but the spelling is "current",
+		// and these are really two different things. When defining APIs it
+		// means the API has not yet been added to a specific release. When
+		// choosing an API level to build for it means that the future API level
+		// should be used, except in the case where the build is finalized in
+		// which case the platform version should be used. This is *weird*,
+		// because in the circumstance where API foo was added in R and bar was
+		// added in S, both of these are usable when building for "current" when
+		// neither R nor S are final, but the S APIs stop being available in a
+		// final R build.
 		if Bool(config.productVariables.Platform_sdk_final) {
-			apiLevelsMap["current"] = config.PlatformSdkVersionInt()
+			apiLevelsMap["current"] = config.PlatformSdkVersion().FinalOrFutureInt()
 		}
 
 		return apiLevelsMap
@@ -298,24 +303,6 @@ func getApiLevelsMap(config Config) map[string]int {
 
 		return apiLevelsMap
 	}).(map[string]int)
-}
-
-// Converts an API level string into its numeric form.
-// * Codenames are decoded.
-// * Numeric API levels are simply converted.
-// * "current" is mapped to FutureApiLevel(10000)
-// * "minimum" is NDK specific and not handled with this. (refer normalizeNdkApiLevel in cc.go)
-func ApiStrToNum(ctx BaseModuleContext, apiLevel string) (int, error) {
-	if apiLevel == "current" {
-		return FutureApiLevel, nil
-	}
-	if num, ok := getApiLevelsMap(ctx.Config())[apiLevel]; ok {
-		return num, nil
-	}
-	if num, err := strconv.Atoi(apiLevel); err == nil {
-		return num, nil
-	}
-	return 0, fmt.Errorf("SDK version should be one of \"current\", <number> or <codename>: %q", apiLevel)
 }
 
 func (a *apiLevelsSingleton) GenerateBuildActions(ctx SingletonContext) {

@@ -46,6 +46,7 @@ var (
 
 		"-O2",
 		"-g",
+		"-fdebug-info-for-profiling",
 
 		"-fno-strict-aliasing",
 
@@ -134,8 +135,8 @@ var (
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r399163"
-	ClangDefaultShortVersion = "11.0.4"
+	ClangDefaultVersion      = "clang-r399163b"
+	ClangDefaultShortVersion = "11.0.5"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{
@@ -205,6 +206,7 @@ func init() {
 	pctx.PrefixedExistentPathsForSourcesVariable("CommonGlobalIncludes", "-I",
 		[]string{
 			"system/core/include",
+			"system/logging/liblog/include",
 			"system/media/audio/include",
 			"hardware/libhardware/include",
 			"hardware/libhardware_legacy/include",

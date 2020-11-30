@@ -16,6 +16,7 @@ package cc
 
 import (
 	"android/soong/android"
+	"android/soong/genrule"
 )
 
 func RegisterRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
@@ -24,6 +25,7 @@ func RegisterRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
 	RegisterBinaryBuildComponents(ctx)
 	RegisterLibraryBuildComponents(ctx)
 	RegisterLibraryHeadersBuildComponents(ctx)
+	genrule.RegisterGenruleBuildComponents(ctx)
 
 	ctx.RegisterModuleType("toolchain_library", ToolchainLibraryFactory)
 	ctx.RegisterModuleType("llndk_library", LlndkLibraryFactory)
@@ -40,6 +42,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 			name: "libatomic",
 			defaults: ["linux_bionic_supported"],
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			native_bridge_supported: true,
 			src: "",
@@ -48,6 +51,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 		toolchain_library {
 			name: "libcompiler_rt-extras",
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			src: "",
 		}
@@ -55,6 +59,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 		toolchain_library {
 			name: "libclang_rt.builtins-arm-android",
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			native_bridge_supported: true,
 			src: "",
@@ -63,6 +68,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 		toolchain_library {
 			name: "libclang_rt.builtins-aarch64-android",
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			native_bridge_supported: true,
 			src: "",
@@ -72,6 +78,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 			name: "libclang_rt.hwasan-aarch64-android",
 			nocrt: true,
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			system_shared_libs: [],
 			stl: "none",
@@ -85,6 +92,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 		toolchain_library {
 			name: "libclang_rt.builtins-i686-android",
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			native_bridge_supported: true,
 			src: "",
@@ -94,6 +102,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 			name: "libclang_rt.builtins-x86_64-android",
 			defaults: ["linux_bionic_supported"],
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			native_bridge_supported: true,
 			src: "",
@@ -102,6 +111,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 		toolchain_library {
 			name: "libclang_rt.fuzzer-arm-android",
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			src: "",
 		}
@@ -109,6 +119,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 		toolchain_library {
 			name: "libclang_rt.fuzzer-aarch64-android",
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			src: "",
 		}
@@ -116,6 +127,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 		toolchain_library {
 			name: "libclang_rt.fuzzer-i686-android",
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			src: "",
 		}
@@ -124,6 +136,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 			name: "libclang_rt.fuzzer-x86_64-android",
 			defaults: ["linux_bionic_supported"],
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			src: "",
 		}
@@ -131,6 +144,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 		toolchain_library {
 			name: "libclang_rt.fuzzer-x86_64",
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			src: "",
 		}
@@ -139,6 +153,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 		cc_prebuilt_library_shared {
 			name: "libclang_rt.ubsan_standalone-aarch64-android",
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			system_shared_libs: [],
 			srcs: [""],
@@ -148,14 +163,20 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 			name: "libgcc",
 			defaults: ["linux_bionic_supported"],
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			src: "",
+			apex_available: [
+				"//apex_available:platform",
+				"//apex_available:anyapex",
+			],
 		}
 
 		toolchain_library {
 			name: "libgcc_stripped",
 			defaults: ["linux_bionic_supported"],
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			sdk_version: "current",
 			src: "",
@@ -172,9 +193,10 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 			stubs: {
 				versions: ["27", "28", "29"],
 			},
+			llndk_stubs: "libc.llndk",
 		}
 		llndk_library {
-			name: "libc",
+			name: "libc.llndk",
 			symbol_file: "",
 			sdk_version: "current",
 		}
@@ -193,9 +215,10 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 				"//apex_available:platform",
 				"myapex"
 			],
+			llndk_stubs: "libm.llndk",
 		}
 		llndk_library {
-			name: "libm",
+			name: "libm.llndk",
 			symbol_file: "",
 			sdk_version: "current",
 		}
@@ -204,6 +227,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 		cc_library {
 			name: "libprofile-extras",
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			native_coverage: false,
 			system_shared_libs: [],
@@ -213,6 +237,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 		cc_library {
 			name: "libprofile-clang-extras",
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			native_coverage: false,
 			system_shared_libs: [],
@@ -222,6 +247,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 		cc_library {
 			name: "libprofile-extras_ndk",
 			vendor_available: true,
+			product_available: true,
 			native_coverage: false,
 			system_shared_libs: [],
 			stl: "none",
@@ -231,6 +257,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 		cc_library {
 			name: "libprofile-clang-extras_ndk",
 			vendor_available: true,
+			product_available: true,
 			native_coverage: false,
 			system_shared_libs: [],
 			stl: "none",
@@ -253,9 +280,10 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 				"//apex_available:platform",
 				"myapex"
 			],
+			llndk_stubs: "libdl.llndk",
 		}
 		llndk_library {
-			name: "libdl",
+			name: "libdl.llndk",
 			symbol_file: "",
 			sdk_version: "current",
 		}
@@ -265,9 +293,10 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 			nocrt: true,
 			system_shared_libs: [],
 			recovery_available: true,
+			llndk_stubs: "libft2.llndk",
 		}
 		llndk_library {
-			name: "libft2",
+			name: "libft2.llndk",
 			symbol_file: "",
 			vendor_available: false,
 			sdk_version: "current",
@@ -279,6 +308,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 			system_shared_libs: [],
 			stl: "none",
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			host_supported: true,
 			min_sdk_version: "29",
@@ -294,6 +324,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 			system_shared_libs: [],
 			stl: "none",
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			host_supported: true,
 			min_sdk_version: "29",
@@ -314,6 +345,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 			stl: "none",
 			host_supported: false,
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 			min_sdk_version: "29",
 			apex_available: [
@@ -328,6 +360,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 			system_shared_libs: [],
 			stl: "none",
 			vendor_available: true,
+			product_available: true,
 			recovery_available: true,
 		}
 
@@ -336,6 +369,7 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 			defaults: ["linux_bionic_supported"],
 			recovery_available: true,
 			vendor_available: true,
+			product_available: true,
 			native_bridge_supported: true,
 			stl: "none",
 			min_sdk_version: "16",
@@ -517,8 +551,8 @@ func TestConfig(buildDir string, os android.OsType, env map[string]string,
 	return config
 }
 
-func CreateTestContext() *android.TestContext {
-	ctx := android.NewTestArchContext()
+func CreateTestContext(config android.Config) *android.TestContext {
+	ctx := android.NewTestArchContext(config)
 	ctx.RegisterModuleType("cc_fuzz", FuzzFactory)
 	ctx.RegisterModuleType("cc_test", TestFactory)
 	ctx.RegisterModuleType("cc_test_library", TestLibraryFactory)
@@ -535,6 +569,7 @@ func CreateTestContext() *android.TestContext {
 	RegisterRequiredBuildComponentsForTest(ctx)
 	ctx.RegisterSingletonType("vndk-snapshot", VndkSnapshotSingleton)
 	ctx.RegisterSingletonType("vendor-snapshot", VendorSnapshotSingleton)
+	ctx.RegisterSingletonType("recovery-snapshot", RecoverySnapshotSingleton)
 
 	return ctx
 }

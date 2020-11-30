@@ -12,7 +12,7 @@
 
 export OUT_DIR=${OUT_DIR:-out}
 
-if [ -e ${OUT_DIR}/soong/.soong.in_make ]; then
+if [ -e ${OUT_DIR}/soong/.soong.kati_enabled ]; then
   # If ${OUT_DIR} has been created without --skip-make, Soong will create an
   # ${OUT_DIR}/soong/build.ninja that leaves out many targets which are
   # expected to be supplied by the .mk files, and that might cause errors in
@@ -32,10 +32,18 @@ source build/envsetup.sh
 
 my_get_build_var() {
   # get_build_var will run Soong in normal in-make mode where it creates
-  # .soong.in_make. That would clobber our real out directory, so we need to
-  # run it in a different one.
+  # .soong.kati_enabled. That would clobber our real out directory, so we need
+  # to run it in a different one.
   OUT_DIR=${OUT_DIR}/get_build_var get_build_var "$@"
 }
+
+readonly SOONG_OUT=${OUT_DIR}/soong
+mkdir -p ${SOONG_OUT}
+
+# Some Soong build rules may require this, and the failure mode if it's missing
+# is confusing (b/172548608).
+readonly BUILD_NUMBER="$(my_get_build_var BUILD_NUMBER)"
+echo -n ${BUILD_NUMBER} > ${SOONG_OUT}/build_number.txt
 
 readonly PLATFORM_SDK_VERSION="$(my_get_build_var PLATFORM_SDK_VERSION)"
 readonly PLATFORM_VERSION="$(my_get_build_var PLATFORM_VERSION)"
@@ -61,8 +69,6 @@ else
   USE_GOMA=false
 fi
 
-readonly SOONG_OUT=${OUT_DIR}/soong
-mkdir -p ${SOONG_OUT}
 readonly SOONG_VARS=${SOONG_OUT}/soong.variables
 
 # Aml_abis: true
@@ -73,6 +79,8 @@ readonly SOONG_VARS=${SOONG_OUT}/soong.variables
 #   -  Enable Bionic on host as ART needs prebuilts for it.
 cat > ${SOONG_VARS}.new << EOF
 {
+    "BuildNumberFile": "build_number.txt",
+
     "Platform_sdk_version": ${PLATFORM_SDK_VERSION},
     "Platform_sdk_codename": "${PLATFORM_VERSION}",
     "Platform_version_active_codenames": ${PLATFORM_VERSION_ALL_CODENAMES},

@@ -26,6 +26,12 @@ func init() {
 	android.RegisterModuleType("python_test", PythonTestFactory)
 }
 
+// Test option struct.
+type TestOptions struct {
+	// If the test is a hostside(no device required) unittest that shall be run during presubmit check.
+	Unit_test *bool
+}
+
 type TestProperties struct {
 	// the name of the test configuration (for example "AndroidTest.xml") that should be
 	// installed with the module.
@@ -34,6 +40,16 @@ type TestProperties struct {
 	// the name of the test configuration template (for example "AndroidTestTemplate.xml") that
 	// should be installed with the module.
 	Test_config_template *string `android:"path,arch_variant"`
+
+	// list of files or filegroup modules that provide data that should be installed alongside
+	// the test
+	Data []string `android:"path,arch_variant"`
+
+	// list of java modules that provide data that should be installed alongside the test.
+	Java_data []string
+
+	// Test options.
+	Test_options TestOptions
 }
 
 type testDecorator struct {
@@ -42,6 +58,8 @@ type testDecorator struct {
 	testProperties TestProperties
 
 	testConfig android.Path
+
+	data []android.DataPath
 }
 
 func (test *testDecorator) bootstrapperProps() []interface{} {
@@ -59,6 +77,19 @@ func (test *testDecorator) install(ctx android.ModuleContext, file android.Path)
 	test.binaryDecorator.pythonInstaller.relative = ctx.ModuleName()
 
 	test.binaryDecorator.pythonInstaller.install(ctx, file)
+
+	dataSrcPaths := android.PathsForModuleSrc(ctx, test.testProperties.Data)
+
+	for _, dataSrcPath := range dataSrcPaths {
+		test.data = append(test.data, android.DataPath{SrcPath: dataSrcPath})
+	}
+
+	// Emulate the data property for java_data dependencies.
+	for _, javaData := range ctx.GetDirectDepsWithTag(javaDataTag) {
+		for _, javaDataSrcPath := range android.OutputFilesForModule(ctx, javaData, "") {
+			test.data = append(test.data, android.DataPath{SrcPath: javaDataSrcPath})
+		}
+	}
 }
 
 func NewTest(hod android.HostOrDeviceSupported) *Module {

@@ -14,6 +14,9 @@
 
 package android
 
+// This is the primary location to write and read all configuration values and
+// product variables necessary for soong_build's operation.
+
 import (
 	"encoding/json"
 	"fmt"
@@ -21,7 +24,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -33,23 +35,43 @@ import (
 	"android/soong/android/soongconfig"
 )
 
+// Bool re-exports proptools.Bool for the android package.
 var Bool = proptools.Bool
+
+// String re-exports proptools.String for the android package.
 var String = proptools.String
+
+// StringDefault re-exports proptools.StringDefault for the android package.
 var StringDefault = proptools.StringDefault
 
-const FutureApiLevel = 10000
+// FutureApiLevelInt is a placeholder constant for unreleased API levels.
+const FutureApiLevelInt = 10000
 
-// The configuration file name
+// FutureApiLevel represents unreleased API levels.
+var FutureApiLevel = ApiLevel{
+	value:     "current",
+	number:    FutureApiLevelInt,
+	isPreview: true,
+}
+
+// configFileName is the name the file containing FileConfigurableOptions from
+// soong_ui for the soong_build primary builder.
 const configFileName = "soong.config"
+
+// productVariablesFileName contain the product configuration variables from soong_ui for the
+// soong_build primary builder and Kati.
 const productVariablesFileName = "soong.variables"
 
 // A FileConfigurableOptions contains options which can be configured by the
 // config file. These will be included in the config struct.
 type FileConfigurableOptions struct {
-	Mega_device *bool `json:",omitempty"`
-	Host_bionic *bool `json:",omitempty"`
+	Mega_device       *bool `json:",omitempty"`
+	Host_bionic       *bool `json:",omitempty"`
+	Host_bionic_arm64 *bool `json:",omitempty"`
 }
 
+// SetDefaultConfig resets the receiving FileConfigurableOptions to default
+// values.
 func (f *FileConfigurableOptions) SetDefaultConfig() {
 	*f = FileConfigurableOptions{}
 }
@@ -59,37 +81,49 @@ type Config struct {
 	*config
 }
 
+// BuildDir returns the build output directory for the configuration.
 func (c Config) BuildDir() string {
 	return c.buildDir
 }
 
-// A DeviceConfig object represents the configuration for a particular device being built.  For
-// now there will only be one of these, but in the future there may be multiple devices being
-// built
+// A DeviceConfig object represents the configuration for a particular device
+// being built. For now there will only be one of these, but in the future there
+// may be multiple devices being built.
 type DeviceConfig struct {
 	*deviceConfig
 }
 
+// VendorConfig represents the configuration for vendor-specific behavior.
 type VendorConfig soongconfig.SoongConfig
 
+// Definition of general build configuration for soong_build. Some of these
+// configuration values are generated from soong_ui for soong_build,
+// communicated over JSON files like soong.config or soong.variables.
 type config struct {
+	// Options configurable with soong.confg
 	FileConfigurableOptions
+
+	// Options configurable with soong.variables
 	productVariables productVariables
 
 	// Only available on configs created by TestConfig
 	TestProductVariables *productVariables
 
-	PrimaryBuilder           string
+	// A specialized context object for Bazel/Soong mixed builds and migration
+	// purposes.
+	BazelContext BazelContext
+
 	ConfigFileName           string
 	ProductVariablesFileName string
 
-	Targets             map[OsType][]Target
-	BuildOSTarget       Target // the Target for tools run on the build machine
-	BuildOSCommonTarget Target // the Target for common (java) tools run on the build machine
-	AndroidCommonTarget Target // the Target for common modules for the Android device
+	Targets                  map[OsType][]Target
+	BuildOSTarget            Target // the Target for tools run on the build machine
+	BuildOSCommonTarget      Target // the Target for common (java) tools run on the build machine
+	AndroidCommonTarget      Target // the Target for common modules for the Android device
+	AndroidFirstDeviceTarget Target // the first Target for modules for the Android device
 
-	// multilibConflicts for an ArchType is true if there is earlier configured device architecture with the same
-	// multilib value.
+	// multilibConflicts for an ArchType is true if there is earlier configured
+	// device architecture with the same multilib value.
 	multilibConflicts map[ArchType]bool
 
 	deviceConfig *deviceConfig
@@ -103,7 +137,9 @@ type config struct {
 	envDeps   map[string]string
 	envFrozen bool
 
-	inMake bool
+	// Changes behavior based on whether Kati runs after soong_build, or if soong_build
+	// runs standalone.
+	katiEnabled bool
 
 	captureBuild      bool // true for tests, saves build parameters for each module
 	ignoreEnvironment bool // true for tests, returns empty from all Getenv calls
@@ -116,6 +152,10 @@ type config struct {
 	// If testAllowNonExistentPaths is true then PathForSource and PathForModuleSrc won't error
 	// in tests when a path doesn't exist.
 	testAllowNonExistentPaths bool
+
+	// The list of files that when changed, must invalidate soong_build to
+	// regenerate build.ninja.
+	ninjaFileDepsSet sync.Map
 
 	OncePer
 }
@@ -138,7 +178,8 @@ func loadConfig(config *config) error {
 	return loadFromConfigFile(&config.productVariables, absolutePath(config.ProductVariablesFileName))
 }
 
-// loads configuration options from a JSON file in the cwd.
+// loadFromConfigFile loads and decodes configuration options from a JSON file
+// in the current working directory.
 func loadFromConfigFile(configurable jsonConfigurable, filename string) error {
 	// Try to open the file
 	configFileReader, err := os.Open(filename)
@@ -178,7 +219,7 @@ func saveToConfigFile(config jsonConfigurable, filename string) error {
 
 	f, err := ioutil.TempFile(filepath.Dir(filename), "config")
 	if err != nil {
-		return fmt.Errorf("cannot create empty config file %s: %s\n", filename, err.Error())
+		return fmt.Errorf("cannot create empty config file %s: %s", filename, err.Error())
 	}
 	defer os.Remove(f.Name())
 	defer f.Close()
@@ -210,27 +251,30 @@ func NullConfig(buildDir string) Config {
 	}
 }
 
-// TestConfig returns a Config object suitable for using for tests
+// TestConfig returns a Config object for testing.
 func TestConfig(buildDir string, env map[string]string, bp string, fs map[string][]byte) Config {
 	envCopy := make(map[string]string)
 	for k, v := range env {
 		envCopy[k] = v
 	}
 
-	// Copy the real PATH value to the test environment, it's needed by HostSystemTool() used in x86_darwin_host.go
+	// Copy the real PATH value to the test environment, it's needed by
+	// NonHermeticHostSystemTool() used in x86_darwin_host.go
 	envCopy["PATH"] = originalEnv["PATH"]
 
 	config := &config{
 		productVariables: productVariables{
-			DeviceName:                  stringPtr("test_device"),
-			Platform_sdk_version:        intPtr(30),
-			DeviceSystemSdkVersions:     []string{"14", "15"},
-			Platform_systemsdk_versions: []string{"29", "30"},
-			AAPTConfig:                  []string{"normal", "large", "xlarge", "hdpi", "xhdpi", "xxhdpi"},
-			AAPTPreferredConfig:         stringPtr("xhdpi"),
-			AAPTCharacteristics:         stringPtr("nosdcard"),
-			AAPTPrebuiltDPI:             []string{"xhdpi", "xxhdpi"},
-			UncompressPrivAppDex:        boolPtr(true),
+			DeviceName:                        stringPtr("test_device"),
+			Platform_sdk_version:              intPtr(30),
+			Platform_sdk_codename:             stringPtr("S"),
+			Platform_version_active_codenames: []string{"S"},
+			DeviceSystemSdkVersions:           []string{"14", "15"},
+			Platform_systemsdk_versions:       []string{"29", "30"},
+			AAPTConfig:                        []string{"normal", "large", "xlarge", "hdpi", "xhdpi", "xxhdpi"},
+			AAPTPreferredConfig:               stringPtr("xhdpi"),
+			AAPTCharacteristics:               stringPtr("nosdcard"),
+			AAPTPrebuiltDPI:                   []string{"xhdpi", "xxhdpi"},
+			UncompressPrivAppDex:              boolPtr(true),
 		},
 
 		buildDir:     buildDir,
@@ -240,6 +284,8 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 		// Set testAllowNonExistentPaths so that test contexts don't need to specify every path
 		// passed to PathForSource or PathForModuleSrc.
 		testAllowNonExistentPaths: true,
+
+		BazelContext: noopBazelContext{},
 	}
 	config.deviceConfig = &deviceConfig{
 		config: config,
@@ -248,56 +294,58 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 
 	config.mockFileSystem(bp, fs)
 
-	if err := config.fromEnv(); err != nil {
-		panic(err)
-	}
-
 	return Config{config}
 }
 
+// TestArchConfigNativeBridge returns a Config object suitable for using
+// for tests that need to run the arch mutator for native bridge supported
+// archs.
 func TestArchConfigNativeBridge(buildDir string, env map[string]string, bp string, fs map[string][]byte) Config {
 	testConfig := TestArchConfig(buildDir, env, bp, fs)
 	config := testConfig.config
 
 	config.Targets[Android] = []Target{
-		{Android, Arch{ArchType: X86_64, ArchVariant: "silvermont", Abi: []string{"arm64-v8a"}}, NativeBridgeDisabled, "", ""},
-		{Android, Arch{ArchType: X86, ArchVariant: "silvermont", Abi: []string{"armeabi-v7a"}}, NativeBridgeDisabled, "", ""},
-		{Android, Arch{ArchType: Arm64, ArchVariant: "armv8-a", Abi: []string{"arm64-v8a"}}, NativeBridgeEnabled, "x86_64", "arm64"},
-		{Android, Arch{ArchType: Arm, ArchVariant: "armv7-a-neon", Abi: []string{"armeabi-v7a"}}, NativeBridgeEnabled, "x86", "arm"},
+		{Android, Arch{ArchType: X86_64, ArchVariant: "silvermont", Abi: []string{"arm64-v8a"}}, NativeBridgeDisabled, "", "", false},
+		{Android, Arch{ArchType: X86, ArchVariant: "silvermont", Abi: []string{"armeabi-v7a"}}, NativeBridgeDisabled, "", "", false},
+		{Android, Arch{ArchType: Arm64, ArchVariant: "armv8-a", Abi: []string{"arm64-v8a"}}, NativeBridgeEnabled, "x86_64", "arm64", false},
+		{Android, Arch{ArchType: Arm, ArchVariant: "armv7-a-neon", Abi: []string{"armeabi-v7a"}}, NativeBridgeEnabled, "x86", "arm", false},
 	}
 
 	return testConfig
 }
 
+// TestArchConfigFuchsia returns a Config object suitable for using for
+// tests that need to run the arch mutator for the Fuchsia arch.
 func TestArchConfigFuchsia(buildDir string, env map[string]string, bp string, fs map[string][]byte) Config {
 	testConfig := TestConfig(buildDir, env, bp, fs)
 	config := testConfig.config
 
 	config.Targets = map[OsType][]Target{
 		Fuchsia: []Target{
-			{Fuchsia, Arch{ArchType: Arm64, ArchVariant: "", Abi: []string{"arm64-v8a"}}, NativeBridgeDisabled, "", ""},
+			{Fuchsia, Arch{ArchType: Arm64, ArchVariant: "", Abi: []string{"arm64-v8a"}}, NativeBridgeDisabled, "", "", false},
 		},
 		BuildOs: []Target{
-			{BuildOs, Arch{ArchType: X86_64}, NativeBridgeDisabled, "", ""},
+			{BuildOs, Arch{ArchType: X86_64}, NativeBridgeDisabled, "", "", false},
 		},
 	}
 
 	return testConfig
 }
 
-// TestConfig returns a Config object suitable for using for tests that need to run the arch mutator
+// TestArchConfig returns a Config object suitable for using for tests that
+// need to run the arch mutator.
 func TestArchConfig(buildDir string, env map[string]string, bp string, fs map[string][]byte) Config {
 	testConfig := TestConfig(buildDir, env, bp, fs)
 	config := testConfig.config
 
 	config.Targets = map[OsType][]Target{
 		Android: []Target{
-			{Android, Arch{ArchType: Arm64, ArchVariant: "armv8-a", Abi: []string{"arm64-v8a"}}, NativeBridgeDisabled, "", ""},
-			{Android, Arch{ArchType: Arm, ArchVariant: "armv7-a-neon", Abi: []string{"armeabi-v7a"}}, NativeBridgeDisabled, "", ""},
+			{Android, Arch{ArchType: Arm64, ArchVariant: "armv8-a", Abi: []string{"arm64-v8a"}}, NativeBridgeDisabled, "", "", false},
+			{Android, Arch{ArchType: Arm, ArchVariant: "armv7-a-neon", Abi: []string{"armeabi-v7a"}}, NativeBridgeDisabled, "", "", false},
 		},
 		BuildOs: []Target{
-			{BuildOs, Arch{ArchType: X86_64}, NativeBridgeDisabled, "", ""},
-			{BuildOs, Arch{ArchType: X86}, NativeBridgeDisabled, "", ""},
+			{BuildOs, Arch{ArchType: X86_64}, NativeBridgeDisabled, "", "", false},
+			{BuildOs, Arch{ArchType: X86}, NativeBridgeDisabled, "", "", false},
 		},
 	}
 
@@ -308,6 +356,7 @@ func TestArchConfig(buildDir string, env map[string]string, bp string, fs map[st
 	config.BuildOSTarget = config.Targets[BuildOs][0]
 	config.BuildOSCommonTarget = getCommonTargets(config.Targets[BuildOs])[0]
 	config.AndroidCommonTarget = getCommonTargets(config.Targets[Android])[0]
+	config.AndroidFirstDeviceTarget = firstTarget(config.Targets[Android], "lib64", "lib32")[0]
 	config.TestProductVariables.DeviceArch = proptools.StringPtr("arm64")
 	config.TestProductVariables.DeviceArchVariant = proptools.StringPtr("armv8-a")
 	config.TestProductVariables.DeviceSecondaryArch = proptools.StringPtr("arm")
@@ -316,10 +365,24 @@ func TestArchConfig(buildDir string, env map[string]string, bp string, fs map[st
 	return testConfig
 }
 
-// New creates a new Config object.  The srcDir argument specifies the path to
-// the root source directory. It also loads the config file, if found.
+// ConfigForAdditionalRun is a config object which is "reset" for another
+// bootstrap run. Only per-run data is reset. Data which needs to persist across
+// multiple runs in the same program execution is carried over (such as Bazel
+// context or environment deps).
+func ConfigForAdditionalRun(c Config) (Config, error) {
+	newConfig, err := NewConfig(c.srcDir, c.buildDir, c.moduleListFile)
+	if err != nil {
+		return Config{}, err
+	}
+	newConfig.BazelContext = c.BazelContext
+	newConfig.envDeps = c.envDeps
+	return newConfig, nil
+}
+
+// NewConfig creates a new Config object. The srcDir argument specifies the path
+// to the root source directory. It also loads the config file, if found.
 func NewConfig(srcDir, buildDir string, moduleListFile string) (Config, error) {
-	// Make a config with default options
+	// Make a config with default options.
 	config := &config{
 		ConfigFileName:           filepath.Join(buildDir, configFileName),
 		ProductVariablesFileName: filepath.Join(buildDir, productVariablesFileName),
@@ -360,11 +423,13 @@ func NewConfig(srcDir, buildDir string, moduleListFile string) (Config, error) {
 		return Config{}, err
 	}
 
-	inMakeFile := filepath.Join(buildDir, ".soong.in_make")
-	if _, err := os.Stat(absolutePath(inMakeFile)); err == nil {
-		config.inMake = true
+	KatiEnabledMarkerFile := filepath.Join(buildDir, ".soong.kati_enabled")
+	if _, err := os.Stat(absolutePath(KatiEnabledMarkerFile)); err == nil {
+		config.katiEnabled = true
 	}
 
+	// Sets up the map of target OSes to the finer grained compilation targets
+	// that are configured from the product variables.
 	targets, err := decodeTargetProductVariables(config)
 	if err != nil {
 		return Config{}, err
@@ -398,15 +463,17 @@ func NewConfig(srcDir, buildDir string, moduleListFile string) (Config, error) {
 		multilib[target.Arch.ArchType.Multilib] = true
 	}
 
+	// Map of OS to compilation targets.
 	config.Targets = targets
+
+	// Compilation targets for host tools.
 	config.BuildOSTarget = config.Targets[BuildOs][0]
 	config.BuildOSCommonTarget = getCommonTargets(config.Targets[BuildOs])[0]
+
+	// Compilation targets for Android.
 	if len(config.Targets[Android]) > 0 {
 		config.AndroidCommonTarget = getCommonTargets(config.Targets[Android])[0]
-	}
-
-	if err := config.fromEnv(); err != nil {
-		return Config{}, err
+		config.AndroidFirstDeviceTarget = firstTarget(config.Targets[Android], "lib64", "lib32")[0]
 	}
 
 	if Bool(config.productVariables.GcovCoverage) && Bool(config.productVariables.ClangCoverage) {
@@ -417,10 +484,10 @@ func NewConfig(srcDir, buildDir string, moduleListFile string) (Config, error) {
 		Bool(config.productVariables.GcovCoverage) ||
 			Bool(config.productVariables.ClangCoverage))
 
-	return Config{config}, nil
-}
+	config.BazelContext, err = NewBazelContext(config)
 
-var TestConfigOsFs = map[string][]byte{}
+	return Config{config}, err
+}
 
 // mockFileSystem replaces all reads with accesses to the provided map of
 // filenames to contents stored as a byte slice.
@@ -452,27 +519,19 @@ func (c *config) mockFileSystem(bp string, fs map[string][]byte) {
 	c.mockBpList = blueprint.MockModuleListFile
 }
 
-func (c *config) fromEnv() error {
-	switch c.Getenv("EXPERIMENTAL_JAVA_LANGUAGE_LEVEL_9") {
-	case "", "true":
-		// Do nothing
-	default:
-		return fmt.Errorf("The environment variable EXPERIMENTAL_JAVA_LANGUAGE_LEVEL_9 is no longer supported. Java language level 9 is now the global default.")
-	}
-
-	return nil
-}
-
 func (c *config) StopBefore() bootstrap.StopBefore {
 	return c.stopBefore
 }
 
+// SetStopBefore configures soong_build to exit earlier at a specific point.
 func (c *config) SetStopBefore(stopBefore bootstrap.StopBefore) {
 	c.stopBefore = stopBefore
 }
 
 var _ bootstrap.ConfigStopBefore = (*config)(nil)
 
+// BlueprintToolLocation returns the directory containing build system tools
+// from Blueprint, like soong_zip and merge_zips.
 func (c *config) BlueprintToolLocation() string {
 	return filepath.Join(c.buildDir, "host", c.PrebuiltOS(), "bin")
 }
@@ -495,9 +554,12 @@ func (c *config) HostJavaToolPath(ctx PathContext, path string) Path {
 	return PathForOutput(ctx, "host", c.PrebuiltOS(), "framework", path)
 }
 
-// HostSystemTool looks for non-hermetic tools from the system we're running on.
-// Generally shouldn't be used, but useful to find the XCode SDK, etc.
-func (c *config) HostSystemTool(name string) string {
+// NonHermeticHostSystemTool looks for non-hermetic tools from the system we're
+// running on. These tools are not checked-in to AOSP, and therefore could lead
+// to reproducibility problems. Should not be used for other than finding the
+// XCode SDK (xcrun, sw_vers), etc. See ui/build/paths/config.go for the
+// allowlist of host system tools.
+func (c *config) NonHermeticHostSystemTool(name string) string {
 	for _, dir := range filepath.SplitList(c.Getenv("PATH")) {
 		path := filepath.Join(dir, name)
 		if s, err := os.Stat(path); err != nil {
@@ -506,10 +568,13 @@ func (c *config) HostSystemTool(name string) string {
 			return path
 		}
 	}
-	return name
+	panic(fmt.Errorf(
+		"Unable to use '%s' as a host system tool for build system "+
+			"hermeticity reasons. See build/soong/ui/build/paths/config.go "+
+			"for the full list of allowed host tools on your system.", name))
 }
 
-// PrebuiltOS returns the name of the host OS used in prebuilts directories
+// PrebuiltOS returns the name of the host OS used in prebuilts directories.
 func (c *config) PrebuiltOS() string {
 	switch runtime.GOOS {
 	case "linux":
@@ -526,10 +591,14 @@ func (c *config) GoRoot() string {
 	return fmt.Sprintf("%s/prebuilts/go/%s", c.srcDir, c.PrebuiltOS())
 }
 
+// PrebuiltBuildTool returns the path to a tool in the prebuilts directory containing
+// checked-in tools, like Kati, Ninja or Toybox, for the current host OS.
 func (c *config) PrebuiltBuildTool(ctx PathContext, tool string) Path {
 	return PathForSource(ctx, "prebuilts/build-tools", c.PrebuiltOS(), "bin", tool)
 }
 
+// CpPreserveSymlinksFlags returns the host-specific flag for the cp(1) command
+// to preserve symlinks.
 func (c *config) CpPreserveSymlinksFlags() string {
 	switch runtime.GOOS {
 	case "darwin":
@@ -577,6 +646,8 @@ func (c *config) IsEnvFalse(key string) bool {
 	return value == "0" || value == "n" || value == "no" || value == "off" || value == "false"
 }
 
+// EnvDeps returns the environment variables this build depends on. The first
+// call to this function blocks future reads from the environment.
 func (c *config) EnvDeps() map[string]string {
 	c.envLock.Lock()
 	defer c.envLock.Unlock()
@@ -584,19 +655,26 @@ func (c *config) EnvDeps() map[string]string {
 	return c.envDeps
 }
 
-func (c *config) EmbeddedInMake() bool {
-	return c.inMake
+func (c *config) KatiEnabled() bool {
+	return c.katiEnabled
 }
 
 func (c *config) BuildId() string {
 	return String(c.productVariables.BuildId)
 }
 
+// BuildNumberFile returns the path to a text file containing metadata
+// representing the current build's number.
+//
+// Rules that want to reference the build number should read from this file
+// without depending on it. They will run whenever their other dependencies
+// require them to run and get the current build number. This ensures they don't
+// rebuild on every incremental build when the build number changes.
 func (c *config) BuildNumberFile(ctx PathContext) Path {
 	return PathForOutput(ctx, String(c.productVariables.BuildNumberFile))
 }
 
-// DeviceName returns the name of the current device target
+// DeviceName returns the name of the current device target.
 // TODO: take an AndroidModuleContext to select the device name for multi-device builds
 func (c *config) DeviceName() string {
 	return *c.productVariables.DeviceName
@@ -614,12 +692,8 @@ func (c *config) PlatformVersionName() string {
 	return String(c.productVariables.Platform_version_name)
 }
 
-func (c *config) PlatformSdkVersionInt() int {
-	return *c.productVariables.Platform_sdk_version
-}
-
-func (c *config) PlatformSdkVersion() string {
-	return strconv.Itoa(c.PlatformSdkVersionInt())
+func (c *config) PlatformSdkVersion() ApiLevel {
+	return uncheckedFinalApiLevel(*c.productVariables.Platform_sdk_version)
 }
 
 func (c *config) PlatformSdkCodename() string {
@@ -648,7 +722,7 @@ func (c *config) MinSupportedSdkVersion() ApiLevel {
 
 func (c *config) FinalApiLevels() []ApiLevel {
 	var levels []ApiLevel
-	for i := 1; i <= c.PlatformSdkVersionInt(); i++ {
+	for i := 1; i <= c.PlatformSdkVersion().FinalOrFutureInt(); i++ {
 		levels = append(levels, uncheckedFinalApiLevel(i))
 	}
 	return levels
@@ -672,20 +746,20 @@ func (c *config) AllSupportedApiLevels() []ApiLevel {
 	return append(levels, c.PreviewApiLevels()...)
 }
 
-func (c *config) DefaultAppTargetSdkInt() int {
-	if Bool(c.productVariables.Platform_sdk_final) {
-		return c.PlatformSdkVersionInt()
-	} else {
-		return FutureApiLevel
-	}
-}
-
-func (c *config) DefaultAppTargetSdk() string {
+// DefaultAppTargetSdk returns the API level that platform apps are targeting.
+// This converts a codename to the exact ApiLevel it represents.
+func (c *config) DefaultAppTargetSdk(ctx EarlyModuleContext) ApiLevel {
 	if Bool(c.productVariables.Platform_sdk_final) {
 		return c.PlatformSdkVersion()
-	} else {
-		return c.PlatformSdkCodename()
 	}
+	codename := c.PlatformSdkCodename()
+	if codename == "" {
+		return NoneApiLevel
+	}
+	if codename == "REL" {
+		panic("Platform_sdk_codename should not be REL when Platform_sdk_final is true")
+	}
+	return ApiLevelOrPanic(ctx, codename)
 }
 
 func (c *config) AppsDefaultVersionName() string {
@@ -717,19 +791,17 @@ func (c *config) DefaultAppCertificateDir(ctx PathContext) SourcePath {
 	defaultCert := String(c.productVariables.DefaultAppCertificate)
 	if defaultCert != "" {
 		return PathForSource(ctx, filepath.Dir(defaultCert))
-	} else {
-		return PathForSource(ctx, "build/make/target/product/security")
 	}
+	return PathForSource(ctx, "build/make/target/product/security")
 }
 
 func (c *config) DefaultAppCertificate(ctx PathContext) (pem, key SourcePath) {
 	defaultCert := String(c.productVariables.DefaultAppCertificate)
 	if defaultCert != "" {
 		return PathForSource(ctx, defaultCert+".x509.pem"), PathForSource(ctx, defaultCert+".pk8")
-	} else {
-		defaultDir := c.DefaultAppCertificateDir(ctx)
-		return defaultDir.Join(ctx, "testkey.x509.pem"), defaultDir.Join(ctx, "testkey.pk8")
 	}
+	defaultDir := c.DefaultAppCertificateDir(ctx)
+	return defaultDir.Join(ctx, "testkey.x509.pem"), defaultDir.Join(ctx, "testkey.pk8")
 }
 
 func (c *config) ApexKeyDir(ctx ModuleContext) SourcePath {
@@ -739,12 +811,14 @@ func (c *config) ApexKeyDir(ctx ModuleContext) SourcePath {
 		// When defaultCert is unset or is set to the testkeys path, use the APEX keys
 		// that is under the module dir
 		return pathForModuleSrc(ctx)
-	} else {
-		// If not, APEX keys are under the specified directory
-		return PathForSource(ctx, filepath.Dir(defaultCert))
 	}
+	// If not, APEX keys are under the specified directory
+	return PathForSource(ctx, filepath.Dir(defaultCert))
 }
 
+// AllowMissingDependencies configures Blueprint/Soong to not fail when modules
+// are configured to depend on non-existent modules. Note that this does not
+// affect missing input dependencies at the Ninja level.
 func (c *config) AllowMissingDependencies() bool {
 	return Bool(c.productVariables.Allow_missing_dependencies)
 }
@@ -763,6 +837,11 @@ func (c *config) UnbundledBuildApps() bool {
 // Returns true if building modules against prebuilt SDKs.
 func (c *config) AlwaysUsePrebuiltSdks() bool {
 	return Bool(c.productVariables.Always_use_prebuilt_sdks)
+}
+
+// Returns true if the boot jars check should be skipped.
+func (c *config) SkipBootJarsCheck() bool {
+	return Bool(c.productVariables.Skip_boot_jars_check)
 }
 
 func (c *config) Fuchsia() bool {
@@ -809,9 +888,8 @@ func (c *config) SanitizeDeviceArch() []string {
 func (c *config) EnableCFI() bool {
 	if c.productVariables.EnableCFI == nil {
 		return true
-	} else {
-		return *c.productVariables.EnableCFI
 	}
+	return *c.productVariables.EnableCFI
 }
 
 func (c *config) DisableScudo() bool {
@@ -856,11 +934,13 @@ func (c *config) RunErrorProne() bool {
 	return c.IsEnvTrue("RUN_ERROR_PRONE")
 }
 
+// XrefCorpusName returns the Kythe cross-reference corpus name.
 func (c *config) XrefCorpusName() string {
 	return c.Getenv("XREF_CORPUS")
 }
 
-// Returns Compilation Unit encoding to use. Can be 'json' (default), 'proto' or 'all'.
+// XrefCuEncoding returns the compilation unit encoding to use for Kythe code
+// xrefs. Can be 'json' (default), 'proto' or 'all'.
 func (c *config) XrefCuEncoding() string {
 	if enc := c.Getenv("KYTHE_KZIP_ENCODING"); enc != "" {
 		return enc
@@ -895,6 +975,10 @@ func (c *config) ArtUseReadBarrier() bool {
 	return Bool(c.productVariables.ArtUseReadBarrier)
 }
 
+// Enforce Runtime Resource Overlays for a module. RROs supersede static RROs,
+// but some modules still depend on it.
+//
+// More info: https://source.android.com/devices/architecture/rros
 func (c *config) EnforceRROForModule(name string) bool {
 	enforceList := c.productVariables.EnforceRROTargets
 	// TODO(b/150820813) Some modules depend on static overlay, remove this after eliminating the dependency.
@@ -911,6 +995,10 @@ func (c *config) EnforceRROForModule(name string) bool {
 		return InList(name, enforceList)
 	}
 	return false
+}
+
+func (c *config) EnforceRROExemptedForModule(name string) bool {
+	return InList(name, c.productVariables.EnforceRROExemptedTargets)
 }
 
 func (c *config) EnforceRROExcludedOverlay(path string) bool {
@@ -937,13 +1025,30 @@ func (c *config) ModulesLoadedByPrivilegedModules() []string {
 	return c.productVariables.ModulesLoadedByPrivilegedModules
 }
 
-func (c *config) DexpreoptGlobalConfig(ctx PathContext) ([]byte, error) {
+// DexpreoptGlobalConfigPath returns the path to the dexpreopt.config file in
+// the output directory, if it was created during the product configuration
+// phase by Kati.
+func (c *config) DexpreoptGlobalConfigPath(ctx PathContext) OptionalPath {
 	if c.productVariables.DexpreoptGlobalConfig == nil {
+		return OptionalPathForPath(nil)
+	}
+	return OptionalPathForPath(
+		pathForBuildToolDep(ctx, *c.productVariables.DexpreoptGlobalConfig))
+}
+
+// DexpreoptGlobalConfig returns the raw byte contents of the dexpreopt global
+// configuration. Since the configuration file was created by Kati during
+// product configuration (externally of soong_build), it's not tracked, so we
+// also manually add a Ninja file dependency on the configuration file to the
+// rule that creates the main build.ninja file. This ensures that build.ninja is
+// regenerated correctly if dexpreopt.config changes.
+func (c *config) DexpreoptGlobalConfig(ctx PathContext) ([]byte, error) {
+	path := c.DexpreoptGlobalConfigPath(ctx)
+	if !path.Valid() {
 		return nil, nil
 	}
-	path := absolutePath(*c.productVariables.DexpreoptGlobalConfig)
-	ctx.AddNinjaFileDeps(path)
-	return ioutil.ReadFile(path)
+	ctx.AddNinjaFileDeps(path.String())
+	return ioutil.ReadFile(absolutePath(path.String()))
 }
 
 func (c *config) FrameworksBaseDirExists(ctx PathContext) bool {
@@ -1113,12 +1218,12 @@ func (c *deviceConfig) OdmSepolicyDirs() []string {
 	return c.config.productVariables.BoardOdmSepolicyDirs
 }
 
-func (c *deviceConfig) PlatPublicSepolicyDirs() []string {
-	return c.config.productVariables.BoardPlatPublicSepolicyDirs
+func (c *deviceConfig) SystemExtPublicSepolicyDirs() []string {
+	return c.config.productVariables.SystemExtPublicSepolicyDirs
 }
 
-func (c *deviceConfig) PlatPrivateSepolicyDirs() []string {
-	return c.config.productVariables.BoardPlatPrivateSepolicyDirs
+func (c *deviceConfig) SystemExtPrivateSepolicyDirs() []string {
+	return c.config.productVariables.SystemExtPrivateSepolicyDirs
 }
 
 func (c *deviceConfig) SepolicyM4Defs() []string {
@@ -1280,6 +1385,10 @@ func (c *deviceConfig) BoardKernelModuleInterfaceVersions() []string {
 	return c.config.productVariables.BoardKernelModuleInterfaceVersions
 }
 
+func (c *deviceConfig) BoardMoveRecoveryResourcesToVendorBoot() bool {
+	return Bool(c.config.productVariables.BoardMoveRecoveryResourcesToVendorBoot)
+}
+
 // The ConfiguredJarList struct provides methods for handling a list of (apex, jar) pairs.
 // Such lists are used in the build system for things like bootclasspath jars or system server jars.
 // The apex part is either an apex name, or a special names "platform" or "system_ext". Jar is a
@@ -1291,26 +1400,31 @@ func (c *deviceConfig) BoardKernelModuleInterfaceVersions() []string {
 //   - "system_ext:foo"
 //
 type ConfiguredJarList struct {
-	apexes []string // A list of apex components.
-	jars   []string // A list of jar components.
+	// A list of apex components, which can be an apex name,
+	// or special names like "platform" or "system_ext".
+	apexes []string
+
+	// A list of jar module name components.
+	jars []string
 }
 
-// The length of the list.
+// Len returns the length of the list of jars.
 func (l *ConfiguredJarList) Len() int {
 	return len(l.jars)
 }
 
-// Apex component of idx-th pair on the list.
-func (l *ConfiguredJarList) apex(idx int) string {
-	return l.apexes[idx]
-}
-
-// Jar component of idx-th pair on the list.
+// Jar returns the idx-th jar component of (apex, jar) pairs.
 func (l *ConfiguredJarList) Jar(idx int) string {
 	return l.jars[idx]
 }
 
-// If the list contains a pair with the given jar.
+// Apex returns the idx-th apex component of (apex, jar) pairs.
+func (l *ConfiguredJarList) Apex(idx int) string {
+	return l.apexes[idx]
+}
+
+// ContainsJar returns true if the (apex, jar) pairs contains a pair with the
+// given jar module name.
 func (l *ConfiguredJarList) ContainsJar(jar string) bool {
 	return InList(jar, l.jars)
 }
@@ -1318,64 +1432,78 @@ func (l *ConfiguredJarList) ContainsJar(jar string) bool {
 // If the list contains the given (apex, jar) pair.
 func (l *ConfiguredJarList) containsApexJarPair(apex, jar string) bool {
 	for i := 0; i < l.Len(); i++ {
-		if apex == l.apex(i) && jar == l.Jar(i) {
+		if apex == l.apexes[i] && jar == l.jars[i] {
 			return true
 		}
 	}
 	return false
 }
 
-// Index of the first pair with the given jar on the list, or -1 if none.
+// IndexOfJar returns the first pair with the given jar name on the list, or -1
+// if not found.
 func (l *ConfiguredJarList) IndexOfJar(jar string) int {
 	return IndexList(jar, l.jars)
 }
 
-// Append an (apex, jar) pair to the list.
-func (l *ConfiguredJarList) Append(apex string, jar string) {
-	l.apexes = append(l.apexes, apex)
-	l.jars = append(l.jars, jar)
+func copyAndAppend(list []string, item string) []string {
+	// Create the result list to be 1 longer than the input.
+	result := make([]string, len(list)+1)
+
+	// Copy the whole input list into the result.
+	count := copy(result, list)
+
+	// Insert the extra item at the end.
+	result[count] = item
+
+	return result
 }
 
-// Filter out sublist.
-func (l *ConfiguredJarList) RemoveList(list ConfiguredJarList) {
+// Append an (apex, jar) pair to the list.
+func (l *ConfiguredJarList) Append(apex string, jar string) ConfiguredJarList {
+	// Create a copy of the backing arrays before appending to avoid sharing backing
+	// arrays that are mutated across instances.
+	apexes := copyAndAppend(l.apexes, apex)
+	jars := copyAndAppend(l.jars, jar)
+
+	return ConfiguredJarList{apexes, jars}
+}
+
+// RemoveList filters out a list of (apex, jar) pairs from the receiving list of pairs.
+func (l *ConfiguredJarList) RemoveList(list ConfiguredJarList) ConfiguredJarList {
 	apexes := make([]string, 0, l.Len())
 	jars := make([]string, 0, l.Len())
 
 	for i, jar := range l.jars {
-		apex := l.apex(i)
+		apex := l.apexes[i]
 		if !list.containsApexJarPair(apex, jar) {
 			apexes = append(apexes, apex)
 			jars = append(jars, jar)
 		}
 	}
 
-	l.apexes = apexes
-	l.jars = jars
+	return ConfiguredJarList{apexes, jars}
 }
 
-// A copy of itself.
-func (l *ConfiguredJarList) CopyOf() ConfiguredJarList {
-	return ConfiguredJarList{CopyOf(l.apexes), CopyOf(l.jars)}
-}
-
-// A copy of the list of strings containing jar components.
+// CopyOfJars returns a copy of the list of strings containing jar module name
+// components.
 func (l *ConfiguredJarList) CopyOfJars() []string {
 	return CopyOf(l.jars)
 }
 
-// A copy of the list of strings with colon-separated (apex, jar) pairs.
+// CopyOfApexJarPairs returns a copy of the list of strings with colon-separated
+// (apex, jar) pairs.
 func (l *ConfiguredJarList) CopyOfApexJarPairs() []string {
 	pairs := make([]string, 0, l.Len())
 
 	for i, jar := range l.jars {
-		apex := l.apex(i)
+		apex := l.apexes[i]
 		pairs = append(pairs, apex+":"+jar)
 	}
 
 	return pairs
 }
 
-// A list of build paths based on the given directory prefix.
+// BuildPaths returns a list of build paths based on the given directory prefix.
 func (l *ConfiguredJarList) BuildPaths(ctx PathContext, dir OutputPath) WritablePaths {
 	paths := make(WritablePaths, l.Len())
 	for i, jar := range l.jars {
@@ -1384,16 +1512,40 @@ func (l *ConfiguredJarList) BuildPaths(ctx PathContext, dir OutputPath) Writable
 	return paths
 }
 
+// UnmarshalJSON converts JSON configuration from raw bytes into a
+// ConfiguredJarList structure.
+func (l *ConfiguredJarList) UnmarshalJSON(b []byte) error {
+	// Try and unmarshal into a []string each item of which contains a pair
+	// <apex>:<jar>.
+	var list []string
+	err := json.Unmarshal(b, &list)
+	if err != nil {
+		// Did not work so return
+		return err
+	}
+
+	apexes, jars, err := splitListOfPairsIntoPairOfLists(list)
+	if err != nil {
+		return err
+	}
+	l.apexes = apexes
+	l.jars = jars
+	return nil
+}
+
+// ModuleStem hardcodes the stem of framework-minus-apex to return "framework".
+//
+// TODO(b/139391334): hard coded until we find a good way to query the stem of a
+// module before any other mutators are run.
 func ModuleStem(module string) string {
-	// b/139391334: the stem of framework-minus-apex is framework. This is hard coded here until we
-	// find a good way to query the stem of a module before any other mutators are run.
 	if module == "framework-minus-apex" {
 		return "framework"
 	}
 	return module
 }
 
-// A list of on-device paths.
+// DevicePaths computes the on-device paths for the list of (apex, jar) pairs,
+// based on the operating system.
 func (l *ConfiguredJarList) DevicePaths(cfg Config, ostype OsType) []string {
 	paths := make([]string, l.Len())
 	for i, jar := range l.jars {
@@ -1418,31 +1570,54 @@ func (l *ConfiguredJarList) DevicePaths(cfg Config, ostype OsType) []string {
 	return paths
 }
 
+func (l *ConfiguredJarList) String() string {
+	var pairs []string
+	for i := 0; i < l.Len(); i++ {
+		pairs = append(pairs, l.apexes[i]+":"+l.jars[i])
+	}
+	return strings.Join(pairs, ",")
+}
+
+func splitListOfPairsIntoPairOfLists(list []string) ([]string, []string, error) {
+	// Now we need to populate this list by splitting each item in the slice of
+	// pairs and appending them to the appropriate list of apexes or jars.
+	apexes := make([]string, len(list))
+	jars := make([]string, len(list))
+
+	for i, apexjar := range list {
+		apex, jar, err := splitConfiguredJarPair(apexjar)
+		if err != nil {
+			return nil, nil, err
+		}
+		apexes[i] = apex
+		jars[i] = jar
+	}
+
+	return apexes, jars, nil
+}
+
 // Expected format for apexJarValue = <apex name>:<jar name>
-func splitConfiguredJarPair(ctx PathContext, str string) (string, string) {
+func splitConfiguredJarPair(str string) (string, string, error) {
 	pair := strings.SplitN(str, ":", 2)
 	if len(pair) == 2 {
-		return pair[0], pair[1]
+		return pair[0], pair[1], nil
 	} else {
-		ReportPathErrorf(ctx, "malformed (apex, jar) pair: '%s', expected format: <apex>:<jar>", str)
-		return "error-apex", "error-jar"
+		return "error-apex", "error-jar", fmt.Errorf("malformed (apex, jar) pair: '%s', expected format: <apex>:<jar>", str)
 	}
 }
 
-func CreateConfiguredJarList(ctx PathContext, list []string) ConfiguredJarList {
-	apexes := make([]string, 0, len(list))
-	jars := make([]string, 0, len(list))
-
-	l := ConfiguredJarList{apexes, jars}
-
-	for _, apexjar := range list {
-		apex, jar := splitConfiguredJarPair(ctx, apexjar)
-		l.Append(apex, jar)
+// CreateTestConfiguredJarList is a function to create ConfiguredJarList for
+// tests.
+func CreateTestConfiguredJarList(list []string) ConfiguredJarList {
+	apexes, jars, err := splitListOfPairsIntoPairOfLists(list)
+	if err != nil {
+		panic(err)
 	}
 
-	return l
+	return ConfiguredJarList{apexes, jars}
 }
 
+// EmptyConfiguredJarList returns an empty jar list.
 func EmptyConfiguredJarList() ConfiguredJarList {
 	return ConfiguredJarList{}
 }
@@ -1451,9 +1626,15 @@ var earlyBootJarsKey = NewOnceKey("earlyBootJars")
 
 func (c *config) BootJars() []string {
 	return c.Once(earlyBootJarsKey, func() interface{} {
-		ctx := NullPathContext{Config{c}}
-		list := CreateConfiguredJarList(ctx,
-			append(CopyOf(c.productVariables.BootJars), c.productVariables.UpdatableBootJars...))
-		return list.CopyOfJars()
+		list := c.productVariables.BootJars.CopyOfJars()
+		return append(list, c.productVariables.UpdatableBootJars.CopyOfJars()...)
 	}).([]string)
+}
+
+func (c *config) NonUpdatableBootJars() ConfiguredJarList {
+	return c.productVariables.BootJars
+}
+
+func (c *config) UpdatableBootJars() ConfiguredJarList {
+	return c.productVariables.UpdatableBootJars
 }

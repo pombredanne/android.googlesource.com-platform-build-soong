@@ -43,6 +43,8 @@ type BuildParams struct {
 	Description     string
 	Output          WritablePath
 	Outputs         WritablePaths
+	SymlinkOutput   WritablePath
+	SymlinkOutputs  WritablePaths
 	ImplicitOutput  WritablePath
 	ImplicitOutputs WritablePaths
 	Input           Path
@@ -176,6 +178,31 @@ type BaseModuleContext interface {
 	// It is intended for use inside the visit functions of Visit* and WalkDeps.
 	OtherModuleType(m blueprint.Module) string
 
+	// OtherModuleProvider returns the value for a provider for the given module.  If the value is
+	// not set it returns the zero value of the type of the provider, so the return value can always
+	// be type asserted to the type of the provider.  The value returned may be a deep copy of the
+	// value originally passed to SetProvider.
+	OtherModuleProvider(m blueprint.Module, provider blueprint.ProviderKey) interface{}
+
+	// OtherModuleHasProvider returns true if the provider for the given module has been set.
+	OtherModuleHasProvider(m blueprint.Module, provider blueprint.ProviderKey) bool
+
+	// Provider returns the value for a provider for the current module.  If the value is
+	// not set it returns the zero value of the type of the provider, so the return value can always
+	// be type asserted to the type of the provider.  It panics if called before the appropriate
+	// mutator or GenerateBuildActions pass for the provider.  The value returned may be a deep
+	// copy of the value originally passed to SetProvider.
+	Provider(provider blueprint.ProviderKey) interface{}
+
+	// HasProvider returns true if the provider for the current module has been set.
+	HasProvider(provider blueprint.ProviderKey) bool
+
+	// SetProvider sets the value for a provider for the current module.  It panics if not called
+	// during the appropriate mutator or GenerateBuildActions pass for the provider, if the value
+	// is not of the appropriate type, or if the value has already been set.  The value should not
+	// be modified after being passed to SetProvider.
+	SetProvider(provider blueprint.ProviderKey, value interface{})
+
 	GetDirectDepsWithTag(tag blueprint.DependencyTag) []Module
 
 	// GetDirectDepWithTag returns the Module the direct dependency with the specified name, or nil if
@@ -245,6 +272,24 @@ type BaseModuleContext interface {
 	// and returns a top-down dependency path from a start module to current child module.
 	GetWalkPath() []Module
 
+	// PrimaryModule returns the first variant of the current module.  Variants of a module are always visited in
+	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from the
+	// Module returned by PrimaryModule without data races.  This can be used to perform singleton actions that are
+	// only done once for all variants of a module.
+	PrimaryModule() Module
+
+	// FinalModule returns the last variant of the current module.  Variants of a module are always visited in
+	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from all
+	// variants using VisitAllModuleVariants if the current module == FinalModule().  This can be used to perform
+	// singleton actions that are only done once for all variants of a module.
+	FinalModule() Module
+
+	// VisitAllModuleVariants calls visit for each variant of the current module.  Variants of a module are always
+	// visited in order by mutators and GenerateBuildActions, so the data created by the current mutator can be read
+	// from all variants if the current module == FinalModule().  Otherwise, care must be taken to not access any
+	// data modified by the current mutator.
+	VisitAllModuleVariants(visit func(Module))
+
 	// GetTagPath is supposed to be called in visit function passed in WalkDeps()
 	// and returns a top-down dependency tags path from a start module to current child module.
 	// It has one less entry than GetWalkPath() as it contains the dependency tags that
@@ -303,6 +348,7 @@ type ModuleContext interface {
 	InstallInTestcases() bool
 	InstallInSanitizerDir() bool
 	InstallInRamdisk() bool
+	InstallInVendorRamdisk() bool
 	InstallInRecovery() bool
 	InstallInRoot() bool
 	InstallBypassMake() bool
@@ -323,24 +369,6 @@ type ModuleContext interface {
 	// phony rules or real files.  Phony can be called on the same name multiple times to add
 	// additional dependencies.
 	Phony(phony string, deps ...Path)
-
-	// PrimaryModule returns the first variant of the current module.  Variants of a module are always visited in
-	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from the
-	// Module returned by PrimaryModule without data races.  This can be used to perform singleton actions that are
-	// only done once for all variants of a module.
-	PrimaryModule() Module
-
-	// FinalModule returns the last variant of the current module.  Variants of a module are always visited in
-	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from all
-	// variants using VisitAllModuleVariants if the current module == FinalModule().  This can be used to perform
-	// singleton actions that are only done once for all variants of a module.
-	FinalModule() Module
-
-	// VisitAllModuleVariants calls visit for each variant of the current module.  Variants of a module are always
-	// visited in order by mutators and GenerateBuildActions, so the data created by the current mutator can be read
-	// from all variants if the current module == FinalModule().  Otherwise, care must be taken to not access any
-	// data modified by the current mutator.
-	VisitAllModuleVariants(visit func(Module))
 
 	// GetMissingDependencies returns the list of dependencies that were passed to AddDependencies or related methods,
 	// but do not exist.
@@ -376,6 +404,7 @@ type Module interface {
 	InstallInTestcases() bool
 	InstallInSanitizerDir() bool
 	InstallInRamdisk() bool
+	InstallInVendorRamdisk() bool
 	InstallInRecovery() bool
 	InstallInRoot() bool
 	InstallBypassMake() bool
@@ -410,7 +439,8 @@ type Module interface {
 	HostRequiredModuleNames() []string
 	TargetRequiredModuleNames() []string
 
-	filesToInstall() InstallPaths
+	FilesToInstall() InstallPaths
+	PackagingSpecs() []PackagingSpec
 }
 
 // Qualified id for a module
@@ -473,8 +503,12 @@ type Dist struct {
 	// A suffix to add to the artifact file name (before any extension).
 	Suffix *string `android:"arch_variant"`
 
-	// A string tag to select the OutputFiles associated with the tag. Defaults to the
-	// the empty "" string.
+	// A string tag to select the OutputFiles associated with the tag.
+	//
+	// If no tag is specified then it will select the default dist paths provided
+	// by the module type. If a tag of "" is specified then it will return the
+	// default output files provided by the modules, i.e. the result of calling
+	// OutputFiles("").
 	Tag *string `android:"arch_variant"`
 }
 
@@ -596,11 +630,14 @@ type commonProperties struct {
 	// Whether this module is installed to ramdisk
 	Ramdisk *bool
 
+	// Whether this module is installed to vendor ramdisk
+	Vendor_ramdisk *bool
+
 	// Whether this module is built for non-native architecures (also known as native bridge binary)
 	Native_bridge_supported *bool `android:"arch_variant"`
 
 	// init.rc files to be installed if this module is installed
-	Init_rc []string `android:"path"`
+	Init_rc []string `android:"arch_variant,path"`
 
 	// VINTF manifest fragments to be installed if this module is installed
 	Vintf_fragments []string `android:"path"`
@@ -684,7 +721,9 @@ type commonProperties struct {
 	DebugMutators   []string `blueprint:"mutated"`
 	DebugVariations []string `blueprint:"mutated"`
 
-	// set by ImageMutator
+	// ImageVariation is set by ImageMutator to specify which image this variation is for,
+	// for example "" for core or "recovery" for recovery.  It will often be set to one of the
+	// constants in image.go, but can also be set to a custom value by individual module types.
 	ImageVariation string `blueprint:"mutated"`
 }
 
@@ -698,8 +737,44 @@ type distProperties struct {
 	Dists []Dist `android:"arch_variant"`
 }
 
+// The key to use in TaggedDistFiles when a Dist structure does not specify a
+// tag property. This intentionally does not use "" as the default because that
+// would mean that an empty tag would have a different meaning when used in a dist
+// structure that when used to reference a specific set of output paths using the
+// :module{tag} syntax, which passes tag to the OutputFiles(tag) method.
+const DefaultDistTag = "<default-dist-tag>"
+
 // A map of OutputFile tag keys to Paths, for disting purposes.
 type TaggedDistFiles map[string]Paths
+
+// addPathsForTag adds a mapping from the tag to the paths. If the map is nil
+// then it will create a map, update it and then return it. If a mapping already
+// exists for the tag then the paths are appended to the end of the current list
+// of paths, ignoring any duplicates.
+func (t TaggedDistFiles) addPathsForTag(tag string, paths ...Path) TaggedDistFiles {
+	if t == nil {
+		t = make(TaggedDistFiles)
+	}
+
+	for _, distFile := range paths {
+		if distFile != nil && !t[tag].containsPath(distFile) {
+			t[tag] = append(t[tag], distFile)
+		}
+	}
+
+	return t
+}
+
+// merge merges the entries from the other TaggedDistFiles object into this one.
+// If the TaggedDistFiles is nil then it will create a new instance, merge the
+// other into it, and then return it.
+func (t TaggedDistFiles) merge(other TaggedDistFiles) TaggedDistFiles {
+	for tag, paths := range other {
+		t = t.addPathsForTag(tag, paths...)
+	}
+
+	return t
+}
 
 func MakeDefaultDistFiles(paths ...Path) TaggedDistFiles {
 	for _, path := range paths {
@@ -709,7 +784,7 @@ func MakeDefaultDistFiles(paths ...Path) TaggedDistFiles {
 	}
 
 	// The default OutputFile tag is the empty "" string.
-	return TaggedDistFiles{"": paths}
+	return TaggedDistFiles{DefaultDistTag: paths}
 }
 
 type hostAndDeviceProperties struct {
@@ -733,27 +808,32 @@ const (
 type HostOrDeviceSupported int
 
 const (
-	_ HostOrDeviceSupported = iota
+	hostSupported = 1 << iota
+	hostCrossSupported
+	deviceSupported
+	hostDefault
+	deviceDefault
 
 	// Host and HostCross are built by default. Device is not supported.
-	HostSupported
+	HostSupported = hostSupported | hostCrossSupported | hostDefault
 
 	// Host is built by default. HostCross and Device are not supported.
-	HostSupportedNoCross
+	HostSupportedNoCross = hostSupported | hostDefault
 
 	// Device is built by default. Host and HostCross are not supported.
-	DeviceSupported
+	DeviceSupported = deviceSupported | deviceDefault
 
 	// Device is built by default. Host and HostCross are supported.
-	HostAndDeviceSupported
+	HostAndDeviceSupported = hostSupported | hostCrossSupported | deviceSupported | deviceDefault
 
 	// Host, HostCross, and Device are built by default.
-	HostAndDeviceDefault
+	HostAndDeviceDefault = hostSupported | hostCrossSupported | hostDefault |
+		deviceSupported | deviceDefault
 
 	// Nothing is supported. This is not exposed to the user, but used to mark a
 	// host only module as unsupported when the module type is not supported on
 	// the host OS. E.g. benchmarks are supported on Linux but not Darwin.
-	NeitherHostNorDeviceSupported
+	NeitherHostNorDeviceSupported = 0
 )
 
 type moduleKind int
@@ -787,6 +867,8 @@ func initAndroidModuleBase(m Module) {
 	m.base().module = m
 }
 
+// InitAndroidModule initializes the Module as an Android module that is not architecture-specific.
+// It adds the common properties, for example "name" and "enabled".
 func InitAndroidModule(m Module) {
 	initAndroidModuleBase(m)
 	base := m.base()
@@ -806,6 +888,12 @@ func InitAndroidModule(m Module) {
 	setPrimaryVisibilityProperty(m, "visibility", &base.commonProperties.Visibility)
 }
 
+// InitAndroidArchModule initializes the Module as an Android module that is architecture-specific.
+// It adds the common properties, for example "name" and "enabled", as well as runtime generated
+// property structs for architecture-specific versions of generic properties tagged with
+// `android:"arch_variant"`.
+//
+//  InitAndroidModule should not be called if InitAndroidArchModule was called.
 func InitAndroidArchModule(m Module, hod HostOrDeviceSupported, defaultMultilib Multilib) {
 	InitAndroidModule(m)
 
@@ -815,21 +903,37 @@ func InitAndroidArchModule(m Module, hod HostOrDeviceSupported, defaultMultilib 
 	base.commonProperties.ArchSpecific = true
 	base.commonProperties.UseTargetVariants = true
 
-	switch hod {
-	case HostAndDeviceSupported, HostAndDeviceDefault:
+	if hod&hostSupported != 0 && hod&deviceSupported != 0 {
 		m.AddProperties(&base.hostAndDeviceProperties)
 	}
 
-	InitArchModule(m)
+	initArchModule(m)
 }
 
+// InitAndroidMultiTargetsArchModule initializes the Module as an Android module that is
+// architecture-specific, but will only have a single variant per OS that handles all the
+// architectures simultaneously.  The list of Targets that it must handle will be available from
+// ModuleContext.MultiTargets. It adds the common properties, for example "name" and "enabled", as
+// well as runtime generated property structs for architecture-specific versions of generic
+// properties tagged with `android:"arch_variant"`.
+//
+// InitAndroidModule or InitAndroidArchModule should not be called if
+// InitAndroidMultiTargetsArchModule was called.
 func InitAndroidMultiTargetsArchModule(m Module, hod HostOrDeviceSupported, defaultMultilib Multilib) {
 	InitAndroidArchModule(m, hod, defaultMultilib)
 	m.base().commonProperties.UseTargetVariants = false
 }
 
-// As InitAndroidMultiTargetsArchModule except it creates an additional CommonOS variant that
-// has dependencies on all the OsType specific variants.
+// InitCommonOSAndroidMultiTargetsArchModule initializes the Module as an Android module that is
+// architecture-specific, but will only have a single variant per OS that handles all the
+// architectures simultaneously, and will also have an additional CommonOS variant that has
+// dependencies on all the OS-specific variants.  The list of Targets that it must handle will be
+// available from ModuleContext.MultiTargets.  It adds the common properties, for example "name" and
+// "enabled", as well as runtime generated property structs for architecture-specific versions of
+// generic properties tagged with `android:"arch_variant"`.
+//
+// InitAndroidModule, InitAndroidArchModule or InitAndroidMultiTargetsArchModule should not be
+// called if InitCommonOSAndroidMultiTargetsArchModule was called.
 func InitCommonOSAndroidMultiTargetsArchModule(m Module, hod HostOrDeviceSupported, defaultMultilib Multilib) {
 	InitAndroidArchModule(m, hod, defaultMultilib)
 	m.base().commonProperties.UseTargetVariants = false
@@ -902,8 +1006,12 @@ type ModuleBase struct {
 	noAddressSanitizer bool
 	installFiles       InstallPaths
 	checkbuildFiles    Paths
+	packagingSpecs     []PackagingSpec
 	noticeFiles        Paths
 	phonies            map[string]Paths
+
+	// The files to copy to the dist as explicitly specified in the .bp file.
+	distFiles TaggedDistFiles
 
 	// Used by buildTargetSingleton to create checkbuild and per-directory build targets
 	// Only set on the final variant of each module
@@ -923,7 +1031,7 @@ type ModuleBase struct {
 	initRcPaths         Paths
 	vintfFragmentsPaths Paths
 
-	prefer32 func(ctx BaseModuleContext, base *ModuleBase, class OsClass) bool
+	prefer32 func(ctx BaseModuleContext, base *ModuleBase, os OsType) bool
 }
 
 func (m *ModuleBase) ComponentDepsMutator(BottomUpMutatorContext) {}
@@ -950,7 +1058,7 @@ func (m *ModuleBase) VariablesForTests() map[string]string {
 	return m.variables
 }
 
-func (m *ModuleBase) Prefer32(prefer32 func(ctx BaseModuleContext, base *ModuleBase, class OsClass) bool) {
+func (m *ModuleBase) Prefer32(prefer32 func(ctx BaseModuleContext, base *ModuleBase, os OsType) bool) {
 	m.prefer32 = prefer32
 }
 
@@ -1006,23 +1114,30 @@ func (m *ModuleBase) Dists() []Dist {
 }
 
 func (m *ModuleBase) GenerateTaggedDistFiles(ctx BaseModuleContext) TaggedDistFiles {
-	distFiles := make(TaggedDistFiles)
+	var distFiles TaggedDistFiles
 	for _, dist := range m.Dists() {
-		var tag string
-		var distFilesForTag Paths
-		if dist.Tag == nil {
-			tag = ""
-		} else {
-			tag = *dist.Tag
-		}
-		distFilesForTag, err := m.base().module.(OutputFileProducer).OutputFiles(tag)
-		if err != nil {
-			ctx.PropertyErrorf("dist.tag", "%s", err.Error())
-		}
-		for _, distFile := range distFilesForTag {
-			if distFile != nil && !distFiles[tag].containsPath(distFile) {
-				distFiles[tag] = append(distFiles[tag], distFile)
+		// If no tag is specified then it means to use the default dist paths so use
+		// the special tag name which represents that.
+		tag := proptools.StringDefault(dist.Tag, DefaultDistTag)
+
+		if outputFileProducer, ok := m.module.(OutputFileProducer); ok {
+			// Call the OutputFiles(tag) method to get the paths associated with the tag.
+			distFilesForTag, err := outputFileProducer.OutputFiles(tag)
+
+			// If the tag was not supported and is not DefaultDistTag then it is an error.
+			// Failing to find paths for DefaultDistTag is not an error. It just means
+			// that the module type requires the legacy behavior.
+			if err != nil && tag != DefaultDistTag {
+				ctx.PropertyErrorf("dist.tag", "%s", err.Error())
 			}
+
+			distFiles = distFiles.addPathsForTag(tag, distFilesForTag...)
+		} else if tag != DefaultDistTag {
+			// If the tag was specified then it is an error if the module does not
+			// implement OutputFileProducer because there is no other way of accessing
+			// the paths for the specified tag.
+			ctx.PropertyErrorf("dist.tag",
+				"tag %s not supported because the module does not implement OutputFileProducer", tag)
 		}
 	}
 
@@ -1046,7 +1161,7 @@ func (m *ModuleBase) Os() OsType {
 }
 
 func (m *ModuleBase) Host() bool {
-	return m.Os().Class == Host || m.Os().Class == HostCross
+	return m.Os().Class == Host
 }
 
 func (m *ModuleBase) Device() bool {
@@ -1066,43 +1181,54 @@ func (m *ModuleBase) IsCommonOSVariant() bool {
 	return m.commonProperties.CommonOSVariant
 }
 
-func (m *ModuleBase) OsClassSupported() []OsClass {
-	switch m.commonProperties.HostOrDeviceSupported {
-	case HostSupported:
-		return []OsClass{Host, HostCross}
-	case HostSupportedNoCross:
-		return []OsClass{Host}
-	case DeviceSupported:
-		return []OsClass{Device}
-	case HostAndDeviceSupported, HostAndDeviceDefault:
-		var supported []OsClass
-		if Bool(m.hostAndDeviceProperties.Host_supported) ||
-			(m.commonProperties.HostOrDeviceSupported == HostAndDeviceDefault &&
-				m.hostAndDeviceProperties.Host_supported == nil) {
-			supported = append(supported, Host, HostCross)
+// supportsTarget returns true if the given Target is supported by the current module.
+func (m *ModuleBase) supportsTarget(target Target) bool {
+	switch target.Os.Class {
+	case Host:
+		if target.HostCross {
+			return m.HostCrossSupported()
+		} else {
+			return m.HostSupported()
 		}
-		if m.hostAndDeviceProperties.Device_supported == nil ||
-			*m.hostAndDeviceProperties.Device_supported {
-			supported = append(supported, Device)
-		}
-		return supported
+	case Device:
+		return m.DeviceSupported()
 	default:
-		return nil
+		return false
 	}
 }
 
+// DeviceSupported returns true if the current module is supported and enabled for device targets,
+// i.e. the factory method set the HostOrDeviceSupported value to include device support and
+// the device support is enabled by default or enabled by the device_supported property.
 func (m *ModuleBase) DeviceSupported() bool {
-	return m.commonProperties.HostOrDeviceSupported == DeviceSupported ||
-		m.commonProperties.HostOrDeviceSupported == HostAndDeviceSupported &&
-			(m.hostAndDeviceProperties.Device_supported == nil ||
-				*m.hostAndDeviceProperties.Device_supported)
+	hod := m.commonProperties.HostOrDeviceSupported
+	// deviceEnabled is true if the device_supported property is true or the HostOrDeviceSupported
+	// value has the deviceDefault bit set.
+	deviceEnabled := proptools.BoolDefault(m.hostAndDeviceProperties.Device_supported, hod&deviceDefault != 0)
+	return hod&deviceSupported != 0 && deviceEnabled
 }
 
+// HostSupported returns true if the current module is supported and enabled for host targets,
+// i.e. the factory method set the HostOrDeviceSupported value to include host support and
+// the host support is enabled by default or enabled by the host_supported property.
 func (m *ModuleBase) HostSupported() bool {
-	return m.commonProperties.HostOrDeviceSupported == HostSupported ||
-		m.commonProperties.HostOrDeviceSupported == HostAndDeviceSupported &&
-			(m.hostAndDeviceProperties.Host_supported != nil &&
-				*m.hostAndDeviceProperties.Host_supported)
+	hod := m.commonProperties.HostOrDeviceSupported
+	// hostEnabled is true if the host_supported property is true or the HostOrDeviceSupported
+	// value has the hostDefault bit set.
+	hostEnabled := proptools.BoolDefault(m.hostAndDeviceProperties.Host_supported, hod&hostDefault != 0)
+	return hod&hostSupported != 0 && hostEnabled
+}
+
+// HostCrossSupported returns true if the current module is supported and enabled for host cross
+// targets, i.e. the factory method set the HostOrDeviceSupported value to include host cross
+// support and the host cross support is enabled by default or enabled by the
+// host_supported property.
+func (m *ModuleBase) HostCrossSupported() bool {
+	hod := m.commonProperties.HostOrDeviceSupported
+	// hostEnabled is true if the host_supported property is true or the HostOrDeviceSupported
+	// value has the hostDefault bit set.
+	hostEnabled := proptools.BoolDefault(m.hostAndDeviceProperties.Host_supported, hod&hostDefault != 0)
+	return hod&hostCrossSupported != 0 && hostEnabled
 }
 
 func (m *ModuleBase) Platform() bool {
@@ -1210,21 +1336,29 @@ func (m *ModuleBase) ExportedToMake() bool {
 	return m.commonProperties.NamespaceExportedToMake
 }
 
+// computeInstallDeps finds the installed paths of all dependencies that have a dependency
+// tag that is annotated as needing installation via the IsInstallDepNeeded method.
 func (m *ModuleBase) computeInstallDeps(ctx blueprint.ModuleContext) InstallPaths {
-
 	var result InstallPaths
-	// TODO(ccross): we need to use WalkDeps and have some way to know which dependencies require installation
-	ctx.VisitDepsDepthFirst(func(m blueprint.Module) {
-		if a, ok := m.(Module); ok {
-			result = append(result, a.filesToInstall()...)
+	ctx.WalkDeps(func(child, parent blueprint.Module) bool {
+		if a, ok := child.(Module); ok {
+			if IsInstallDepNeeded(ctx.OtherModuleDependencyTag(child)) {
+				result = append(result, a.FilesToInstall()...)
+				return true
+			}
 		}
+		return false
 	})
 
 	return result
 }
 
-func (m *ModuleBase) filesToInstall() InstallPaths {
+func (m *ModuleBase) FilesToInstall() InstallPaths {
 	return m.installFiles
+}
+
+func (m *ModuleBase) PackagingSpecs() []PackagingSpec {
+	return m.packagingSpecs
 }
 
 func (m *ModuleBase) NoAddressSanitizer() bool {
@@ -1245,6 +1379,10 @@ func (m *ModuleBase) InstallInSanitizerDir() bool {
 
 func (m *ModuleBase) InstallInRamdisk() bool {
 	return Bool(m.commonProperties.Ramdisk)
+}
+
+func (m *ModuleBase) InstallInVendorRamdisk() bool {
+	return Bool(m.commonProperties.Vendor_ramdisk)
 }
 
 func (m *ModuleBase) InstallInRecovery() bool {
@@ -1294,6 +1432,10 @@ func (m *ModuleBase) getVariationByMutatorName(mutator string) string {
 
 func (m *ModuleBase) InRamdisk() bool {
 	return m.base().commonProperties.ImageVariation == RamdiskVariation
+}
+
+func (m *ModuleBase) InVendorRamdisk() bool {
+	return m.base().commonProperties.ImageVariation == VendorRamdiskVariation
 }
 
 func (m *ModuleBase) InRecovery() bool {
@@ -1352,7 +1494,7 @@ func (m *ModuleBase) generateModuleTarget(ctx ModuleContext) {
 
 	if len(deps) > 0 {
 		suffix := ""
-		if ctx.Config().EmbeddedInMake() {
+		if ctx.Config().KatiEnabled() {
 			suffix = "-soong"
 		}
 
@@ -1474,8 +1616,8 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 	if !ctx.PrimaryArch() {
 		suffix = append(suffix, ctx.Arch().ArchType.String())
 	}
-	if apex, ok := m.module.(ApexModule); ok && !apex.IsForPlatform() {
-		suffix = append(suffix, apex.ApexVariationName())
+	if apexInfo := ctx.Provider(ApexInfoProvider).(ApexInfo); !apexInfo.IsForPlatform() {
+		suffix = append(suffix, apexInfo.ApexVariationName)
 	}
 
 	ctx.Variable(pctx, "moduleDesc", desc)
@@ -1487,22 +1629,9 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 	ctx.Variable(pctx, "moduleDescSuffix", s)
 
 	// Some common property checks for properties that will be used later in androidmk.go
-	if m.distProperties.Dist.Dest != nil {
-		_, err := validateSafePath(*m.distProperties.Dist.Dest)
-		if err != nil {
-			ctx.PropertyErrorf("dist.dest", "%s", err.Error())
-		}
-	}
-	if m.distProperties.Dist.Dir != nil {
-		_, err := validateSafePath(*m.distProperties.Dist.Dir)
-		if err != nil {
-			ctx.PropertyErrorf("dist.dir", "%s", err.Error())
-		}
-	}
-	if m.distProperties.Dist.Suffix != nil {
-		if strings.Contains(*m.distProperties.Dist.Suffix, "/") {
-			ctx.PropertyErrorf("dist.suffix", "Suffix may not contain a '/' character.")
-		}
+	checkDistProperties(ctx, "dist", &m.distProperties.Dist)
+	for i, _ := range m.distProperties.Dists {
+		checkDistProperties(ctx, fmt.Sprintf("dists[%d]", i), &m.distProperties.Dists[i])
 	}
 
 	if m.Enabled() {
@@ -1539,8 +1668,18 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 			return
 		}
 
+		// Create the set of tagged dist files after calling GenerateAndroidBuildActions
+		// as GenerateTaggedDistFiles() calls OutputFiles(tag) and so relies on the
+		// output paths being set which must be done before or during
+		// GenerateAndroidBuildActions.
+		m.distFiles = m.GenerateTaggedDistFiles(ctx)
+		if ctx.Failed() {
+			return
+		}
+
 		m.installFiles = append(m.installFiles, ctx.installFiles...)
 		m.checkbuildFiles = append(m.checkbuildFiles, ctx.checkbuildFiles...)
+		m.packagingSpecs = append(m.packagingSpecs, ctx.packagingSpecs...)
 		m.initRcPaths = PathsForModuleSrc(ctx, m.commonProperties.Init_rc)
 		m.vintfFragmentsPaths = PathsForModuleSrc(ctx, m.commonProperties.Vintf_fragments)
 		for k, v := range ctx.phonies {
@@ -1564,6 +1703,32 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 	m.buildParams = ctx.buildParams
 	m.ruleParams = ctx.ruleParams
 	m.variables = ctx.variables
+}
+
+// Check the supplied dist structure to make sure that it is valid.
+//
+// property - the base property, e.g. dist or dists[1], which is combined with the
+// name of the nested property to produce the full property, e.g. dist.dest or
+// dists[1].dir.
+func checkDistProperties(ctx *moduleContext, property string, dist *Dist) {
+	if dist.Dest != nil {
+		_, err := validateSafePath(*dist.Dest)
+		if err != nil {
+			ctx.PropertyErrorf(property+".dest", "%s", err.Error())
+		}
+	}
+	if dist.Dir != nil {
+		_, err := validateSafePath(*dist.Dir)
+		if err != nil {
+			ctx.PropertyErrorf(property+".dir", "%s", err.Error())
+		}
+	}
+	if dist.Suffix != nil {
+		if strings.Contains(*dist.Suffix, "/") {
+			ctx.PropertyErrorf(property+".suffix", "Suffix may not contain a '/' character.")
+		}
+	}
+
 }
 
 type earlyModuleContext struct {
@@ -1681,6 +1846,21 @@ func (b *baseModuleContext) OtherModuleReverseDependencyVariantExists(name strin
 func (b *baseModuleContext) OtherModuleType(m blueprint.Module) string {
 	return b.bp.OtherModuleType(m)
 }
+func (b *baseModuleContext) OtherModuleProvider(m blueprint.Module, provider blueprint.ProviderKey) interface{} {
+	return b.bp.OtherModuleProvider(m, provider)
+}
+func (b *baseModuleContext) OtherModuleHasProvider(m blueprint.Module, provider blueprint.ProviderKey) bool {
+	return b.bp.OtherModuleHasProvider(m, provider)
+}
+func (b *baseModuleContext) Provider(provider blueprint.ProviderKey) interface{} {
+	return b.bp.Provider(provider)
+}
+func (b *baseModuleContext) HasProvider(provider blueprint.ProviderKey) bool {
+	return b.bp.HasProvider(provider)
+}
+func (b *baseModuleContext) SetProvider(provider blueprint.ProviderKey, value interface{}) {
+	b.bp.SetProvider(provider, value)
+}
 
 func (b *baseModuleContext) GetDirectDepWithTag(name string, tag blueprint.DependencyTag) blueprint.Module {
 	return b.bp.GetDirectDepWithTag(name, tag)
@@ -1693,6 +1873,7 @@ func (b *baseModuleContext) blueprintBaseModuleContext() blueprint.BaseModuleCon
 type moduleContext struct {
 	bp blueprint.ModuleContext
 	baseModuleContext
+	packagingSpecs  []PackagingSpec
 	installDeps     InstallPaths
 	installFiles    InstallPaths
 	checkbuildFiles Paths
@@ -1723,6 +1904,27 @@ func (m *moduleContext) ModuleBuild(pctx PackageContext, params ModuleBuildParam
 	m.Build(pctx, BuildParams(params))
 }
 
+func validateBuildParams(params blueprint.BuildParams) error {
+	// Validate that the symlink outputs are declared outputs or implicit outputs
+	allOutputs := map[string]bool{}
+	for _, output := range params.Outputs {
+		allOutputs[output] = true
+	}
+	for _, output := range params.ImplicitOutputs {
+		allOutputs[output] = true
+	}
+	for _, symlinkOutput := range params.SymlinkOutputs {
+		if !allOutputs[symlinkOutput] {
+			return fmt.Errorf(
+				"Symlink output %s is not a declared output or implicit output",
+				symlinkOutput)
+		}
+	}
+	return nil
+}
+
+// Convert build parameters from their concrete Android types into their string representations,
+// and combine the singular and plural fields of the same type (e.g. Output and Outputs).
 func convertBuildParams(params BuildParams) blueprint.BuildParams {
 	bparams := blueprint.BuildParams{
 		Rule:            params.Rule,
@@ -1730,6 +1932,7 @@ func convertBuildParams(params BuildParams) blueprint.BuildParams {
 		Deps:            params.Deps,
 		Outputs:         params.Outputs.Strings(),
 		ImplicitOutputs: params.ImplicitOutputs.Strings(),
+		SymlinkOutputs:  params.SymlinkOutputs.Strings(),
 		Inputs:          params.Inputs.Strings(),
 		Implicits:       params.Implicits.Strings(),
 		OrderOnly:       params.OrderOnly.Strings(),
@@ -1743,6 +1946,9 @@ func convertBuildParams(params BuildParams) blueprint.BuildParams {
 	}
 	if params.Output != nil {
 		bparams.Outputs = append(bparams.Outputs, params.Output.String())
+	}
+	if params.SymlinkOutput != nil {
+		bparams.SymlinkOutputs = append(bparams.SymlinkOutputs, params.SymlinkOutput.String())
 	}
 	if params.ImplicitOutput != nil {
 		bparams.ImplicitOutputs = append(bparams.ImplicitOutputs, params.ImplicitOutput.String())
@@ -1759,6 +1965,7 @@ func convertBuildParams(params BuildParams) blueprint.BuildParams {
 
 	bparams.Outputs = proptools.NinjaEscapeList(bparams.Outputs)
 	bparams.ImplicitOutputs = proptools.NinjaEscapeList(bparams.ImplicitOutputs)
+	bparams.SymlinkOutputs = proptools.NinjaEscapeList(bparams.SymlinkOutputs)
 	bparams.Inputs = proptools.NinjaEscapeList(bparams.Inputs)
 	bparams.Implicits = proptools.NinjaEscapeList(bparams.Implicits)
 	bparams.OrderOnly = proptools.NinjaEscapeList(bparams.OrderOnly)
@@ -1815,7 +2022,15 @@ func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 		m.buildParams = append(m.buildParams, params)
 	}
 
-	m.bp.Build(pctx.PackageContext, convertBuildParams(params))
+	bparams := convertBuildParams(params)
+	err := validateBuildParams(bparams)
+	if err != nil {
+		m.ModuleErrorf(
+			"%s: build parameter validation failed: %s",
+			m.ModuleName(),
+			err.Error())
+	}
+	m.bp.Build(pctx.PackageContext, bparams)
 }
 
 func (m *moduleContext) Phony(name string, deps ...Path) {
@@ -2001,6 +2216,20 @@ func (b *baseModuleContext) GetTagPath() []blueprint.DependencyTag {
 	return b.tagPath
 }
 
+func (b *baseModuleContext) VisitAllModuleVariants(visit func(Module)) {
+	b.bp.VisitAllModuleVariants(func(module blueprint.Module) {
+		visit(module.(Module))
+	})
+}
+
+func (b *baseModuleContext) PrimaryModule() Module {
+	return b.bp.PrimaryModule().(Module)
+}
+
+func (b *baseModuleContext) FinalModule() Module {
+	return b.bp.FinalModule().(Module)
+}
+
 // A regexp for removing boilerplate from BaseDependencyTag from the string representation of
 // a dependency tag.
 var tagCleaner = regexp.MustCompile(`\QBaseDependencyTag:{}\E(, )?`)
@@ -2036,20 +2265,6 @@ func (b *baseModuleContext) GetPathString(skipFirst bool) string {
 	return sb.String()
 }
 
-func (m *moduleContext) VisitAllModuleVariants(visit func(Module)) {
-	m.bp.VisitAllModuleVariants(func(module blueprint.Module) {
-		visit(module.(Module))
-	})
-}
-
-func (m *moduleContext) PrimaryModule() Module {
-	return m.bp.PrimaryModule().(Module)
-}
-
-func (m *moduleContext) FinalModule() Module {
-	return m.bp.FinalModule().(Module)
-}
-
 func (m *moduleContext) ModuleSubDir() string {
 	return m.bp.ModuleSubDir()
 }
@@ -2075,7 +2290,7 @@ func (b *baseModuleContext) Os() OsType {
 }
 
 func (b *baseModuleContext) Host() bool {
-	return b.os.Class == Host || b.os.Class == HostCross
+	return b.os.Class == Host
 }
 
 func (b *baseModuleContext) Device() bool {
@@ -2148,6 +2363,10 @@ func (m *moduleContext) InstallInRamdisk() bool {
 	return m.module.InstallInRamdisk()
 }
 
+func (m *moduleContext) InstallInVendorRamdisk() bool {
+	return m.module.InstallInVendorRamdisk()
+}
+
 func (m *moduleContext) InstallInRecovery() bool {
 	return m.module.InstallInRecovery()
 }
@@ -2177,7 +2396,7 @@ func (m *moduleContext) skipInstall(fullInstallPath InstallPath) bool {
 	}
 
 	if m.Device() {
-		if m.Config().EmbeddedInMake() && !m.InstallBypassMake() {
+		if m.Config().KatiEnabled() && !m.InstallBypassMake() {
 			return true
 		}
 
@@ -2191,16 +2410,15 @@ func (m *moduleContext) skipInstall(fullInstallPath InstallPath) bool {
 
 func (m *moduleContext) InstallFile(installPath InstallPath, name string, srcPath Path,
 	deps ...Path) InstallPath {
-	return m.installFile(installPath, name, srcPath, Cp, deps)
+	return m.installFile(installPath, name, srcPath, deps, false)
 }
 
 func (m *moduleContext) InstallExecutable(installPath InstallPath, name string, srcPath Path,
 	deps ...Path) InstallPath {
-	return m.installFile(installPath, name, srcPath, CpExecutable, deps)
+	return m.installFile(installPath, name, srcPath, deps, true)
 }
 
-func (m *moduleContext) installFile(installPath InstallPath, name string, srcPath Path,
-	rule blueprint.Rule, deps []Path) InstallPath {
+func (m *moduleContext) installFile(installPath InstallPath, name string, srcPath Path, deps []Path, executable bool) InstallPath {
 
 	fullInstallPath := installPath.Join(m, name)
 	m.module.base().hooks.runInstallHooks(m, srcPath, fullInstallPath, false)
@@ -2219,6 +2437,11 @@ func (m *moduleContext) installFile(installPath InstallPath, name string, srcPat
 			orderOnlyDeps = deps
 		}
 
+		rule := Cp
+		if executable {
+			rule = CpExecutable
+		}
+
 		m.Build(pctx, BuildParams{
 			Rule:        rule,
 			Description: "install " + fullInstallPath.Base(),
@@ -2226,11 +2449,19 @@ func (m *moduleContext) installFile(installPath InstallPath, name string, srcPat
 			Input:       srcPath,
 			Implicits:   implicitDeps,
 			OrderOnly:   orderOnlyDeps,
-			Default:     !m.Config().EmbeddedInMake(),
+			Default:     !m.Config().KatiEnabled(),
 		})
 
 		m.installFiles = append(m.installFiles, fullInstallPath)
 	}
+
+	m.packagingSpecs = append(m.packagingSpecs, PackagingSpec{
+		relPathInPackage: Rel(m, fullInstallPath.PartitionDir(), fullInstallPath.String()),
+		srcPath:          srcPath,
+		symlinkTarget:    "",
+		executable:       executable,
+	})
+
 	m.checkbuildFiles = append(m.checkbuildFiles, srcPath)
 	return fullInstallPath
 }
@@ -2239,18 +2470,18 @@ func (m *moduleContext) InstallSymlink(installPath InstallPath, name string, src
 	fullInstallPath := installPath.Join(m, name)
 	m.module.base().hooks.runInstallHooks(m, srcPath, fullInstallPath, true)
 
+	relPath, err := filepath.Rel(path.Dir(fullInstallPath.String()), srcPath.String())
+	if err != nil {
+		panic(fmt.Sprintf("Unable to generate symlink between %q and %q: %s", fullInstallPath.Base(), srcPath.Base(), err))
+	}
 	if !m.skipInstall(fullInstallPath) {
 
-		relPath, err := filepath.Rel(path.Dir(fullInstallPath.String()), srcPath.String())
-		if err != nil {
-			panic(fmt.Sprintf("Unable to generate symlink between %q and %q: %s", fullInstallPath.Base(), srcPath.Base(), err))
-		}
 		m.Build(pctx, BuildParams{
 			Rule:        Symlink,
 			Description: "install symlink " + fullInstallPath.Base(),
 			Output:      fullInstallPath,
 			Input:       srcPath,
-			Default:     !m.Config().EmbeddedInMake(),
+			Default:     !m.Config().KatiEnabled(),
 			Args: map[string]string{
 				"fromPath": relPath,
 			},
@@ -2259,6 +2490,14 @@ func (m *moduleContext) InstallSymlink(installPath InstallPath, name string, src
 		m.installFiles = append(m.installFiles, fullInstallPath)
 		m.checkbuildFiles = append(m.checkbuildFiles, srcPath)
 	}
+
+	m.packagingSpecs = append(m.packagingSpecs, PackagingSpec{
+		relPathInPackage: Rel(m, fullInstallPath.PartitionDir(), fullInstallPath.String()),
+		srcPath:          nil,
+		symlinkTarget:    relPath,
+		executable:       false,
+	})
+
 	return fullInstallPath
 }
 
@@ -2273,7 +2512,7 @@ func (m *moduleContext) InstallAbsoluteSymlink(installPath InstallPath, name str
 			Rule:        Symlink,
 			Description: "install symlink " + fullInstallPath.Base() + " -> " + absPath,
 			Output:      fullInstallPath,
-			Default:     !m.Config().EmbeddedInMake(),
+			Default:     !m.Config().KatiEnabled(),
 			Args: map[string]string{
 				"fromPath": absPath,
 			},
@@ -2281,6 +2520,14 @@ func (m *moduleContext) InstallAbsoluteSymlink(installPath InstallPath, name str
 
 		m.installFiles = append(m.installFiles, fullInstallPath)
 	}
+
+	m.packagingSpecs = append(m.packagingSpecs, PackagingSpec{
+		relPathInPackage: Rel(m, fullInstallPath.PartitionDir(), fullInstallPath.String()),
+		srcPath:          nil,
+		symlinkTarget:    absPath,
+		executable:       false,
+	})
+
 	return fullInstallPath
 }
 
@@ -2407,6 +2654,15 @@ func outputFilesForModule(ctx PathContext, module blueprint.Module, tag string) 
 			return nil, fmt.Errorf("failed to get output files from module %q", pathContextName(ctx, module))
 		}
 		return paths, nil
+	} else if sourceFileProducer, ok := module.(SourceFileProducer); ok {
+		if tag != "" {
+			return nil, fmt.Errorf("module %q is a SourceFileProducer, not an OutputFileProducer, and so does not support tag %q", pathContextName(ctx, module), tag)
+		}
+		paths := sourceFileProducer.Srcs()
+		if len(paths) == 0 {
+			return nil, fmt.Errorf("failed to get output files from module %q", pathContextName(ctx, module))
+		}
+		return paths, nil
 	} else {
 		return nil, fmt.Errorf("module %q is not an OutputFileProducer", pathContextName(ctx, module))
 	}
@@ -2494,7 +2750,7 @@ func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 	})
 
 	suffix := ""
-	if ctx.Config().EmbeddedInMake() {
+	if ctx.Config().KatiEnabled() {
 		suffix = "-soong"
 	}
 
@@ -2502,7 +2758,7 @@ func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 	ctx.Phony("checkbuild"+suffix, checkbuildDeps...)
 
 	// Make will generate the MODULES-IN-* targets
-	if ctx.Config().EmbeddedInMake() {
+	if ctx.Config().KatiEnabled() {
 		return
 	}
 
@@ -2535,30 +2791,36 @@ func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 	}
 
 	// Create (host|host-cross|target)-<OS> phony rules to build a reduced checkbuild.
-	osDeps := map[OsType]Paths{}
+	type osAndCross struct {
+		os        OsType
+		hostCross bool
+	}
+	osDeps := map[osAndCross]Paths{}
 	ctx.VisitAllModules(func(module Module) {
 		if module.Enabled() {
-			os := module.Target().Os
-			osDeps[os] = append(osDeps[os], module.base().checkbuildFiles...)
+			key := osAndCross{os: module.Target().Os, hostCross: module.Target().HostCross}
+			osDeps[key] = append(osDeps[key], module.base().checkbuildFiles...)
 		}
 	})
 
 	osClass := make(map[string]Paths)
-	for os, deps := range osDeps {
+	for key, deps := range osDeps {
 		var className string
 
-		switch os.Class {
+		switch key.os.Class {
 		case Host:
-			className = "host"
-		case HostCross:
-			className = "host-cross"
+			if key.hostCross {
+				className = "host-cross"
+			} else {
+				className = "host"
+			}
 		case Device:
 			className = "target"
 		default:
 			continue
 		}
 
-		name := className + "-" + os.Name
+		name := className + "-" + key.os.Name
 		osClass[className] = append(osClass[className], PathForPhony(ctx, name))
 
 		ctx.Phony(name, deps...)

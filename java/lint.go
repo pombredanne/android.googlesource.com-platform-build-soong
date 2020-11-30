@@ -447,14 +447,17 @@ func (l *lintSingleton) generateLintReportZips(ctx android.SingletonContext) {
 	var outputs []*lintOutputs
 	var dirs []string
 	ctx.VisitAllModules(func(m android.Module) {
-		if ctx.Config().EmbeddedInMake() && !m.ExportedToMake() {
+		if ctx.Config().KatiEnabled() && !m.ExportedToMake() {
 			return
 		}
 
-		if apex, ok := m.(android.ApexModule); ok && apex.NotAvailableForPlatform() && apex.IsForPlatform() {
-			// There are stray platform variants of modules in apexes that are not available for
-			// the platform, and they sometimes can't be built.  Don't depend on them.
-			return
+		if apex, ok := m.(android.ApexModule); ok && apex.NotAvailableForPlatform() {
+			apexInfo := ctx.ModuleProvider(m, android.ApexInfoProvider).(android.ApexInfo)
+			if apexInfo.IsForPlatform() {
+				// There are stray platform variants of modules in apexes that are not available for
+				// the platform, and they sometimes can't be built.  Don't depend on them.
+				return
+			}
 		}
 
 		if l, ok := m.(lintOutputsIntf); ok {

@@ -95,6 +95,8 @@ func InitDefaultableModule(module DefaultableModule) {
 	module.setProperties(module.(Module).GetProperties(), module.(Module).base().variableProperties)
 
 	module.AddProperties(module.defaults())
+
+	module.base().customizableProperties = module.GetProperties()
 }
 
 // A restricted subset of context methods, similar to LoadHookContext.
@@ -181,7 +183,7 @@ func InitDefaultsModule(module DefaultsModule) {
 
 	initAndroidModuleBase(module)
 	initProductVariableModule(module)
-	InitArchModule(module)
+	initArchModule(module)
 	InitDefaultableModule(module)
 
 	// Add properties that will not have defaults applied to them.
