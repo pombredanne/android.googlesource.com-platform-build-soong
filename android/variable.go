@@ -319,8 +319,9 @@ type productVariables struct {
 	Ndk_abis               *bool `json:",omitempty"`
 	Exclude_draft_ndk_apis *bool `json:",omitempty"`
 
-	Flatten_apex *bool `json:",omitempty"`
-	Aml_abis     *bool `json:",omitempty"`
+	Flatten_apex   *bool `json:",omitempty"`
+	CompressedApex *bool `json:",omitempty"`
+	Aml_abis       *bool `json:",omitempty"`
 
 	DexpreoptGlobalConfig *string `json:",omitempty"`
 
@@ -337,7 +338,6 @@ type productVariables struct {
 
 	ProductPublicSepolicyDirs  []string `json:",omitempty"`
 	ProductPrivateSepolicyDirs []string `json:",omitempty"`
-	ProductCompatibleProperty  *bool    `json:",omitempty"`
 
 	ProductVndkVersion *string `json:",omitempty"`
 
@@ -346,6 +346,9 @@ type productVariables struct {
 	MissingUsesLibraries []string `json:",omitempty"`
 
 	EnforceProductPartitionInterface *bool `json:",omitempty"`
+
+	EnforceInterPartitionJavaSdkLibrary *bool    `json:",omitempty"`
+	InterPartitionJavaLibraryAllowList  []string `json:",omitempty"`
 
 	InstallExtraFlattenedApexes *bool `json:",omitempty"`
 

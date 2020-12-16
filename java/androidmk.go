@@ -85,7 +85,6 @@ func (library *Library) AndroidMkEntries() []android.AndroidMkEntries {
 	} else {
 		entriesList = append(entriesList, android.AndroidMkEntries{
 			Class:      "JAVA_LIBRARIES",
-			DistFiles:  library.distFiles,
 			OutputFile: android.OptionalPathForPath(library.outputFile),
 			Include:    "$(BUILD_SYSTEM)/soong_java_prebuilt.mk",
 			ExtraEntries: []android.AndroidMkExtraEntriesFunc{
@@ -140,9 +139,9 @@ func (library *Library) AndroidMkEntries() []android.AndroidMkEntries {
 func testSuiteComponent(entries *android.AndroidMkEntries, test_suites []string) {
 	entries.SetString("LOCAL_MODULE_TAGS", "tests")
 	if len(test_suites) > 0 {
-		entries.AddStrings("LOCAL_COMPATIBILITY_SUITE", test_suites...)
+		entries.AddCompatibilityTestSuites(test_suites...)
 	} else {
-		entries.SetString("LOCAL_COMPATIBILITY_SUITE", "null-suite")
+		entries.AddCompatibilityTestSuites("null-suite")
 	}
 }
 
@@ -160,6 +159,9 @@ func (j *Test) AndroidMkEntries() []android.AndroidMkEntries {
 			entries.SetString("LOCAL_DISABLE_AUTO_GENERATE_TEST_CONFIG", "true")
 		}
 		entries.AddStrings("LOCAL_TEST_MAINLINE_MODULES", j.testProperties.Test_mainline_modules...)
+		if Bool(j.testProperties.Test_options.Unit_test) {
+			entries.SetBool("LOCAL_IS_UNIT_TEST", true)
+		}
 	})
 
 	return entriesList
@@ -272,7 +274,7 @@ func (binary *Binary) AndroidMkEntries() []android.AndroidMkEntries {
 				},
 			},
 			ExtraFooters: []android.AndroidMkExtraFootersFunc{
-				func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
+				func(w io.Writer, name, prefix, moduleDir string) {
 					fmt.Fprintln(w, "jar_installed_module := $(LOCAL_INSTALLED_MODULE)")
 				},
 			},
@@ -287,7 +289,7 @@ func (binary *Binary) AndroidMkEntries() []android.AndroidMkEntries {
 				},
 			},
 			ExtraFooters: []android.AndroidMkExtraFootersFunc{
-				func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
+				func(w io.Writer, name, prefix, moduleDir string) {
 					// Ensure that the wrapper script timestamp is always updated when the jar is updated
 					fmt.Fprintln(w, "$(LOCAL_INSTALLED_MODULE): $(jar_installed_module)")
 					fmt.Fprintln(w, "jar_installed_module :=")
@@ -391,7 +393,7 @@ func (app *AndroidApp) AndroidMkEntries() []android.AndroidMkEntries {
 			},
 		},
 		ExtraFooters: []android.AndroidMkExtraFootersFunc{
-			func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
+			func(w io.Writer, name, prefix, moduleDir string) {
 				if app.noticeOutputs.Merged.Valid() {
 					fmt.Fprintf(w, "$(call dist-for-goals,%s,%s:%s)\n",
 						app.installApkName, app.noticeOutputs.Merged.String(), app.installApkName+"_NOTICE")
@@ -521,17 +523,12 @@ func (dstubs *Droidstubs) AndroidMkEntries() []android.AndroidMkEntries {
 	// Note that dstubs.apiFile can be also be nil if WITHOUT_CHECKS_API is true.
 	// TODO(b/146727827): Revert when we do not need to generate stubs and API separately.
 
-	var distFiles android.TaggedDistFiles
-	if dstubs.apiFile != nil {
-		distFiles = android.MakeDefaultDistFiles(dstubs.apiFile)
-	}
 	outputFile := android.OptionalPathForPath(dstubs.stubsSrcJar)
 	if !outputFile.Valid() {
 		outputFile = android.OptionalPathForPath(dstubs.apiFile)
 	}
 	return []android.AndroidMkEntries{android.AndroidMkEntries{
 		Class:      "JAVA_LIBRARIES",
-		DistFiles:  distFiles,
 		OutputFile: outputFile,
 		Include:    "$(BUILD_SYSTEM)/soong_droiddoc_prebuilt.mk",
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
@@ -551,7 +548,7 @@ func (dstubs *Droidstubs) AndroidMkEntries() []android.AndroidMkEntries {
 			},
 		},
 		ExtraFooters: []android.AndroidMkExtraFootersFunc{
-			func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
+			func(w io.Writer, name, prefix, moduleDir string) {
 				if dstubs.apiFile != nil {
 					fmt.Fprintf(w, ".PHONY: %s %s.txt\n", dstubs.Name(), dstubs.Name())
 					fmt.Fprintf(w, "%s %s.txt: %s\n", dstubs.Name(), dstubs.Name(), dstubs.apiFile)

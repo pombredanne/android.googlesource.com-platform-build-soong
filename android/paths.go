@@ -138,6 +138,8 @@ type WritablePath interface {
 	// the writablePath method doesn't directly do anything,
 	// but it allows a struct to distinguish between whether or not it implements the WritablePath interface
 	writablePath()
+
+	ReplaceExtension(ctx PathContext, ext string) OutputPath
 }
 
 type genPathProvider interface {
@@ -540,6 +542,45 @@ func firstUniquePathsMap(list Paths) Paths {
 	return list[:k]
 }
 
+// FirstUniqueInstallPaths returns all unique elements of an InstallPaths, keeping the first copy of each.  It
+// modifies the InstallPaths slice contents in place, and returns a subslice of the original slice.
+func FirstUniqueInstallPaths(list InstallPaths) InstallPaths {
+	// 128 was chosen based on BenchmarkFirstUniquePaths results.
+	if len(list) > 128 {
+		return firstUniqueInstallPathsMap(list)
+	}
+	return firstUniqueInstallPathsList(list)
+}
+
+func firstUniqueInstallPathsList(list InstallPaths) InstallPaths {
+	k := 0
+outer:
+	for i := 0; i < len(list); i++ {
+		for j := 0; j < k; j++ {
+			if list[i] == list[j] {
+				continue outer
+			}
+		}
+		list[k] = list[i]
+		k++
+	}
+	return list[:k]
+}
+
+func firstUniqueInstallPathsMap(list InstallPaths) InstallPaths {
+	k := 0
+	seen := make(map[InstallPath]bool, len(list))
+	for i := 0; i < len(list); i++ {
+		if seen[list[i]] {
+			continue
+		}
+		seen[list[i]] = true
+		list[k] = list[i]
+		k++
+	}
+	return list[:k]
+}
+
 // LastUniquePaths returns all unique elements of a Paths, keeping the last copy of each.  It
 // modifies the Paths slice contents in place, and returns a subslice of the original slice.
 func LastUniquePaths(list Paths) Paths {
@@ -665,7 +706,7 @@ func (p DirectorySortedPaths) PathsInDirectory(dir string) Paths {
 	return Paths(ret)
 }
 
-// WritablePaths is a slice of WritablePaths, used for multiple outputs.
+// WritablePaths is a slice of WritablePath, used for multiple outputs.
 type WritablePaths []WritablePath
 
 // Strings returns the string forms of the writable paths.
@@ -1113,6 +1154,17 @@ func pathForModule(ctx ModuleContext) OutputPath {
 	return PathForOutput(ctx, ".intermediates", ctx.ModuleDir(), ctx.ModuleName(), ctx.ModuleSubDir())
 }
 
+type BazelOutPath struct {
+	OutputPath
+}
+
+var _ Path = BazelOutPath{}
+var _ objPathProvider = BazelOutPath{}
+
+func (p BazelOutPath) objPathWithExt(ctx ModuleContext, subdir, ext string) ModuleObjPath {
+	return PathForModuleObj(ctx, subdir, pathtools.ReplaceExtension(p.path, ext))
+}
+
 // PathForVndkRefAbiDump returns an OptionalPath representing the path of the
 // reference abi dump for the given module. This is not guaranteed to be valid.
 func PathForVndkRefAbiDump(ctx ModuleContext, version, fileName string,
@@ -1149,6 +1201,24 @@ func PathForVndkRefAbiDump(ctx ModuleContext, version, fileName string,
 	return ExistentPathForSource(ctx, "prebuilts", "abi-dumps", dirName,
 		version, binderBitness, archNameAndVariant, "source-based",
 		fileName+ext)
+}
+
+// PathForBazelOut returns a Path representing the paths... under an output directory dedicated to
+// bazel-owned outputs.
+func PathForBazelOut(ctx PathContext, paths ...string) BazelOutPath {
+	execRootPathComponents := append([]string{"execroot", "__main__"}, paths...)
+	execRootPath := filepath.Join(execRootPathComponents...)
+	validatedExecRootPath, err := validatePath(execRootPath)
+	if err != nil {
+		reportPathError(ctx, err)
+	}
+
+	outputPath := OutputPath{basePath{"", ctx.Config(), ""},
+		ctx.Config().BazelContext.OutputBase()}
+
+	return BazelOutPath{
+		OutputPath: outputPath.withRel(validatedExecRootPath),
+	}
 }
 
 // PathForModuleOut returns a Path representing the paths... under the module's
@@ -1249,6 +1319,10 @@ func (p InstallPath) buildDir() string {
 	return p.config.buildDir
 }
 
+func (p InstallPath) ReplaceExtension(ctx PathContext, ext string) OutputPath {
+	panic("Not implemented")
+}
+
 var _ Path = InstallPath{}
 var _ WritablePath = InstallPath{}
 
@@ -1312,7 +1386,7 @@ func PathForModuleInstall(ctx ModuleInstallPathContext, pathComponents ...string
 
 	ret := pathForInstall(ctx, os, arch, partition, ctx.Debug(), pathComponents...)
 
-	if ctx.InstallBypassMake() && ctx.Config().EmbeddedInMake() {
+	if ctx.InstallBypassMake() && ctx.Config().KatiEnabled() {
 		ret = ret.ToMakePath()
 	}
 
@@ -1509,6 +1583,10 @@ func (p PhonyPath) writablePath() {}
 
 func (p PhonyPath) buildDir() string {
 	return p.config.buildDir
+}
+
+func (p PhonyPath) ReplaceExtension(ctx PathContext, ext string) OutputPath {
+	panic("Not implemented")
 }
 
 var _ Path = PhonyPath{}

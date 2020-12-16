@@ -17,6 +17,7 @@ package cc
 import (
 	"android/soong/android"
 	"path/filepath"
+	"strings"
 )
 
 func init() {
@@ -117,6 +118,8 @@ func (p *prebuiltLibraryLinker) link(ctx ModuleContext,
 			return nil
 		}
 
+		p.libraryDecorator.exportVersioningMacroIfNeeded(ctx)
+
 		in := android.PathForModuleSrc(ctx, srcs[0])
 
 		if p.static() {
@@ -146,7 +149,7 @@ func (p *prebuiltLibraryLinker) link(ctx ModuleContext,
 			// depending on a table of contents file instead of the library itself.
 			tocFile := android.PathForModuleOut(ctx, libName+".toc")
 			p.tocFile = android.OptionalPathForPath(tocFile)
-			TransformSharedObjectToToc(ctx, outputFile, tocFile, builderFlags)
+			transformSharedObjectToToc(ctx, outputFile, tocFile, builderFlags)
 
 			if ctx.Windows() && p.properties.Windows_import_lib != nil {
 				// Consumers of this library actually links to the import library in build
@@ -190,6 +193,12 @@ func (p *prebuiltLibraryLinker) link(ctx ModuleContext,
 		}
 	}
 
+	if p.header() {
+		ctx.SetProvider(HeaderLibraryInfoProvider, HeaderLibraryInfo{})
+
+		return nil
+	}
+
 	return nil
 }
 
@@ -218,6 +227,11 @@ func (p *prebuiltLibraryLinker) nativeCoverage() bool {
 
 func (p *prebuiltLibraryLinker) disablePrebuilt() {
 	p.properties.Srcs = nil
+}
+
+// Implements versionedInterface
+func (p *prebuiltLibraryLinker) implementationModuleName(name string) string {
+	return strings.TrimPrefix(name, "prebuilt_")
 }
 
 func NewPrebuiltLibrary(hod android.HostOrDeviceSupported) (*Module, *libraryDecorator) {

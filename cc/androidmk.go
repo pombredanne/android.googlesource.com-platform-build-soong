@@ -46,7 +46,7 @@ type AndroidMkContext interface {
 	InRamdisk() bool
 	InVendorRamdisk() bool
 	InRecovery() bool
-	AnyVariantDirectlyInAnyApex() bool
+	NotInPlatform() bool
 }
 
 type subAndroidMkProvider interface {
@@ -113,7 +113,7 @@ func (c *Module) AndroidMkEntries() []android.AndroidMkEntries {
 						entries.SetString("LOCAL_SOONG_VNDK_VERSION", c.VndkVersion())
 						// VNDK libraries available to vendor are not installed because
 						// they are packaged in VNDK APEX and installed by APEX packages (apex/apex.go)
-						if !c.isVndkExt() {
+						if !c.IsVndkExt() {
 							entries.SetBool("LOCAL_UNINSTALLABLE_MODULE", true)
 						}
 					}
@@ -130,7 +130,7 @@ func (c *Module) AndroidMkEntries() []android.AndroidMkEntries {
 			},
 		},
 		ExtraFooters: []android.AndroidMkExtraFootersFunc{
-			func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
+			func(w io.Writer, name, prefix, moduleDir string) {
 				if c.Properties.IsSdkVariant && c.Properties.SdkAndPlatformVariantVisibleToMake &&
 					c.CcLibraryInterface() && c.Shared() {
 					// Using the SDK variant as a JNI library needs a copy of the .so that
@@ -281,10 +281,15 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 			}
 		})
 	}
-	if len(library.Properties.Stubs.Versions) > 0 && !ctx.Host() && ctx.AnyVariantDirectlyInAnyApex() &&
+	// If a library providing a stub is included in an APEX, the private APIs of the library
+	// is accessible only inside the APEX. From outside of the APEX, clients can only use the
+	// public APIs via the stub. To enforce this, the (latest version of the) stub gets the
+	// name of the library. The impl library instead gets the `.bootstrap` suffix to so that
+	// they can be exceptionally used directly when APEXes are not available (e.g. during the
+	// very early stage in the boot process).
+	if len(library.Properties.Stubs.Versions) > 0 && !ctx.Host() && ctx.NotInPlatform() &&
 		!ctx.InRamdisk() && !ctx.InVendorRamdisk() && !ctx.InRecovery() && !ctx.UseVndk() && !ctx.static() {
 		if library.buildStubs() && library.isLatestStubVersion() {
-			// reference the latest version via its name without suffix when it is provided by apex
 			entries.SubName = ""
 		}
 		if !library.buildStubs() {
@@ -296,7 +301,7 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 func (object *objectLinker) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
 	entries.Class = "STATIC_LIBRARIES"
 	entries.ExtraFooters = append(entries.ExtraFooters,
-		func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
+		func(w io.Writer, name, prefix, moduleDir string) {
 			out := entries.OutputFile.Path()
 			varname := fmt.Sprintf("SOONG_%sOBJECT_%s%s", prefix, name, entries.SubName)
 
@@ -334,8 +339,7 @@ func (benchmark *benchmarkDecorator) AndroidMkEntries(ctx AndroidMkContext, entr
 	entries.Class = "NATIVE_TESTS"
 	entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
 		if len(benchmark.Properties.Test_suites) > 0 {
-			entries.SetString("LOCAL_COMPATIBILITY_SUITE",
-				strings.Join(benchmark.Properties.Test_suites, " "))
+			entries.AddCompatibilityTestSuites(benchmark.Properties.Test_suites...)
 		}
 		if benchmark.testConfig != nil {
 			entries.SetString("LOCAL_FULL_TEST_CONFIG", benchmark.testConfig.String())
@@ -360,8 +364,7 @@ func (test *testBinary) AndroidMkEntries(ctx AndroidMkContext, entries *android.
 	}
 	entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
 		if len(test.Properties.Test_suites) > 0 {
-			entries.SetString("LOCAL_COMPATIBILITY_SUITE",
-				strings.Join(test.Properties.Test_suites, " "))
+			entries.AddCompatibilityTestSuites(test.Properties.Test_suites...)
 		}
 		if test.testConfig != nil {
 			entries.SetString("LOCAL_FULL_TEST_CONFIG", test.testConfig.String())
@@ -370,6 +373,9 @@ func (test *testBinary) AndroidMkEntries(ctx AndroidMkContext, entries *android.
 			entries.SetBool("LOCAL_DISABLE_AUTO_GENERATE_TEST_CONFIG", true)
 		}
 		entries.AddStrings("LOCAL_TEST_MAINLINE_MODULES", test.Properties.Test_mainline_modules...)
+		if Bool(test.Properties.Test_options.Unit_test) {
+			entries.SetBool("LOCAL_IS_UNIT_TEST", true)
+		}
 	})
 
 	androidMkWriteTestData(test.data, ctx, entries)
@@ -505,7 +511,7 @@ func (c *vndkPrebuiltLibraryDecorator) AndroidMkEntries(ctx AndroidMkContext, en
 	})
 }
 
-func (c *vendorSnapshotLibraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
+func (c *snapshotLibraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
 	// Each vendor snapshot is exported to androidMk only when BOARD_VNDK_VERSION != current
 	// and the version of the prebuilt is same as BOARD_VNDK_VERSION.
 	if c.shared() {
@@ -549,7 +555,7 @@ func (c *vendorSnapshotLibraryDecorator) AndroidMkEntries(ctx AndroidMkContext, 
 	})
 }
 
-func (c *vendorSnapshotBinaryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
+func (c *snapshotBinaryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
 	entries.Class = "EXECUTABLES"
 
 	if c.androidMkVendorSuffix {
@@ -563,7 +569,7 @@ func (c *vendorSnapshotBinaryDecorator) AndroidMkEntries(ctx AndroidMkContext, e
 	})
 }
 
-func (c *vendorSnapshotObjectLinker) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
+func (c *snapshotObjectLinker) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
 	entries.Class = "STATIC_LIBRARIES"
 
 	if c.androidMkVendorSuffix {
@@ -573,7 +579,7 @@ func (c *vendorSnapshotObjectLinker) AndroidMkEntries(ctx AndroidMkContext, entr
 	}
 
 	entries.ExtraFooters = append(entries.ExtraFooters,
-		func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
+		func(w io.Writer, name, prefix, moduleDir string) {
 			out := entries.OutputFile.Path()
 			varname := fmt.Sprintf("SOONG_%sOBJECT_%s%s", prefix, name, entries.SubName)
 

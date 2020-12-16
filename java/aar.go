@@ -17,6 +17,7 @@ package java
 import (
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"android/soong/android"
@@ -192,22 +193,31 @@ func (a *aapt) aapt2Flags(ctx android.ModuleContext, sdkContext sdkContext,
 		rroDirs = append(rroDirs, resRRODirs...)
 	}
 
-	var assetFiles android.Paths
-	for _, dir := range assetDirs {
-		assetFiles = append(assetFiles, androidResourceGlob(ctx, dir)...)
+	var assetDeps android.Paths
+	for i, dir := range assetDirs {
+		// Add a dependency on every file in the asset directory.  This ensures the aapt2
+		// rule will be rerun if one of the files in the asset directory is modified.
+		assetDeps = append(assetDeps, androidResourceGlob(ctx, dir)...)
+
+		// Add a dependency on a file that contains a list of all the files in the asset directory.
+		// This ensures the aapt2 rule will be run if a file is removed from the asset directory,
+		// or a file is added whose timestamp is older than the output of aapt2.
+		assetFileListFile := android.PathForModuleOut(ctx, "asset_dir_globs", strconv.Itoa(i)+".glob")
+		androidResourceGlobList(ctx, dir, assetFileListFile)
+		assetDeps = append(assetDeps, assetFileListFile)
 	}
 
 	assetDirStrings := assetDirs.Strings()
 	if a.noticeFile.Valid() {
 		assetDirStrings = append(assetDirStrings, filepath.Dir(a.noticeFile.Path().String()))
-		assetFiles = append(assetFiles, a.noticeFile.Path())
+		assetDeps = append(assetDeps, a.noticeFile.Path())
 	}
 
 	linkFlags = append(linkFlags, "--manifest "+manifestPath.String())
 	linkDeps = append(linkDeps, manifestPath)
 
 	linkFlags = append(linkFlags, android.JoinWithPrefix(assetDirStrings, "-A "))
-	linkDeps = append(linkDeps, assetFiles...)
+	linkDeps = append(linkDeps, assetDeps...)
 
 	// SDK version flags
 	minSdkVersion, err := sdkContext.minSdkVersion().effectiveVersionString(ctx)
@@ -407,6 +417,7 @@ func aaptLibs(ctx android.ModuleContext, sdkContext sdkContext, classLoaderConte
 
 	ctx.VisitDirectDeps(func(module android.Module) {
 		depName := ctx.OtherModuleName(module)
+		depTag := ctx.OtherModuleDependencyTag(module)
 
 		var exportPackage android.Path
 		aarDep, _ := module.(AndroidLibraryDependency)
@@ -414,7 +425,7 @@ func aaptLibs(ctx android.ModuleContext, sdkContext sdkContext, classLoaderConte
 			exportPackage = aarDep.ExportPackage()
 		}
 
-		switch ctx.OtherModuleDependencyTag(module) {
+		switch depTag {
 		case instrumentationForTag:
 			// Nothing, instrumentationForTag is treated as libTag for javac but not for aapt2.
 		case libTag:
@@ -426,7 +437,7 @@ func aaptLibs(ctx android.ModuleContext, sdkContext sdkContext, classLoaderConte
 			// (including the java_sdk_library) itself then append any implicit sdk library
 			// names to the list of sdk libraries to be added to the manifest.
 			if component, ok := module.(SdkLibraryComponentDependency); ok {
-				classLoaderContexts.MaybeAddContext(ctx, component.OptionalImplicitSdkLibrary(), true,
+				classLoaderContexts.MaybeAddContext(ctx, component.OptionalImplicitSdkLibrary(),
 					component.DexJarBuildPath(), component.DexJarInstallPath())
 			}
 
@@ -439,7 +450,6 @@ func aaptLibs(ctx android.ModuleContext, sdkContext sdkContext, classLoaderConte
 				transitiveStaticLibs = append(transitiveStaticLibs, aarDep.ExportedStaticPackages()...)
 				transitiveStaticLibs = append(transitiveStaticLibs, exportPackage)
 				transitiveStaticLibManifests = append(transitiveStaticLibManifests, aarDep.ExportedManifests()...)
-				classLoaderContexts.AddContextMap(aarDep.ClassLoaderContexts(), depName)
 				if aarDep.ExportedAssets().Valid() {
 					assets = append(assets, aarDep.ExportedAssets().Path())
 				}
@@ -458,11 +468,8 @@ func aaptLibs(ctx android.ModuleContext, sdkContext sdkContext, classLoaderConte
 			}
 		}
 
-		// Add nested dependencies after processing the direct dependency: if it is a <uses-library>,
-		// nested context is added as its subcontext, and should not be re-added at the top-level.
-		if dep, ok := module.(Dependency); ok {
-			classLoaderContexts.AddContextMap(dep.ClassLoaderContexts(), depName)
-		}
+		// Merge dep's CLC after processing the dep itself (which may add its own <uses-library>).
+		maybeAddCLCFromDep(module, depTag, depName, classLoaderContexts)
 	})
 
 	deps = append(deps, sharedLibs...)
@@ -836,8 +843,8 @@ func (a *AARImport) ClassLoaderContexts() dexpreopt.ClassLoaderContextMap {
 	return nil
 }
 
-func (d *AARImport) ExportedPlugins() (android.Paths, []string) {
-	return nil, nil
+func (d *AARImport) ExportedPlugins() (android.Paths, []string, bool) {
+	return nil, nil, false
 }
 
 func (a *AARImport) SrcJarArgs() ([]string, android.Paths) {

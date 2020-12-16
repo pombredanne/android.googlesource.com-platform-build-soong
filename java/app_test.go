@@ -291,7 +291,7 @@ func TestAndroidAppLinkType(t *testing.T) {
 		}
 	`)
 
-	testJavaError(t, "Adjust sdk_version: property of the source or target module so that target module is built with the same or smaller API set than the source.", `
+	testJavaError(t, "consider adjusting sdk_version: OR platform_apis:", `
 		android_app {
 			name: "foo",
 			srcs: ["a.java"],
@@ -335,7 +335,7 @@ func TestAndroidAppLinkType(t *testing.T) {
 		}
 	`)
 
-	testJavaError(t, "Adjust sdk_version: property of the source or target module so that target module is built with the same or smaller API set than the source.", `
+	testJavaError(t, "consider adjusting sdk_version: OR platform_apis:", `
 		android_app {
 			name: "foo",
 			srcs: ["a.java"],
@@ -2524,6 +2524,24 @@ func TestAndroidAppImport_ArchVariants(t *testing.T) {
 			`,
 			expected: "prebuilts/apk/app.apk",
 		},
+		{
+			name: "no matching arch without default",
+			bp: `
+				android_app_import {
+					name: "foo",
+					arch: {
+						arm: {
+							apk: "prebuilts/apk/app_arm.apk",
+						},
+					},
+					presigned: true,
+					dex_preopt: {
+						enabled: true,
+					},
+				}
+			`,
+			expected: "",
+		},
 	}
 
 	jniRuleRe := regexp.MustCompile("^if \\(zipinfo (\\S+)")
@@ -2531,6 +2549,12 @@ func TestAndroidAppImport_ArchVariants(t *testing.T) {
 		ctx, _ := testJava(t, test.bp)
 
 		variant := ctx.ModuleForTests("foo", "android_common")
+		if test.expected == "" {
+			if variant.Module().Enabled() {
+				t.Error("module should have been disabled, but wasn't")
+			}
+			continue
+		}
 		jniRuleCommand := variant.Output("jnis-uncompressed/foo.apk").RuleParams.Command
 		matches := jniRuleRe.FindStringSubmatch(jniRuleCommand)
 		if len(matches) != 2 {
@@ -2539,6 +2563,34 @@ func TestAndroidAppImport_ArchVariants(t *testing.T) {
 		if test.expected != matches[1] {
 			t.Errorf("wrong src apk, expected: %q got: %q", test.expected, matches[1])
 		}
+	}
+}
+
+func TestAndroidAppImport_overridesDisabledAndroidApp(t *testing.T) {
+	ctx, _ := testJava(t, `
+		android_app {
+			name: "foo",
+			srcs: ["a.java"],
+			enabled: false,
+		}
+ 
+ 		android_app_import {
+			name: "foo",
+			apk: "prebuilts/apk/app.apk",
+			certificate: "platform",
+			prefer: true,
+		}
+		`)
+
+	variant := ctx.ModuleForTests("prebuilt_foo", "android_common")
+	a := variant.Module().(*AndroidAppImport)
+	// The prebuilt module should still be enabled and active even if the source-based counterpart
+	// is disabled.
+	if !a.prebuilt.UsePrebuilt() {
+		t.Errorf("prebuilt foo module is not active")
+	}
+	if !a.Enabled() {
+		t.Errorf("prebuilt foo module is disabled")
 	}
 }
 
@@ -2730,6 +2782,13 @@ func TestUsesLibraries(t *testing.T) {
 		}
 
 		java_sdk_library {
+			name: "fred",
+			srcs: ["a.java"],
+			api_packages: ["fred"],
+			sdk_version: "current",
+		}
+
+		java_sdk_library {
 			name: "bar",
 			srcs: ["a.java"],
 			api_packages: ["bar"],
@@ -2753,7 +2812,12 @@ func TestUsesLibraries(t *testing.T) {
 			name: "app",
 			srcs: ["a.java"],
 			libs: ["qux", "quuz.stubs"],
-			static_libs: ["static-runtime-helper"],
+			static_libs: [
+				"static-runtime-helper",
+				// statically linked component libraries should not pull their SDK libraries,
+				// so "fred" should not be added to class loader context
+				"fred.stubs",
+			],
 			uses_libs: ["foo"],
 			sdk_version: "current",
 			optional_uses_libs: [
