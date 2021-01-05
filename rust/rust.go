@@ -189,7 +189,15 @@ func (mod *Module) IsVndkExt() bool {
 	return false
 }
 
-func (c *Module) IsVndkPrivate(config android.Config) bool {
+func (c *Module) IsVndkPrivate() bool {
+	return false
+}
+
+func (c *Module) IsLlndk() bool {
+	return false
+}
+
+func (c *Module) IsLlndkPublic() bool {
 	return false
 }
 
@@ -474,6 +482,16 @@ func (mod *Module) CoverageFiles() android.Paths {
 	panic(fmt.Errorf("CoverageFiles called on non-library module: %q", mod.BaseModuleName()))
 }
 
+func (mod *Module) installable(apexInfo android.ApexInfo) bool {
+	// The apex variant is not installable because it is included in the APEX and won't appear
+	// in the system partition as a standalone file.
+	if !apexInfo.IsForPlatform() {
+		return false
+	}
+
+	return mod.outputFile.Valid() && !mod.Properties.PreventInstall
+}
+
 var _ cc.LinkableInterface = (*Module)(nil)
 
 func (mod *Module) Init() android.Module {
@@ -645,7 +663,9 @@ func (mod *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 		outputFile := mod.compiler.compile(ctx, flags, deps)
 
 		mod.outputFile = android.OptionalPathForPath(outputFile)
-		if mod.outputFile.Valid() && !mod.Properties.PreventInstall {
+
+		apexInfo := actx.Provider(android.ApexInfoProvider).(android.ApexInfo)
+		if mod.installable(apexInfo) {
 			mod.compiler.install(ctx)
 		}
 	}
@@ -678,15 +698,15 @@ func (mod *Module) deps(ctx DepsContext) Deps {
 
 type dependencyTag struct {
 	blueprint.BaseDependencyTag
-	name       string
-	library    bool
-	proc_macro bool
+	name      string
+	library   bool
+	procMacro bool
 }
 
 // InstallDepNeeded returns true for rlibs, dylibs, and proc macros so that they or their transitive
 // dependencies (especially C/C++ shared libs) are installed as dependencies of a rust binary.
 func (d dependencyTag) InstallDepNeeded() bool {
-	return d.library || d.proc_macro
+	return d.library || d.procMacro
 }
 
 var _ android.InstallNeededDependencyTag = dependencyTag{}
@@ -695,7 +715,7 @@ var (
 	customBindgenDepTag = dependencyTag{name: "customBindgenTag"}
 	rlibDepTag          = dependencyTag{name: "rlibTag", library: true}
 	dylibDepTag         = dependencyTag{name: "dylib", library: true}
-	procMacroDepTag     = dependencyTag{name: "procMacro", proc_macro: true}
+	procMacroDepTag     = dependencyTag{name: "procMacro", procMacro: true}
 	testPerSrcDepTag    = dependencyTag{name: "rust_unit_tests"}
 	sourceDepTag        = dependencyTag{name: "source"}
 )

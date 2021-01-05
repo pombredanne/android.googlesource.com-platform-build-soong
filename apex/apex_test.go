@@ -258,7 +258,11 @@ func testApexContext(_ *testing.T, bp string, handlers ...testCustomizer) (*andr
 	java.RegisterJavaBuildComponents(ctx)
 	java.RegisterSystemModulesBuildComponents(ctx)
 	java.RegisterAppBuildComponents(ctx)
+	java.RegisterAppImportBuildComponents(ctx)
+	java.RegisterAppSetBuildComponents(ctx)
+	java.RegisterRuntimeResourceOverlayBuildComponents(ctx)
 	java.RegisterSdkLibraryBuildComponents(ctx)
+	java.RegisterPrebuiltApisBuildComponents(ctx)
 	ctx.RegisterSingletonType("apex_keys_text", apexKeysTextFactory)
 	ctx.RegisterModuleType("bpf", bpf.BpfFactory)
 
@@ -1355,9 +1359,9 @@ func TestApexDependsOnLLNDKTransitively(t *testing.T) {
 			ensureListContains(t, names(apexManifestRule.Args["requireNativeLibs"]), "libbar.so")
 
 			mylibLdFlags := ctx.ModuleForTests("mylib", "android_vendor.VER_arm64_armv8-a_shared_"+tc.apexVariant).Rule("ld").Args["libFlags"]
-			ensureContains(t, mylibLdFlags, "libbar.llndk/android_vendor.VER_arm64_armv8-a_shared_"+tc.shouldLink+"/libbar.so")
+			ensureContains(t, mylibLdFlags, "libbar/android_vendor.VER_arm64_armv8-a_shared_"+tc.shouldLink+"/libbar.so")
 			for _, ver := range tc.shouldNotLink {
-				ensureNotContains(t, mylibLdFlags, "libbar.llndk/android_vendor.VER_arm64_armv8-a_shared_"+ver+"/libbar.so")
+				ensureNotContains(t, mylibLdFlags, "libbar/android_vendor.VER_arm64_armv8-a_shared_"+ver+"/libbar.so")
 			}
 
 			mylibCFlags := ctx.ModuleForTests("mylib", "android_vendor.VER_arm64_armv8-a_static_"+tc.apexVariant).Rule("cc").Args["cFlags"]
@@ -2679,12 +2683,12 @@ func TestKeys(t *testing.T) {
 	// check the APEX keys
 	keys := ctx.ModuleForTests("myapex.key", "android_common").Module().(*apexKey)
 
-	if keys.public_key_file.String() != "vendor/foo/devkeys/testkey.avbpubkey" {
-		t.Errorf("public key %q is not %q", keys.public_key_file.String(),
+	if keys.publicKeyFile.String() != "vendor/foo/devkeys/testkey.avbpubkey" {
+		t.Errorf("public key %q is not %q", keys.publicKeyFile.String(),
 			"vendor/foo/devkeys/testkey.avbpubkey")
 	}
-	if keys.private_key_file.String() != "vendor/foo/devkeys/testkey.pem" {
-		t.Errorf("private key %q is not %q", keys.private_key_file.String(),
+	if keys.privateKeyFile.String() != "vendor/foo/devkeys/testkey.pem" {
+		t.Errorf("private key %q is not %q", keys.privateKeyFile.String(),
 			"vendor/foo/devkeys/testkey.pem")
 	}
 
@@ -4143,12 +4147,12 @@ func TestApexKeyFromOtherModule(t *testing.T) {
 
 	apex_key := ctx.ModuleForTests("myapex.key", "android_common").Module().(*apexKey)
 	expected_pubkey := "testkey2.avbpubkey"
-	actual_pubkey := apex_key.public_key_file.String()
+	actual_pubkey := apex_key.publicKeyFile.String()
 	if actual_pubkey != expected_pubkey {
 		t.Errorf("wrong public key path. expected %q. actual %q", expected_pubkey, actual_pubkey)
 	}
 	expected_privkey := "testkey2.pem"
-	actual_privkey := apex_key.private_key_file.String()
+	actual_privkey := apex_key.privateKeyFile.String()
 	if actual_privkey != expected_privkey {
 		t.Errorf("wrong private key path. expected %q. actual %q", expected_privkey, actual_privkey)
 	}
@@ -4994,6 +4998,11 @@ var filesForSdkLibrary = map[string][]byte{
 	"api/test-current.txt":   nil,
 	"api/test-removed.txt":   nil,
 
+	"100/public/api/foo.txt":         nil,
+	"100/public/api/foo-removed.txt": nil,
+	"100/system/api/foo.txt":         nil,
+	"100/system/api/foo-removed.txt": nil,
+
 	// For java_sdk_library_import
 	"a.jar": nil,
 }
@@ -5017,6 +5026,11 @@ func TestJavaSDKLibrary(t *testing.T) {
 			srcs: ["a.java"],
 			api_packages: ["foo"],
 			apex_available: [ "myapex" ],
+		}
+
+		prebuilt_apis {
+			name: "sdk",
+			api_dirs: ["100"],
 		}
 	`, withFiles(filesForSdkLibrary))
 
@@ -5060,6 +5074,11 @@ func TestJavaSDKLibrary_WithinApex(t *testing.T) {
 			apex_available: ["myapex"],
 			sdk_version: "none",
 			system_modules: "none",
+		}
+
+		prebuilt_apis {
+			name: "sdk",
+			api_dirs: ["100"],
 		}
 	`, withFiles(filesForSdkLibrary))
 
@@ -5107,6 +5126,11 @@ func TestJavaSDKLibrary_CrossBoundary(t *testing.T) {
 			sdk_version: "none",
 			system_modules: "none",
 		}
+
+		prebuilt_apis {
+			name: "sdk",
+			api_dirs: ["100"],
+		}
 	`, withFiles(filesForSdkLibrary))
 
 	// java_sdk_library installs both impl jar and permission XML
@@ -5123,7 +5147,11 @@ func TestJavaSDKLibrary_CrossBoundary(t *testing.T) {
 }
 
 func TestJavaSDKLibrary_ImportPreferred(t *testing.T) {
-	ctx, _ := testApex(t, ``,
+	ctx, _ := testApex(t, `
+		prebuilt_apis {
+			name: "sdk",
+			api_dirs: ["100"],
+		}`,
 		withFiles(map[string][]byte{
 			"apex/a.java":             nil,
 			"apex/apex_manifest.json": nil,
@@ -5190,7 +5218,7 @@ func TestJavaSDKLibrary_ImportPreferred(t *testing.T) {
 			},
 		}
 `),
-		}),
+		}), withFiles(filesForSdkLibrary),
 	)
 
 	// java_sdk_library installs both impl jar and permission XML
@@ -6578,7 +6606,7 @@ func TestPrebuiltStubLibDep(t *testing.T) {
 								continue
 							}
 							mod := ctx.ModuleForTests(modName, variant).Module().(*cc.Module)
-							if !mod.Enabled() || mod.IsSkipInstall() {
+							if !mod.Enabled() || mod.IsHideFromMake() {
 								continue
 							}
 							for _, ent := range android.AndroidMkEntriesForTest(t, config, "", mod) {

@@ -78,6 +78,13 @@ type VndkProperties struct {
 		// VNDK-SP or LL-NDK modules only.
 		Support_system_process *bool
 
+		// declared as a VNDK-private module.
+		// This module still creates the vendor and product variants refering
+		// to the `vendor_available: true` and `product_available: true`
+		// properties. However, it is only available to the other VNDK modules
+		// but not to the non-VNDK vendor or product modules.
+		Private *bool
+
 		// Extending another module
 		Extends *string
 	}
@@ -135,30 +142,24 @@ func (vndk *vndkdep) vndkCheckLinkType(ctx android.BaseModuleContext, to *Module
 		return
 	}
 	if !vndk.isVndk() {
-		// Non-VNDK modules those installed to /vendor or /system/vendor
-		// can't depend on modules marked with vendor_available: false;
-		// or those installed to /product or /system/product can't depend
-		// on modules marked with product_available: false.
-		violation := false
-		if lib, ok := to.linker.(*llndkStubDecorator); ok && !Bool(lib.Properties.Vendor_available) {
-			violation = true
-		} else {
-			if _, ok := to.linker.(libraryInterface); ok && to.VendorProperties.Vendor_available != nil && !Bool(to.VendorProperties.Vendor_available) {
-				// Vendor_available == nil && !Bool(Vendor_available) should be okay since
-				// it means a vendor-only, or product-only library which is a valid dependency
-				// for non-VNDK modules.
-				violation = true
-			}
-		}
-		if violation {
-			ctx.ModuleErrorf("Vendor module that is not VNDK should not link to %q which is marked as `vendor_available: false`", to.Name())
+		// Non-VNDK modules those installed to /vendor, /system/vendor,
+		// /product or /system/product cannot depend on VNDK-private modules
+		// that include VNDK-core-private, VNDK-SP-private and LLNDK-private.
+		if to.IsVndkPrivate() {
+			ctx.ModuleErrorf("non-VNDK module should not link to %q which has `private: true`", to.Name())
 		}
 	}
 	if lib, ok := to.linker.(*libraryDecorator); !ok || !lib.shared() {
 		// Check only shared libraries.
-		// Other (static and LL-NDK) libraries are allowed to link.
+		// Other (static) libraries are allowed to link.
 		return
 	}
+
+	if to.IsLlndk() {
+		// LL-NDK libraries are allowed to link
+		return
+	}
+
 	if !to.UseVndk() {
 		ctx.ModuleErrorf("(%s) should not link to %q which is not a vendor-available library",
 			vndk.typeName(), to.Name())
@@ -177,10 +178,9 @@ func (vndk *vndkdep) vndkCheckLinkType(ctx android.BaseModuleContext, to *Module
 				to.Name())
 			return
 		}
-		// TODO(b/150902910): vndk-ext for product must check product_available.
-		if !Bool(to.VendorProperties.Vendor_available) {
+		if to.IsVndkPrivate() {
 			ctx.ModuleErrorf(
-				"`extends` refers module %q which does not have `vendor_available: true`",
+				"`extends` refers module %q which has `private: true`",
 				to.Name())
 			return
 		}
@@ -250,20 +250,10 @@ func vndkSpLibraries(config android.Config) map[string]string {
 	}).(map[string]string)
 }
 
-func isLlndkLibrary(baseModuleName string, config android.Config) bool {
-	_, ok := llndkLibraries(config)[strings.TrimSuffix(baseModuleName, llndkLibrarySuffix)]
-	return ok
-}
-
 func llndkLibraries(config android.Config) map[string]string {
 	return config.Once(llndkLibrariesKey, func() interface{} {
 		return make(map[string]string)
 	}).(map[string]string)
-}
-
-func isVndkPrivateLibrary(baseModuleName string, config android.Config) bool {
-	_, ok := vndkPrivateLibraries(config)[baseModuleName]
-	return ok
 }
 
 func vndkPrivateLibraries(config android.Config) map[string]string {
@@ -301,12 +291,10 @@ func processLlndkLibrary(mctx android.BottomUpMutatorContext, m *Module) {
 	defer vndkLibrariesLock.Unlock()
 
 	llndkLibraries(mctx.Config())[name] = filename
+	m.VendorProperties.IsLLNDK = true
 	if !Bool(lib.Properties.Vendor_available) {
 		vndkPrivateLibraries(mctx.Config())[name] = filename
-	}
-
-	if mctx.OtherModuleExists(name) {
-		mctx.AddFarVariationDependencies(m.Target().Variations(), llndkImplDep, name)
+		m.VendorProperties.IsLLNDKPrivate = true
 	}
 }
 
@@ -330,6 +318,12 @@ func processVndkLibrary(mctx android.BottomUpMutatorContext, m *Module) {
 	vndkLibrariesLock.Lock()
 	defer vndkLibrariesLock.Unlock()
 
+	if m.InProduct() {
+		// We may skip the other steps for the product variants because they
+		// are already covered by the vendor variants.
+		return
+	}
+
 	if inList(name, vndkMustUseVendorVariantList(mctx.Config())) {
 		m.Properties.MustUseVendorVariant = true
 	}
@@ -342,9 +336,7 @@ func processVndkLibrary(mctx android.BottomUpMutatorContext, m *Module) {
 	} else {
 		vndkCoreLibraries(mctx.Config())[name] = filename
 	}
-	// As `vendor_available` and `product_available` has the same value for VNDK modules,
-	// we don't need to check both values.
-	if !Bool(m.VendorProperties.Vendor_available) {
+	if m.IsVndkPrivate() {
 		vndkPrivateLibraries(mctx.Config())[name] = filename
 	}
 }
@@ -410,10 +402,32 @@ func VndkMutator(mctx android.BottomUpMutatorContext) {
 		return
 	}
 
-	lib, is_lib := m.linker.(*libraryDecorator)
-	prebuilt_lib, is_prebuilt_lib := m.linker.(*prebuiltLibraryLinker)
+	// This is a temporary measure to copy the properties from an llndk_library into the cc_library
+	// that will actually build the stubs.  It will be removed once the properties are moved into
+	// the cc_library in the Android.bp files.
+	mergeLLNDKToLib := func(llndk *Module, llndkProperties *llndkLibraryProperties, flagExporter *flagExporter) {
+		if llndkLib := moduleLibraryInterface(llndk); llndkLib != nil {
+			*llndkProperties = llndkLib.(*llndkStubDecorator).Properties
+			flagExporter.Properties = llndkLib.(*llndkStubDecorator).flagExporter.Properties
 
-	if (is_lib && lib.buildShared()) || (is_prebuilt_lib && prebuilt_lib.buildShared()) {
+			m.VendorProperties.IsLLNDK = llndk.VendorProperties.IsLLNDK
+			m.VendorProperties.IsLLNDKPrivate = llndk.VendorProperties.IsLLNDKPrivate
+		}
+	}
+
+	lib, isLib := m.linker.(*libraryDecorator)
+	prebuiltLib, isPrebuiltLib := m.linker.(*prebuiltLibraryLinker)
+
+	if m.UseVndk() && isLib && lib.hasLLNDKStubs() {
+		llndk := mctx.AddVariationDependencies(nil, llndkStubDepTag, String(lib.Properties.Llndk_stubs))
+		mergeLLNDKToLib(llndk[0].(*Module), &lib.Properties.Llndk, &lib.flagExporter)
+	}
+	if m.UseVndk() && isPrebuiltLib && prebuiltLib.hasLLNDKStubs() {
+		llndk := mctx.AddVariationDependencies(nil, llndkStubDepTag, String(prebuiltLib.Properties.Llndk_stubs))
+		mergeLLNDKToLib(llndk[0].(*Module), &prebuiltLib.Properties.Llndk, &prebuiltLib.flagExporter)
+	}
+
+	if (isLib && lib.buildShared()) || (isPrebuiltLib && prebuiltLib.buildShared()) {
 		if m.vndkdep != nil && m.vndkdep.isVndk() && !m.vndkdep.isVndkExt() {
 			processVndkLibrary(mctx, m)
 			return
@@ -780,10 +794,10 @@ func (c *vndkSnapshotSingleton) GenerateBuildActions(ctx android.SingletonContex
 
 func getVndkFileName(m *Module) (string, error) {
 	if library, ok := m.linker.(*libraryDecorator); ok {
-		return library.getLibNameHelper(m.BaseModuleName(), true) + ".so", nil
+		return library.getLibNameHelper(m.BaseModuleName(), true, false) + ".so", nil
 	}
 	if prebuilt, ok := m.linker.(*prebuiltLibraryLinker); ok {
-		return prebuilt.libraryDecorator.getLibNameHelper(m.BaseModuleName(), true) + ".so", nil
+		return prebuilt.libraryDecorator.getLibNameHelper(m.BaseModuleName(), true, false) + ".so", nil
 	}
 	return "", fmt.Errorf("VNDK library should have libraryDecorator or prebuiltLibraryLinker as linker: %T", m.linker)
 }
@@ -819,13 +833,11 @@ func (c *vndkSnapshotSingleton) MakeVars(ctx android.MakeVarsContext) {
 	// they been moved to an apex.
 	movedToApexLlndkLibraries := make(map[string]bool)
 	ctx.VisitAllModules(func(module android.Module) {
-		if m, ok := module.(*Module); ok {
-			if llndk, ok := m.linker.(*llndkStubDecorator); ok {
-				// Skip bionic libs, they are handled in different manner
-				name := llndk.implementationModuleName(m.BaseModuleName())
-				if llndk.movedToApex && !isBionic(name) {
-					movedToApexLlndkLibraries[name] = true
-				}
+		if library := moduleLibraryInterface(module); library != nil && library.hasLLNDKStubs() {
+			// Skip bionic libs, they are handled in different manner
+			name := library.implementationModuleName(module.(*Module).BaseModuleName())
+			if module.(android.ApexModule).DirectlyInAnyApex() && !isBionic(name) {
+				movedToApexLlndkLibraries[name] = true
 			}
 		}
 	})

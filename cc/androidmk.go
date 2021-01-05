@@ -232,8 +232,8 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 			if len(library.Properties.Overrides) > 0 {
 				entries.SetString("LOCAL_OVERRIDES_MODULES", strings.Join(makeOverrideModuleNames(ctx, library.Properties.Overrides), " "))
 			}
-			if len(library.post_install_cmds) > 0 {
-				entries.SetString("LOCAL_POST_INSTALL_CMD", strings.Join(library.post_install_cmds, "&& "))
+			if len(library.postInstallCmds) > 0 {
+				entries.SetString("LOCAL_POST_INSTALL_CMD", strings.Join(library.postInstallCmds, "&& "))
 			}
 		})
 	} else if library.header() {
@@ -269,11 +269,11 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 	if library.shared() && !library.buildStubs() {
 		ctx.subAndroidMk(entries, library.baseInstaller)
 	} else {
-		if library.buildStubs() {
+		if library.buildStubs() && library.stubsVersion() != "" {
 			entries.SubName = "." + library.stubsVersion()
 		}
 		entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
-			// library.makeUninstallable() depends on this to bypass SkipInstall() for
+			// library.makeUninstallable() depends on this to bypass HideFromMake() for
 			// static libraries.
 			entries.SetBool("LOCAL_UNINSTALLABLE_MODULE", true)
 			if library.buildStubs() {
@@ -328,8 +328,8 @@ func (binary *binaryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *a
 		if len(binary.Properties.Overrides) > 0 {
 			entries.SetString("LOCAL_OVERRIDES_MODULES", strings.Join(makeOverrideModuleNames(ctx, binary.Properties.Overrides), " "))
 		}
-		if len(binary.post_install_cmds) > 0 {
-			entries.SetString("LOCAL_POST_INSTALL_CMD", strings.Join(binary.post_install_cmds, "&& "))
+		if len(binary.postInstallCmds) > 0 {
+			entries.SetString("LOCAL_POST_INSTALL_CMD", strings.Join(binary.postInstallCmds, "&& "))
 		}
 	})
 }
@@ -471,18 +471,9 @@ func (c *stubDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.
 }
 
 func (c *llndkStubDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
-	entries.Class = "SHARED_LIBRARIES"
-	entries.OverrideName = c.implementationModuleName(ctx.BaseModuleName())
-
-	entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
-		c.libraryDecorator.androidMkWriteExportedFlags(entries)
-		_, _, ext := android.SplitFileExt(entries.OutputFile.Path().Base())
-
-		entries.SetString("LOCAL_BUILT_MODULE_STEM", "$(LOCAL_MODULE)"+ext)
-		entries.SetBool("LOCAL_UNINSTALLABLE_MODULE", true)
-		entries.SetBool("LOCAL_NO_NOTICE_FILE", true)
-		entries.SetString("LOCAL_SOONG_TOC", c.toc().String())
-	})
+	// Don't write anything for an llndk_library module, the vendor variant of the cc_library
+	// module will write the Android.mk entries.
+	entries.Disabled = true
 }
 
 func (c *vndkPrebuiltLibraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {

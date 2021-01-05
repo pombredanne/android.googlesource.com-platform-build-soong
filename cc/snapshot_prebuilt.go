@@ -787,11 +787,11 @@ func VendorSnapshotSourceMutator(ctx android.BottomUpMutatorContext) {
 	if !module.SocSpecific() {
 		// But we can't just check SocSpecific() since we already passed the image mutator.
 		// Check ramdisk and recovery to see if we are real "vendor: true" module.
-		ramdisk_available := module.InRamdisk() && !module.OnlyInRamdisk()
-		vendor_ramdisk_available := module.InVendorRamdisk() && !module.OnlyInVendorRamdisk()
-		recovery_available := module.InRecovery() && !module.OnlyInRecovery()
+		ramdiskAvailable := module.InRamdisk() && !module.OnlyInRamdisk()
+		vendorRamdiskAvailable := module.InVendorRamdisk() && !module.OnlyInVendorRamdisk()
+		recoveryAvailable := module.InRecovery() && !module.OnlyInRecovery()
 
-		if !ramdisk_available && !recovery_available && !vendor_ramdisk_available {
+		if !ramdiskAvailable && !recoveryAvailable && !vendorRamdiskAvailable {
 			vendorSnapshotsLock.Lock()
 			defer vendorSnapshotsLock.Unlock()
 
@@ -805,7 +805,7 @@ func VendorSnapshotSourceMutator(ctx android.BottomUpMutatorContext) {
 	}
 
 	// .. and also filter out llndk library
-	if module.isLlndk(ctx.Config()) {
+	if module.IsLlndk() {
 		return
 	}
 
@@ -836,7 +836,7 @@ func VendorSnapshotSourceMutator(ctx android.BottomUpMutatorContext) {
 	// Disables source modules if corresponding snapshot exists.
 	if lib, ok := module.linker.(libraryInterface); ok && lib.buildStatic() && lib.buildShared() {
 		// But do not disable because the shared variant depends on the static variant.
-		module.SkipInstall()
+		module.HideFromMake()
 		module.Properties.HideFromMake = true
 	} else {
 		module.Disable()
