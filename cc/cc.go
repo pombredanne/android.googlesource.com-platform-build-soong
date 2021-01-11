@@ -57,14 +57,14 @@ func RegisterCCBuildComponents(ctx android.RegistrationContext) {
 	})
 
 	ctx.PostDepsMutators(func(ctx android.RegisterMutatorsContext) {
-		ctx.TopDown("asan_deps", sanitizerDepsMutator(asan))
-		ctx.BottomUp("asan", sanitizerMutator(asan)).Parallel()
+		ctx.TopDown("asan_deps", sanitizerDepsMutator(Asan))
+		ctx.BottomUp("asan", sanitizerMutator(Asan)).Parallel()
 
 		ctx.TopDown("hwasan_deps", sanitizerDepsMutator(hwasan))
 		ctx.BottomUp("hwasan", sanitizerMutator(hwasan)).Parallel()
 
-		ctx.TopDown("fuzzer_deps", sanitizerDepsMutator(fuzzer))
-		ctx.BottomUp("fuzzer", sanitizerMutator(fuzzer)).Parallel()
+		ctx.TopDown("fuzzer_deps", sanitizerDepsMutator(Fuzzer))
+		ctx.BottomUp("fuzzer", sanitizerMutator(Fuzzer)).Parallel()
 
 		// cfi mutator shouldn't run before sanitizers that return true for
 		// incompatibleWithCfi()
@@ -369,10 +369,7 @@ type VendorProperties struct {
 	// If set to false, this module becomes inaccessible from /vendor modules.
 	//
 	// The modules with vndk: {enabled: true} must define 'vendor_available'
-	// to either 'true' or 'false'. In this case, 'vendor_available: false' has
-	// a different meaning than that of non-VNDK modules.
-	// 'vendor_available: false' for a VNDK module means 'VNDK-private' that
-	// can only be depended on by VNDK libraries, not by non-VNDK vendor modules.
+	// to 'true'.
 	//
 	// Nothing happens if BOARD_VNDK_VERSION isn't set in the BoardConfig.mk
 	Vendor_available *bool
@@ -394,13 +391,6 @@ type VendorProperties struct {
 	// vndk: {enabled: true} don't have to define 'product_available'. The VNDK
 	// library without 'product_available' may not be depended on by any other
 	// modules that has product variants including the product available VNDKs.
-	// However, for the modules with vndk: {enabled: true},
-	// 'product_available: false' creates the product variant that is available
-	// only for the other product available VNDK modules but not by non-VNDK
-	// product modules.
-	// In the case of the modules with vndk: {enabled: true}, if
-	// 'product_available' is defined, it must have the same value with the
-	// 'vendor_available'.
 	//
 	// Nothing happens if BOARD_VNDK_VERSION isn't set in the BoardConfig.mk
 	// and PRODUCT_PRODUCT_VNDK_VERSION isn't set.
@@ -785,6 +775,14 @@ type Module struct {
 	hideApexVariantFromMake bool
 }
 
+func (c *Module) SetPreventInstall() {
+	c.Properties.PreventInstall = true
+}
+
+func (c *Module) SetHideFromMake() {
+	c.Properties.HideFromMake = true
+}
+
 func (c *Module) Toc() android.OptionalPath {
 	if c.linker != nil {
 		if library, ok := c.linker.(libraryInterface); ok {
@@ -1026,7 +1024,7 @@ func (c *Module) Init() android.Module {
 
 // Returns true for dependency roots (binaries)
 // TODO(ccross): also handle dlopenable libraries
-func (c *Module) isDependencyRoot() bool {
+func (c *Module) IsDependencyRoot() bool {
 	if root, ok := c.linker.(interface {
 		isDependencyRoot() bool
 	}); ok {
@@ -1264,7 +1262,7 @@ func (ctx *moduleContextImpl) staticBinary() bool {
 }
 
 func (ctx *moduleContextImpl) header() bool {
-	return ctx.mod.header()
+	return ctx.mod.Header()
 }
 
 func (ctx *moduleContextImpl) binary() bool {
@@ -1419,6 +1417,10 @@ func (c *Module) Prebuilt() *android.Prebuilt {
 		return p.prebuilt()
 	}
 	return nil
+}
+
+func (c *Module) IsPrebuilt() bool {
+	return c.Prebuilt() != nil
 }
 
 func (c *Module) Name() string {
@@ -2847,7 +2849,7 @@ func (c *Module) makeLibName(ctx android.ModuleContext, ccDep LinkableInterface,
 				return baseName + ".vendor"
 			}
 
-			if c.inVendor() && vendorSuffixModules[baseName] {
+			if c.InVendor() && vendorSuffixModules[baseName] {
 				return baseName + ".vendor"
 			} else if c.InRecovery() && recoverySuffixModules[baseName] {
 				return baseName + ".recovery"
@@ -2959,7 +2961,8 @@ func (c *Module) staticBinary() bool {
 	return false
 }
 
-func (c *Module) header() bool {
+// Header returns true if the module is a header-only variant. (See cc/library.go header()).
+func (c *Module) Header() bool {
 	if h, ok := c.linker.(interface {
 		header() bool
 	}); ok {
