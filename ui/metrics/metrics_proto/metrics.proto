@@ -94,12 +94,17 @@ message MetricsBase {
   optional PerfInfo total = 21;
 
   optional BuildConfig build_config = 23;
+
+  // The hostname of the machine.
+  optional string hostname = 24;
 }
 
 message BuildConfig {
   optional bool use_goma = 1;
 
   optional bool use_rbe = 2;
+
+  optional bool force_use_goma = 3;
 }
 
 message PerfInfo {
