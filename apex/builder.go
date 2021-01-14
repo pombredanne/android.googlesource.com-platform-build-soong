@@ -36,6 +36,7 @@ var (
 
 func init() {
 	pctx.Import("android/soong/android")
+	pctx.Import("android/soong/cc/config")
 	pctx.Import("android/soong/java")
 	pctx.HostBinToolVariable("apexer", "apexer")
 	// ART minimal builds (using the master-art manifest) do not have the "frameworks/base"
@@ -62,6 +63,7 @@ func init() {
 	pctx.HostBinToolVariable("jsonmodify", "jsonmodify")
 	pctx.HostBinToolVariable("conv_apex_manifest", "conv_apex_manifest")
 	pctx.HostBinToolVariable("extract_apks", "extract_apks")
+	pctx.SourcePathVariable("genNdkUsedbyApexPath", "build/soong/scripts/gen_ndk_usedby_apex.sh")
 }
 
 var (
@@ -172,6 +174,12 @@ var (
 			`exit 1); touch ${out}`,
 		Description: "Diff ${image_content_file} and ${allowed_files_file}",
 	}, "image_content_file", "allowed_files_file", "apex_module_name")
+
+	generateAPIsUsedbyApexRule = pctx.StaticRule("generateAPIsUsedbyApexRule", blueprint.RuleParams{
+		Command:     "$genNdkUsedbyApexPath ${image_dir} ${readelf} ${out}",
+		CommandDeps: []string{"${genNdkUsedbyApexPath}"},
+		Description: "Generate symbol list used by Apex",
+	}, "image_dir", "readelf")
 )
 
 func (a *apexBundle) buildManifest(ctx android.ModuleContext, provideNativeLibs, requireNativeLibs []string) {
@@ -469,13 +477,10 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			optFlags = append(optFlags, "--android_manifest "+androidManifestFile.String())
 		}
 
-		targetSdkVersion := ctx.Config().DefaultAppTargetSdk()
-		// TODO(b/157078772): propagate min_sdk_version to apexer.
-		minSdkVersion := ctx.Config().DefaultAppTargetSdk()
-
-		if a.minSdkVersion(ctx) == android.SdkVersion_Android10 {
-			minSdkVersion = strconv.Itoa(a.minSdkVersion(ctx))
-		}
+		minSdkVersion := strconv.Itoa(a.minSdkVersion(ctx))
+		// apex module doesn't have a concept of target_sdk_version, hence for the time being
+		// targetSdkVersion == default targetSdkVersion of the branch.
+		targetSdkVersion := strconv.Itoa(ctx.Config().DefaultAppTargetSdkInt())
 
 		if java.UseApiFingerprint(ctx) {
 			targetSdkVersion = ctx.Config().PlatformSdkCodename() + fmt.Sprintf(".$$(cat %s)", java.ApiFingerprintPath(ctx).String())
@@ -552,6 +557,22 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			Output:      apexProtoFile,
 			Description: "apex proto convert",
 		})
+
+		implicitInputs = append(implicitInputs, unsignedOutputFile)
+
+		// Run coverage analysis
+		apisUsedbyOutputFile := android.PathForModuleOut(ctx, a.Name()+".txt")
+		ctx.Build(pctx, android.BuildParams{
+			Rule:        generateAPIsUsedbyApexRule,
+			Implicits:   implicitInputs,
+			Description: "coverage",
+			Output:      apisUsedbyOutputFile,
+			Args: map[string]string{
+				"image_dir": imageDir.String(),
+				"readelf":   "${config.ClangBin}/llvm-readelf",
+			},
+		})
+		a.coverageOutputPath = apisUsedbyOutputFile
 
 		bundleConfig := a.buildBundleConfig(ctx)
 
