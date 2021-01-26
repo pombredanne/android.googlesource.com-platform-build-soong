@@ -316,16 +316,8 @@ func checkVndkOutput(t *testing.T, ctx *android.TestContext, output string, expe
 
 func checkVndkLibrariesOutput(t *testing.T, ctx *android.TestContext, module string, expected []string) {
 	t.Helper()
-	vndkLibraries := ctx.ModuleForTests(module, "")
-
-	var output string
-	if module != "vndkcorevariant.libraries.txt" {
-		output = insertVndkVersion(module, "VER")
-	} else {
-		output = module
-	}
-
-	checkWriteFileOutput(t, vndkLibraries.Output(output), expected)
+	got := ctx.ModuleForTests(module, "").Module().(*vndkLibrariesTxt).fileNames
+	assertArrayString(t, got, expected)
 }
 
 func TestVndk(t *testing.T) {
@@ -738,12 +730,29 @@ func TestVndkWhenVndkVersionIsNotSet(t *testing.T) {
 			},
 			nocrt: true,
 		}
+
+		cc_library {
+			name: "libllndk",
+			llndk_stubs: "libllndk.llndk",
+		}
+
+		llndk_library {
+			name: "libllndk.llndk",
+			symbol_file: "",
+			export_llndk_headers: ["libllndk_headers"],
+		}
+
+		llndk_headers {
+			name: "libllndk_headers",
+			export_include_dirs: ["include"],
+		}
 	`)
 
 	checkVndkOutput(t, ctx, "vndk/vndk.libraries.txt", []string{
 		"LLNDK: libc.so",
 		"LLNDK: libdl.so",
 		"LLNDK: libft2.so",
+		"LLNDK: libllndk.so",
 		"LLNDK: libm.so",
 		"VNDK-SP: libc++.so",
 		"VNDK-core: libvndk-private.so",
@@ -1101,874 +1110,6 @@ func TestDoubleLoadbleDep(t *testing.T) {
 	`)
 }
 
-func TestVendorSnapshotCapture(t *testing.T) {
-	bp := `
-	cc_library {
-		name: "libvndk",
-		vendor_available: true,
-		product_available: true,
-		vndk: {
-			enabled: true,
-		},
-		nocrt: true,
-	}
-
-	cc_library {
-		name: "libvendor",
-		vendor: true,
-		nocrt: true,
-	}
-
-	cc_library {
-		name: "libvendor_available",
-		vendor_available: true,
-		nocrt: true,
-	}
-
-	cc_library_headers {
-		name: "libvendor_headers",
-		vendor_available: true,
-		nocrt: true,
-	}
-
-	cc_binary {
-		name: "vendor_bin",
-		vendor: true,
-		nocrt: true,
-	}
-
-	cc_binary {
-		name: "vendor_available_bin",
-		vendor_available: true,
-		nocrt: true,
-	}
-
-	toolchain_library {
-		name: "libb",
-		vendor_available: true,
-		src: "libb.a",
-	}
-
-	cc_object {
-		name: "obj",
-		vendor_available: true,
-	}
-
-	cc_library {
-		name: "libllndk",
-		llndk_stubs: "libllndk.llndk",
-	}
-
-	llndk_library {
-		name: "libllndk.llndk",
-		symbol_file: "",
-	}
-`
-	config := TestConfig(buildDir, android.Android, nil, bp, nil)
-	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
-	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
-	ctx := testCcWithConfig(t, config)
-
-	// Check Vendor snapshot output.
-
-	snapshotDir := "vendor-snapshot"
-	snapshotVariantPath := filepath.Join(buildDir, snapshotDir, "arm64")
-	snapshotSingleton := ctx.SingletonForTests("vendor-snapshot")
-
-	var jsonFiles []string
-
-	for _, arch := range [][]string{
-		[]string{"arm64", "armv8-a"},
-		[]string{"arm", "armv7-a-neon"},
-	} {
-		archType := arch[0]
-		archVariant := arch[1]
-		archDir := fmt.Sprintf("arch-%s-%s", archType, archVariant)
-
-		// For shared libraries, only non-VNDK vendor_available modules are captured
-		sharedVariant := fmt.Sprintf("android_vendor.VER_%s_%s_shared", archType, archVariant)
-		sharedDir := filepath.Join(snapshotVariantPath, archDir, "shared")
-		checkSnapshot(t, ctx, snapshotSingleton, "libvendor", "libvendor.so", sharedDir, sharedVariant)
-		checkSnapshot(t, ctx, snapshotSingleton, "libvendor_available", "libvendor_available.so", sharedDir, sharedVariant)
-		jsonFiles = append(jsonFiles,
-			filepath.Join(sharedDir, "libvendor.so.json"),
-			filepath.Join(sharedDir, "libvendor_available.so.json"))
-
-		// LLNDK modules are not captured
-		checkSnapshotExclude(t, ctx, snapshotSingleton, "libllndk", "libllndk.so", sharedDir, sharedVariant)
-
-		// For static libraries, all vendor:true and vendor_available modules (including VNDK) are captured.
-		// Also cfi variants are captured, except for prebuilts like toolchain_library
-		staticVariant := fmt.Sprintf("android_vendor.VER_%s_%s_static", archType, archVariant)
-		staticCfiVariant := fmt.Sprintf("android_vendor.VER_%s_%s_static_cfi", archType, archVariant)
-		staticDir := filepath.Join(snapshotVariantPath, archDir, "static")
-		checkSnapshot(t, ctx, snapshotSingleton, "libb", "libb.a", staticDir, staticVariant)
-		checkSnapshot(t, ctx, snapshotSingleton, "libvndk", "libvndk.a", staticDir, staticVariant)
-		checkSnapshot(t, ctx, snapshotSingleton, "libvndk", "libvndk.cfi.a", staticDir, staticCfiVariant)
-		checkSnapshot(t, ctx, snapshotSingleton, "libvendor", "libvendor.a", staticDir, staticVariant)
-		checkSnapshot(t, ctx, snapshotSingleton, "libvendor", "libvendor.cfi.a", staticDir, staticCfiVariant)
-		checkSnapshot(t, ctx, snapshotSingleton, "libvendor_available", "libvendor_available.a", staticDir, staticVariant)
-		checkSnapshot(t, ctx, snapshotSingleton, "libvendor_available", "libvendor_available.cfi.a", staticDir, staticCfiVariant)
-		jsonFiles = append(jsonFiles,
-			filepath.Join(staticDir, "libb.a.json"),
-			filepath.Join(staticDir, "libvndk.a.json"),
-			filepath.Join(staticDir, "libvndk.cfi.a.json"),
-			filepath.Join(staticDir, "libvendor.a.json"),
-			filepath.Join(staticDir, "libvendor.cfi.a.json"),
-			filepath.Join(staticDir, "libvendor_available.a.json"),
-			filepath.Join(staticDir, "libvendor_available.cfi.a.json"))
-
-		// For binary executables, all vendor:true and vendor_available modules are captured.
-		if archType == "arm64" {
-			binaryVariant := fmt.Sprintf("android_vendor.VER_%s_%s", archType, archVariant)
-			binaryDir := filepath.Join(snapshotVariantPath, archDir, "binary")
-			checkSnapshot(t, ctx, snapshotSingleton, "vendor_bin", "vendor_bin", binaryDir, binaryVariant)
-			checkSnapshot(t, ctx, snapshotSingleton, "vendor_available_bin", "vendor_available_bin", binaryDir, binaryVariant)
-			jsonFiles = append(jsonFiles,
-				filepath.Join(binaryDir, "vendor_bin.json"),
-				filepath.Join(binaryDir, "vendor_available_bin.json"))
-		}
-
-		// For header libraries, all vendor:true and vendor_available modules are captured.
-		headerDir := filepath.Join(snapshotVariantPath, archDir, "header")
-		jsonFiles = append(jsonFiles, filepath.Join(headerDir, "libvendor_headers.json"))
-
-		// For object modules, all vendor:true and vendor_available modules are captured.
-		objectVariant := fmt.Sprintf("android_vendor.VER_%s_%s", archType, archVariant)
-		objectDir := filepath.Join(snapshotVariantPath, archDir, "object")
-		checkSnapshot(t, ctx, snapshotSingleton, "obj", "obj.o", objectDir, objectVariant)
-		jsonFiles = append(jsonFiles, filepath.Join(objectDir, "obj.o.json"))
-	}
-
-	for _, jsonFile := range jsonFiles {
-		// verify all json files exist
-		if snapshotSingleton.MaybeOutput(jsonFile).Rule == nil {
-			t.Errorf("%q expected but not found", jsonFile)
-		}
-	}
-
-	// fake snapshot should have all outputs in the normal snapshot.
-	fakeSnapshotSingleton := ctx.SingletonForTests("vendor-fake-snapshot")
-	for _, output := range snapshotSingleton.AllOutputs() {
-		fakeOutput := strings.Replace(output, "/vendor-snapshot/", "/fake/vendor-snapshot/", 1)
-		if fakeSnapshotSingleton.MaybeOutput(fakeOutput).Rule == nil {
-			t.Errorf("%q expected but not found", fakeOutput)
-		}
-	}
-}
-
-func TestVendorSnapshotUse(t *testing.T) {
-	frameworkBp := `
-	cc_library {
-		name: "libvndk",
-		vendor_available: true,
-		product_available: true,
-		vndk: {
-			enabled: true,
-		},
-		nocrt: true,
-		compile_multilib: "64",
-	}
-
-	cc_library {
-		name: "libvendor",
-		vendor: true,
-		nocrt: true,
-		no_libcrt: true,
-		stl: "none",
-		system_shared_libs: [],
-		compile_multilib: "64",
-	}
-
-	cc_binary {
-		name: "bin",
-		vendor: true,
-		nocrt: true,
-		no_libcrt: true,
-		stl: "none",
-		system_shared_libs: [],
-		compile_multilib: "64",
-	}
-`
-
-	vndkBp := `
-	vndk_prebuilt_shared {
-		name: "libvndk",
-		version: "BOARD",
-		target_arch: "arm64",
-		vendor_available: true,
-		product_available: true,
-		vndk: {
-			enabled: true,
-		},
-		arch: {
-			arm64: {
-				srcs: ["libvndk.so"],
-				export_include_dirs: ["include/libvndk"],
-			},
-		},
-	}
-`
-
-	vendorProprietaryBp := `
-	cc_library {
-		name: "libvendor_without_snapshot",
-		vendor: true,
-		nocrt: true,
-		no_libcrt: true,
-		stl: "none",
-		system_shared_libs: [],
-		compile_multilib: "64",
-	}
-
-	cc_library_shared {
-		name: "libclient",
-		vendor: true,
-		nocrt: true,
-		no_libcrt: true,
-		stl: "none",
-		system_shared_libs: [],
-		shared_libs: ["libvndk"],
-		static_libs: ["libvendor", "libvendor_without_snapshot"],
-		compile_multilib: "64",
-		srcs: ["client.cpp"],
-	}
-
-	cc_binary {
-		name: "bin_without_snapshot",
-		vendor: true,
-		nocrt: true,
-		no_libcrt: true,
-		stl: "none",
-		system_shared_libs: [],
-		static_libs: ["libvndk"],
-		compile_multilib: "64",
-		srcs: ["bin.cpp"],
-	}
-
-	vendor_snapshot_static {
-		name: "libvndk",
-		version: "BOARD",
-		target_arch: "arm64",
-		vendor: true,
-		arch: {
-			arm64: {
-				src: "libvndk.a",
-				export_include_dirs: ["include/libvndk"],
-			},
-		},
-	}
-
-	vendor_snapshot_shared {
-		name: "libvendor",
-		version: "BOARD",
-		target_arch: "arm64",
-		vendor: true,
-		arch: {
-			arm64: {
-				src: "libvendor.so",
-				export_include_dirs: ["include/libvendor"],
-			},
-		},
-	}
-
-	vendor_snapshot_static {
-		name: "libvendor",
-		version: "BOARD",
-		target_arch: "arm64",
-		vendor: true,
-		arch: {
-			arm64: {
-				src: "libvendor.a",
-				export_include_dirs: ["include/libvendor"],
-			},
-		},
-	}
-
-	vendor_snapshot_binary {
-		name: "bin",
-		version: "BOARD",
-		target_arch: "arm64",
-		vendor: true,
-		arch: {
-			arm64: {
-				src: "bin",
-			},
-		},
-	}
-`
-	depsBp := GatherRequiredDepsForTest(android.Android)
-
-	mockFS := map[string][]byte{
-		"deps/Android.bp":              []byte(depsBp),
-		"framework/Android.bp":         []byte(frameworkBp),
-		"vendor/Android.bp":            []byte(vendorProprietaryBp),
-		"vendor/bin":                   nil,
-		"vendor/bin.cpp":               nil,
-		"vendor/client.cpp":            nil,
-		"vendor/include/libvndk/a.h":   nil,
-		"vendor/include/libvendor/b.h": nil,
-		"vendor/libvndk.a":             nil,
-		"vendor/libvendor.a":           nil,
-		"vendor/libvendor.so":          nil,
-		"vndk/Android.bp":              []byte(vndkBp),
-		"vndk/include/libvndk/a.h":     nil,
-		"vndk/libvndk.so":              nil,
-	}
-
-	config := TestConfig(buildDir, android.Android, nil, "", mockFS)
-	config.TestProductVariables.DeviceVndkVersion = StringPtr("BOARD")
-	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
-	ctx := CreateTestContext(config)
-	ctx.Register()
-
-	_, errs := ctx.ParseFileList(".", []string{"deps/Android.bp", "framework/Android.bp", "vendor/Android.bp", "vndk/Android.bp"})
-	android.FailIfErrored(t, errs)
-	_, errs = ctx.PrepareBuildActions(config)
-	android.FailIfErrored(t, errs)
-
-	sharedVariant := "android_vendor.BOARD_arm64_armv8-a_shared"
-	staticVariant := "android_vendor.BOARD_arm64_armv8-a_static"
-	binaryVariant := "android_vendor.BOARD_arm64_armv8-a"
-
-	// libclient uses libvndk.vndk.BOARD.arm64, libvendor.vendor_static.BOARD.arm64, libvendor_without_snapshot
-	libclientCcFlags := ctx.ModuleForTests("libclient", sharedVariant).Rule("cc").Args["cFlags"]
-	for _, includeFlags := range []string{
-		"-Ivndk/include/libvndk",     // libvndk
-		"-Ivendor/include/libvendor", // libvendor
-	} {
-		if !strings.Contains(libclientCcFlags, includeFlags) {
-			t.Errorf("flags for libclient must contain %#v, but was %#v.",
-				includeFlags, libclientCcFlags)
-		}
-	}
-
-	libclientLdFlags := ctx.ModuleForTests("libclient", sharedVariant).Rule("ld").Args["libFlags"]
-	for _, input := range [][]string{
-		[]string{sharedVariant, "libvndk.vndk.BOARD.arm64"},
-		[]string{staticVariant, "libvendor.vendor_static.BOARD.arm64"},
-		[]string{staticVariant, "libvendor_without_snapshot"},
-	} {
-		outputPaths := getOutputPaths(ctx, input[0] /* variant */, []string{input[1]} /* module name */)
-		if !strings.Contains(libclientLdFlags, outputPaths[0].String()) {
-			t.Errorf("libflags for libclient must contain %#v, but was %#v", outputPaths[0], libclientLdFlags)
-		}
-	}
-
-	// bin_without_snapshot uses libvndk.vendor_static.BOARD.arm64
-	binWithoutSnapshotCcFlags := ctx.ModuleForTests("bin_without_snapshot", binaryVariant).Rule("cc").Args["cFlags"]
-	if !strings.Contains(binWithoutSnapshotCcFlags, "-Ivendor/include/libvndk") {
-		t.Errorf("flags for bin_without_snapshot must contain %#v, but was %#v.",
-			"-Ivendor/include/libvndk", binWithoutSnapshotCcFlags)
-	}
-
-	binWithoutSnapshotLdFlags := ctx.ModuleForTests("bin_without_snapshot", binaryVariant).Rule("ld").Args["libFlags"]
-	libVndkStaticOutputPaths := getOutputPaths(ctx, staticVariant, []string{"libvndk.vendor_static.BOARD.arm64"})
-	if !strings.Contains(binWithoutSnapshotLdFlags, libVndkStaticOutputPaths[0].String()) {
-		t.Errorf("libflags for bin_without_snapshot must contain %#v, but was %#v",
-			libVndkStaticOutputPaths[0], binWithoutSnapshotLdFlags)
-	}
-
-	// libvendor.so is installed by libvendor.vendor_shared.BOARD.arm64
-	ctx.ModuleForTests("libvendor.vendor_shared.BOARD.arm64", sharedVariant).Output("libvendor.so")
-
-	// libvendor_without_snapshot.so is installed by libvendor_without_snapshot
-	ctx.ModuleForTests("libvendor_without_snapshot", sharedVariant).Output("libvendor_without_snapshot.so")
-
-	// bin is installed by bin.vendor_binary.BOARD.arm64
-	ctx.ModuleForTests("bin.vendor_binary.BOARD.arm64", binaryVariant).Output("bin")
-
-	// bin_without_snapshot is installed by bin_without_snapshot
-	ctx.ModuleForTests("bin_without_snapshot", binaryVariant).Output("bin_without_snapshot")
-
-	// libvendor and bin don't have vendor.BOARD variant
-	libvendorVariants := ctx.ModuleVariantsForTests("libvendor")
-	if inList(sharedVariant, libvendorVariants) {
-		t.Errorf("libvendor must not have variant %#v, but it does", sharedVariant)
-	}
-
-	binVariants := ctx.ModuleVariantsForTests("bin")
-	if inList(binaryVariant, binVariants) {
-		t.Errorf("bin must not have variant %#v, but it does", sharedVariant)
-	}
-}
-
-func TestVendorSnapshotSanitizer(t *testing.T) {
-	bp := `
-	vendor_snapshot_static {
-		name: "libsnapshot",
-		vendor: true,
-		target_arch: "arm64",
-		version: "BOARD",
-		arch: {
-			arm64: {
-				src: "libsnapshot.a",
-				cfi: {
-					src: "libsnapshot.cfi.a",
-				}
-			},
-		},
-	}
-`
-	config := TestConfig(buildDir, android.Android, nil, bp, nil)
-	config.TestProductVariables.DeviceVndkVersion = StringPtr("BOARD")
-	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
-	ctx := testCcWithConfig(t, config)
-
-	// Check non-cfi and cfi variant.
-	staticVariant := "android_vendor.BOARD_arm64_armv8-a_static"
-	staticCfiVariant := "android_vendor.BOARD_arm64_armv8-a_static_cfi"
-
-	staticModule := ctx.ModuleForTests("libsnapshot.vendor_static.BOARD.arm64", staticVariant).Module().(*Module)
-	assertString(t, staticModule.outputFile.Path().Base(), "libsnapshot.a")
-
-	staticCfiModule := ctx.ModuleForTests("libsnapshot.vendor_static.BOARD.arm64", staticCfiVariant).Module().(*Module)
-	assertString(t, staticCfiModule.outputFile.Path().Base(), "libsnapshot.cfi.a")
-}
-
-func assertExcludeFromVendorSnapshotIs(t *testing.T, c *Module, expected bool) {
-	t.Helper()
-	if c.ExcludeFromVendorSnapshot() != expected {
-		t.Errorf("expected %q ExcludeFromVendorSnapshot to be %t", c.String(), expected)
-	}
-}
-
-func assertExcludeFromRecoverySnapshotIs(t *testing.T, c *Module, expected bool) {
-	t.Helper()
-	if c.ExcludeFromRecoverySnapshot() != expected {
-		t.Errorf("expected %q ExcludeFromRecoverySnapshot to be %t", c.String(), expected)
-	}
-}
-
-func TestVendorSnapshotExclude(t *testing.T) {
-
-	// This test verifies that the exclude_from_vendor_snapshot property
-	// makes its way from the Android.bp source file into the module data
-	// structure. It also verifies that modules are correctly included or
-	// excluded in the vendor snapshot based on their path (framework or
-	// vendor) and the exclude_from_vendor_snapshot property.
-
-	frameworkBp := `
-		cc_library_shared {
-			name: "libinclude",
-			srcs: ["src/include.cpp"],
-			vendor_available: true,
-		}
-		cc_library_shared {
-			name: "libexclude",
-			srcs: ["src/exclude.cpp"],
-			vendor: true,
-			exclude_from_vendor_snapshot: true,
-		}
-	`
-
-	vendorProprietaryBp := `
-		cc_library_shared {
-			name: "libvendor",
-			srcs: ["vendor.cpp"],
-			vendor: true,
-		}
-	`
-
-	depsBp := GatherRequiredDepsForTest(android.Android)
-
-	mockFS := map[string][]byte{
-		"deps/Android.bp":       []byte(depsBp),
-		"framework/Android.bp":  []byte(frameworkBp),
-		"framework/include.cpp": nil,
-		"framework/exclude.cpp": nil,
-		"device/Android.bp":     []byte(vendorProprietaryBp),
-		"device/vendor.cpp":     nil,
-	}
-
-	config := TestConfig(buildDir, android.Android, nil, "", mockFS)
-	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
-	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
-	ctx := CreateTestContext(config)
-	ctx.Register()
-
-	_, errs := ctx.ParseFileList(".", []string{"deps/Android.bp", "framework/Android.bp", "device/Android.bp"})
-	android.FailIfErrored(t, errs)
-	_, errs = ctx.PrepareBuildActions(config)
-	android.FailIfErrored(t, errs)
-
-	// Test an include and exclude framework module.
-	assertExcludeFromVendorSnapshotIs(t, ctx.ModuleForTests("libinclude", coreVariant).Module().(*Module), false)
-	assertExcludeFromVendorSnapshotIs(t, ctx.ModuleForTests("libinclude", vendorVariant).Module().(*Module), false)
-	assertExcludeFromVendorSnapshotIs(t, ctx.ModuleForTests("libexclude", vendorVariant).Module().(*Module), true)
-
-	// A vendor module is excluded, but by its path, not the
-	// exclude_from_vendor_snapshot property.
-	assertExcludeFromVendorSnapshotIs(t, ctx.ModuleForTests("libvendor", vendorVariant).Module().(*Module), false)
-
-	// Verify the content of the vendor snapshot.
-
-	snapshotDir := "vendor-snapshot"
-	snapshotVariantPath := filepath.Join(buildDir, snapshotDir, "arm64")
-	snapshotSingleton := ctx.SingletonForTests("vendor-snapshot")
-
-	var includeJsonFiles []string
-	var excludeJsonFiles []string
-
-	for _, arch := range [][]string{
-		[]string{"arm64", "armv8-a"},
-		[]string{"arm", "armv7-a-neon"},
-	} {
-		archType := arch[0]
-		archVariant := arch[1]
-		archDir := fmt.Sprintf("arch-%s-%s", archType, archVariant)
-
-		sharedVariant := fmt.Sprintf("android_vendor.VER_%s_%s_shared", archType, archVariant)
-		sharedDir := filepath.Join(snapshotVariantPath, archDir, "shared")
-
-		// Included modules
-		checkSnapshot(t, ctx, snapshotSingleton, "libinclude", "libinclude.so", sharedDir, sharedVariant)
-		includeJsonFiles = append(includeJsonFiles, filepath.Join(sharedDir, "libinclude.so.json"))
-
-		// Excluded modules
-		checkSnapshotExclude(t, ctx, snapshotSingleton, "libexclude", "libexclude.so", sharedDir, sharedVariant)
-		excludeJsonFiles = append(excludeJsonFiles, filepath.Join(sharedDir, "libexclude.so.json"))
-		checkSnapshotExclude(t, ctx, snapshotSingleton, "libvendor", "libvendor.so", sharedDir, sharedVariant)
-		excludeJsonFiles = append(excludeJsonFiles, filepath.Join(sharedDir, "libvendor.so.json"))
-	}
-
-	// Verify that each json file for an included module has a rule.
-	for _, jsonFile := range includeJsonFiles {
-		if snapshotSingleton.MaybeOutput(jsonFile).Rule == nil {
-			t.Errorf("include json file %q not found", jsonFile)
-		}
-	}
-
-	// Verify that each json file for an excluded module has no rule.
-	for _, jsonFile := range excludeJsonFiles {
-		if snapshotSingleton.MaybeOutput(jsonFile).Rule != nil {
-			t.Errorf("exclude json file %q found", jsonFile)
-		}
-	}
-}
-
-func TestVendorSnapshotExcludeInVendorProprietaryPathErrors(t *testing.T) {
-
-	// This test verifies that using the exclude_from_vendor_snapshot
-	// property on a module in a vendor proprietary path generates an
-	// error. These modules are already excluded, so we prohibit using the
-	// property in this way, which could add to confusion.
-
-	vendorProprietaryBp := `
-		cc_library_shared {
-			name: "libvendor",
-			srcs: ["vendor.cpp"],
-			vendor: true,
-			exclude_from_vendor_snapshot: true,
-		}
-	`
-
-	depsBp := GatherRequiredDepsForTest(android.Android)
-
-	mockFS := map[string][]byte{
-		"deps/Android.bp":   []byte(depsBp),
-		"device/Android.bp": []byte(vendorProprietaryBp),
-		"device/vendor.cpp": nil,
-	}
-
-	config := TestConfig(buildDir, android.Android, nil, "", mockFS)
-	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
-	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
-	ctx := CreateTestContext(config)
-	ctx.Register()
-
-	_, errs := ctx.ParseFileList(".", []string{"deps/Android.bp", "device/Android.bp"})
-	android.FailIfErrored(t, errs)
-
-	_, errs = ctx.PrepareBuildActions(config)
-	android.CheckErrorsAgainstExpectations(t, errs, []string{
-		`module "libvendor\{.+,image:vendor.+,arch:arm64_.+\}" in vendor proprietary path "device" may not use "exclude_from_vendor_snapshot: true"`,
-		`module "libvendor\{.+,image:vendor.+,arch:arm_.+\}" in vendor proprietary path "device" may not use "exclude_from_vendor_snapshot: true"`,
-		`module "libvendor\{.+,image:vendor.+,arch:arm64_.+\}" in vendor proprietary path "device" may not use "exclude_from_vendor_snapshot: true"`,
-		`module "libvendor\{.+,image:vendor.+,arch:arm_.+\}" in vendor proprietary path "device" may not use "exclude_from_vendor_snapshot: true"`,
-		`module "libvendor\{.+,image:vendor.+,arch:arm64_.+\}" in vendor proprietary path "device" may not use "exclude_from_vendor_snapshot: true"`,
-		`module "libvendor\{.+,image:vendor.+,arch:arm_.+\}" in vendor proprietary path "device" may not use "exclude_from_vendor_snapshot: true"`,
-	})
-}
-
-func TestVendorSnapshotExcludeWithVendorAvailable(t *testing.T) {
-
-	// This test verifies that using the exclude_from_vendor_snapshot
-	// property on a module that is vendor available generates an error. A
-	// vendor available module must be captured in the vendor snapshot and
-	// must not built from source when building the vendor image against
-	// the vendor snapshot.
-
-	frameworkBp := `
-		cc_library_shared {
-			name: "libinclude",
-			srcs: ["src/include.cpp"],
-			vendor_available: true,
-			exclude_from_vendor_snapshot: true,
-		}
-	`
-
-	depsBp := GatherRequiredDepsForTest(android.Android)
-
-	mockFS := map[string][]byte{
-		"deps/Android.bp":       []byte(depsBp),
-		"framework/Android.bp":  []byte(frameworkBp),
-		"framework/include.cpp": nil,
-	}
-
-	config := TestConfig(buildDir, android.Android, nil, "", mockFS)
-	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
-	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
-	ctx := CreateTestContext(config)
-	ctx.Register()
-
-	_, errs := ctx.ParseFileList(".", []string{"deps/Android.bp", "framework/Android.bp"})
-	android.FailIfErrored(t, errs)
-
-	_, errs = ctx.PrepareBuildActions(config)
-	android.CheckErrorsAgainstExpectations(t, errs, []string{
-		`module "libinclude\{.+,image:,arch:arm64_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
-		`module "libinclude\{.+,image:,arch:arm_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
-		`module "libinclude\{.+,image:vendor.+,arch:arm64_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
-		`module "libinclude\{.+,image:vendor.+,arch:arm_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
-		`module "libinclude\{.+,image:,arch:arm64_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
-		`module "libinclude\{.+,image:,arch:arm_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
-		`module "libinclude\{.+,image:vendor.+,arch:arm64_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
-		`module "libinclude\{.+,image:vendor.+,arch:arm_.+\}" may not use both "vendor_available: true" and "exclude_from_vendor_snapshot: true"`,
-	})
-}
-
-func TestRecoverySnapshotCapture(t *testing.T) {
-	bp := `
-	cc_library {
-		name: "libvndk",
-		vendor_available: true,
-		recovery_available: true,
-		product_available: true,
-		vndk: {
-			enabled: true,
-		},
-		nocrt: true,
-	}
-
-	cc_library {
-		name: "librecovery",
-		recovery: true,
-		nocrt: true,
-	}
-
-	cc_library {
-		name: "librecovery_available",
-		recovery_available: true,
-		nocrt: true,
-	}
-
-	cc_library_headers {
-		name: "librecovery_headers",
-		recovery_available: true,
-		nocrt: true,
-	}
-
-	cc_binary {
-		name: "recovery_bin",
-		recovery: true,
-		nocrt: true,
-	}
-
-	cc_binary {
-		name: "recovery_available_bin",
-		recovery_available: true,
-		nocrt: true,
-	}
-
-	toolchain_library {
-		name: "libb",
-		recovery_available: true,
-		src: "libb.a",
-	}
-
-	cc_object {
-		name: "obj",
-		recovery_available: true,
-	}
-`
-	config := TestConfig(buildDir, android.Android, nil, bp, nil)
-	config.TestProductVariables.RecoverySnapshotVersion = StringPtr("current")
-	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
-	ctx := testCcWithConfig(t, config)
-
-	// Check Recovery snapshot output.
-
-	snapshotDir := "recovery-snapshot"
-	snapshotVariantPath := filepath.Join(buildDir, snapshotDir, "arm64")
-	snapshotSingleton := ctx.SingletonForTests("recovery-snapshot")
-
-	var jsonFiles []string
-
-	for _, arch := range [][]string{
-		[]string{"arm64", "armv8-a"},
-	} {
-		archType := arch[0]
-		archVariant := arch[1]
-		archDir := fmt.Sprintf("arch-%s-%s", archType, archVariant)
-
-		// For shared libraries, only recovery_available modules are captured.
-		sharedVariant := fmt.Sprintf("android_recovery_%s_%s_shared", archType, archVariant)
-		sharedDir := filepath.Join(snapshotVariantPath, archDir, "shared")
-		checkSnapshot(t, ctx, snapshotSingleton, "libvndk", "libvndk.so", sharedDir, sharedVariant)
-		checkSnapshot(t, ctx, snapshotSingleton, "librecovery", "librecovery.so", sharedDir, sharedVariant)
-		checkSnapshot(t, ctx, snapshotSingleton, "librecovery_available", "librecovery_available.so", sharedDir, sharedVariant)
-		jsonFiles = append(jsonFiles,
-			filepath.Join(sharedDir, "libvndk.so.json"),
-			filepath.Join(sharedDir, "librecovery.so.json"),
-			filepath.Join(sharedDir, "librecovery_available.so.json"))
-
-		// For static libraries, all recovery:true and recovery_available modules are captured.
-		staticVariant := fmt.Sprintf("android_recovery_%s_%s_static", archType, archVariant)
-		staticDir := filepath.Join(snapshotVariantPath, archDir, "static")
-		checkSnapshot(t, ctx, snapshotSingleton, "libb", "libb.a", staticDir, staticVariant)
-		checkSnapshot(t, ctx, snapshotSingleton, "librecovery", "librecovery.a", staticDir, staticVariant)
-		checkSnapshot(t, ctx, snapshotSingleton, "librecovery_available", "librecovery_available.a", staticDir, staticVariant)
-		jsonFiles = append(jsonFiles,
-			filepath.Join(staticDir, "libb.a.json"),
-			filepath.Join(staticDir, "librecovery.a.json"),
-			filepath.Join(staticDir, "librecovery_available.a.json"))
-
-		// For binary executables, all recovery:true and recovery_available modules are captured.
-		if archType == "arm64" {
-			binaryVariant := fmt.Sprintf("android_recovery_%s_%s", archType, archVariant)
-			binaryDir := filepath.Join(snapshotVariantPath, archDir, "binary")
-			checkSnapshot(t, ctx, snapshotSingleton, "recovery_bin", "recovery_bin", binaryDir, binaryVariant)
-			checkSnapshot(t, ctx, snapshotSingleton, "recovery_available_bin", "recovery_available_bin", binaryDir, binaryVariant)
-			jsonFiles = append(jsonFiles,
-				filepath.Join(binaryDir, "recovery_bin.json"),
-				filepath.Join(binaryDir, "recovery_available_bin.json"))
-		}
-
-		// For header libraries, all vendor:true and vendor_available modules are captured.
-		headerDir := filepath.Join(snapshotVariantPath, archDir, "header")
-		jsonFiles = append(jsonFiles, filepath.Join(headerDir, "librecovery_headers.json"))
-
-		// For object modules, all vendor:true and vendor_available modules are captured.
-		objectVariant := fmt.Sprintf("android_recovery_%s_%s", archType, archVariant)
-		objectDir := filepath.Join(snapshotVariantPath, archDir, "object")
-		checkSnapshot(t, ctx, snapshotSingleton, "obj", "obj.o", objectDir, objectVariant)
-		jsonFiles = append(jsonFiles, filepath.Join(objectDir, "obj.o.json"))
-	}
-
-	for _, jsonFile := range jsonFiles {
-		// verify all json files exist
-		if snapshotSingleton.MaybeOutput(jsonFile).Rule == nil {
-			t.Errorf("%q expected but not found", jsonFile)
-		}
-	}
-}
-
-func TestRecoverySnapshotExclude(t *testing.T) {
-	// This test verifies that the exclude_from_recovery_snapshot property
-	// makes its way from the Android.bp source file into the module data
-	// structure. It also verifies that modules are correctly included or
-	// excluded in the recovery snapshot based on their path (framework or
-	// vendor) and the exclude_from_recovery_snapshot property.
-
-	frameworkBp := `
-		cc_library_shared {
-			name: "libinclude",
-			srcs: ["src/include.cpp"],
-                        recovery_available: true,
-		}
-		cc_library_shared {
-			name: "libexclude",
-			srcs: ["src/exclude.cpp"],
-			recovery: true,
-			exclude_from_recovery_snapshot: true,
-		}
-	`
-
-	vendorProprietaryBp := `
-		cc_library_shared {
-			name: "libvendor",
-			srcs: ["vendor.cpp"],
-			recovery: true,
-		}
-	`
-
-	depsBp := GatherRequiredDepsForTest(android.Android)
-
-	mockFS := map[string][]byte{
-		"deps/Android.bp":       []byte(depsBp),
-		"framework/Android.bp":  []byte(frameworkBp),
-		"framework/include.cpp": nil,
-		"framework/exclude.cpp": nil,
-		"device/Android.bp":     []byte(vendorProprietaryBp),
-		"device/vendor.cpp":     nil,
-	}
-
-	config := TestConfig(buildDir, android.Android, nil, "", mockFS)
-	config.TestProductVariables.RecoverySnapshotVersion = StringPtr("current")
-	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
-	ctx := CreateTestContext(config)
-	ctx.Register()
-
-	_, errs := ctx.ParseFileList(".", []string{"deps/Android.bp", "framework/Android.bp", "device/Android.bp"})
-	android.FailIfErrored(t, errs)
-	_, errs = ctx.PrepareBuildActions(config)
-	android.FailIfErrored(t, errs)
-
-	// Test an include and exclude framework module.
-	assertExcludeFromRecoverySnapshotIs(t, ctx.ModuleForTests("libinclude", coreVariant).Module().(*Module), false)
-	assertExcludeFromRecoverySnapshotIs(t, ctx.ModuleForTests("libinclude", recoveryVariant).Module().(*Module), false)
-	assertExcludeFromRecoverySnapshotIs(t, ctx.ModuleForTests("libexclude", recoveryVariant).Module().(*Module), true)
-
-	// A vendor module is excluded, but by its path, not the
-	// exclude_from_recovery_snapshot property.
-	assertExcludeFromRecoverySnapshotIs(t, ctx.ModuleForTests("libvendor", recoveryVariant).Module().(*Module), false)
-
-	// Verify the content of the recovery snapshot.
-
-	snapshotDir := "recovery-snapshot"
-	snapshotVariantPath := filepath.Join(buildDir, snapshotDir, "arm64")
-	snapshotSingleton := ctx.SingletonForTests("recovery-snapshot")
-
-	var includeJsonFiles []string
-	var excludeJsonFiles []string
-
-	for _, arch := range [][]string{
-		[]string{"arm64", "armv8-a"},
-	} {
-		archType := arch[0]
-		archVariant := arch[1]
-		archDir := fmt.Sprintf("arch-%s-%s", archType, archVariant)
-
-		sharedVariant := fmt.Sprintf("android_recovery_%s_%s_shared", archType, archVariant)
-		sharedDir := filepath.Join(snapshotVariantPath, archDir, "shared")
-
-		// Included modules
-		checkSnapshot(t, ctx, snapshotSingleton, "libinclude", "libinclude.so", sharedDir, sharedVariant)
-		includeJsonFiles = append(includeJsonFiles, filepath.Join(sharedDir, "libinclude.so.json"))
-
-		// Excluded modules
-		checkSnapshotExclude(t, ctx, snapshotSingleton, "libexclude", "libexclude.so", sharedDir, sharedVariant)
-		excludeJsonFiles = append(excludeJsonFiles, filepath.Join(sharedDir, "libexclude.so.json"))
-		checkSnapshotExclude(t, ctx, snapshotSingleton, "libvendor", "libvendor.so", sharedDir, sharedVariant)
-		excludeJsonFiles = append(excludeJsonFiles, filepath.Join(sharedDir, "libvendor.so.json"))
-	}
-
-	// Verify that each json file for an included module has a rule.
-	for _, jsonFile := range includeJsonFiles {
-		if snapshotSingleton.MaybeOutput(jsonFile).Rule == nil {
-			t.Errorf("include json file %q not found", jsonFile)
-		}
-	}
-
-	// Verify that each json file for an excluded module has no rule.
-	for _, jsonFile := range excludeJsonFiles {
-		if snapshotSingleton.MaybeOutput(jsonFile).Rule != nil {
-			t.Errorf("exclude json file %q found", jsonFile)
-		}
-	}
-}
-
 func TestDoubleLoadableDepError(t *testing.T) {
 	// Check whether an error is emitted when a LLNDK depends on a non-double_loadable VNDK lib.
 	testCcError(t, "module \".*\" variant \".*\": link.* \".*\" which is not LL-NDK, VNDK-SP, .*double_loadable", `
@@ -2013,64 +1154,6 @@ func TestDoubleLoadableDepError(t *testing.T) {
 		}
 	`)
 
-	// Check whether an error is emitted when a double_loadable lib depends on a non-double_loadable vendor_available lib.
-	testCcError(t, "module \".*\" variant \".*\": link.* \".*\" which is not LL-NDK, VNDK-SP, .*double_loadable", `
-		cc_library {
-			name: "libdoubleloadable",
-			vendor_available: true,
-			double_loadable: true,
-			shared_libs: ["libnondoubleloadable"],
-		}
-
-		cc_library {
-			name: "libnondoubleloadable",
-			vendor_available: true,
-		}
-	`)
-
-	// Check whether an error is emitted when a double_loadable lib depends on a non-double_loadable VNDK lib.
-	testCcError(t, "module \".*\" variant \".*\": link.* \".*\" which is not LL-NDK, VNDK-SP, .*double_loadable", `
-		cc_library {
-			name: "libdoubleloadable",
-			vendor_available: true,
-			double_loadable: true,
-			shared_libs: ["libnondoubleloadable"],
-		}
-
-		cc_library {
-			name: "libnondoubleloadable",
-			vendor_available: true,
-			product_available: true,
-			vndk: {
-				enabled: true,
-			},
-		}
-	`)
-
-	// Check whether an error is emitted when a double_loadable VNDK depends on a non-double_loadable VNDK private lib.
-	testCcError(t, "module \".*\" variant \".*\": link.* \".*\" which is not LL-NDK, VNDK-SP, .*double_loadable", `
-		cc_library {
-			name: "libdoubleloadable",
-			vendor_available: true,
-			product_available: true,
-			vndk: {
-				enabled: true,
-			},
-			double_loadable: true,
-			shared_libs: ["libnondoubleloadable"],
-		}
-
-		cc_library {
-			name: "libnondoubleloadable",
-			vendor_available: true,
-			product_available: true,
-			vndk: {
-				enabled: true,
-				private: true,
-			},
-		}
-	`)
-
 	// Check whether an error is emitted when a LLNDK depends on a non-double_loadable indirectly.
 	testCcError(t, "module \".*\" variant \".*\": link.* \".*\" which is not LL-NDK, VNDK-SP, .*double_loadable", `
 		cc_library {
@@ -2092,6 +1175,29 @@ func TestDoubleLoadableDepError(t *testing.T) {
 		// indirect dependency of LLNDK
 		cc_library {
 			name: "libvendoravailable",
+			vendor_available: true,
+		}
+	`)
+
+	// The error is not from 'client' but from 'libllndk'
+	testCcError(t, "module \"libllndk\".* links a library \"libnondoubleloadable\".*double_loadable", `
+		cc_library {
+			name: "client",
+			vendor_available: true,
+			double_loadable: true,
+			shared_libs: ["libllndk"],
+		}
+		cc_library {
+			name: "libllndk",
+			shared_libs: ["libnondoubleloadable"],
+			llndk_stubs: "libllndk.llndk",
+		}
+		llndk_library {
+			name: "libllndk.llndk",
+			symbol_file: "",
+		}
+		cc_library {
+			name: "libnondoubleloadable",
 			vendor_available: true,
 		}
 	`)
@@ -3154,7 +2260,25 @@ func TestMakeLinkType(t *testing.T) {
 			name: "libllndkprivate.llndk",
 			private: true,
 			symbol_file: "",
-		}`
+		}
+
+		llndk_libraries_txt {
+			name: "llndk.libraries.txt",
+		}
+		vndkcore_libraries_txt {
+			name: "vndkcore.libraries.txt",
+		}
+		vndksp_libraries_txt {
+			name: "vndksp.libraries.txt",
+		}
+		vndkprivate_libraries_txt {
+			name: "vndkprivate.libraries.txt",
+		}
+		vndkcorevariant_libraries_txt {
+			name: "vndkcorevariant.libraries.txt",
+			insert_vndk_version: false,
+		}
+	`
 
 	config := TestConfig(buildDir, android.Android, nil, bp, nil)
 	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
@@ -3162,14 +2286,14 @@ func TestMakeLinkType(t *testing.T) {
 	// native:vndk
 	ctx := testCcWithConfig(t, config)
 
-	assertMapKeys(t, vndkCoreLibraries(config),
-		[]string{"libvndk", "libvndkprivate"})
-	assertMapKeys(t, vndkSpLibraries(config),
-		[]string{"libc++", "libvndksp"})
-	assertMapKeys(t, llndkLibraries(config),
-		[]string{"libc", "libdl", "libft2", "libllndk", "libllndkprivate", "libm"})
-	assertMapKeys(t, vndkPrivateLibraries(config),
-		[]string{"libft2", "libllndkprivate", "libvndkprivate"})
+	checkVndkLibrariesOutput(t, ctx, "vndkcore.libraries.txt",
+		[]string{"libvndk.so", "libvndkprivate.so"})
+	checkVndkLibrariesOutput(t, ctx, "vndksp.libraries.txt",
+		[]string{"libc++.so", "libvndksp.so"})
+	checkVndkLibrariesOutput(t, ctx, "llndk.libraries.txt",
+		[]string{"libc.so", "libdl.so", "libft2.so", "libllndk.so", "libllndkprivate.so", "libm.so"})
+	checkVndkLibrariesOutput(t, ctx, "vndkprivate.libraries.txt",
+		[]string{"libft2.so", "libllndkprivate.so", "libvndkprivate.so"})
 
 	vendorVariant27 := "android_vendor.27_arm64_armv8-a_shared"
 
@@ -4460,4 +3584,311 @@ func TestAidlFlagsPassedToTheAidlCompiler(t *testing.T) {
 	if !strings.Contains(aidlCommand, expectedAidlFlag) {
 		t.Errorf("aidl command %q does not contain %q", aidlCommand, expectedAidlFlag)
 	}
+}
+
+type MemtagNoteType int
+
+const (
+	None MemtagNoteType = iota + 1
+	Sync
+	Async
+)
+
+func (t MemtagNoteType) str() string {
+	switch t {
+	case None:
+		return "none"
+	case Sync:
+		return "sync"
+	case Async:
+		return "async"
+	default:
+		panic("invalid note type")
+	}
+}
+
+func checkHasMemtagNote(t *testing.T, m android.TestingModule, expected MemtagNoteType) {
+	note_async := "note_memtag_heap_async"
+	note_sync := "note_memtag_heap_sync"
+
+	found := None
+	implicits := m.Rule("ld").Implicits
+	for _, lib := range implicits {
+		if strings.Contains(lib.Rel(), note_async) {
+			found = Async
+			break
+		} else if strings.Contains(lib.Rel(), note_sync) {
+			found = Sync
+			break
+		}
+	}
+
+	if found != expected {
+		t.Errorf("Wrong Memtag note in target %q: found %q, expected %q", m.Module().(*Module).Name(), found.str(), expected.str())
+	}
+}
+
+func makeMemtagTestConfig(t *testing.T) android.Config {
+	templateBp := `
+		cc_test {
+			name: "%[1]s_test",
+			gtest: false,
+		}
+
+		cc_test {
+			name: "%[1]s_test_false",
+			gtest: false,
+			sanitize: { memtag_heap: false },
+		}
+
+		cc_test {
+			name: "%[1]s_test_true",
+			gtest: false,
+			sanitize: { memtag_heap: true },
+		}
+
+		cc_test {
+			name: "%[1]s_test_true_nodiag",
+			gtest: false,
+			sanitize: { memtag_heap: true, diag: { memtag_heap: false }  },
+		}
+
+		cc_test {
+			name: "%[1]s_test_true_diag",
+			gtest: false,
+			sanitize: { memtag_heap: true, diag: { memtag_heap: true }  },
+		}
+
+		cc_binary {
+			name: "%[1]s_binary",
+		}
+
+		cc_binary {
+			name: "%[1]s_binary_false",
+			sanitize: { memtag_heap: false },
+		}
+
+		cc_binary {
+			name: "%[1]s_binary_true",
+			sanitize: { memtag_heap: true },
+		}
+
+		cc_binary {
+			name: "%[1]s_binary_true_nodiag",
+			sanitize: { memtag_heap: true, diag: { memtag_heap: false }  },
+		}
+
+		cc_binary {
+			name: "%[1]s_binary_true_diag",
+			sanitize: { memtag_heap: true, diag: { memtag_heap: true }  },
+		}
+		`
+	subdirDefaultBp := fmt.Sprintf(templateBp, "default")
+	subdirExcludeBp := fmt.Sprintf(templateBp, "exclude")
+	subdirSyncBp := fmt.Sprintf(templateBp, "sync")
+	subdirAsyncBp := fmt.Sprintf(templateBp, "async")
+
+	mockFS := map[string][]byte{
+		"subdir_default/Android.bp": []byte(subdirDefaultBp),
+		"subdir_exclude/Android.bp": []byte(subdirExcludeBp),
+		"subdir_sync/Android.bp":    []byte(subdirSyncBp),
+		"subdir_async/Android.bp":   []byte(subdirAsyncBp),
+	}
+
+	return TestConfig(buildDir, android.Android, nil, "", mockFS)
+}
+
+func TestSanitizeMemtagHeap(t *testing.T) {
+	variant := "android_arm64_armv8-a"
+
+	config := makeMemtagTestConfig(t)
+	config.TestProductVariables.MemtagHeapExcludePaths = []string{"subdir_exclude"}
+	config.TestProductVariables.MemtagHeapSyncIncludePaths = []string{"subdir_sync"}
+	config.TestProductVariables.MemtagHeapAsyncIncludePaths = []string{"subdir_async"}
+	ctx := CreateTestContext(config)
+	ctx.Register()
+
+	_, errs := ctx.ParseFileList(".", []string{"Android.bp", "subdir_default/Android.bp", "subdir_exclude/Android.bp", "subdir_sync/Android.bp", "subdir_async/Android.bp"})
+	android.FailIfErrored(t, errs)
+	_, errs = ctx.PrepareBuildActions(config)
+	android.FailIfErrored(t, errs)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_test", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_test_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_test_true", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_test_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_test_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_binary", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_binary_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_binary_true", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_binary_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_binary_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_test", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_test_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_test_true", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_test_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_test_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_binary", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_binary_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_binary_true", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_binary_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_binary_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_test", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_test_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_test_true", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_test_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_test_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_binary", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_binary_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_binary_true", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_binary_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_binary_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_test", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_test_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_test_true", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_test_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_test_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_binary", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_binary_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_binary_true", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_binary_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_binary_true_diag", variant), Sync)
+}
+
+func TestSanitizeMemtagHeapWithSanitizeDevice(t *testing.T) {
+	variant := "android_arm64_armv8-a"
+
+	config := makeMemtagTestConfig(t)
+	config.TestProductVariables.MemtagHeapExcludePaths = []string{"subdir_exclude"}
+	config.TestProductVariables.MemtagHeapSyncIncludePaths = []string{"subdir_sync"}
+	config.TestProductVariables.MemtagHeapAsyncIncludePaths = []string{"subdir_async"}
+	config.TestProductVariables.SanitizeDevice = []string{"memtag_heap"}
+	ctx := CreateTestContext(config)
+	ctx.Register()
+
+	_, errs := ctx.ParseFileList(".", []string{"Android.bp", "subdir_default/Android.bp", "subdir_exclude/Android.bp", "subdir_sync/Android.bp", "subdir_async/Android.bp"})
+	android.FailIfErrored(t, errs)
+	_, errs = ctx.PrepareBuildActions(config)
+	android.FailIfErrored(t, errs)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_test", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_test_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_test_true", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_test_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_test_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_binary", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_binary_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_binary_true", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_binary_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_binary_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_test", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_test_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_test_true", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_test_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_test_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_binary", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_binary_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_binary_true", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_binary_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_binary_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_test", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_test_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_test_true", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_test_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_test_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_binary", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_binary_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_binary_true", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_binary_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_binary_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_test", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_test_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_test_true", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_test_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_test_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_binary", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_binary_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_binary_true", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_binary_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_binary_true_diag", variant), Sync)
+}
+
+func TestSanitizeMemtagHeapWithSanitizeDeviceDiag(t *testing.T) {
+	variant := "android_arm64_armv8-a"
+
+	config := makeMemtagTestConfig(t)
+	config.TestProductVariables.MemtagHeapExcludePaths = []string{"subdir_exclude"}
+	config.TestProductVariables.MemtagHeapSyncIncludePaths = []string{"subdir_sync"}
+	config.TestProductVariables.MemtagHeapAsyncIncludePaths = []string{"subdir_async"}
+	config.TestProductVariables.SanitizeDevice = []string{"memtag_heap"}
+	config.TestProductVariables.SanitizeDeviceDiag = []string{"memtag_heap"}
+	ctx := CreateTestContext(config)
+	ctx.Register()
+
+	_, errs := ctx.ParseFileList(".", []string{"Android.bp", "subdir_default/Android.bp", "subdir_exclude/Android.bp", "subdir_sync/Android.bp", "subdir_async/Android.bp"})
+	android.FailIfErrored(t, errs)
+	_, errs = ctx.PrepareBuildActions(config)
+	android.FailIfErrored(t, errs)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_test", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_test_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_test_true", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_test_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_test_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_binary", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_binary_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_binary_true", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_binary_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("default_binary_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_test", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_test_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_test_true", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_test_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_test_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_binary", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_binary_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_binary_true", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_binary_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("exclude_binary_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_test", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_test_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_test_true", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_test_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_test_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_binary", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_binary_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_binary_true", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_binary_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("async_binary_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_test", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_test_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_test_true", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_test_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_test_true_diag", variant), Sync)
+
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_binary", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_binary_false", variant), None)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_binary_true", variant), Sync)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_binary_true_nodiag", variant), Async)
+	checkHasMemtagNote(t, ctx.ModuleForTests("sync_binary_true_diag", variant), Sync)
 }

@@ -86,7 +86,7 @@ func init() {
 
 func TransformSrcToBinary(ctx ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags,
 	outputFile android.WritablePath, linkDirs []string) buildOutput {
-	flags.RustFlags = append(flags.RustFlags, "-C lto")
+	flags.GlobalRustFlags = append(flags.GlobalRustFlags, "-C lto")
 
 	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "bin", linkDirs)
 }
@@ -103,13 +103,13 @@ func TransformSrctoDylib(ctx ModuleContext, mainSrc android.Path, deps PathDeps,
 
 func TransformSrctoStatic(ctx ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags,
 	outputFile android.WritablePath, linkDirs []string) buildOutput {
-	flags.RustFlags = append(flags.RustFlags, "-C lto")
+	flags.GlobalRustFlags = append(flags.GlobalRustFlags, "-C lto")
 	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "staticlib", linkDirs)
 }
 
 func TransformSrctoShared(ctx ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags,
 	outputFile android.WritablePath, linkDirs []string) buildOutput {
-	flags.RustFlags = append(flags.RustFlags, "-C lto")
+	flags.GlobalRustFlags = append(flags.GlobalRustFlags, "-C lto")
 	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "cdylib", linkDirs)
 }
 
@@ -188,7 +188,7 @@ func transformSrctoCrate(ctx ModuleContext, main android.Path, deps PathDeps, fl
 	implicits = append(implicits, rustLibsToPaths(deps.DyLibs)...)
 	implicits = append(implicits, rustLibsToPaths(deps.ProcMacros)...)
 	implicits = append(implicits, deps.StaticLibs...)
-	implicits = append(implicits, deps.SharedLibs...)
+	implicits = append(implicits, deps.SharedLibDeps...)
 	implicits = append(implicits, deps.srcProviderFiles...)
 
 	if deps.CrtBegin.Valid() {

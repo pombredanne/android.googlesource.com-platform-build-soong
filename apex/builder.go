@@ -687,7 +687,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		implicitInputs = append(implicitInputs, unsignedOutputFile)
 
 		// Run coverage analysis
-		apisUsedbyOutputFile := android.PathForModuleOut(ctx, a.Name()+".txt")
+		apisUsedbyOutputFile := android.PathForModuleOut(ctx, a.Name()+"_using.txt")
 		ctx.Build(pctx, android.BuildParams{
 			Rule:        generateAPIsUsedbyApexRule,
 			Implicits:   implicitInputs,
@@ -698,7 +698,19 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 				"readelf":   "${config.ClangBin}/llvm-readelf",
 			},
 		})
-		a.coverageOutputPath = apisUsedbyOutputFile
+		a.apisUsedByModuleFile = apisUsedbyOutputFile
+
+		apisBackedbyOutputFile := android.PathForModuleOut(ctx, a.Name()+"_backing.txt")
+		ndkLibraryList := android.PathForSource(ctx, "system/core/rootdir/etc/public.libraries.android.txt")
+		rule := android.NewRuleBuilder(pctx, ctx)
+		rule.Command().
+			Tool(android.PathForSource(ctx, "build/soong/scripts/gen_ndk_backedby_apex.sh")).
+			Text(imageDir.String()).
+			Implicits(implicitInputs).
+			Output(apisBackedbyOutputFile).
+			Input(ndkLibraryList)
+		rule.Build("ndk_backedby_list", "Generate API libraries backed by Apex")
+		a.apisBackedByModuleFile = apisBackedbyOutputFile
 
 		bundleConfig := a.buildBundleConfig(ctx)
 
@@ -763,9 +775,13 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 	})
 	a.outputFile = signedOutputFile
 
-	// Process APEX compression if enabled
+	// Process APEX compression if enabled or forced
+	if ctx.ModuleDir() != "system/apex/apexd/apexd_testdata" && a.testOnlyShouldForceCompression() {
+		ctx.PropertyErrorf("test_only_force_compression", "not available")
+		return
+	}
 	compressionEnabled := ctx.Config().CompressedApex() && proptools.BoolDefault(a.properties.Compressible, true)
-	if compressionEnabled && apexType == imageApex {
+	if apexType == imageApex && (compressionEnabled || a.testOnlyShouldForceCompression()) {
 		a.isCompressed = true
 		unsignedCompressedOutputFile := android.PathForModuleOut(ctx, a.Name()+".capex.unsigned")
 
@@ -782,6 +798,9 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		compressRule.Build("compressRule", "Generate unsigned compressed APEX file")
 
 		signedCompressedOutputFile := android.PathForModuleOut(ctx, a.Name()+".capex")
+		if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_SIGNAPK") {
+			args["outCommaList"] = signedCompressedOutputFile.String()
+		}
 		ctx.Build(pctx, android.BuildParams{
 			Rule:        rule,
 			Description: "sign compressedApex",

@@ -18,7 +18,10 @@ package config
 // For these libraries, the vendor variants must be installed even if the device
 // has VndkUseCoreVariant set.
 var VndkMustUseVendorVariantList = []string{
+	"android.hardware.authsecret-unstable-ndk_platform",
 	"android.hardware.automotive.occupant_awareness-ndk_platform",
+	"android.hardware.health.storage-ndk_platform",
+	"android.hardware.health.storage-unstable-ndk_platform",
 	"android.hardware.light-ndk_platform",
 	"android.hardware.identity-ndk_platform",
 	"android.hardware.nfc@1.2",
@@ -27,7 +30,12 @@ var VndkMustUseVendorVariantList = []string{
 	"android.hardware.power-ndk_platform",
 	"android.hardware.rebootescrow-ndk_platform",
 	"android.hardware.security.keymint-unstable-ndk_platform",
+	"android.hardware.security.secureclock-ndk_platform",
+	"android.hardware.security.secureclock-unstable-ndk_platform",
+	"android.hardware.security.sharedsecret-ndk_platform",
+	"android.hardware.security.sharedsecret-unstable-ndk_platform",
 	"android.hardware.vibrator-ndk_platform",
+	"android.hardware.weaver-unstable-ndk_platform",
 	"android.system.keystore2-unstable-ndk_platform",
 	"libbinder",
 	"libcrypto",

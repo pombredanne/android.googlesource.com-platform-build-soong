@@ -15,6 +15,7 @@
 package android
 
 import (
+	"android/soong/bazel"
 	"fmt"
 	"os"
 	"path"
@@ -454,6 +455,7 @@ type Module interface {
 	InstallForceOS() (*OsType, *ArchType)
 	HideFromMake()
 	IsHideFromMake() bool
+	IsSkipInstall() bool
 	MakeUninstallable()
 	ReplacedByPrebuilt()
 	IsReplacedByPrebuilt() bool
@@ -488,6 +490,43 @@ type Module interface {
 	// TransitivePackagingSpecs returns the PackagingSpecs for this module and any transitive
 	// dependencies with dependency tags for which IsInstallDepNeeded() returns true.
 	TransitivePackagingSpecs() []PackagingSpec
+}
+
+// BazelTargetModule is a lightweight wrapper interface around Module for
+// bp2build conversion purposes.
+//
+// In bp2build's bootstrap.Main execution, Soong runs an alternate pipeline of
+// mutators that creates BazelTargetModules from regular Module objects,
+// performing the mapping from Soong properties to Bazel rule attributes in the
+// process. This process may optionally create additional BazelTargetModules,
+// resulting in a 1:many mapping.
+//
+// bp2build.Codegen is then responsible for visiting all modules in the graph,
+// filtering for BazelTargetModules, and code-generating BUILD targets from
+// them.
+type BazelTargetModule interface {
+	Module
+
+	BazelTargetModuleProperties() *bazel.BazelTargetModuleProperties
+}
+
+// InitBazelTargetModule is a wrapper function that decorates BazelTargetModule
+// with property structs containing metadata for bp2build conversion.
+func InitBazelTargetModule(module BazelTargetModule) {
+	module.AddProperties(module.BazelTargetModuleProperties())
+	InitAndroidModule(module)
+}
+
+// BazelTargetModuleBase contains the property structs with metadata for
+// bp2build conversion.
+type BazelTargetModuleBase struct {
+	ModuleBase
+	Properties bazel.BazelTargetModuleProperties
+}
+
+// BazelTargetModuleProperties getter.
+func (btmb *BazelTargetModuleBase) BazelTargetModuleProperties() *bazel.BazelTargetModuleProperties {
+	return &btmb.Properties
 }
 
 // Qualified id for a module
@@ -1068,6 +1107,9 @@ type ModuleBase struct {
 	archProperties          [][]interface{}
 	customizableProperties  []interface{}
 
+	// Properties specific to the Blueprint to BUILD migration.
+	bazelTargetModuleProperties bazel.BazelTargetModuleProperties
+
 	// Information about all the properties on the module that contains visibility rules that need
 	// checking.
 	visibilityPropertyInfo []visibilityProperty
@@ -1396,6 +1438,12 @@ func (m *ModuleBase) IsHideFromMake() bool {
 // SkipInstall marks this variant to not create install rules when ctx.Install* are called.
 func (m *ModuleBase) SkipInstall() {
 	m.commonProperties.SkipInstall = true
+}
+
+// IsSkipInstall returns true if this variant is marked to not create install
+// rules when ctx.Install* are called.
+func (m *ModuleBase) IsSkipInstall() bool {
+	return m.commonProperties.SkipInstall
 }
 
 // Similar to HideFromMake, but if the AndroidMk entry would set
@@ -2425,10 +2473,6 @@ func (m *ModuleBase) MakeAsPlatform() {
 	m.commonProperties.Soc_specific = boolPtr(false)
 	m.commonProperties.Product_specific = boolPtr(false)
 	m.commonProperties.System_ext_specific = boolPtr(false)
-}
-
-func (m *ModuleBase) EnableNativeBridgeSupportByDefault() {
-	m.commonProperties.Native_bridge_supported = boolPtr(true)
 }
 
 func (m *ModuleBase) MakeAsSystemExt() {
