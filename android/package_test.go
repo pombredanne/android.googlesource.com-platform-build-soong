@@ -17,9 +17,11 @@ var packageTests = []struct {
 				package {
 					name: "package",
 					visibility: ["//visibility:private"],
+					licenses: ["license"],
 				}`),
 		},
 		expectedErrors: []string{
+			`top/Blueprints:5:14: unrecognized property "licenses"`,
 			`top/Blueprints:3:10: unrecognized property "name"`,
 			`top/Blueprints:4:16: unrecognized property "visibility"`,
 		},
@@ -44,9 +46,10 @@ var packageTests = []struct {
 			"top/Blueprints": []byte(`
 				package {
 					default_visibility: ["//visibility:private"],
+					default_applicable_licenses: ["license"],
 				}
 
-        package {
+			        package {
 				}`),
 		},
 		expectedErrors: []string{
@@ -86,9 +89,9 @@ func testPackage(fs map[string][]byte) (*TestContext, []error) {
 	// Create a new config per test as visibility information is stored in the config.
 	config := TestArchConfig(buildDir, nil, "", fs)
 
-	ctx := NewTestArchContext()
+	ctx := NewTestArchContext(config)
 	RegisterPackageBuildComponents(ctx)
-	ctx.Register(config)
+	ctx.Register()
 
 	_, errs := ctx.ParseBlueprintsFiles(".")
 	if len(errs) > 0 {

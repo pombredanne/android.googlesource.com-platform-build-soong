@@ -92,7 +92,7 @@ func (gc *generatedContents) Printfln(format string, args ...interface{}) {
 }
 
 func (gf *generatedFile) build(pctx android.PackageContext, ctx android.BuilderContext, implicits android.Paths) {
-	rb := android.NewRuleBuilder()
+	rb := android.NewRuleBuilder(pctx, ctx)
 
 	content := gf.content.String()
 
@@ -108,7 +108,7 @@ func (gf *generatedFile) build(pctx android.PackageContext, ctx android.BuilderC
 		Text("| sed 's/\\\\n/\\n/g' >").Output(gf.path)
 	rb.Command().
 		Text("chmod a+x").Output(gf.path)
-	rb.Build(pctx, ctx, gf.path.Base(), "Build "+gf.path.Base())
+	rb.Build(gf.path.Base(), "Build "+gf.path.Base())
 }
 
 // Collect all the members.
@@ -300,7 +300,7 @@ func (s *sdk) buildSnapshot(ctx android.ModuleContext, sdkVariants []*sdk) andro
 	snapshotModule.AddProperty("name", snapshotName)
 
 	// Make sure that the snapshot has the same visibility as the sdk.
-	visibility := android.EffectiveVisibilityRules(ctx, s)
+	visibility := android.EffectiveVisibilityRules(ctx, s).Strings()
 	if len(visibility) != 0 {
 		snapshotModule.AddProperty("visibility", visibility)
 	}
@@ -347,33 +347,10 @@ func (s *sdk) buildSnapshot(ctx android.ModuleContext, sdkVariants []*sdk) andro
 
 	targetPropertySet := snapshotModule.AddPropertySet("target")
 
-	// If host is supported and any member is host OS dependent then disable host
-	// by default, so that we can enable each host OS variant explicitly. This
-	// avoids problems with implicitly enabled OS variants when the snapshot is
-	// used, which might be different from this run (e.g. different build OS).
-	hasHostOsDependentMember := false
-	if s.HostSupported() {
-		for _, memberRef := range memberRefs {
-			if memberRef.memberType.IsHostOsDependent() {
-				hasHostOsDependentMember = true
-				break
-			}
-		}
-		if hasHostOsDependentMember {
-			hostPropertySet := targetPropertySet.AddPropertySet("host")
-			hostPropertySet.AddProperty("enabled", false)
-		}
-	}
-
 	// Iterate over the os types in a fixed order.
 	for _, osType := range s.getPossibleOsTypes() {
 		if sdkVariant, ok := osTypeToMemberProperties[osType]; ok {
 			osPropertySet := targetPropertySet.AddPropertySet(sdkVariant.Target().Os.Name)
-
-			// Enable the variant explicitly when we've disabled it by default on host.
-			if hasHostOsDependentMember && osType.Class == android.Host {
-				osPropertySet.AddProperty("enabled", true)
-			}
 
 			variantProps := variantToProperties[sdkVariant]
 			if variantProps.Compile_multilib != "" && variantProps.Compile_multilib != "both" {
@@ -381,6 +358,31 @@ func (s *sdk) buildSnapshot(ctx android.ModuleContext, sdkVariants []*sdk) andro
 			}
 
 			s.addMemberPropertiesToPropertySet(builder, osPropertySet, sdkVariant.dynamicMemberTypeListProperties)
+		}
+	}
+
+	// If host is supported and any member is host OS dependent then disable host
+	// by default, so that we can enable each host OS variant explicitly. This
+	// avoids problems with implicitly enabled OS variants when the snapshot is
+	// used, which might be different from this run (e.g. different build OS).
+	if s.HostSupported() {
+		var supportedHostTargets []string
+		for _, memberRef := range memberRefs {
+			if memberRef.memberType.IsHostOsDependent() && memberRef.variant.Target().Os.Class == android.Host {
+				targetString := memberRef.variant.Target().Os.String() + "_" + memberRef.variant.Target().Arch.ArchType.String()
+				if !android.InList(targetString, supportedHostTargets) {
+					supportedHostTargets = append(supportedHostTargets, targetString)
+				}
+			}
+		}
+		if len(supportedHostTargets) > 0 {
+			hostPropertySet := targetPropertySet.AddPropertySet("host")
+			hostPropertySet.AddProperty("enabled", false)
+		}
+		// Enable the <os>_<arch> variant explicitly when we've disabled it by default on host.
+		for _, hostTarget := range supportedHostTargets {
+			propertySet := targetPropertySet.AddPropertySet(hostTarget)
+			propertySet.AddProperty("enabled", true)
 		}
 	}
 
@@ -651,6 +653,9 @@ type snapshotBuilder struct {
 	filesToZip  android.Paths
 	zipsToMerge android.Paths
 
+	// The path to an empty file.
+	emptyFile android.WritablePath
+
 	prebuiltModules map[string]*bpModule
 	prebuiltOrder   []*bpModule
 
@@ -701,6 +706,19 @@ func (s *snapshotBuilder) UnzipToSnapshot(zipPath android.Path, destDir string) 
 	s.zipsToMerge = append(s.zipsToMerge, tmpZipPath)
 }
 
+func (s *snapshotBuilder) EmptyFile() android.Path {
+	if s.emptyFile == nil {
+		ctx := s.ctx
+		s.emptyFile = android.PathForModuleOut(ctx, "empty")
+		s.ctx.Build(pctx, android.BuildParams{
+			Rule:   android.Touch,
+			Output: s.emptyFile,
+		})
+	}
+
+	return s.emptyFile
+}
+
 func (s *snapshotBuilder) AddPrebuiltModule(member android.SdkMember, moduleType string) android.BpModule {
 	name := member.Name()
 	if s.prebuiltModules[name] != nil {
@@ -719,10 +737,36 @@ func (s *snapshotBuilder) AddPrebuiltModule(member android.SdkMember, moduleType
 	} else {
 		// Extract visibility information from a member variant. All variants have the same
 		// visibility so it doesn't matter which one is used.
-		visibility := android.EffectiveVisibilityRules(s.ctx, variant)
+		visibilityRules := android.EffectiveVisibilityRules(s.ctx, variant)
+
+		// Add any additional visibility rules needed for the prebuilts to reference each other.
+		err := visibilityRules.Widen(s.sdk.properties.Prebuilt_visibility)
+		if err != nil {
+			s.ctx.PropertyErrorf("prebuilt_visibility", "%s", err)
+		}
+
+		visibility := visibilityRules.Strings()
 		if len(visibility) != 0 {
 			m.AddProperty("visibility", visibility)
 		}
+	}
+
+	// Where available copy apex_available properties from the member.
+	if apexAware, ok := variant.(interface{ ApexAvailable() []string }); ok {
+		apexAvailable := apexAware.ApexAvailable()
+		if len(apexAvailable) == 0 {
+			// //apex_available:platform is the default.
+			apexAvailable = []string{android.AvailableToPlatform}
+		}
+
+		// Add in any baseline apex available settings.
+		apexAvailable = append(apexAvailable, apex.BaselineApexAvailable(member.Name())...)
+
+		// Remove duplicates and sort.
+		apexAvailable = android.FirstUniqueStrings(apexAvailable)
+		sort.Strings(apexAvailable)
+
+		m.AddProperty("apex_available", apexAvailable)
 	}
 
 	deviceSupported := false
@@ -738,22 +782,6 @@ func (s *snapshotBuilder) AddPrebuiltModule(member android.SdkMember, moduleType
 	}
 
 	addHostDeviceSupportedProperties(deviceSupported, hostSupported, m)
-
-	// Where available copy apex_available properties from the member.
-	if apexAware, ok := variant.(interface{ ApexAvailable() []string }); ok {
-		apexAvailable := apexAware.ApexAvailable()
-
-		// Add in any baseline apex available settings.
-		apexAvailable = append(apexAvailable, apex.BaselineApexAvailable(member.Name())...)
-
-		if len(apexAvailable) > 0 {
-			// Remove duplicates and sort.
-			apexAvailable = android.FirstUniqueStrings(apexAvailable)
-			sort.Strings(apexAvailable)
-
-			m.AddProperty("apex_available", apexAvailable)
-		}
-	}
 
 	// Disable installation in the versioned module of those modules that are ever installable.
 	if installable, ok := variant.(interface{ EverInstallable() bool }); ok {
@@ -976,7 +1004,7 @@ func newOsTypeSpecificInfo(ctx android.SdkMemberContext, osType android.OsType, 
 			archTypeName := archType.Name
 
 			archVariants := variantsByArchName[archTypeName]
-			archInfo := newArchSpecificInfo(ctx, archType, osSpecificVariantPropertiesFactory, archVariants)
+			archInfo := newArchSpecificInfo(ctx, archType, osType, osSpecificVariantPropertiesFactory, archVariants)
 
 			osInfo.archInfos = append(osInfo.archInfos, archInfo)
 		}
@@ -1059,11 +1087,6 @@ func (osInfo *osTypeSpecificInfo) addToPropertySet(ctx *memberContext, bpModule 
 		osPropertySet = targetPropertySet.AddPropertySet(osType.Name)
 		archPropertySet = targetPropertySet
 
-		// Enable the variant explicitly when we've disabled it by default on host.
-		if ctx.memberType.IsHostOsDependent() && osType.Class == android.Host {
-			osPropertySet.AddProperty("enabled", true)
-		}
-
 		// Arch specific properties need to be added to an os and arch specific
 		// section prefixed with <os>_.
 		archOsPrefix = osType.Name + "_"
@@ -1097,6 +1120,7 @@ type archTypeSpecificInfo struct {
 	baseInfo
 
 	archType android.ArchType
+	osType   android.OsType
 
 	linkInfos []*linkTypeSpecificInfo
 }
@@ -1105,10 +1129,10 @@ var _ propertiesContainer = (*archTypeSpecificInfo)(nil)
 
 // Create a new archTypeSpecificInfo for the specified arch type and its properties
 // structures populated with information from the variants.
-func newArchSpecificInfo(ctx android.SdkMemberContext, archType android.ArchType, variantPropertiesFactory variantPropertiesFactoryFunc, archVariants []android.Module) *archTypeSpecificInfo {
+func newArchSpecificInfo(ctx android.SdkMemberContext, archType android.ArchType, osType android.OsType, variantPropertiesFactory variantPropertiesFactoryFunc, archVariants []android.Module) *archTypeSpecificInfo {
 
 	// Create an arch specific info into which the variant properties can be copied.
-	archInfo := &archTypeSpecificInfo{archType: archType}
+	archInfo := &archTypeSpecificInfo{archType: archType, osType: osType}
 
 	// Create the properties into which the arch type specific properties will be
 	// added.
@@ -1172,6 +1196,10 @@ func (archInfo *archTypeSpecificInfo) optimizeProperties(ctx *memberContext, com
 func (archInfo *archTypeSpecificInfo) addToPropertySet(ctx *memberContext, archPropertySet android.BpPropertySet, archOsPrefix string) {
 	archTypeName := archInfo.archType.Name
 	archTypePropertySet := archPropertySet.AddPropertySet(archOsPrefix + archTypeName)
+	// Enable the <os>_<arch> variant explicitly when we've disabled it by default on host.
+	if ctx.memberType.IsHostOsDependent() && archInfo.osType.Class == android.Host {
+		archTypePropertySet.AddProperty("enabled", true)
+	}
 	addSdkMemberPropertiesToSet(ctx, archInfo.Properties, archTypePropertySet)
 
 	for _, linkInfo := range archInfo.linkInfos {

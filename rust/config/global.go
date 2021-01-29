@@ -24,7 +24,7 @@ import (
 var pctx = android.NewPackageContext("android/soong/rust/config")
 
 var (
-	RustDefaultVersion = "1.46.0"
+	RustDefaultVersion = "1.49.0"
 	RustDefaultBase    = "prebuilts/rust/"
 	DefaultEdition     = "2018"
 	Stdlibs            = []string{
@@ -32,14 +32,26 @@ var (
 		"libtest",
 	}
 
+	// Mapping between Soong internal arch types and std::env constants.
+	// Required as Rust uses aarch64 when Soong uses arm64.
+	StdEnvArch = map[android.ArchType]string{
+		android.Arm:    "arm",
+		android.Arm64:  "aarch64",
+		android.X86:    "x86",
+		android.X86_64: "x86_64",
+	}
+
 	GlobalRustFlags = []string{
 		"--remap-path-prefix $$(pwd)=",
 		"-C codegen-units=1",
+		"-C debuginfo=2",
 		"-C opt-level=3",
 		"-C relocation-model=pic",
 	}
 
-	deviceGlobalRustFlags = []string{}
+	deviceGlobalRustFlags = []string{
+		"-C panic=abort",
+	}
 
 	deviceGlobalLinkFlags = []string{
 		// Prepend the lld flags from cc_config so we stay in sync with cc

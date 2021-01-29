@@ -41,7 +41,6 @@ var (
 var pgoProfileProjectsConfigKey = android.NewOnceKey("PgoProfileProjects")
 
 const profileInstrumentFlag = "-fprofile-generate=/data/local/tmp"
-const profileSamplingFlag = "-gmlt -fdebug-info-for-profiling"
 const profileUseInstrumentFormat = "-fprofile-use=%s"
 const profileUseSamplingFormat = "-fprofile-sample-accurate -fprofile-sample-use=%s"
 
@@ -100,14 +99,11 @@ func (props *PgoProperties) addInstrumentationProfileGatherFlags(ctx ModuleConte
 }
 func (props *PgoProperties) addSamplingProfileGatherFlags(ctx ModuleContext, flags Flags) Flags {
 	flags.Local.CFlags = append(flags.Local.CFlags, props.Pgo.Cflags...)
-
-	flags.Local.CFlags = append(flags.Local.CFlags, profileSamplingFlag)
-	flags.Local.LdFlags = append(flags.Local.LdFlags, profileSamplingFlag)
 	return flags
 }
 
 func (props *PgoProperties) getPgoProfileFile(ctx BaseModuleContext) android.OptionalPath {
-	profile_file := *props.Pgo.Profile_file
+	profileFile := *props.Pgo.Profile_file
 
 	// Test if the profile_file is present in any of the PGO profile projects
 	for _, profileProject := range getPgoProfileProjects(ctx.DeviceConfig()) {
@@ -116,24 +112,24 @@ func (props *PgoProperties) getPgoProfileFile(ctx BaseModuleContext) android.Opt
 		// <profile_file>.<arbitrary-version> when available.  This
 		// works around an issue where ccache serves stale cache
 		// entries when the profile file has changed.
-		globPattern := filepath.Join(profileProject, profile_file+".*")
-		versioned_profiles, err := ctx.GlobWithDeps(globPattern, nil)
+		globPattern := filepath.Join(profileProject, profileFile+".*")
+		versionedProfiles, err := ctx.GlobWithDeps(globPattern, nil)
 		if err != nil {
 			ctx.ModuleErrorf("glob: %s", err.Error())
 		}
 
-		path := android.ExistentPathForSource(ctx, profileProject, profile_file)
+		path := android.ExistentPathForSource(ctx, profileProject, profileFile)
 		if path.Valid() {
-			if len(versioned_profiles) != 0 {
-				ctx.PropertyErrorf("pgo.profile_file", "Profile_file has multiple versions: "+filepath.Join(profileProject, profile_file)+", "+strings.Join(versioned_profiles, ", "))
+			if len(versionedProfiles) != 0 {
+				ctx.PropertyErrorf("pgo.profile_file", "Profile_file has multiple versions: "+filepath.Join(profileProject, profileFile)+", "+strings.Join(versionedProfiles, ", "))
 			}
 			return path
 		}
 
-		if len(versioned_profiles) > 1 {
-			ctx.PropertyErrorf("pgo.profile_file", "Profile_file has multiple versions: "+strings.Join(versioned_profiles, ", "))
-		} else if len(versioned_profiles) == 1 {
-			return android.OptionalPathForPath(android.PathForSource(ctx, versioned_profiles[0]))
+		if len(versionedProfiles) > 1 {
+			ctx.PropertyErrorf("pgo.profile_file", "Profile_file has multiple versions: "+strings.Join(versionedProfiles, ", "))
+		} else if len(versionedProfiles) == 1 {
+			return android.OptionalPathForPath(android.PathForSource(ctx, versionedProfiles[0]))
 		}
 	}
 

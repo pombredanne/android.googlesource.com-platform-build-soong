@@ -371,8 +371,8 @@ func decodeSdkDep(ctx android.EarlyModuleContext, sdkContext sdkContext) sdkDep 
 		jar := filepath.Join(dir, "android.jar")
 		// There's no aidl for other SDKs yet.
 		// TODO(77525052): Add aidl files for other SDKs too.
-		public_dir := filepath.Join("prebuilts", "sdk", sdkVersion.version.String(), "public")
-		aidl := filepath.Join(public_dir, "framework.aidl")
+		publicDir := filepath.Join("prebuilts", "sdk", sdkVersion.version.String(), "public")
+		aidl := filepath.Join(publicDir, "framework.aidl")
 		jarPath := android.ExistentPathForSource(ctx, jar)
 		aidlPath := android.ExistentPathForSource(ctx, aidl)
 		lambdaStubsPath := android.PathForSource(ctx, config.SdkLambdaStubsPath)
@@ -544,7 +544,7 @@ func createSdkFrameworkAidl(ctx android.SingletonContext) {
 
 	commitChangeForRestat(rule, tempPath, combinedAidl)
 
-	rule.Build(pctx, ctx, "framework_aidl", "generate framework.aidl")
+	rule.Build("framework_aidl", "generate framework.aidl")
 }
 
 // Creates a version of framework.aidl for the non-updatable part of the platform.
@@ -558,7 +558,7 @@ func createNonUpdatableFrameworkAidl(ctx android.SingletonContext) {
 
 	commitChangeForRestat(rule, tempPath, combinedAidl)
 
-	rule.Build(pctx, ctx, "framework_non_updatable_aidl", "generate framework_non_updatable.aidl")
+	rule.Build("framework_non_updatable_aidl", "generate framework_non_updatable.aidl")
 }
 
 func createFrameworkAidl(stubsModules []string, path android.OutputPath, ctx android.SingletonContext) *android.RuleBuilder {
@@ -586,7 +586,7 @@ func createFrameworkAidl(stubsModules []string, path android.OutputPath, ctx and
 		}
 	}
 
-	rule := android.NewRuleBuilder()
+	rule := android.NewRuleBuilder(pctx, ctx)
 	rule.MissingDeps(missingDeps)
 
 	var aidls android.Paths
@@ -597,7 +597,7 @@ func createFrameworkAidl(stubsModules []string, path android.OutputPath, ctx and
 			rule.Command().
 				Text("rm -f").Output(aidl)
 			rule.Command().
-				BuiltTool(ctx, "sdkparcelables").
+				BuiltTool("sdkparcelables").
 				Input(jar).
 				Output(aidl)
 
@@ -632,7 +632,7 @@ func nonUpdatableFrameworkAidlPath(ctx android.PathContext) android.OutputPath {
 func createAPIFingerprint(ctx android.SingletonContext) {
 	out := ApiFingerprintPath(ctx)
 
-	rule := android.NewRuleBuilder()
+	rule := android.NewRuleBuilder(pctx, ctx)
 
 	rule.Command().
 		Text("rm -f").Output(out)
@@ -659,7 +659,7 @@ func createAPIFingerprint(ctx android.SingletonContext) {
 			Output(out)
 	}
 
-	rule.Build(pctx, ctx, "api_fingerprint", "generate api_fingerprint.txt")
+	rule.Build("api_fingerprint", "generate api_fingerprint.txt")
 }
 
 func ApiFingerprintPath(ctx android.PathContext) android.OutputPath {

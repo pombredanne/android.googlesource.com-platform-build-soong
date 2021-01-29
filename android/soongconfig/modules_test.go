@@ -17,6 +17,8 @@ package soongconfig
 import (
 	"reflect"
 	"testing"
+
+	"github.com/google/blueprint/proptools"
 )
 
 func Test_CanonicalizeToProperty(t *testing.T) {
@@ -245,5 +247,82 @@ func Test_createAffectablePropertiesType(t *testing.T) {
 				t.Errorf("createAffectablePropertiesType() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+type properties struct {
+	A *string
+	B bool
+}
+
+type boolVarProps struct {
+	A                  *string
+	B                  bool
+	Conditions_default *properties
+}
+
+type soongConfigVars struct {
+	Bool_var interface{}
+}
+
+func Test_PropertiesToApply(t *testing.T) {
+	mt, _ := newModuleType(&ModuleTypeProperties{
+		Module_type:      "foo",
+		Config_namespace: "bar",
+		Bool_variables:   []string{"bool_var"},
+		Properties:       []string{"a", "b"},
+	})
+	boolVarPositive := &properties{
+		A: proptools.StringPtr("A"),
+		B: true,
+	}
+	conditionsDefault := &properties{
+		A: proptools.StringPtr("default"),
+		B: false,
+	}
+	actualProps := &struct {
+		Soong_config_variables soongConfigVars
+	}{
+		Soong_config_variables: soongConfigVars{
+			Bool_var: &boolVarProps{
+				A:                  boolVarPositive.A,
+				B:                  boolVarPositive.B,
+				Conditions_default: conditionsDefault,
+			},
+		},
+	}
+	props := reflect.ValueOf(actualProps)
+
+	testCases := []struct {
+		name      string
+		config    SoongConfig
+		wantProps []interface{}
+	}{
+		{
+			name:      "no_vendor_config",
+			config:    Config(map[string]string{}),
+			wantProps: []interface{}{conditionsDefault},
+		},
+		{
+			name:      "vendor_config_false",
+			config:    Config(map[string]string{"bool_var": "n"}),
+			wantProps: []interface{}{conditionsDefault},
+		},
+		{
+			name:      "bool_var_true",
+			config:    Config(map[string]string{"bool_var": "y"}),
+			wantProps: []interface{}{boolVarPositive},
+		},
+	}
+
+	for _, tc := range testCases {
+		gotProps, err := PropertiesToApply(mt, props, tc.config)
+		if err != nil {
+			t.Errorf("%s: Unexpected error in PropertiesToApply: %s", tc.name, err)
+		}
+
+		if !reflect.DeepEqual(gotProps, tc.wantProps) {
+			t.Errorf("%s: Expected %s, got %s", tc.name, tc.wantProps, gotProps)
+		}
 	}
 }

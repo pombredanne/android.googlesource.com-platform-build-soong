@@ -90,6 +90,7 @@ type MakeVarsContext interface {
 	ModuleDir(module blueprint.Module) string
 	ModuleSubDir(module blueprint.Module) string
 	ModuleType(module blueprint.Module) string
+	ModuleProvider(module blueprint.Module, key blueprint.ProviderKey) interface{}
 	BlueprintFile(module blueprint.Module) string
 
 	ModuleErrorf(module blueprint.Module, format string, args ...interface{})
@@ -128,25 +129,33 @@ var _ PathContext = MakeVarsContext(nil)
 type MakeVarsProvider func(ctx MakeVarsContext)
 
 func RegisterMakeVarsProvider(pctx PackageContext, provider MakeVarsProvider) {
-	makeVarsProviders = append(makeVarsProviders, makeVarsProvider{pctx, provider})
+	makeVarsInitProviders = append(makeVarsInitProviders, makeVarsProvider{pctx, provider})
 }
 
 // SingletonMakeVarsProvider is a Singleton with an extra method to provide extra values to be exported to Make.
 type SingletonMakeVarsProvider interface {
-	Singleton
-
 	// MakeVars uses a MakeVarsContext to provide extra values to be exported to Make.
 	MakeVars(ctx MakeVarsContext)
 }
 
-// registerSingletonMakeVarsProvider adds a singleton that implements SingletonMakeVarsProvider to the list of
-// MakeVarsProviders to run.
-func registerSingletonMakeVarsProvider(singleton SingletonMakeVarsProvider) {
-	makeVarsProviders = append(makeVarsProviders, makeVarsProvider{pctx, SingletonmakeVarsProviderAdapter(singleton)})
+var singletonMakeVarsProvidersKey = NewOnceKey("singletonMakeVarsProvidersKey")
+
+// registerSingletonMakeVarsProvider adds a singleton that implements SingletonMakeVarsProvider to
+// the list of MakeVarsProviders to run.
+func registerSingletonMakeVarsProvider(config Config, singleton SingletonMakeVarsProvider) {
+	// Singletons are registered on the Context and may be different between different Contexts,
+	// for example when running multiple tests.  Store the SingletonMakeVarsProviders in the
+	// Config so they are attached to the Context.
+	singletonMakeVarsProviders := config.Once(singletonMakeVarsProvidersKey, func() interface{} {
+		return &[]makeVarsProvider{}
+	}).(*[]makeVarsProvider)
+
+	*singletonMakeVarsProviders = append(*singletonMakeVarsProviders,
+		makeVarsProvider{pctx, singletonMakeVarsProviderAdapter(singleton)})
 }
 
-// SingletonmakeVarsProviderAdapter converts a SingletonMakeVarsProvider to a MakeVarsProvider.
-func SingletonmakeVarsProviderAdapter(singleton SingletonMakeVarsProvider) MakeVarsProvider {
+// singletonMakeVarsProviderAdapter converts a SingletonMakeVarsProvider to a MakeVarsProvider.
+func singletonMakeVarsProviderAdapter(singleton SingletonMakeVarsProvider) MakeVarsProvider {
 	return func(ctx MakeVarsContext) { singleton.MakeVars(ctx) }
 }
 
@@ -171,7 +180,8 @@ type makeVarsProvider struct {
 	call MakeVarsProvider
 }
 
-var makeVarsProviders []makeVarsProvider
+// Collection of makevars providers that are registered in init() methods.
+var makeVarsInitProviders []makeVarsProvider
 
 type makeVarsContext struct {
 	SingletonContext
@@ -202,7 +212,7 @@ type dist struct {
 }
 
 func (s *makeVarsSingleton) GenerateBuildActions(ctx SingletonContext) {
-	if !ctx.Config().EmbeddedInMake() {
+	if !ctx.Config().KatiEnabled() {
 		return
 	}
 
@@ -219,7 +229,11 @@ func (s *makeVarsSingleton) GenerateBuildActions(ctx SingletonContext) {
 	var vars []makeVarsVariable
 	var dists []dist
 	var phonies []phony
-	for _, provider := range makeVarsProviders {
+
+	providers := append([]makeVarsProvider(nil), makeVarsInitProviders...)
+	providers = append(providers, *ctx.Config().Get(singletonMakeVarsProvidersKey).(*[]makeVarsProvider)...)
+
+	for _, provider := range providers {
 		mctx := &makeVarsContext{
 			SingletonContext: ctx,
 			pctx:             provider.pctx,

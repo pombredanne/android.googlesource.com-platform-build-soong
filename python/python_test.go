@@ -44,7 +44,7 @@ var (
 	pkgPathErrTemplate       = moduleVariantErrTemplate +
 		"pkg_path: %q must be a relative path contained in par file."
 	badIdentifierErrTemplate = moduleVariantErrTemplate +
-		"srcs: the path %q contains invalid token %q."
+		"srcs: the path %q contains invalid subpath %q."
 	dupRunfileErrTemplate = moduleVariantErrTemplate +
 		"found two files to be placed at the same location within zip %q." +
 		" First file: in module %s at path %q." +
@@ -329,13 +329,13 @@ func TestPythonModule(t *testing.T) {
 	for _, d := range data {
 		t.Run(d.desc, func(t *testing.T) {
 			config := android.TestConfig(buildDir, nil, "", d.mockFiles)
-			ctx := android.NewTestContext()
+			ctx := android.NewTestContext(config)
 			ctx.PreDepsMutators(RegisterPythonPreDepsMutators)
 			ctx.RegisterModuleType("python_library_host", PythonLibraryHostFactory)
 			ctx.RegisterModuleType("python_binary_host", PythonBinaryHostFactory)
 			ctx.RegisterModuleType("python_defaults", defaultsFactory)
 			ctx.PreArchMutators(android.RegisterDefaultsPreArchMutators)
-			ctx.Register(config)
+			ctx.Register()
 			_, testErrs := ctx.ParseBlueprintsFiles(bpFile)
 			android.FailIfErrored(t, testErrs)
 			_, actErrs := ctx.PrepareBuildActions(config)
@@ -370,7 +370,7 @@ func expectErrors(t *testing.T, actErrs []error, expErrs []string) (testErrs []e
 	} else {
 		sort.Strings(expErrs)
 		for i, v := range actErrStrs {
-			if v != expErrs[i] {
+			if !strings.Contains(v, expErrs[i]) {
 				testErrs = append(testErrs, errors.New(v))
 			}
 		}
@@ -395,10 +395,11 @@ func expectModule(t *testing.T, ctx *android.TestContext, buildDir, name, varian
 
 	if !reflect.DeepEqual(actualPyRunfiles, expectedPyRunfiles) {
 		testErrs = append(testErrs, errors.New(fmt.Sprintf(
-			`binary "%s" variant "%s" has unexpected pyRunfiles: %q!`,
+			`binary "%s" variant "%s" has unexpected pyRunfiles: %q! (expected: %q)`,
 			base.Name(),
 			base.properties.Actual_version,
-			actualPyRunfiles)))
+			actualPyRunfiles,
+			expectedPyRunfiles)))
 	}
 
 	if base.srcsZip.String() != strings.Replace(expectedSrcsZip, "@prefix@", buildDir, 1) {

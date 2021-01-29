@@ -54,69 +54,115 @@ func TestMain(m *testing.M) {
 	os.Exit(run())
 }
 
-func testConfig(bp string) android.Config {
-	bp = bp + GatherRequiredDepsForTest()
-
-	fs := map[string][]byte{
-		"foo.rs":     nil,
-		"foo.c":      nil,
-		"src/bar.rs": nil,
-		"src/any.h":  nil,
-		"buf.proto":  nil,
-		"liby.so":    nil,
-		"libz.so":    nil,
-	}
-
-	cc.GatherRequiredFilesForTest(fs)
-
-	return android.TestArchConfig(buildDir, nil, bp, fs)
-}
-
+// testRust returns a TestContext in which a basic environment has been setup.
+// This environment contains a few mocked files. See testRustCtx.useMockedFs
+// for the list of these files.
 func testRust(t *testing.T, bp string) *android.TestContext {
-	return testRustContext(t, bp, false)
+	tctx := newTestRustCtx(t, bp)
+	tctx.useMockedFs()
+	tctx.generateConfig()
+	return tctx.parse(t)
 }
 
+// testRustCov returns a TestContext in which a basic environment has been
+// setup. This environment explicitly enables coverage.
 func testRustCov(t *testing.T, bp string) *android.TestContext {
-	return testRustContext(t, bp, true)
+	tctx := newTestRustCtx(t, bp)
+	tctx.useMockedFs()
+	tctx.generateConfig()
+	tctx.enableCoverage(t)
+	return tctx.parse(t)
 }
 
-func testRustContext(t *testing.T, bp string, coverage bool) *android.TestContext {
+// testRustError ensures that at least one error was raised and its value
+// matches the pattern provided. The error can be either in the parsing of the
+// Blueprint or when generating the build actions.
+func testRustError(t *testing.T, pattern string, bp string) {
+	tctx := newTestRustCtx(t, bp)
+	tctx.useMockedFs()
+	tctx.generateConfig()
+	tctx.parseError(t, pattern)
+}
+
+// testRustCtx is used to build a particular test environment. Unless your
+// tests requires a specific setup, prefer the wrapping functions: testRust,
+// testRustCov or testRustError.
+type testRustCtx struct {
+	bp     string
+	fs     map[string][]byte
+	env    map[string]string
+	config *android.Config
+}
+
+// newTestRustCtx returns a new testRustCtx for the Blueprint definition argument.
+func newTestRustCtx(t *testing.T, bp string) *testRustCtx {
 	// TODO (b/140435149)
 	if runtime.GOOS != "linux" {
-		t.Skip("Only the Linux toolchain is supported for Rust")
+		t.Skip("Rust Soong tests can only be run on Linux hosts currently")
 	}
+	return &testRustCtx{bp: bp}
+}
 
-	t.Helper()
-	config := testConfig(bp)
-
-	if coverage {
-		config.TestProductVariables.GcovCoverage = proptools.BoolPtr(true)
-		config.TestProductVariables.Native_coverage = proptools.BoolPtr(true)
-		config.TestProductVariables.NativeCoveragePaths = []string{"*"}
+// useMockedFs setup a default mocked filesystem for the test environment.
+func (tctx *testRustCtx) useMockedFs() {
+	tctx.fs = map[string][]byte{
+		"foo.rs":          nil,
+		"foo.c":           nil,
+		"src/bar.rs":      nil,
+		"src/any.h":       nil,
+		"proto.proto":     nil,
+		"proto/buf.proto": nil,
+		"buf.proto":       nil,
+		"foo.proto":       nil,
+		"liby.so":         nil,
+		"libz.so":         nil,
 	}
+}
 
-	ctx := CreateTestContext()
-	ctx.Register(config)
+// generateConfig creates the android.Config based on the bp, fs and env
+// attributes of the testRustCtx.
+func (tctx *testRustCtx) generateConfig() {
+	tctx.bp = tctx.bp + GatherRequiredDepsForTest()
+	tctx.bp = tctx.bp + cc.GatherRequiredDepsForTest(android.NoOsType)
+	cc.GatherRequiredFilesForTest(tctx.fs)
+	config := android.TestArchConfig(buildDir, tctx.env, tctx.bp, tctx.fs)
+	tctx.config = &config
+}
 
+// enableCoverage configures the test to enable coverage.
+func (tctx *testRustCtx) enableCoverage(t *testing.T) {
+	if tctx.config == nil {
+		t.Fatalf("tctx.config not been generated yet. Please call generateConfig first.")
+	}
+	tctx.config.TestProductVariables.ClangCoverage = proptools.BoolPtr(true)
+	tctx.config.TestProductVariables.Native_coverage = proptools.BoolPtr(true)
+	tctx.config.TestProductVariables.NativeCoveragePaths = []string{"*"}
+}
+
+// parse validates the configuration and parses the Blueprint file. It returns
+// a TestContext which can be used to retrieve the generated modules via
+// ModuleForTests.
+func (tctx testRustCtx) parse(t *testing.T) *android.TestContext {
+	if tctx.config == nil {
+		t.Fatalf("tctx.config not been generated yet. Please call generateConfig first.")
+	}
+	ctx := CreateTestContext(*tctx.config)
+	ctx.Register()
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	android.FailIfErrored(t, errs)
-	_, errs = ctx.PrepareBuildActions(config)
+	_, errs = ctx.PrepareBuildActions(*tctx.config)
 	android.FailIfErrored(t, errs)
-
 	return ctx
 }
 
-func testRustError(t *testing.T, pattern string, bp string) {
-	// TODO (b/140435149)
-	if runtime.GOOS != "linux" {
-		t.Skip("Only the Linux toolchain is supported for Rust")
+// parseError parses the Blueprint file and ensure that at least one error
+// matching the provided pattern is observed.
+func (tctx testRustCtx) parseError(t *testing.T, pattern string) {
+	if tctx.config == nil {
+		t.Fatalf("tctx.config not been generated yet. Please call generateConfig first.")
 	}
-
-	t.Helper()
-	config := testConfig(bp)
-
-	ctx := CreateTestContext()
-	ctx.Register(config)
+	ctx := CreateTestContext(*tctx.config)
+	ctx.Register()
 
 	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
 	if len(errs) > 0 {
@@ -124,7 +170,7 @@ func testRustError(t *testing.T, pattern string, bp string) {
 		return
 	}
 
-	_, errs = ctx.PrepareBuildActions(config)
+	_, errs = ctx.PrepareBuildActions(*tctx.config)
 	if len(errs) > 0 {
 		android.FailIfNoMatchingErrors(t, pattern, errs)
 		return
@@ -243,6 +289,12 @@ func TestSourceProviderDeps(t *testing.T) {
 			cmd: "$(location) -o $(out) $(in)",
 			srcs: ["src/any.h"],
 			out: ["src/any.rs"],
+		}
+		rust_binary_host {
+			name: "any_rust_binary",
+			srcs: [
+				"foo.rs",
+			],
 		}
 		rust_bindgen {
 			name: "libbindings",

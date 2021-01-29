@@ -42,7 +42,7 @@ var (
 	// TODO(b/143658984): goma can't handle the --system argument to javac.
 	javac, javacRE = remoteexec.MultiCommandStaticRules(pctx, "javac",
 		blueprint.RuleParams{
-			Command: `rm -rf "$outDir" "$annoDir" "$srcJarDir" && mkdir -p "$outDir" "$annoDir" "$srcJarDir" && ` +
+			Command: `rm -rf "$outDir" "$annoDir" "$srcJarDir" "$out" && mkdir -p "$outDir" "$annoDir" "$srcJarDir" && ` +
 				`${config.ZipSyncCmd} -d $srcJarDir -l $srcJarDir/list -f "*.java" $srcJars && ` +
 				`(if [ -s $srcJarDir/list ] || [ -s $out.rsp ] ; then ` +
 				`${config.SoongJavacWrapper} $javaTemplate${config.JavacCmd} ` +
@@ -572,14 +572,7 @@ func TransformJetifier(ctx android.ModuleContext, outputFile android.WritablePat
 }
 
 func GenerateMainClassManifest(ctx android.ModuleContext, outputFile android.WritablePath, mainClass string) {
-	ctx.Build(pctx, android.BuildParams{
-		Rule:        android.WriteFile,
-		Description: "manifest",
-		Output:      outputFile,
-		Args: map[string]string{
-			"content": "Main-Class: " + mainClass + "\n",
-		},
-	})
+	android.WriteFileRule(ctx, outputFile, "Main-Class: "+mainClass+"\n")
 }
 
 func TransformZipAlign(ctx android.ModuleContext, outputFile android.WritablePath, inputFile android.Path) {

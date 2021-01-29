@@ -3,28 +3,30 @@
 # Non exhaustive list of modules where we want prebuilts. More can be added as
 # needed.
 MAINLINE_MODULES=(
+  com.android.art
   com.android.art.debug
-  com.android.art.release
   com.android.art.testing
   com.android.conscrypt
+  com.android.i18n
   com.android.runtime
   com.android.tzdata
-  com.android.i18n
 )
 
 # List of SDKs and module exports we know of.
 MODULES_SDK_AND_EXPORTS=(
   art-module-sdk
   art-module-test-exports
+  conscrypt-module-host-exports
   conscrypt-module-sdk
   conscrypt-module-test-exports
-  conscrypt-module-host-exports
-  runtime-module-sdk
-  runtime-module-host-exports
-  i18n-module-test-exports
+  i18n-module-host-exports
   i18n-module-sdk
+  i18n-module-test-exports
   platform-mainline-sdk
   platform-mainline-test-exports
+  runtime-module-host-exports
+  runtime-module-sdk
+  tzdata-module-test-exports
 )
 
 # List of libraries installed on the platform that are needed for ART chroot

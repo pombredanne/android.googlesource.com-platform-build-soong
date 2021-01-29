@@ -66,6 +66,7 @@ func ToolchainLibraryFactory() android.Module {
 	module.stl = nil
 	module.sanitize = nil
 	module.installer = nil
+	module.library = toolchainLibrary
 	module.Properties.Sdk_version = StringPtr("current")
 	return module.Init()
 }
@@ -84,24 +85,31 @@ func (library *toolchainLibraryDecorator) link(ctx ModuleContext,
 	}
 
 	srcPath := android.PathForSource(ctx, *library.Properties.Src)
-
-	if library.stripper.StripProperties.Strip.Keep_symbols_list != nil {
-		fileName := ctx.ModuleName() + staticLibraryExtension
-		outputFile := android.PathForModuleOut(ctx, fileName)
-		stripFlags := flagsToStripFlags(flags)
-		library.stripper.StripStaticLib(ctx, srcPath, outputFile, stripFlags)
-		return outputFile
-	}
+	outputFile := android.Path(srcPath)
 
 	if library.Properties.Repack_objects_to_keep != nil {
 		fileName := ctx.ModuleName() + staticLibraryExtension
-		outputFile := android.PathForModuleOut(ctx, fileName)
-		TransformArchiveRepack(ctx, srcPath, outputFile, library.Properties.Repack_objects_to_keep)
-
-		return outputFile
+		repackedPath := android.PathForModuleOut(ctx, fileName)
+		transformArchiveRepack(ctx, outputFile, repackedPath, library.Properties.Repack_objects_to_keep)
+		outputFile = repackedPath
 	}
 
-	return srcPath
+	if library.stripper.StripProperties.Strip.Keep_symbols_list != nil {
+		fileName := ctx.ModuleName() + staticLibraryExtension
+		strippedPath := android.PathForModuleOut(ctx, fileName)
+		stripFlags := flagsToStripFlags(flags)
+		library.stripper.StripStaticLib(ctx, outputFile, strippedPath, stripFlags)
+		outputFile = strippedPath
+	}
+
+	depSet := android.NewDepSetBuilder(android.TOPOLOGICAL).Direct(outputFile).Build()
+	ctx.SetProvider(StaticLibraryInfoProvider, StaticLibraryInfo{
+		StaticLibrary: outputFile,
+
+		TransitiveStaticLibrariesForOrdering: depSet,
+	})
+
+	return outputFile
 }
 
 func (library *toolchainLibraryDecorator) nativeCoverage() bool {

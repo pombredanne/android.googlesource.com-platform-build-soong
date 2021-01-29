@@ -23,6 +23,7 @@ func TestRustBindgen(t *testing.T) {
 	ctx := testRust(t, `
 		rust_bindgen {
 			name: "libbindgen",
+			defaults: ["cc_defaults_flags"],
 			wrapper_src: "src/any.h",
 			crate_name: "bindgen",
 			stem: "libbindgen",
@@ -31,6 +32,7 @@ func TestRustBindgen(t *testing.T) {
 			cflags: ["--clang-flag()"],
 			shared_libs: ["libfoo_shared"],
 			static_libs: ["libfoo_static"],
+			header_libs: ["libfoo_header"],
 		}
 		cc_library_shared {
 			name: "libfoo_shared",
@@ -39,6 +41,14 @@ func TestRustBindgen(t *testing.T) {
 		cc_library_static {
 			name: "libfoo_static",
 			export_include_dirs: ["static_include"],
+		}
+		cc_library_headers {
+			name: "libfoo_header",
+			export_include_dirs: ["header_include"],
+		}
+		cc_defaults {
+			name: "cc_defaults_flags",
+			cflags: ["--default-flag"],
 		}
 	`)
 	libbindgen := ctx.ModuleForTests("libbindgen", "android_arm64_armv8-a_source").Output("bindings.rs")
@@ -54,6 +64,12 @@ func TestRustBindgen(t *testing.T) {
 	}
 	if !strings.Contains(libbindgen.Args["cflags"], "-Istatic_include") {
 		t.Errorf("missing static_libs exported includes in rust_bindgen rule: cflags %#v", libbindgen.Args["cflags"])
+	}
+	if !strings.Contains(libbindgen.Args["cflags"], "-Iheader_include") {
+		t.Errorf("missing static_libs exported includes in rust_bindgen rule: cflags %#v", libbindgen.Args["cflags"])
+	}
+	if !strings.Contains(libbindgen.Args["cflags"], "--default-flag") {
+		t.Errorf("rust_bindgen missing cflags defined in cc_defaults: cflags %#v", libbindgen.Args["cflags"])
 	}
 }
 
@@ -125,4 +141,30 @@ func TestRustBindgenStdVersions(t *testing.T) {
 	if !strings.Contains(libbindgen_cppstd.Args["cflags"], "-std=foo") {
 		t.Errorf("cpp_std value not passed in to rust_bindgen as a clang flag")
 	}
+}
+
+func TestBindgenDisallowedFlags(t *testing.T) {
+	// Make sure passing '-x c++' to cflags generates an error
+	testRustError(t, "cflags: -x c\\+\\+ should not be specified in cflags.*", `
+		rust_bindgen {
+			name: "libbad_flag",
+			wrapper_src: "src/any.h",
+			crate_name: "bindgen",
+			stem: "libbindgen",
+			source_stem: "bindings",
+			cflags: ["-x c++"]
+		}
+	`)
+
+	// Make sure passing '-std=' to cflags generates an error
+	testRustError(t, "cflags: -std should not be specified in cflags.*", `
+		rust_bindgen {
+			name: "libbad_flag",
+			wrapper_src: "src/any.h",
+			crate_name: "bindgen",
+			stem: "libbindgen",
+			source_stem: "bindings",
+			cflags: ["-std=foo"]
+		}
+	`)
 }

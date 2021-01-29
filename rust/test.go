@@ -19,6 +19,12 @@ import (
 	"android/soong/tradefed"
 )
 
+// Test option struct.
+type TestOptions struct {
+	// If the test is a hostside(no device required) unittest that shall be run during presubmit check.
+	Unit_test *bool
+}
+
 type TestProperties struct {
 	// Disables the creation of a test-specific directory when used with
 	// relative_install_path. Useful if several tests need to be in the same
@@ -44,6 +50,9 @@ type TestProperties struct {
 
 	// if set, build with the standard Rust test harness. Defaults to true.
 	Test_harness *bool
+
+	// Test options.
+	Test_options TestOptions
 }
 
 // A test module is a binary module with extra --test compiler flag
@@ -110,6 +119,9 @@ func (test *testDecorator) compilerFlags(ctx ModuleContext, flags Flags) Flags {
 	flags = test.binaryDecorator.compilerFlags(ctx, flags)
 	if test.testHarness() {
 		flags.RustFlags = append(flags.RustFlags, "--test")
+	}
+	if ctx.Device() {
+		flags.RustFlags = append(flags.RustFlags, "-Z panic_abort_tests")
 	}
 	return flags
 }

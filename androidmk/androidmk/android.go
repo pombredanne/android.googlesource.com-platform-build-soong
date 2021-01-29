@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	clear_vars      = "__android_mk_clear_vars"
-	include_ignored = "__android_mk_include_ignored"
+	clearVarsPath      = "__android_mk_clear_vars"
+	includeIgnoredPath = "__android_mk_include_ignored"
 )
 
 type bpVariable struct {
@@ -214,6 +214,8 @@ func init() {
 
 			"LOCAL_PRIVATE_PLATFORM_APIS": "platform_apis",
 			"LOCAL_JETIFIER_ENABLED":      "jetifier",
+
+			"LOCAL_IS_UNIT_TEST": "unit_test",
 		})
 }
 
@@ -911,7 +913,7 @@ func allSubdirJavaFiles(args []string) []string {
 }
 
 func includeIgnored(args []string) []string {
-	return []string{include_ignored}
+	return []string{includeIgnoredPath}
 }
 
 var moduleTypes = map[string]string{
@@ -953,12 +955,11 @@ var prebuiltTypes = map[string]string{
 var soongModuleTypes = map[string]bool{}
 
 var includePathToModule = map[string]string{
-	"test/vts/tools/build/Android.host_config.mk": "vts_config",
-	// The rest will be populated dynamically in androidScope below
+	// The content will be populated dynamically in androidScope below
 }
 
 func mapIncludePath(path string) (string, bool) {
-	if path == clear_vars || path == include_ignored {
+	if path == clearVarsPath || path == includeIgnoredPath {
 		return path, true
 	}
 	module, ok := includePathToModule[path]
@@ -967,7 +968,7 @@ func mapIncludePath(path string) (string, bool) {
 
 func androidScope() mkparser.Scope {
 	globalScope := mkparser.NewScope(nil)
-	globalScope.Set("CLEAR_VARS", clear_vars)
+	globalScope.Set("CLEAR_VARS", clearVarsPath)
 	globalScope.SetFunc("my-dir", mydir)
 	globalScope.SetFunc("all-java-files-under", allFilesUnder("*.java"))
 	globalScope.SetFunc("all-proto-files-under", allFilesUnder("*.proto"))

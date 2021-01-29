@@ -20,16 +20,14 @@ bootstrap_go_binary {
         "golang-protobuf-proto",
         "soong",
         "soong-android",
+        "soong-bp2build",
         "soong-env",
         "soong-ui-metrics_proto",
     ],
     srcs: [
         "main.go",
         "writedocs.go",
-        "bazel_overlay.go",
-    ],
-    testSrcs: [
-        "bazel_overlay_test.go",
+        "queryview.go",
     ],
     primaryBuilder: true,
 }

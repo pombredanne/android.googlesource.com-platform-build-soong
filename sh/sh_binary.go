@@ -66,7 +66,18 @@ type shBinaryProperties struct {
 	Symlinks []string `android:"arch_variant"`
 
 	// Make this module available when building for ramdisk.
+	// On device without a dedicated recovery partition, the module is only
+	// available after switching root into
+	// /first_stage_ramdisk. To expose the module before switching root, install
+	// the recovery variant instead.
 	Ramdisk_available *bool
+
+	// Make this module available when building for vendor ramdisk.
+	// On device without a dedicated recovery partition, the module is only
+	// available after switching root into
+	// /first_stage_ramdisk. To expose the module before switching root, install
+	// the recovery variant instead.
+	Vendor_ramdisk_available *bool
 
 	// Make this module available when building for recovery.
 	Recovery_available *bool
@@ -176,6 +187,10 @@ func (s *ShBinary) RamdiskVariantNeeded(ctx android.BaseModuleContext) bool {
 	return proptools.Bool(s.properties.Ramdisk_available) || s.ModuleBase.InstallInRamdisk()
 }
 
+func (s *ShBinary) VendorRamdiskVariantNeeded(ctx android.BaseModuleContext) bool {
+	return proptools.Bool(s.properties.Vendor_ramdisk_available) || s.ModuleBase.InstallInVendorRamdisk()
+}
+
 func (s *ShBinary) RecoveryVariantNeeded(ctx android.BaseModuleContext) bool {
 	return proptools.Bool(s.properties.Recovery_available) || s.ModuleBase.InstallInRecovery()
 }
@@ -190,14 +205,14 @@ func (s *ShBinary) SetImageVariation(ctx android.BaseModuleContext, variation st
 func (s *ShBinary) generateAndroidBuildActions(ctx android.ModuleContext) {
 	s.sourceFilePath = android.PathForModuleSrc(ctx, proptools.String(s.properties.Src))
 	filename := proptools.String(s.properties.Filename)
-	filename_from_src := proptools.Bool(s.properties.Filename_from_src)
+	filenameFromSrc := proptools.Bool(s.properties.Filename_from_src)
 	if filename == "" {
-		if filename_from_src {
+		if filenameFromSrc {
 			filename = s.sourceFilePath.Base()
 		} else {
 			filename = ctx.ModuleName()
 		}
-	} else if filename_from_src {
+	} else if filenameFromSrc {
 		ctx.PropertyErrorf("filename_from_src", "filename is set. filename_from_src can't be true")
 		return
 	}
@@ -261,7 +276,7 @@ func (s *ShTest) DepsMutator(ctx android.BottomUpMutatorContext) {
 	ctx.AddFarVariationDependencies(append(ctx.Target().Variations(), sharedLibVariations...),
 		shTestDataLibsTag, s.testProperties.Data_libs...)
 	if ctx.Target().Os.Class == android.Host && len(ctx.Config().Targets[android.Android]) > 0 {
-		deviceVariations := ctx.Config().Targets[android.Android][0].Variations()
+		deviceVariations := ctx.Config().AndroidFirstDeviceTarget.Variations()
 		ctx.AddFarVariationDependencies(deviceVariations, shTestDataDeviceBinsTag, s.testProperties.Data_device_bins...)
 		ctx.AddFarVariationDependencies(append(deviceVariations, sharedLibVariations...),
 			shTestDataDeviceLibsTag, s.testProperties.Data_device_libs...)
@@ -330,15 +345,8 @@ func (s *ShTest) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		depTag := ctx.OtherModuleDependencyTag(dep)
 		switch depTag {
 		case shTestDataBinsTag, shTestDataDeviceBinsTag:
-			if cc, isCc := dep.(*cc.Module); isCc {
-				s.addToDataModules(ctx, cc.OutputFile().Path().Base(), cc.OutputFile().Path())
-				return
-			}
-			property := "data_bins"
-			if depTag == shTestDataDeviceBinsTag {
-				property = "data_device_bins"
-			}
-			ctx.PropertyErrorf(property, "%q of type %q is not supported", dep.Name(), ctx.OtherModuleType(dep))
+			path := android.OutputFileForModule(ctx, dep, "")
+			s.addToDataModules(ctx, path.Base(), path)
 		case shTestDataLibsTag, shTestDataDeviceLibsTag:
 			if cc, isCc := dep.(*cc.Module); isCc {
 				// Copy to an intermediate output directory to append "lib[64]" to the path,
@@ -383,7 +391,7 @@ func (s *ShTest) AndroidMkEntries() []android.AndroidMkEntries {
 			func(entries *android.AndroidMkEntries) {
 				s.customAndroidMkEntries(entries)
 				entries.SetPath("LOCAL_MODULE_PATH", s.installDir.ToMakePath())
-				entries.AddStrings("LOCAL_COMPATIBILITY_SUITE", s.testProperties.Test_suites...)
+				entries.AddCompatibilityTestSuites(s.testProperties.Test_suites...)
 				if s.testConfig != nil {
 					entries.SetPath("LOCAL_FULL_TEST_CONFIG", s.testConfig)
 				}

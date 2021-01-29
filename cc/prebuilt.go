@@ -17,6 +17,7 @@ package cc
 import (
 	"android/soong/android"
 	"path/filepath"
+	"strings"
 )
 
 func init() {
@@ -38,9 +39,10 @@ type prebuiltLinkerInterface interface {
 }
 
 type prebuiltLinkerProperties struct {
-
 	// a prebuilt library or binary. Can reference a genrule module that generates an executable file.
 	Srcs []string `android:"path,arch_variant"`
+
+	Sanitized Sanitized `android:"arch_variant"`
 
 	// Check the prebuilt ELF files (e.g. DT_SONAME, DT_NEEDED, resolution of undefined
 	// symbols, etc), default true.
@@ -97,15 +99,17 @@ func (p *prebuiltLibraryLinker) linkerProps() []interface{} {
 func (p *prebuiltLibraryLinker) link(ctx ModuleContext,
 	flags Flags, deps PathDeps, objs Objects) android.Path {
 
-	p.libraryDecorator.exportIncludes(ctx)
-	p.libraryDecorator.reexportDirs(deps.ReexportedDirs...)
-	p.libraryDecorator.reexportSystemDirs(deps.ReexportedSystemDirs...)
-	p.libraryDecorator.reexportFlags(deps.ReexportedFlags...)
-	p.libraryDecorator.reexportDeps(deps.ReexportedDeps...)
-	p.libraryDecorator.addExportedGeneratedHeaders(deps.ReexportedGeneratedHeaders...)
+	p.libraryDecorator.flagExporter.exportIncludes(ctx)
+	p.libraryDecorator.flagExporter.reexportDirs(deps.ReexportedDirs...)
+	p.libraryDecorator.flagExporter.reexportSystemDirs(deps.ReexportedSystemDirs...)
+	p.libraryDecorator.flagExporter.reexportFlags(deps.ReexportedFlags...)
+	p.libraryDecorator.flagExporter.reexportDeps(deps.ReexportedDeps...)
+	p.libraryDecorator.flagExporter.addExportedGeneratedHeaders(deps.ReexportedGeneratedHeaders...)
+
+	p.libraryDecorator.flagExporter.setProvider(ctx)
 
 	// TODO(ccross): verify shared library dependencies
-	srcs := p.prebuiltSrcs()
+	srcs := p.prebuiltSrcs(ctx)
 	if len(srcs) > 0 {
 		builderFlags := flagsToBuilderFlags(flags)
 
@@ -114,9 +118,17 @@ func (p *prebuiltLibraryLinker) link(ctx ModuleContext,
 			return nil
 		}
 
+		p.libraryDecorator.exportVersioningMacroIfNeeded(ctx)
+
 		in := android.PathForModuleSrc(ctx, srcs[0])
 
 		if p.static() {
+			depSet := android.NewDepSetBuilder(android.TOPOLOGICAL).Direct(in).Build()
+			ctx.SetProvider(StaticLibraryInfoProvider, StaticLibraryInfo{
+				StaticLibrary: in,
+
+				TransitiveStaticLibrariesForOrdering: depSet,
+			})
 			return in
 		}
 
@@ -137,7 +149,7 @@ func (p *prebuiltLibraryLinker) link(ctx ModuleContext,
 			// depending on a table of contents file instead of the library itself.
 			tocFile := android.PathForModuleOut(ctx, libName+".toc")
 			p.tocFile = android.OptionalPathForPath(tocFile)
-			TransformSharedObjectToToc(ctx, outputFile, tocFile, builderFlags)
+			transformSharedObjectToToc(ctx, outputFile, tocFile, builderFlags)
 
 			if ctx.Windows() && p.properties.Windows_import_lib != nil {
 				// Consumers of this library actually links to the import library in build
@@ -170,22 +182,38 @@ func (p *prebuiltLibraryLinker) link(ctx ModuleContext,
 				},
 			})
 
+			ctx.SetProvider(SharedLibraryInfoProvider, SharedLibraryInfo{
+				SharedLibrary:           outputFile,
+				UnstrippedSharedLibrary: p.unstrippedOutputFile,
+
+				TableOfContents: p.tocFile,
+			})
+
 			return outputFile
 		}
+	}
+
+	if p.header() {
+		ctx.SetProvider(HeaderLibraryInfoProvider, HeaderLibraryInfo{})
+
+		return nil
 	}
 
 	return nil
 }
 
-func (p *prebuiltLibraryLinker) prebuiltSrcs() []string {
+func (p *prebuiltLibraryLinker) prebuiltSrcs(ctx android.BaseModuleContext) []string {
+	sanitize := ctx.Module().(*Module).sanitize
 	srcs := p.properties.Srcs
+	srcs = append(srcs, srcsForSanitizer(sanitize, p.properties.Sanitized)...)
 	if p.static() {
 		srcs = append(srcs, p.libraryDecorator.StaticProperties.Static.Srcs...)
+		srcs = append(srcs, srcsForSanitizer(sanitize, p.libraryDecorator.StaticProperties.Static.Sanitized)...)
 	}
 	if p.shared() {
 		srcs = append(srcs, p.libraryDecorator.SharedProperties.Shared.Srcs...)
+		srcs = append(srcs, srcsForSanitizer(sanitize, p.libraryDecorator.SharedProperties.Shared.Sanitized)...)
 	}
-
 	return srcs
 }
 
@@ -201,6 +229,11 @@ func (p *prebuiltLibraryLinker) disablePrebuilt() {
 	p.properties.Srcs = nil
 }
 
+// Implements versionedInterface
+func (p *prebuiltLibraryLinker) implementationModuleName(name string) string {
+	return strings.TrimPrefix(name, "prebuilt_")
+}
+
 func NewPrebuiltLibrary(hod android.HostOrDeviceSupported) (*Module, *libraryDecorator) {
 	module, library := NewLibrary(hod)
 	module.compiler = nil
@@ -209,11 +242,12 @@ func NewPrebuiltLibrary(hod android.HostOrDeviceSupported) (*Module, *libraryDec
 		libraryDecorator: library,
 	}
 	module.linker = prebuilt
+	module.library = prebuilt
 
 	module.AddProperties(&prebuilt.properties)
 
-	srcsSupplier := func() []string {
-		return prebuilt.prebuiltSrcs()
+	srcsSupplier := func(ctx android.BaseModuleContext) []string {
+		return prebuilt.prebuiltSrcs(ctx)
 	}
 
 	android.InitPrebuiltModuleWithSrcSupplier(module, srcsSupplier, "srcs")
@@ -424,4 +458,29 @@ func NewPrebuiltBinary(hod android.HostOrDeviceSupported) (*Module, *binaryDecor
 
 	android.InitPrebuiltModule(module, &prebuilt.properties.Srcs)
 	return module, binary
+}
+
+type Sanitized struct {
+	None struct {
+		Srcs []string `android:"path,arch_variant"`
+	} `android:"arch_variant"`
+	Address struct {
+		Srcs []string `android:"path,arch_variant"`
+	} `android:"arch_variant"`
+	Hwaddress struct {
+		Srcs []string `android:"path,arch_variant"`
+	} `android:"arch_variant"`
+}
+
+func srcsForSanitizer(sanitize *sanitize, sanitized Sanitized) []string {
+	if sanitize == nil {
+		return nil
+	}
+	if Bool(sanitize.Properties.Sanitize.Address) && sanitized.Address.Srcs != nil {
+		return sanitized.Address.Srcs
+	}
+	if Bool(sanitize.Properties.Sanitize.Hwaddress) && sanitized.Hwaddress.Srcs != nil {
+		return sanitized.Hwaddress.Srcs
+	}
+	return sanitized.None.Srcs
 }

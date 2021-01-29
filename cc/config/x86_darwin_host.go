@@ -67,6 +67,7 @@ var (
 		"10.14",
 		"10.15",
 		"11.0",
+		"11.1",
 	}
 
 	darwinAvailableLibraries = append(
@@ -135,7 +136,7 @@ var macTools = &macPlatformTools{}
 
 func getMacTools(ctx android.PackageVarContext) *macPlatformTools {
 	macTools.once.Do(func() {
-		xcrunTool := ctx.Config().HostSystemTool("xcrun")
+		xcrunTool := ctx.Config().NonHermeticHostSystemTool("xcrun")
 
 		xcrun := func(args ...string) string {
 			if macTools.err != nil {

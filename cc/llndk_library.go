@@ -15,24 +15,21 @@
 package cc
 
 import (
-	"path/filepath"
 	"strings"
 
 	"android/soong/android"
-
-	"github.com/google/blueprint"
 )
-
-var llndkImplDep = struct {
-	blueprint.DependencyTag
-}{}
 
 var (
 	llndkLibrarySuffix = ".llndk"
 	llndkHeadersSuffix = ".llndk"
 )
 
-// Creates a stub shared library based on the provided version file.
+// Holds properties to describe a stub shared library based on the provided version file.
+// The stub library will actually be built by the cc_library module that points to this
+// module with the llndk_stubs property.
+// TODO(ccross): move the properties from llndk_library modules directly into the cc_library
+//  modules and remove the llndk_library modules.
 //
 // Example:
 //
@@ -58,125 +55,73 @@ type llndkLibraryProperties struct {
 	// Whether the system library uses symbol versions.
 	Unversioned *bool
 
-	// whether this module can be directly depended upon by libs that are installed to /vendor.
-	// When set to false, this module can only be depended on by VNDK libraries, not vendor
-	// libraries. This effectively hides this module from vendors. Default value is true.
-	Vendor_available *bool
-
 	// list of llndk headers to re-export include directories from.
 	Export_llndk_headers []string `android:"arch_variant"`
+
+	// whether this module can be directly depended upon by libs that are installed
+	// to /vendor and /product.
+	// When set to true, this module can only be depended on by VNDK libraries, not
+	// vendor nor product libraries. This effectively hides this module from
+	// non-system modules. Default value is false.
+	Private *bool
 }
 
 type llndkStubDecorator struct {
 	*libraryDecorator
 
 	Properties llndkLibraryProperties
-
-	exportHeadersTimestamp android.OptionalPath
-	versionScriptPath      android.ModuleGenPath
 }
 
+var _ versionedInterface = (*llndkStubDecorator)(nil)
+
 func (stub *llndkStubDecorator) compilerFlags(ctx ModuleContext, flags Flags, deps PathDeps) Flags {
-	flags = stub.baseCompiler.compilerFlags(ctx, flags, deps)
-	return addStubLibraryCompilerFlags(flags)
+	return flags
 }
 
 func (stub *llndkStubDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) Objects {
-	vndkVer := ctx.Module().(*Module).VndkVersion()
-	if !inList(vndkVer, ctx.Config().PlatformVersionActiveCodenames()) || vndkVer == "" {
-		// For non-enforcing devices, vndkVer is empty. Use "current" in that case, too.
-		vndkVer = "current"
-	}
-	if stub.stubsVersion() != "" {
-		vndkVer = stub.stubsVersion()
-	}
-	objs, versionScript := compileStubLibrary(ctx, flags, String(stub.Properties.Symbol_file), vndkVer, "--llndk")
-	stub.versionScriptPath = versionScript
-	return objs
+	return Objects{}
 }
 
 func (stub *llndkStubDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
-	headers := addSuffix(stub.Properties.Export_llndk_headers, llndkHeadersSuffix)
-	deps.HeaderLibs = append(deps.HeaderLibs, headers...)
-	deps.ReexportHeaderLibHeaders = append(deps.ReexportHeaderLibHeaders, headers...)
 	return deps
 }
 
 func (stub *llndkStubDecorator) Name(name string) string {
+	if strings.HasSuffix(name, llndkLibrarySuffix) {
+		return name
+	}
 	return name + llndkLibrarySuffix
 }
 
-func (stub *llndkStubDecorator) linkerFlags(ctx ModuleContext, flags Flags) Flags {
-	stub.libraryDecorator.libName = strings.TrimSuffix(ctx.ModuleName(),
-		llndkLibrarySuffix)
-	return stub.libraryDecorator.linkerFlags(ctx, flags)
+func (stub *llndkStubDecorator) linkerProps() []interface{} {
+	props := stub.libraryDecorator.linkerProps()
+	return append(props, &stub.Properties)
 }
 
-func (stub *llndkStubDecorator) processHeaders(ctx ModuleContext, srcHeaderDir string, outDir android.ModuleGenPath) android.Path {
-	srcDir := android.PathForModuleSrc(ctx, srcHeaderDir)
-	srcFiles := ctx.GlobFiles(filepath.Join(srcDir.String(), "**/*.h"), nil)
-
-	var installPaths []android.WritablePath
-	for _, header := range srcFiles {
-		headerDir := filepath.Dir(header.String())
-		relHeaderDir, err := filepath.Rel(srcDir.String(), headerDir)
-		if err != nil {
-			ctx.ModuleErrorf("filepath.Rel(%q, %q) failed: %s",
-				srcDir.String(), headerDir, err)
-			continue
-		}
-
-		installPaths = append(installPaths, outDir.Join(ctx, relHeaderDir, header.Base()))
-	}
-
-	return processHeadersWithVersioner(ctx, srcDir, outDir, srcFiles, installPaths)
+func (stub *llndkStubDecorator) linkerFlags(ctx ModuleContext, flags Flags) Flags {
+	stub.libraryDecorator.libName = stub.implementationModuleName(ctx.ModuleName())
+	return stub.libraryDecorator.linkerFlags(ctx, flags)
 }
 
 func (stub *llndkStubDecorator) link(ctx ModuleContext, flags Flags, deps PathDeps,
 	objs Objects) android.Path {
-
-	if !Bool(stub.Properties.Unversioned) {
-		linkerScriptFlag := "-Wl,--version-script," + stub.versionScriptPath.String()
-		flags.Local.LdFlags = append(flags.Local.LdFlags, linkerScriptFlag)
-		flags.LdFlagsDeps = append(flags.LdFlagsDeps, stub.versionScriptPath)
-	}
-
-	if len(stub.Properties.Export_preprocessed_headers) > 0 {
-		genHeaderOutDir := android.PathForModuleGen(ctx, "include")
-
-		var timestampFiles android.Paths
-		for _, dir := range stub.Properties.Export_preprocessed_headers {
-			timestampFiles = append(timestampFiles, stub.processHeaders(ctx, dir, genHeaderOutDir))
-		}
-
-		if Bool(stub.Properties.Export_headers_as_system) {
-			stub.reexportSystemDirs(genHeaderOutDir)
-		} else {
-			stub.reexportDirs(genHeaderOutDir)
-		}
-
-		stub.reexportDeps(timestampFiles...)
-	}
-
-	if Bool(stub.Properties.Export_headers_as_system) {
-		stub.exportIncludesAsSystem(ctx)
-		stub.libraryDecorator.flagExporter.Properties.Export_include_dirs = []string{}
-	}
-
-	if stub.stubsVersion() != "" {
-		stub.reexportFlags("-D" + versioningMacroName(ctx.baseModuleName()) + "=" + stub.stubsVersion())
-	}
-
-	return stub.libraryDecorator.link(ctx, flags, deps, objs)
+	return nil
 }
 
 func (stub *llndkStubDecorator) nativeCoverage() bool {
 	return false
 }
 
+func (stub *llndkStubDecorator) implementationModuleName(name string) string {
+	return strings.TrimSuffix(name, llndkLibrarySuffix)
+}
+
+func (stub *llndkStubDecorator) buildStubs() bool {
+	return true
+}
+
 func NewLLndkStubLibrary() *Module {
 	module, library := NewLibrary(android.DeviceSupported)
-	library.BuildOnlyShared()
 	module.stl = nil
 	module.sanitize = nil
 	library.disableStripping()
@@ -184,16 +129,10 @@ func NewLLndkStubLibrary() *Module {
 	stub := &llndkStubDecorator{
 		libraryDecorator: library,
 	}
-	stub.Properties.Vendor_available = BoolPtr(true)
 	module.compiler = stub
 	module.linker = stub
 	module.installer = nil
-
-	module.AddProperties(
-		&module.Properties,
-		&stub.Properties,
-		&library.MutatedProperties,
-		&library.flagExporter.Properties)
+	module.library = stub
 
 	return module
 }
@@ -208,16 +147,25 @@ func NewLLndkStubLibrary() *Module {
 //    }
 func LlndkLibraryFactory() android.Module {
 	module := NewLLndkStubLibrary()
-	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibBoth)
-	return module
+	return module.Init()
+}
+
+// isVestigialLLNDKModule returns true if m is a vestigial llndk_library module used to provide
+// properties to the LLNDK variant of a cc_library.
+func isVestigialLLNDKModule(m *Module) bool {
+	_, ok := m.linker.(*llndkStubDecorator)
+	return ok
 }
 
 type llndkHeadersDecorator struct {
 	*libraryDecorator
 }
 
-func (headers *llndkHeadersDecorator) Name(name string) string {
-	return name + llndkHeadersSuffix
+func (llndk *llndkHeadersDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
+	deps.HeaderLibs = append(deps.HeaderLibs, llndk.Properties.Llndk.Export_llndk_headers...)
+	deps.ReexportHeaderLibHeaders = append(deps.ReexportHeaderLibHeaders,
+		llndk.Properties.Llndk.Export_llndk_headers...)
+	return deps
 }
 
 // llndk_headers contains a set of c/c++ llndk headers files which are imported
@@ -235,11 +183,7 @@ func llndkHeadersFactory() android.Module {
 	module.compiler = nil
 	module.linker = decorator
 	module.installer = nil
-
-	module.AddProperties(
-		&module.Properties,
-		&library.MutatedProperties,
-		&library.flagExporter.Properties)
+	module.library = decorator
 
 	module.Init()
 

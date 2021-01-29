@@ -81,6 +81,10 @@ func (this ApiLevel) IsCurrent() bool {
 	return this.value == "current"
 }
 
+func (this ApiLevel) IsNone() bool {
+	return this.number == -1
+}
+
 // Returns -1 if the current API level is less than the argument, 0 if they
 // are equal, and 1 if it is greater than the argument.
 func (this ApiLevel) CompareTo(other ApiLevel) int {
@@ -152,7 +156,7 @@ var FirstNonLibAndroidSupportVersion = uncheckedFinalApiLevel(21)
 // * "30" -> "30"
 // * "R" -> "30"
 // * "S" -> "S"
-func ReplaceFinalizedCodenames(ctx EarlyModuleContext, raw string) string {
+func ReplaceFinalizedCodenames(ctx PathContext, raw string) string {
 	num, ok := getFinalCodenamesMap(ctx.Config())[raw]
 	if !ok {
 		return raw
@@ -175,7 +179,7 @@ func ReplaceFinalizedCodenames(ctx EarlyModuleContext, raw string) string {
 //
 // Inputs that are not "current", known previews, or convertible to an integer
 // will return an error.
-func ApiLevelFromUser(ctx EarlyModuleContext, raw string) (ApiLevel, error) {
+func ApiLevelFromUser(ctx PathContext, raw string) (ApiLevel, error) {
 	if raw == "" {
 		panic("API level string must be non-empty")
 	}
@@ -203,7 +207,7 @@ func ApiLevelFromUser(ctx EarlyModuleContext, raw string) (ApiLevel, error) {
 // Converts an API level string `raw` into an ApiLevel in the same method as
 // `ApiLevelFromUser`, but the input is assumed to have no errors and any errors
 // will panic instead of returning an error.
-func ApiLevelOrPanic(ctx EarlyModuleContext, raw string) ApiLevel {
+func ApiLevelOrPanic(ctx PathContext, raw string) ApiLevel {
 	value, err := ApiLevelFromUser(ctx, raw)
 	if err != nil {
 		panic(err.Error())
@@ -225,14 +229,7 @@ func createApiLevelsJson(ctx SingletonContext, file WritablePath,
 		ctx.Errorf(err.Error())
 	}
 
-	ctx.Build(pctx, BuildParams{
-		Rule:        WriteFile,
-		Description: "generate " + file.Base(),
-		Output:      file,
-		Args: map[string]string{
-			"content": string(jsonStr[:]),
-		},
-	})
+	WriteFileRule(ctx, file, string(jsonStr))
 }
 
 func GetApiLevelsJson(ctx PathContext) WritablePath {

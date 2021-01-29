@@ -122,11 +122,21 @@ type BaseCompilerProperties struct {
 
 	// whether to suppress inclusion of standard crates - defaults to false
 	No_stdlibs *bool
+
+	// Change the rustlibs linkage to select rlib linkage by default for device targets.
+	// Also link libstd as an rlib as well on device targets.
+	// Note: This is the default behavior for host targets.
+	//
+	// This is primarily meant for rust_binary and rust_ffi modules where the default
+	// linkage of libstd might need to be overridden in some use cases. This should
+	// generally be avoided with other module types since it may cause collisions at
+	// linkage if all dependencies of the root binary module do not link against libstd\
+	// the same way.
+	Prefer_rlib *bool `android:"arch_variant"`
 }
 
 type baseCompiler struct {
-	Properties   BaseCompilerProperties
-	coverageFile android.Path //rustc generates a single gcno file
+	Properties BaseCompilerProperties
 
 	// Install related
 	dir      string
@@ -135,9 +145,9 @@ type baseCompiler struct {
 	relative string
 	path     android.InstallPath
 	location installLocation
+	sanitize *sanitize
 
-	coverageOutputZipFile android.OptionalPath
-	distFile              android.OptionalPath
+	distFile android.OptionalPath
 	// Stripped output file. If Valid(), this file will be installed instead of outputFile.
 	strippedOutputFile android.OptionalPath
 }
@@ -154,9 +164,15 @@ func (compiler *baseCompiler) coverageOutputZipPath() android.OptionalPath {
 	panic("baseCompiler does not implement coverageOutputZipPath()")
 }
 
+func (compiler *baseCompiler) preferRlib() bool {
+	return Bool(compiler.Properties.Prefer_rlib)
+}
+
 func (compiler *baseCompiler) stdLinkage(ctx *depsContext) RustLinkage {
 	// For devices, we always link stdlibs in as dylibs by default.
-	if ctx.Device() {
+	if compiler.preferRlib() {
+		return RlibLinkage
+	} else if ctx.Device() {
 		return DylibLinkage
 	} else {
 		return RlibLinkage
@@ -197,9 +213,9 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags) Flag
 	flags.GlobalLinkFlags = append(flags.GlobalLinkFlags, ctx.toolchain().ToolchainLinkFlags())
 
 	if ctx.Host() && !ctx.Windows() {
-		rpath_prefix := `\$$ORIGIN/`
+		rpathPrefix := `\$$ORIGIN/`
 		if ctx.Darwin() {
-			rpath_prefix = "@loader_path/"
+			rpathPrefix = "@loader_path/"
 		}
 
 		var rpath string
@@ -208,8 +224,8 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags) Flag
 		} else {
 			rpath = "lib"
 		}
-		flags.LinkFlags = append(flags.LinkFlags, "-Wl,-rpath,"+rpath_prefix+rpath)
-		flags.LinkFlags = append(flags.LinkFlags, "-Wl,-rpath,"+rpath_prefix+"../"+rpath)
+		flags.LinkFlags = append(flags.LinkFlags, "-Wl,-rpath,"+rpathPrefix+rpath)
+		flags.LinkFlags = append(flags.LinkFlags, "-Wl,-rpath,"+rpathPrefix+"../"+rpath)
 	}
 
 	return flags
@@ -217,6 +233,10 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags) Flag
 
 func (compiler *baseCompiler) compile(ctx ModuleContext, flags Flags, deps PathDeps) android.Path {
 	panic(fmt.Errorf("baseCrater doesn't know how to crate things!"))
+}
+
+func (compiler *baseCompiler) isDependencyRoot() bool {
+	return false
 }
 
 func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
@@ -240,11 +260,18 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	return deps
 }
 
-func bionicDeps(deps Deps) Deps {
-	deps.SharedLibs = append(deps.SharedLibs, "liblog")
-	deps.SharedLibs = append(deps.SharedLibs, "libc")
-	deps.SharedLibs = append(deps.SharedLibs, "libm")
-	deps.SharedLibs = append(deps.SharedLibs, "libdl")
+func bionicDeps(deps Deps, static bool) Deps {
+	bionicLibs := []string{}
+	bionicLibs = append(bionicLibs, "liblog")
+	bionicLibs = append(bionicLibs, "libc")
+	bionicLibs = append(bionicLibs, "libm")
+	bionicLibs = append(bionicLibs, "libdl")
+
+	if static {
+		deps.StaticLibs = append(deps.StaticLibs, bionicLibs...)
+	} else {
+		deps.SharedLibs = append(deps.SharedLibs, bionicLibs...)
+	}
 
 	//TODO(b/141331117) libstd requires libgcc on Android
 	deps.StaticLibs = append(deps.StaticLibs, "libgcc")

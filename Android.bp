@@ -46,7 +46,9 @@ toolchain_library {
     name: "libatomic",
     defaults: ["linux_bionic_supported"],
     vendor_available: true,
+    product_available: true,
     ramdisk_available: true,
+    vendor_ramdisk_available: true,
     recovery_available: true,
     native_bridge_supported: true,
 
@@ -70,8 +72,13 @@ toolchain_library {
     name: "libgcc",
     defaults: ["linux_bionic_supported"],
     vendor_available: true,
+    product_available: true,
     recovery_available: true,
     native_bridge_supported: true,
+    apex_available: [
+        "//apex_available:platform",
+        "//apex_available:anyapex",
+    ],
 
     arch: {
         arm: {
@@ -93,7 +100,9 @@ toolchain_library {
     name: "libgcc_stripped",
     defaults: ["linux_bionic_supported"],
     vendor_available: true,
+    product_available: true,
     ramdisk_available: true,
+    vendor_ramdisk_available: true,
     recovery_available: true,
     native_bridge_supported: true,
     sdk_version: "current",
@@ -212,4 +221,9 @@ cc_genrule {
     cmd: "$(location) -f $(out) $(in)",
     srcs: [":linker"],
     out: ["linker.flags"],
+}
+
+// Instantiate the dex_bootjars singleton module.
+dex_bootjars {
+    name: "dex_bootjars",
 }

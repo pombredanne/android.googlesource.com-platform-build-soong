@@ -25,14 +25,14 @@ import (
 	"github.com/google/blueprint"
 )
 
-func NewTestContext() *TestContext {
+func NewTestContext(config Config) *TestContext {
 	namespaceExportFilter := func(namespace *Namespace) bool {
 		return true
 	}
 
 	nameResolver := NewNameResolver(namespaceExportFilter)
 	ctx := &TestContext{
-		Context:      &Context{blueprint.NewContext()},
+		Context:      &Context{blueprint.NewContext(), config},
 		NameResolver: nameResolver,
 	}
 
@@ -40,11 +40,16 @@ func NewTestContext() *TestContext {
 
 	ctx.postDeps = append(ctx.postDeps, registerPathDepsMutator)
 
+	ctx.SetFs(ctx.config.fs)
+	if ctx.config.mockBpList != "" {
+		ctx.SetModuleListFile(ctx.config.mockBpList)
+	}
+
 	return ctx
 }
 
-func NewTestArchContext() *TestContext {
-	ctx := NewTestContext()
+func NewTestArchContext(config Config) *TestContext {
+	ctx := NewTestContext(config)
 	ctx.preDeps = append(ctx.preDeps, registerArchMutator)
 	return ctx
 }
@@ -52,8 +57,8 @@ func NewTestArchContext() *TestContext {
 type TestContext struct {
 	*Context
 	preArch, preDeps, postDeps, finalDeps []RegisterMutatorFunc
+	bp2buildMutators                      []RegisterMutatorFunc
 	NameResolver                          *NameResolver
-	config                                Config
 }
 
 func (ctx *TestContext) PreArchMutators(f RegisterMutatorFunc) {
@@ -77,16 +82,25 @@ func (ctx *TestContext) FinalDepsMutators(f RegisterMutatorFunc) {
 	ctx.finalDeps = append(ctx.finalDeps, f)
 }
 
-func (ctx *TestContext) Register(config Config) {
-	ctx.SetFs(config.fs)
-	if config.mockBpList != "" {
-		ctx.SetModuleListFile(config.mockBpList)
+// RegisterBp2BuildMutator registers a BazelTargetModule mutator for converting a module
+// type to the equivalent Bazel target.
+func (ctx *TestContext) RegisterBp2BuildMutator(moduleType string, m func(TopDownMutatorContext)) {
+	mutatorName := moduleType + "_bp2build"
+	f := func(ctx RegisterMutatorsContext) {
+		ctx.TopDown(mutatorName, m)
 	}
+	ctx.bp2buildMutators = append(ctx.bp2buildMutators, f)
+}
+
+func (ctx *TestContext) Register() {
 	registerMutators(ctx.Context.Context, ctx.preArch, ctx.preDeps, ctx.postDeps, ctx.finalDeps)
 
 	ctx.RegisterSingletonType("env", EnvSingleton)
+}
 
-	ctx.config = config
+// RegisterForBazelConversion prepares a test context for bp2build conversion.
+func (ctx *TestContext) RegisterForBazelConversion() {
+	RegisterMutatorsForBazelConversion(ctx.Context.Context, ctx.bp2buildMutators)
 }
 
 func (ctx *TestContext) ParseFileList(rootDir string, filePaths []string) (deps []string, errs []error) {
@@ -105,8 +119,14 @@ func (ctx *TestContext) RegisterModuleType(name string, factory ModuleFactory) {
 	ctx.Context.RegisterModuleType(name, ModuleFactoryAdaptor(factory))
 }
 
+func (ctx *TestContext) RegisterSingletonModuleType(name string, factory SingletonModuleFactory) {
+	s, m := SingletonModuleFactoryAdaptor(name, factory)
+	ctx.RegisterSingletonType(name, s)
+	ctx.RegisterModuleType(name, m)
+}
+
 func (ctx *TestContext) RegisterSingletonType(name string, factory SingletonFactory) {
-	ctx.Context.RegisterSingletonType(name, SingletonFactoryAdaptor(factory))
+	ctx.Context.RegisterSingletonType(name, SingletonFactoryAdaptor(ctx.Context, factory))
 }
 
 func (ctx *TestContext) ModuleForTests(name, variant string) TestingModule {
@@ -426,8 +446,8 @@ func CheckErrorsAgainstExpectations(t *testing.T, errs []error, expectedErrorPat
 
 }
 
-func SetInMakeForTests(config Config) {
-	config.inMake = true
+func SetKatiEnabledForTests(config Config) {
+	config.katiEnabled = true
 }
 
 func AndroidMkEntriesForTest(t *testing.T, config Config, bpPath string, mod blueprint.Module) []AndroidMkEntries {
@@ -465,7 +485,14 @@ func AndroidMkDataForTest(t *testing.T, config Config, bpPath string, mod bluepr
 //
 // The build and source paths should be distinguishable based on their contents.
 func NormalizePathForTesting(path Path) string {
+	if path == nil {
+		return "<nil path>"
+	}
 	p := path.String()
+	// Allow absolute paths to /dev/
+	if strings.HasPrefix(p, "/dev/") {
+		return p
+	}
 	if w, ok := path.(WritablePath); ok {
 		rel, err := filepath.Rel(w.buildDir(), p)
 		if err != nil {

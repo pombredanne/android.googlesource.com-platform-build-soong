@@ -80,7 +80,7 @@ func (p *makefileGoal) AndroidMkEntries() []AndroidMkEntries {
 		Class:      "ETC",
 		OutputFile: OptionalPathForPath(p.outputFilePath),
 		ExtraFooters: []AndroidMkExtraFootersFunc{
-			func(w io.Writer, name, prefix, moduleDir string, entries *AndroidMkEntries) {
+			func(w io.Writer, name, prefix, moduleDir string) {
 				// Can't use Cp because inputPath() is not a valid Path.
 				fmt.Fprintf(w, "$(eval $(call copy-one-file,%s,%s))\n", proptools.String(p.inputPath()), p.outputFilePath)
 			},
@@ -93,7 +93,6 @@ func (p *makefileGoal) AndroidMkEntries() []AndroidMkEntries {
 func MakefileGoalFactory() Module {
 	module := &makefileGoal{}
 	module.AddProperties(&module.properties)
-	// This module is device-only
-	InitAndroidArchModule(module, DeviceSupported, MultilibFirst)
+	InitAndroidModule(module)
 	return module
 }

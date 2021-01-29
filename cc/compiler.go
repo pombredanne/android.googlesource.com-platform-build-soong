@@ -123,6 +123,9 @@ type BaseCompilerProperties struct {
 
 		// whether to generate traces (for systrace) for this interface
 		Generate_traces *bool
+
+		// list of flags that will be passed to the AIDL compiler
+		Flags []string
 	}
 
 	Renderscript struct {
@@ -143,21 +146,21 @@ type BaseCompilerProperties struct {
 	} `android:"arch_variant"`
 
 	Target struct {
-		Vendor struct {
-			// list of source files that should only be used in the
-			// vendor variant of the C/C++ module.
+		Vendor, Product struct {
+			// list of source files that should only be used in vendor or
+			// product variant of the C/C++ module.
 			Srcs []string `android:"path"`
 
-			// list of source files that should not be used to
-			// build the vendor variant of the C/C++ module.
+			// list of source files that should not be used to build vendor
+			// or product variant of the C/C++ module.
 			Exclude_srcs []string `android:"path"`
 
-			// List of additional cflags that should be used to build the vendor
-			// variant of the C/C++ module.
+			// List of additional cflags that should be used to build vendor
+			// or product variant of the C/C++ module.
 			Cflags []string
 
-			// list of generated sources that should not be used to
-			// build the vendor variant of the C/C++ module.
+			// list of generated sources that should not be used to build
+			// vendor or product variant of the C/C++ module.
 			Exclude_generated_sources []string
 		}
 		Recovery struct {
@@ -176,6 +179,15 @@ type BaseCompilerProperties struct {
 			// list of generated sources that should not be used to
 			// build the recovery variant of the C/C++ module.
 			Exclude_generated_sources []string
+		}
+		Vendor_ramdisk struct {
+			// list of source files that should not be used to
+			// build the vendor ramdisk variant of the C/C++ module.
+			Exclude_srcs []string `android:"path"`
+
+			// List of additional cflags that should be used to build the vendor ramdisk
+			// variant of the C/C++ module.
+			Cflags []string
 		}
 	}
 
@@ -289,7 +301,9 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	CheckBadCompilerFlags(ctx, "conlyflags", compiler.Properties.Conlyflags)
 	CheckBadCompilerFlags(ctx, "asflags", compiler.Properties.Asflags)
 	CheckBadCompilerFlags(ctx, "vendor.cflags", compiler.Properties.Target.Vendor.Cflags)
+	CheckBadCompilerFlags(ctx, "product.cflags", compiler.Properties.Target.Product.Cflags)
 	CheckBadCompilerFlags(ctx, "recovery.cflags", compiler.Properties.Target.Recovery.Cflags)
+	CheckBadCompilerFlags(ctx, "vendor_ramdisk.cflags", compiler.Properties.Target.Vendor_ramdisk.Cflags)
 
 	esc := proptools.NinjaAndShellEscapeList
 
@@ -355,7 +369,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		}
 		if ctx.Device() {
 			flags.Global.CommonFlags = append(flags.Global.CommonFlags,
-				fmt.Sprintf("-D__ANDROID_SDK_VERSION__=%d",
+				fmt.Sprintf("-D__ANDROID_APEX_MIN_SDK_VERSION__=%d",
 					ctx.apexSdkVersion().FinalOrFutureInt()))
 		}
 	}
@@ -390,7 +404,12 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 
 	target := "-target " + tc.ClangTriple()
 	if ctx.Os().Class == android.Device {
-		version := ctx.sdkVersion()
+		// When built for the non-updateble part of platform, minSdkVersion doesn't matter.
+		// It matters only when building we are building for modules that can be unbundled.
+		version := "current"
+		if !ctx.isForPlatform() || ctx.isSdkVariant() {
+			version = ctx.minSdkVersion()
+		}
 		if version == "" || version == "current" {
 			target += strconv.Itoa(android.FutureApiLevelInt)
 		} else {
@@ -463,12 +482,20 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	flags.Local.ConlyFlags = append([]string{"-std=" + cStd}, flags.Local.ConlyFlags...)
 	flags.Local.CppFlags = append([]string{"-std=" + cppStd}, flags.Local.CppFlags...)
 
-	if ctx.useVndk() {
+	if ctx.inVendor() {
 		flags.Local.CFlags = append(flags.Local.CFlags, esc(compiler.Properties.Target.Vendor.Cflags)...)
+	}
+
+	if ctx.inProduct() {
+		flags.Local.CFlags = append(flags.Local.CFlags, esc(compiler.Properties.Target.Product.Cflags)...)
 	}
 
 	if ctx.inRecovery() {
 		flags.Local.CFlags = append(flags.Local.CFlags, esc(compiler.Properties.Target.Recovery.Cflags)...)
+	}
+
+	if ctx.inVendorRamdisk() {
+		flags.Local.CFlags = append(flags.Local.CFlags, esc(compiler.Properties.Target.Vendor_ramdisk.Cflags)...)
 	}
 
 	// We can enforce some rules more strictly in the code we own. strict
@@ -502,6 +529,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	}
 
 	if compiler.hasSrcExt(".aidl") {
+		flags.aidlFlags = append(flags.aidlFlags, compiler.Properties.Aidl.Flags...)
 		if len(compiler.Properties.Aidl.Local_include_dirs) > 0 {
 			localAidlIncludeDirs := android.PathsForModuleSrc(ctx, compiler.Properties.Aidl.Local_include_dirs)
 			flags.aidlFlags = append(flags.aidlFlags, includeDirsToFlags(localAidlIncludeDirs))
@@ -629,7 +657,7 @@ func (compiler *baseCompiler) compile(ctx ModuleContext, flags Flags, deps PathD
 func compileObjs(ctx android.ModuleContext, flags builderFlags,
 	subdir string, srcFiles, pathDeps android.Paths, cFlagsDeps android.Paths) Objects {
 
-	return TransformSourceToObj(ctx, subdir, srcFiles, flags, pathDeps, cFlagsDeps)
+	return transformSourceToObj(ctx, subdir, srcFiles, flags, pathDeps, cFlagsDeps)
 }
 
 var thirdPartyDirPrefixExceptions = []*regexp.Regexp{
@@ -651,4 +679,47 @@ func isThirdParty(path string) bool {
 		}
 	}
 	return true
+}
+
+// Properties for rust_bindgen related to generating rust bindings.
+// This exists here so these properties can be included in a cc_default
+// which can be used in both cc and rust modules.
+type RustBindgenClangProperties struct {
+	// list of directories relative to the Blueprints file that will
+	// be added to the include path using -I
+	Local_include_dirs []string `android:"arch_variant,variant_prepend"`
+
+	// list of static libraries that provide headers for this binding.
+	Static_libs []string `android:"arch_variant,variant_prepend"`
+
+	// list of shared libraries that provide headers for this binding.
+	Shared_libs []string `android:"arch_variant"`
+
+	// List of libraries which export include paths required for this module
+	Header_libs []string `android:"arch_variant,variant_prepend"`
+
+	// list of clang flags required to correctly interpret the headers.
+	Cflags []string `android:"arch_variant"`
+
+	// list of c++ specific clang flags required to correctly interpret the headers.
+	// This is provided primarily to make sure cppflags defined in cc_defaults are pulled in.
+	Cppflags []string `android:"arch_variant"`
+
+	// C standard version to use. Can be a specific version (such as "gnu11"),
+	// "experimental" (which will use draft versions like C1x when available),
+	// or the empty string (which will use the default).
+	//
+	// If this is set, the file extension will be ignored and this will be used as the std version value. Setting this
+	// to "default" will use the build system default version. This cannot be set at the same time as cpp_std.
+	C_std *string
+
+	// C++ standard version to use. Can be a specific version (such as
+	// "gnu++11"), "experimental" (which will use draft versions like C++1z when
+	// available), or the empty string (which will use the default).
+	//
+	// If this is set, the file extension will be ignored and this will be used as the std version value. Setting this
+	// to "default" will use the build system default version. This cannot be set at the same time as c_std.
+	Cpp_std *string
+
+	//TODO(b/161141999) Add support for headers from cc_library_header modules.
 }

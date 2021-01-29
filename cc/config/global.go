@@ -46,12 +46,14 @@ var (
 
 		"-O2",
 		"-g",
+		"-fdebug-info-for-profiling",
 
 		"-fno-strict-aliasing",
 
 		"-Werror=date-time",
 		"-Werror=pragma-pack",
 		"-Werror=pragma-pack-suspicious-include",
+		"-Werror=string-plus-int",
 		"-Werror=unreachable-code-loop-increment",
 	}
 
@@ -89,9 +91,12 @@ var (
 		"-Wl,--warn-shared-textrel",
 		"-Wl,--fatal-warnings",
 		"-Wl,--no-undefined-version",
+		// TODO: Eventually we should link against a libunwind.a with hidden symbols, and then these
+		// --exclude-libs arguments can be removed.
 		"-Wl,--exclude-libs,libgcc.a",
 		"-Wl,--exclude-libs,libgcc_stripped.a",
 		"-Wl,--exclude-libs,libunwind_llvm.a",
+		"-Wl,--exclude-libs,libunwind.a",
 	}
 
 	deviceGlobalLldflags = append(ClangFilterUnknownLldflags(deviceGlobalLdflags),
@@ -112,8 +117,13 @@ var (
 	}
 
 	noOverrideGlobalCflags = []string{
+		"-Werror=bool-operation",
+		"-Werror=implicit-int-float-conversion",
+		"-Werror=int-in-bool-context",
 		"-Werror=int-to-pointer-cast",
 		"-Werror=pointer-to-int-cast",
+		"-Werror=string-compare",
+		"-Werror=xor-used-as-pow",
 		// http://b/161386391 for -Wno-void-pointer-to-enum-cast
 		"-Wno-void-pointer-to-enum-cast",
 		// http://b/161386391 for -Wno-void-pointer-to-int-cast
@@ -134,8 +144,8 @@ var (
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r399163"
-	ClangDefaultShortVersion = "11.0.4"
+	ClangDefaultVersion      = "clang-r407598b"
+	ClangDefaultShortVersion = "12.0.2"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{
@@ -205,6 +215,7 @@ func init() {
 	pctx.PrefixedExistentPathsForSourcesVariable("CommonGlobalIncludes", "-I",
 		[]string{
 			"system/core/include",
+			"system/logging/liblog/include",
 			"system/media/audio/include",
 			"hardware/libhardware/include",
 			"hardware/libhardware_legacy/include",
@@ -213,10 +224,6 @@ func init() {
 			"frameworks/native/opengl/include",
 			"frameworks/av/include",
 		})
-	// This is used by non-NDK modules to get jni.h. export_include_dirs doesn't help
-	// with this, since there is no associated library.
-	pctx.PrefixedExistentPathsForSourcesVariable("CommonNativehelperInclude", "-I",
-		[]string{"libnativehelper/include_jni"})
 
 	pctx.SourcePathVariable("ClangDefaultBase", ClangDefaultBase)
 	pctx.VariableFunc("ClangBase", func(ctx android.PackageVarContext) string {

@@ -44,6 +44,14 @@ func testSdkWithJava(t *testing.T, bp string) *testSdkResult {
 		"api/system-server-removed.txt":                     nil,
 		"build/soong/scripts/gen-java-current-api-files.sh": nil,
 		"docs/known_doctags":                                nil,
+		"100/public/api/myjavalib.txt":                      nil,
+		"100/public/api/myjavalib-removed.txt":              nil,
+		"100/system/api/myjavalib.txt":                      nil,
+		"100/system/api/myjavalib-removed.txt":              nil,
+		"100/module-lib/api/myjavalib.txt":                  nil,
+		"100/module-lib/api/myjavalib-removed.txt":          nil,
+		"100/system-server/api/myjavalib.txt":               nil,
+		"100/system-server/api/myjavalib-removed.txt":       nil,
 	}
 
 	// for java_sdk_library tests
@@ -84,6 +92,10 @@ java_import {
 	name: "framework", 
 	sdk_version: "none",
 }
+prebuilt_apis {
+	name: "sdk",
+	api_dirs: ["100"],
+}
 ` + bp
 
 	return testSdkWithFs(t, bp, fs)
@@ -121,17 +133,22 @@ func TestSdkDependsOnSourceEvenWhenPrebuiltPreferred(t *testing.T) {
 java_import {
     name: "mysdk_sdkmember@current",
     sdk_member_name: "sdkmember",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     jars: ["java/sdkmember.jar"],
 }
 
 java_import {
     name: "sdkmember",
     prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     jars: ["java/sdkmember.jar"],
 }
 
 sdk_snapshot {
     name: "mysdk@current",
+    visibility: ["//visibility:public"],
     java_header_libs: ["mysdk_sdkmember@current"],
 }
 `))
@@ -243,17 +260,22 @@ func TestSnapshotWithJavaHeaderLibrary(t *testing.T) {
 java_import {
     name: "mysdk_myjavalib@current",
     sdk_member_name: "myjavalib",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     jars: ["java/myjavalib.jar"],
 }
 
 java_import {
     name: "myjavalib",
     prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     jars: ["java/myjavalib.jar"],
 }
 
 sdk_snapshot {
     name: "mysdk@current",
+    visibility: ["//visibility:public"],
     java_header_libs: ["mysdk_myjavalib@current"],
 }
 
@@ -295,6 +317,8 @@ func TestHostSnapshotWithJavaHeaderLibrary(t *testing.T) {
 java_import {
     name: "mysdk_myjavalib@current",
     sdk_member_name: "myjavalib",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     jars: ["java/myjavalib.jar"],
@@ -303,6 +327,8 @@ java_import {
 java_import {
     name: "myjavalib",
     prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     jars: ["java/myjavalib.jar"],
@@ -310,6 +336,7 @@ java_import {
 
 sdk_snapshot {
     name: "mysdk@current",
+    visibility: ["//visibility:public"],
     device_supported: false,
     host_supported: true,
     java_header_libs: ["mysdk_myjavalib@current"],
@@ -347,6 +374,8 @@ func TestDeviceAndHostSnapshotWithJavaHeaderLibrary(t *testing.T) {
 java_import {
     name: "mysdk_myjavalib@current",
     sdk_member_name: "myjavalib",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     host_supported: true,
     target: {
         android: {
@@ -361,6 +390,8 @@ java_import {
 java_import {
     name: "myjavalib",
     prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     host_supported: true,
     target: {
         android: {
@@ -374,6 +405,7 @@ java_import {
 
 sdk_snapshot {
     name: "mysdk@current",
+    visibility: ["//visibility:public"],
     host_supported: true,
     java_header_libs: ["mysdk_myjavalib@current"],
 }
@@ -413,17 +445,22 @@ func TestSnapshotWithJavaImplLibrary(t *testing.T) {
 java_import {
     name: "myexports_myjavalib@current",
     sdk_member_name: "myjavalib",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     jars: ["java/myjavalib.jar"],
 }
 
 java_import {
     name: "myjavalib",
     prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     jars: ["java/myjavalib.jar"],
 }
 
 module_exports_snapshot {
     name: "myexports@current",
+    visibility: ["//visibility:public"],
     java_libs: ["myexports_myjavalib@current"],
 }
 
@@ -431,6 +468,61 @@ module_exports_snapshot {
 		checkAllCopyRules(`
 .intermediates/myjavalib/android_common/withres/myjavalib.jar -> java/myjavalib.jar
 aidl/foo/bar/Test.aidl -> aidl/aidl/foo/bar/Test.aidl
+`),
+	)
+}
+
+func TestSnapshotWithJavaBootLibrary(t *testing.T) {
+	result := testSdkWithJava(t, `
+		module_exports {
+			name: "myexports",
+			java_boot_libs: ["myjavalib"],
+		}
+
+		java_library {
+			name: "myjavalib",
+			srcs: ["Test.java"],
+			java_resources: ["resource.txt"],
+			// The aidl files should not be copied to the snapshot because a java_boot_libs member is not
+			// intended to be used for compiling Java, only for accessing the dex implementation jar.
+			aidl: {
+				export_include_dirs: ["aidl"],
+			},
+			system_modules: "none",
+			sdk_version: "none",
+			compile_dex: true,
+		}
+	`)
+
+	result.CheckSnapshot("myexports", "",
+		checkAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+java_import {
+    name: "myexports_myjavalib@current",
+    sdk_member_name: "myjavalib",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
+    jars: ["java_boot_libs/snapshot/jars/are/invalid/myjavalib.jar"],
+}
+
+java_import {
+    name: "myjavalib",
+    prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
+    jars: ["java_boot_libs/snapshot/jars/are/invalid/myjavalib.jar"],
+}
+
+module_exports_snapshot {
+    name: "myexports@current",
+    visibility: ["//visibility:public"],
+    java_boot_libs: ["myexports_myjavalib@current"],
+}
+
+`),
+		checkAllCopyRules(`
+.intermediates/myexports/common_os/empty -> java_boot_libs/snapshot/jars/are/invalid/myjavalib.jar
 `),
 	)
 }
@@ -465,6 +557,8 @@ func TestHostSnapshotWithJavaImplLibrary(t *testing.T) {
 java_import {
     name: "myexports_myjavalib@current",
     sdk_member_name: "myjavalib",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     jars: ["java/myjavalib.jar"],
@@ -473,6 +567,8 @@ java_import {
 java_import {
     name: "myjavalib",
     prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     jars: ["java/myjavalib.jar"],
@@ -480,6 +576,7 @@ java_import {
 
 module_exports_snapshot {
     name: "myexports@current",
+    visibility: ["//visibility:public"],
     device_supported: false,
     host_supported: true,
     java_libs: ["myexports_myjavalib@current"],
@@ -516,6 +613,8 @@ func TestSnapshotWithJavaTest(t *testing.T) {
 java_test_import {
     name: "myexports_myjavatests@current",
     sdk_member_name: "myjavatests",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     jars: ["java/myjavatests.jar"],
     test_config: "java/myjavatests-AndroidTest.xml",
 }
@@ -523,12 +622,15 @@ java_test_import {
 java_test_import {
     name: "myjavatests",
     prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     jars: ["java/myjavatests.jar"],
     test_config: "java/myjavatests-AndroidTest.xml",
 }
 
 module_exports_snapshot {
     name: "myexports@current",
+    visibility: ["//visibility:public"],
     java_tests: ["myexports_myjavatests@current"],
 }
 `),
@@ -566,6 +668,8 @@ func TestHostSnapshotWithJavaTest(t *testing.T) {
 java_test_import {
     name: "myexports_myjavatests@current",
     sdk_member_name: "myjavatests",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     jars: ["java/myjavatests.jar"],
@@ -575,6 +679,8 @@ java_test_import {
 java_test_import {
     name: "myjavatests",
     prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     jars: ["java/myjavatests.jar"],
@@ -583,6 +689,7 @@ java_test_import {
 
 module_exports_snapshot {
     name: "myexports@current",
+    visibility: ["//visibility:public"],
     device_supported: false,
     host_supported: true,
     java_tests: ["myexports_myjavatests@current"],
@@ -592,142 +699,6 @@ module_exports_snapshot {
 .intermediates/myjavatests/linux_glibc_common/javac/myjavatests.jar -> java/myjavatests.jar
 .intermediates/myjavatests/linux_glibc_common/myjavatests.config -> java/myjavatests-AndroidTest.xml
 `),
-	)
-}
-
-func testSdkWithDroidstubs(t *testing.T, bp string) *testSdkResult {
-	t.Helper()
-
-	fs := map[string][]byte{
-		"foo/bar/Foo.java":               nil,
-		"stubs-sources/foo/bar/Foo.java": nil,
-	}
-	return testSdkWithFs(t, bp, fs)
-}
-
-// Note: This test does not verify that a droidstubs can be referenced, either
-// directly or indirectly from an APEX as droidstubs can never be a part of an
-// apex.
-func TestBasicSdkWithDroidstubs(t *testing.T) {
-	testSdkWithDroidstubs(t, `
-		sdk {
-				name: "mysdk",
-				stubs_sources: ["mystub"],
-		}
-		sdk_snapshot {
-				name: "mysdk@10",
-				stubs_sources: ["mystub_mysdk@10"],
-		}
-		prebuilt_stubs_sources {
-				name: "mystub_mysdk@10",
-				sdk_member_name: "mystub",
-				srcs: ["stubs-sources/foo/bar/Foo.java"],
-		}
-		droidstubs {
-				name: "mystub",
-				srcs: ["foo/bar/Foo.java"],
-				sdk_version: "none",
-				system_modules: "none",
-		}
-		java_library {
-				name: "myjavalib",
-				srcs: [":mystub"],
-				sdk_version: "none",
-				system_modules: "none",
-		}
-	`)
-}
-
-func TestSnapshotWithDroidstubs(t *testing.T) {
-	result := testSdkWithDroidstubs(t, `
-		module_exports {
-			name: "myexports",
-			stubs_sources: ["myjavaapistubs"],
-		}
-
-		droidstubs {
-			name: "myjavaapistubs",
-			srcs: ["foo/bar/Foo.java"],
-			system_modules: "none",
-			sdk_version: "none",
-		}
-	`)
-
-	result.CheckSnapshot("myexports", "",
-		checkAndroidBpContents(`
-// This is auto-generated. DO NOT EDIT.
-
-prebuilt_stubs_sources {
-    name: "myexports_myjavaapistubs@current",
-    sdk_member_name: "myjavaapistubs",
-    srcs: ["java/myjavaapistubs_stubs_sources"],
-}
-
-prebuilt_stubs_sources {
-    name: "myjavaapistubs",
-    prefer: false,
-    srcs: ["java/myjavaapistubs_stubs_sources"],
-}
-
-module_exports_snapshot {
-    name: "myexports@current",
-    stubs_sources: ["myexports_myjavaapistubs@current"],
-}
-
-`),
-		checkAllCopyRules(""),
-		checkMergeZips(".intermediates/myexports/common_os/tmp/java/myjavaapistubs_stubs_sources.zip"),
-	)
-}
-
-func TestHostSnapshotWithDroidstubs(t *testing.T) {
-	result := testSdkWithDroidstubs(t, `
-		module_exports {
-			name: "myexports",
-			device_supported: false,
-			host_supported: true,
-			stubs_sources: ["myjavaapistubs"],
-		}
-
-		droidstubs {
-			name: "myjavaapistubs",
-			device_supported: false,
-			host_supported: true,
-			srcs: ["foo/bar/Foo.java"],
-			system_modules: "none",
-			sdk_version: "none",
-		}
-	`)
-
-	result.CheckSnapshot("myexports", "",
-		checkAndroidBpContents(`
-// This is auto-generated. DO NOT EDIT.
-
-prebuilt_stubs_sources {
-    name: "myexports_myjavaapistubs@current",
-    sdk_member_name: "myjavaapistubs",
-    device_supported: false,
-    host_supported: true,
-    srcs: ["java/myjavaapistubs_stubs_sources"],
-}
-
-prebuilt_stubs_sources {
-    name: "myjavaapistubs",
-    prefer: false,
-    device_supported: false,
-    host_supported: true,
-    srcs: ["java/myjavaapistubs_stubs_sources"],
-}
-
-module_exports_snapshot {
-    name: "myexports@current",
-    device_supported: false,
-    host_supported: true,
-    stubs_sources: ["myexports_myjavaapistubs@current"],
-}
-`),
-		checkAllCopyRules(""),
-		checkMergeZips(".intermediates/myexports/common_os/tmp/java/myjavaapistubs_stubs_sources.zip"),
 	)
 }
 
@@ -766,12 +737,16 @@ func TestSnapshotWithJavaSystemModules(t *testing.T) {
 java_import {
     name: "mysdk_exported-system-module@current",
     sdk_member_name: "exported-system-module",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     jars: ["java/exported-system-module.jar"],
 }
 
 java_import {
     name: "exported-system-module",
     prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     jars: ["java/exported-system-module.jar"],
 }
 
@@ -779,6 +754,7 @@ java_import {
     name: "mysdk_system-module@current",
     sdk_member_name: "system-module",
     visibility: ["//visibility:private"],
+    apex_available: ["//apex_available:platform"],
     jars: ["java/system-module.jar"],
 }
 
@@ -786,12 +762,14 @@ java_import {
     name: "mysdk_system-module",
     prefer: false,
     visibility: ["//visibility:private"],
+    apex_available: ["//apex_available:platform"],
     jars: ["java/system-module.jar"],
 }
 
 java_system_modules_import {
     name: "mysdk_my-system-modules@current",
     sdk_member_name: "my-system-modules",
+    visibility: ["//visibility:public"],
     libs: [
         "mysdk_system-module@current",
         "mysdk_exported-system-module@current",
@@ -801,6 +779,7 @@ java_system_modules_import {
 java_system_modules_import {
     name: "my-system-modules",
     prefer: false,
+    visibility: ["//visibility:public"],
     libs: [
         "mysdk_system-module",
         "exported-system-module",
@@ -809,6 +788,7 @@ java_system_modules_import {
 
 sdk_snapshot {
     name: "mysdk@current",
+    visibility: ["//visibility:public"],
     java_header_libs: ["mysdk_exported-system-module@current"],
     java_system_modules: ["mysdk_my-system-modules@current"],
 }
@@ -854,6 +834,7 @@ java_import {
     name: "mysdk_system-module@current",
     sdk_member_name: "system-module",
     visibility: ["//visibility:private"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     jars: ["java/system-module.jar"],
@@ -863,6 +844,7 @@ java_import {
     name: "mysdk_system-module",
     prefer: false,
     visibility: ["//visibility:private"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     jars: ["java/system-module.jar"],
@@ -871,6 +853,7 @@ java_import {
 java_system_modules_import {
     name: "mysdk_my-system-modules@current",
     sdk_member_name: "my-system-modules",
+    visibility: ["//visibility:public"],
     device_supported: false,
     host_supported: true,
     libs: ["mysdk_system-module@current"],
@@ -879,6 +862,7 @@ java_system_modules_import {
 java_system_modules_import {
     name: "my-system-modules",
     prefer: false,
+    visibility: ["//visibility:public"],
     device_supported: false,
     host_supported: true,
     libs: ["mysdk_system-module"],
@@ -886,6 +870,7 @@ java_system_modules_import {
 
 sdk_snapshot {
     name: "mysdk@current",
+    visibility: ["//visibility:public"],
     device_supported: false,
     host_supported: true,
     java_system_modules: ["mysdk_my-system-modules@current"],
@@ -939,6 +924,8 @@ func TestDeviceAndHostSnapshotWithOsSpecificMembers(t *testing.T) {
 java_import {
     name: "myexports_hostjavalib@current",
     sdk_member_name: "hostjavalib",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     jars: ["java/hostjavalib.jar"],
@@ -947,6 +934,8 @@ java_import {
 java_import {
     name: "hostjavalib",
     prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     jars: ["java/hostjavalib.jar"],
@@ -955,18 +944,24 @@ java_import {
 java_import {
     name: "myexports_androidjavalib@current",
     sdk_member_name: "androidjavalib",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     jars: ["java/androidjavalib.jar"],
 }
 
 java_import {
     name: "androidjavalib",
     prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     jars: ["java/androidjavalib.jar"],
 }
 
 java_import {
     name: "myexports_myjavalib@current",
     sdk_member_name: "myjavalib",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     host_supported: true,
     target: {
         android: {
@@ -981,6 +976,8 @@ java_import {
 java_import {
     name: "myjavalib",
     prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     host_supported: true,
     target: {
         android: {
@@ -994,6 +991,7 @@ java_import {
 
 module_exports_snapshot {
     name: "myexports@current",
+    visibility: ["//visibility:public"],
     host_supported: true,
     java_libs: ["myexports_myjavalib@current"],
     target: {
@@ -1040,6 +1038,7 @@ func TestSnapshotWithJavaSdkLibrary(t *testing.T) {
 java_sdk_library_import {
     name: "mysdk_myjavalib@current",
     sdk_member_name: "myjavalib",
+    visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: false,
     public: {
@@ -1068,6 +1067,7 @@ java_sdk_library_import {
 java_sdk_library_import {
     name: "myjavalib",
     prefer: false,
+    visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: false,
     public: {
@@ -1095,6 +1095,7 @@ java_sdk_library_import {
 
 sdk_snapshot {
     name: "mysdk@current",
+    visibility: ["//visibility:public"],
     java_sdk_libs: ["mysdk_myjavalib@current"],
 }
 `),
@@ -1138,6 +1139,8 @@ func TestSnapshotWithJavaSdkLibrary_SdkVersion_None(t *testing.T) {
 java_sdk_library_import {
     name: "mysdk_myjavalib@current",
     sdk_member_name: "myjavalib",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     shared_library: true,
     public: {
         jars: ["sdk_library/public/myjavalib-stubs.jar"],
@@ -1151,6 +1154,8 @@ java_sdk_library_import {
 java_sdk_library_import {
     name: "myjavalib",
     prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     shared_library: true,
     public: {
         jars: ["sdk_library/public/myjavalib-stubs.jar"],
@@ -1163,6 +1168,7 @@ java_sdk_library_import {
 
 sdk_snapshot {
     name: "mysdk@current",
+    visibility: ["//visibility:public"],
     java_sdk_libs: ["mysdk_myjavalib@current"],
 }
 `),
@@ -1202,6 +1208,8 @@ func TestSnapshotWithJavaSdkLibrary_SdkVersion_ForScope(t *testing.T) {
 java_sdk_library_import {
     name: "mysdk_myjavalib@current",
     sdk_member_name: "myjavalib",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     shared_library: true,
     public: {
         jars: ["sdk_library/public/myjavalib-stubs.jar"],
@@ -1215,6 +1223,8 @@ java_sdk_library_import {
 java_sdk_library_import {
     name: "myjavalib",
     prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     shared_library: true,
     public: {
         jars: ["sdk_library/public/myjavalib-stubs.jar"],
@@ -1227,6 +1237,7 @@ java_sdk_library_import {
 
 sdk_snapshot {
     name: "mysdk@current",
+    visibility: ["//visibility:public"],
     java_sdk_libs: ["mysdk_myjavalib@current"],
 }
 `),
@@ -1269,6 +1280,7 @@ func TestSnapshotWithJavaSdkLibrary_ApiScopes(t *testing.T) {
 java_sdk_library_import {
     name: "mysdk_myjavalib@current",
     sdk_member_name: "myjavalib",
+    visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: true,
     public: {
@@ -1290,6 +1302,7 @@ java_sdk_library_import {
 java_sdk_library_import {
     name: "myjavalib",
     prefer: false,
+    visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: true,
     public: {
@@ -1310,6 +1323,7 @@ java_sdk_library_import {
 
 sdk_snapshot {
     name: "mysdk@current",
+    visibility: ["//visibility:public"],
     java_sdk_libs: ["mysdk_myjavalib@current"],
 }
 `),
@@ -1359,6 +1373,7 @@ func TestSnapshotWithJavaSdkLibrary_ModuleLib(t *testing.T) {
 java_sdk_library_import {
     name: "mysdk_myjavalib@current",
     sdk_member_name: "myjavalib",
+    visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: true,
     public: {
@@ -1387,6 +1402,7 @@ java_sdk_library_import {
 java_sdk_library_import {
     name: "myjavalib",
     prefer: false,
+    visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: true,
     public: {
@@ -1414,6 +1430,7 @@ java_sdk_library_import {
 
 sdk_snapshot {
     name: "mysdk@current",
+    visibility: ["//visibility:public"],
     java_sdk_libs: ["mysdk_myjavalib@current"],
 }
 `),
@@ -1464,6 +1481,7 @@ func TestSnapshotWithJavaSdkLibrary_SystemServer(t *testing.T) {
 java_sdk_library_import {
     name: "mysdk_myjavalib@current",
     sdk_member_name: "myjavalib",
+    visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: true,
     public: {
@@ -1485,6 +1503,7 @@ java_sdk_library_import {
 java_sdk_library_import {
     name: "myjavalib",
     prefer: false,
+    visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: true,
     public: {
@@ -1505,6 +1524,7 @@ java_sdk_library_import {
 
 sdk_snapshot {
     name: "mysdk@current",
+    visibility: ["//visibility:public"],
     java_sdk_libs: ["mysdk_myjavalib@current"],
 }
 `),
@@ -1549,6 +1569,7 @@ func TestSnapshotWithJavaSdkLibrary_NamingScheme(t *testing.T) {
 java_sdk_library_import {
     name: "mysdk_myjavalib@current",
     sdk_member_name: "myjavalib",
+    visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     naming_scheme: "default",
     shared_library: true,
@@ -1564,6 +1585,7 @@ java_sdk_library_import {
 java_sdk_library_import {
     name: "myjavalib",
     prefer: false,
+    visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     naming_scheme: "default",
     shared_library: true,
@@ -1578,6 +1600,7 @@ java_sdk_library_import {
 
 sdk_snapshot {
     name: "mysdk@current",
+    visibility: ["//visibility:public"],
     java_sdk_libs: ["mysdk_myjavalib@current"],
 }
 `),
@@ -1622,6 +1645,8 @@ func TestSnapshotWithJavaSdkLibrary_DoctagFiles(t *testing.T) {
 java_sdk_library_import {
     name: "mysdk_myjavalib@current",
     sdk_member_name: "myjavalib",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     shared_library: true,
     doctag_files: ["doctags/docs/known_doctags"],
     public: {
@@ -1636,6 +1661,8 @@ java_sdk_library_import {
 java_sdk_library_import {
     name: "myjavalib",
     prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
     shared_library: true,
     doctag_files: ["doctags/docs/known_doctags"],
     public: {
@@ -1649,6 +1676,7 @@ java_sdk_library_import {
 
 sdk_snapshot {
     name: "mysdk@current",
+    visibility: ["//visibility:public"],
     java_sdk_libs: ["mysdk_myjavalib@current"],
 }
 `),

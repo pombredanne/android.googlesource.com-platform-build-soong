@@ -44,6 +44,18 @@ func registerMutatorsToContext(ctx *blueprint.Context, mutators []*mutator) {
 	}
 }
 
+// RegisterMutatorsForBazelConversion is a alternate registration pipeline for bp2build. Exported for testing.
+func RegisterMutatorsForBazelConversion(ctx *blueprint.Context, bp2buildMutators []RegisterMutatorFunc) {
+	mctx := &registerMutatorsContext{}
+
+	// Register bp2build mutators
+	for _, f := range bp2buildMutators {
+		f(mctx)
+	}
+
+	registerMutatorsToContext(ctx, mctx.mutators)
+}
+
 func registerMutators(ctx *blueprint.Context, preArch, preDeps, postDeps, finalDeps []RegisterMutatorFunc) {
 	mctx := &registerMutatorsContext{}
 
@@ -110,6 +122,11 @@ var preArch = []RegisterMutatorFunc{
 	//
 	RegisterVisibilityRuleChecker,
 
+	// Record the default_applicable_licenses for each package.
+	//
+	// This must run before the defaults so that defaults modules can pick up the package default.
+	RegisterLicensesPackageMapper,
+
 	// Apply properties from defaults modules to the referencing modules.
 	//
 	// Any mutators that are added before this will not see any modules created by
@@ -136,6 +153,12 @@ var preArch = []RegisterMutatorFunc{
 	// prebuilt.
 	RegisterPrebuiltsPreArchMutators,
 
+	// Gather the licenses properties for all modules for use during expansion and enforcement.
+	//
+	// This must come after the defaults mutators to ensure that any licenses supplied
+	// in a defaults module has been successfully applied before the rules are gathered.
+	RegisterLicensesPropertyGatherer,
+
 	// Gather the visibility rules for all modules for us during visibility enforcement.
 	//
 	// This must come after the defaults mutators to ensure that any visibility supplied
@@ -157,6 +180,7 @@ var postDeps = []RegisterMutatorFunc{
 	registerPathDepsMutator,
 	RegisterPrebuiltsPostDepsMutators,
 	RegisterVisibilityRuleEnforcer,
+	RegisterLicensesDependencyChecker,
 	RegisterNeverallowMutator,
 	RegisterOverridePostDepsMutators,
 }
@@ -177,6 +201,21 @@ func PostDepsMutators(f RegisterMutatorFunc) {
 
 func FinalDepsMutators(f RegisterMutatorFunc) {
 	finalDeps = append(finalDeps, f)
+}
+
+var bp2buildMutators = []RegisterMutatorFunc{}
+
+// RegisterBp2BuildMutator registers specially crafted mutators for
+// converting Blueprint/Android modules into special modules that can
+// be code-generated into Bazel BUILD targets.
+//
+// TODO(b/178068862): bring this into TestContext.
+func RegisterBp2BuildMutator(moduleType string, m func(TopDownMutatorContext)) {
+	mutatorName := moduleType + "_bp2build"
+	f := func(ctx RegisterMutatorsContext) {
+		ctx.TopDown(mutatorName, m)
+	}
+	bp2buildMutators = append(bp2buildMutators, f)
 }
 
 type BaseMutatorContext interface {

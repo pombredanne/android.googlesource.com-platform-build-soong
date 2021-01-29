@@ -53,14 +53,14 @@ func TestMain(m *testing.M) {
 
 func testContext(config android.Config) *android.TestContext {
 
-	ctx := android.NewTestArchContext()
+	ctx := android.NewTestArchContext(config)
 	ctx.RegisterModuleType("filegroup", android.FileGroupFactory)
 	ctx.RegisterModuleType("tool", toolFactory)
 
-	registerGenruleBuildComponents(ctx)
+	RegisterGenruleBuildComponents(ctx)
 
 	ctx.PreArchMutators(android.RegisterDefaultsPreArchMutators)
-	ctx.Register(config)
+	ctx.Register()
 
 	return ctx
 }
@@ -141,7 +141,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "$(location) > $(out)",
 			`,
-			expect: "out/tool > __SBOX_OUT_FILES__",
+			expect: "__SBOX_SANDBOX_DIR__/tools/out/bin/tool > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "empty location tool2",
@@ -150,7 +150,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "$(location) > $(out)",
 			`,
-			expect: "out/tool > __SBOX_OUT_FILES__",
+			expect: "__SBOX_SANDBOX_DIR__/tools/out/bin/tool > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "empty location tool file",
@@ -159,7 +159,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "$(location) > $(out)",
 			`,
-			expect: "tool_file1 > __SBOX_OUT_FILES__",
+			expect: "__SBOX_SANDBOX_DIR__/tools/src/tool_file1 > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "empty location tool file fg",
@@ -168,7 +168,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "$(location) > $(out)",
 			`,
-			expect: "tool_file1 > __SBOX_OUT_FILES__",
+			expect: "__SBOX_SANDBOX_DIR__/tools/src/tool_file1 > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "empty location tool and tool file",
@@ -178,7 +178,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "$(location) > $(out)",
 			`,
-			expect: "out/tool > __SBOX_OUT_FILES__",
+			expect: "__SBOX_SANDBOX_DIR__/tools/out/bin/tool > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "tool",
@@ -187,7 +187,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "$(location tool) > $(out)",
 			`,
-			expect: "out/tool > __SBOX_OUT_FILES__",
+			expect: "__SBOX_SANDBOX_DIR__/tools/out/bin/tool > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "tool2",
@@ -196,7 +196,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "$(location :tool) > $(out)",
 			`,
-			expect: "out/tool > __SBOX_OUT_FILES__",
+			expect: "__SBOX_SANDBOX_DIR__/tools/out/bin/tool > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "tool file",
@@ -205,7 +205,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "$(location tool_file1) > $(out)",
 			`,
-			expect: "tool_file1 > __SBOX_OUT_FILES__",
+			expect: "__SBOX_SANDBOX_DIR__/tools/src/tool_file1 > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "tool file fg",
@@ -214,7 +214,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "$(location :1tool_file) > $(out)",
 			`,
-			expect: "tool_file1 > __SBOX_OUT_FILES__",
+			expect: "__SBOX_SANDBOX_DIR__/tools/src/tool_file1 > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "tool files",
@@ -223,7 +223,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "$(locations :tool_files) > $(out)",
 			`,
-			expect: "tool_file1 tool_file2 > __SBOX_OUT_FILES__",
+			expect: "__SBOX_SANDBOX_DIR__/tools/src/tool_file1 __SBOX_SANDBOX_DIR__/tools/src/tool_file2 > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "in1",
@@ -232,7 +232,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "cat $(in) > $(out)",
 			`,
-			expect: "cat ${in} > __SBOX_OUT_FILES__",
+			expect: "cat in1 > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "in1 fg",
@@ -241,7 +241,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "cat $(in) > $(out)",
 			`,
-			expect: "cat ${in} > __SBOX_OUT_FILES__",
+			expect: "cat in1 > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "ins",
@@ -250,7 +250,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "cat $(in) > $(out)",
 			`,
-			expect: "cat ${in} > __SBOX_OUT_FILES__",
+			expect: "cat in1 in2 > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "ins fg",
@@ -259,7 +259,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "cat $(in) > $(out)",
 			`,
-			expect: "cat ${in} > __SBOX_OUT_FILES__",
+			expect: "cat in1 in2 > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "location in1",
@@ -268,7 +268,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "cat $(location in1) > $(out)",
 			`,
-			expect: "cat in1 > __SBOX_OUT_FILES__",
+			expect: "cat in1 > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "location in1 fg",
@@ -277,7 +277,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "cat $(location :1in) > $(out)",
 			`,
-			expect: "cat in1 > __SBOX_OUT_FILES__",
+			expect: "cat in1 > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "location ins",
@@ -286,7 +286,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "cat $(location in1) > $(out)",
 			`,
-			expect: "cat in1 > __SBOX_OUT_FILES__",
+			expect: "cat in1 > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "location ins fg",
@@ -295,7 +295,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "cat $(locations :ins) > $(out)",
 			`,
-			expect: "cat in1 in2 > __SBOX_OUT_FILES__",
+			expect: "cat in1 in2 > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "outs",
@@ -303,7 +303,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out", "out2"],
 				cmd: "echo foo > $(out)",
 			`,
-			expect: "echo foo > __SBOX_OUT_FILES__",
+			expect: "echo foo > __SBOX_SANDBOX_DIR__/out/out __SBOX_SANDBOX_DIR__/out/out2",
 		},
 		{
 			name: "location out",
@@ -311,7 +311,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out", "out2"],
 				cmd: "echo foo > $(location out2)",
 			`,
-			expect: "echo foo > __SBOX_OUT_DIR__/out2",
+			expect: "echo foo > __SBOX_SANDBOX_DIR__/out/out2",
 		},
 		{
 			name: "depfile",
@@ -320,7 +320,7 @@ func TestGenruleCmd(t *testing.T) {
 				depfile: true,
 				cmd: "echo foo > $(out) && touch $(depfile)",
 			`,
-			expect: "echo foo > __SBOX_OUT_FILES__ && touch __SBOX_DEPFILE__",
+			expect: "echo foo > __SBOX_SANDBOX_DIR__/out/out && touch __SBOX_DEPFILE__",
 		},
 		{
 			name: "gendir",
@@ -328,7 +328,7 @@ func TestGenruleCmd(t *testing.T) {
 				out: ["out"],
 				cmd: "echo foo > $(genDir)/foo && cp $(genDir)/foo $(out)",
 			`,
-			expect: "echo foo > __SBOX_OUT_DIR__/foo && cp __SBOX_OUT_DIR__/foo __SBOX_OUT_FILES__",
+			expect: "echo foo > __SBOX_SANDBOX_DIR__/out/foo && cp __SBOX_SANDBOX_DIR__/out/foo __SBOX_SANDBOX_DIR__/out/out",
 		},
 
 		{
@@ -443,7 +443,7 @@ func TestGenruleCmd(t *testing.T) {
 
 			allowMissingDependencies: true,
 
-			expect: "cat ***missing srcs :missing*** > __SBOX_OUT_FILES__",
+			expect: "cat ***missing srcs :missing*** > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "tool allow missing dependencies",
@@ -455,7 +455,7 @@ func TestGenruleCmd(t *testing.T) {
 
 			allowMissingDependencies: true,
 
-			expect: "***missing tool :missing*** > __SBOX_OUT_FILES__",
+			expect: "***missing tool :missing*** > __SBOX_SANDBOX_DIR__/out/out",
 		},
 	}
 
@@ -495,7 +495,7 @@ func TestGenruleCmd(t *testing.T) {
 			}
 
 			gen := ctx.ModuleForTests("gen", "").Module().(*Module)
-			if g, w := gen.rawCommands[0], "'"+test.expect+"'"; w != g {
+			if g, w := gen.rawCommands[0], test.expect; w != g {
 				t.Errorf("want %q, got %q", w, g)
 			}
 		})
@@ -542,18 +542,18 @@ func TestGenruleHashInputs(t *testing.T) {
 	}{
 		{
 			name: "hash0",
-			// sha256 value obtained from: echo -n 'in1.txtin2.txt' | sha256sum
-			expectedHash: "031097e11e0a8c822c960eb9742474f46336360a515744000d086d94335a9cb9",
+			// sha256 value obtained from: echo -en 'in1.txt\nin2.txt' | sha256sum
+			expectedHash: "18da75b9b1cc74b09e365b4ca2e321b5d618f438cc632b387ad9dc2ab4b20e9d",
 		},
 		{
 			name: "hash1",
-			// sha256 value obtained from: echo -n 'in1.txtin2.txtin3.txt' | sha256sum
-			expectedHash: "de5d22a4a7ab50d250cc59fcdf7a7e0775790d270bfca3a7a9e1f18a70dd996c",
+			// sha256 value obtained from: echo -en 'in1.txt\nin2.txt\nin3.txt' | sha256sum
+			expectedHash: "a38d432a4b19df93140e1f1fe26c97ff0387dae01fe506412b47208f0595fb45",
 		},
 		{
 			name: "hash2",
-			// $(in) is present, option should not appear
-			expectedHash: "",
+			// sha256 value obtained from: echo -en 'in1.txt\nin2.txt\nin3.txt' | sha256sum
+			expectedHash: "a38d432a4b19df93140e1f1fe26c97ff0387dae01fe506412b47208f0595fb45",
 		},
 	}
 
@@ -570,20 +570,11 @@ func TestGenruleHashInputs(t *testing.T) {
 	for _, test := range testcases {
 		t.Run(test.name, func(t *testing.T) {
 			gen := ctx.ModuleForTests(test.name, "")
-			command := gen.Rule("generator").RuleParams.Command
+			manifest := android.RuleBuilderSboxProtoForTests(t, gen.Output("genrule.sbox.textproto"))
+			hash := manifest.Commands[0].GetInputHash()
 
-			if len(test.expectedHash) > 0 {
-				// We add spaces before and after to make sure that
-				// this option doesn't abutt another sbox option.
-				expectedInputHashOption := " --input-hash " + test.expectedHash + " "
-
-				if !strings.Contains(command, expectedInputHashOption) {
-					t.Errorf("Expected command \"%s\" to contain \"%s\"", command, expectedInputHashOption)
-				}
-			} else {
-				if strings.Contains(command, "--input-hash") {
-					t.Errorf("Unexpected \"--input-hash\" found in command: \"%s\"", command)
-				}
+			if g, w := hash, test.expectedHash; g != w {
+				t.Errorf("Expected has %q, got %q", w, g)
 			}
 		})
 	}
@@ -609,7 +600,7 @@ func TestGenSrcs(t *testing.T) {
 				cmd: "$(location) $(in) > $(out)",
 			`,
 			cmds: []string{
-				"'bash -c '\\''out/tool in1.txt > __SBOX_OUT_DIR__/in1.h'\\'' && bash -c '\\''out/tool in2.txt > __SBOX_OUT_DIR__/in2.h'\\'''",
+				"bash -c '__SBOX_SANDBOX_DIR__/tools/out/bin/tool in1.txt > __SBOX_SANDBOX_DIR__/out/in1.h' && bash -c '__SBOX_SANDBOX_DIR__/tools/out/bin/tool in2.txt > __SBOX_SANDBOX_DIR__/out/in2.h'",
 			},
 			deps:  []string{buildDir + "/.intermediates/gen/gen/gensrcs/in1.h", buildDir + "/.intermediates/gen/gen/gensrcs/in2.h"},
 			files: []string{buildDir + "/.intermediates/gen/gen/gensrcs/in1.h", buildDir + "/.intermediates/gen/gen/gensrcs/in2.h"},
@@ -623,8 +614,8 @@ func TestGenSrcs(t *testing.T) {
 				shard_size: 2,
 			`,
 			cmds: []string{
-				"'bash -c '\\''out/tool in1.txt > __SBOX_OUT_DIR__/in1.h'\\'' && bash -c '\\''out/tool in2.txt > __SBOX_OUT_DIR__/in2.h'\\'''",
-				"'bash -c '\\''out/tool in3.txt > __SBOX_OUT_DIR__/in3.h'\\'''",
+				"bash -c '__SBOX_SANDBOX_DIR__/tools/out/bin/tool in1.txt > __SBOX_SANDBOX_DIR__/out/in1.h' && bash -c '__SBOX_SANDBOX_DIR__/tools/out/bin/tool in2.txt > __SBOX_SANDBOX_DIR__/out/in2.h'",
+				"bash -c '__SBOX_SANDBOX_DIR__/tools/out/bin/tool in3.txt > __SBOX_SANDBOX_DIR__/out/in3.h'",
 			},
 			deps:  []string{buildDir + "/.intermediates/gen/gen/gensrcs/in1.h", buildDir + "/.intermediates/gen/gen/gensrcs/in2.h", buildDir + "/.intermediates/gen/gen/gensrcs/in3.h"},
 			files: []string{buildDir + "/.intermediates/gen/gen/gensrcs/in1.h", buildDir + "/.intermediates/gen/gen/gensrcs/in2.h", buildDir + "/.intermediates/gen/gen/gensrcs/in3.h"},
@@ -710,7 +701,7 @@ func TestGenruleDefaults(t *testing.T) {
 	}
 	gen := ctx.ModuleForTests("gen", "").Module().(*Module)
 
-	expectedCmd := "'cp ${in} __SBOX_OUT_FILES__'"
+	expectedCmd := "cp in1 __SBOX_SANDBOX_DIR__/out/out"
 	if gen.rawCommands[0] != expectedCmd {
 		t.Errorf("Expected cmd: %q, actual: %q", expectedCmd, gen.rawCommands[0])
 	}
@@ -718,6 +709,40 @@ func TestGenruleDefaults(t *testing.T) {
 	expectedSrcs := []string{"in1"}
 	if !reflect.DeepEqual(expectedSrcs, gen.properties.Srcs) {
 		t.Errorf("Expected srcs: %q, actual: %q", expectedSrcs, gen.properties.Srcs)
+	}
+}
+
+func TestGenruleWithBazel(t *testing.T) {
+	bp := `
+		genrule {
+				name: "foo",
+				out: ["one.txt", "two.txt"],
+				bazel_module: { label: "//foo/bar:bar" },
+		}
+	`
+
+	config := testConfig(bp, nil)
+	config.BazelContext = android.MockBazelContext{
+		AllFiles: map[string][]string{
+			"//foo/bar:bar": []string{"bazelone.txt", "bazeltwo.txt"}}}
+
+	ctx := testContext(config)
+	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
+	if errs == nil {
+		_, errs = ctx.PrepareBuildActions(config)
+	}
+	if errs != nil {
+		t.Fatal(errs)
+	}
+	gen := ctx.ModuleForTests("foo", "").Module().(*Module)
+
+	expectedOutputFiles := []string{"outputbase/execroot/__main__/bazelone.txt",
+		"outputbase/execroot/__main__/bazeltwo.txt"}
+	if !reflect.DeepEqual(gen.outputFiles.Strings(), expectedOutputFiles) {
+		t.Errorf("Expected output files: %q, actual: %q", expectedOutputFiles, gen.outputFiles)
+	}
+	if !reflect.DeepEqual(gen.outputDeps.Strings(), expectedOutputFiles) {
+		t.Errorf("Expected output deps: %q, actual: %q", expectedOutputFiles, gen.outputDeps)
 	}
 }
 
@@ -733,7 +758,7 @@ func toolFactory() android.Module {
 }
 
 func (t *testTool) GenerateAndroidBuildActions(ctx android.ModuleContext) {
-	t.outputFile = android.PathForTesting("out", ctx.ModuleName())
+	t.outputFile = ctx.InstallFile(android.PathForModuleInstall(ctx, "bin"), ctx.ModuleName(), android.PathForOutput(ctx, ctx.ModuleName()))
 }
 
 func (t *testTool) HostToolPath() android.OptionalPath {

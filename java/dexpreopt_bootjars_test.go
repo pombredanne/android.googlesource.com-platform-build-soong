@@ -48,11 +48,10 @@ func testDexpreoptBoot(t *testing.T, ruleFile string, expectedInputs, expectedOu
 
 	pathCtx := android.PathContextForTesting(config)
 	dexpreoptConfig := dexpreopt.GlobalConfigForTests(pathCtx)
-	dexpreoptConfig.BootJars = android.CreateConfiguredJarList(pathCtx, []string{"platform:foo", "platform:bar", "platform:baz"})
+	dexpreoptConfig.BootJars = android.CreateTestConfiguredJarList([]string{"platform:foo", "platform:bar", "platform:baz"})
 	dexpreopt.SetTestGlobalConfig(config, dexpreoptConfig)
 
-	ctx := testContext()
-	RegisterDexpreoptBootJarsComponents(ctx)
+	ctx := testContext(config)
 	run(t, ctx, config)
 
 	dexpreoptBootJars := ctx.SingletonForTests("dex_bootjars")
@@ -87,7 +86,7 @@ func TestDexpreoptBootJars(t *testing.T) {
 	ruleFile := "boot-foo.art"
 
 	expectedInputs := []string{
-		"dex_artjars/android/apex/com.android.art/javalib/arm64/boot.art",
+		"dex_artjars/android/apex/art_boot_images/javalib/arm64/boot.art",
 		"dex_bootjars_input/foo.jar",
 		"dex_bootjars_input/bar.jar",
 		"dex_bootjars_input/baz.jar",

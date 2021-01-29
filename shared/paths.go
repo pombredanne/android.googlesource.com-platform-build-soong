@@ -18,9 +18,27 @@ package shared
 
 import (
 	"path/filepath"
+
+	"android/soong/bazel"
 )
+
+// A SharedPaths represents a list of paths that are shared between
+// soong_ui and soong.
+type SharedPaths interface {
+	// BazelMetricsDir returns the path where a set of bazel profile
+	// files are stored for later processed by the metrics pipeline.
+	BazelMetricsDir() string
+}
 
 // Given the out directory, returns the root of the temp directory (to be cleared at the start of each execution of Soong)
 func TempDirForOutDir(outDir string) (tempPath string) {
 	return filepath.Join(outDir, ".temp")
+}
+
+// BazelMetricsFilename returns the bazel profile filename based
+// on the action name. This is to help to store a set of bazel
+// profiles since bazel may execute multiple times during a single
+// build.
+func BazelMetricsFilename(s SharedPaths, actionName bazel.RunName) string {
+	return filepath.Join(s.BazelMetricsDir(), actionName.String()+"_bazel_profile.gz")
 }

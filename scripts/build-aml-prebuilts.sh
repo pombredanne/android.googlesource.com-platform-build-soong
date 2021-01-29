@@ -12,7 +12,7 @@
 
 export OUT_DIR=${OUT_DIR:-out}
 
-if [ -e ${OUT_DIR}/soong/.soong.in_make ]; then
+if [ -e ${OUT_DIR}/soong/.soong.kati_enabled ]; then
   # If ${OUT_DIR} has been created without --skip-make, Soong will create an
   # ${OUT_DIR}/soong/build.ninja that leaves out many targets which are
   # expected to be supplied by the .mk files, and that might cause errors in
@@ -32,10 +32,18 @@ source build/envsetup.sh
 
 my_get_build_var() {
   # get_build_var will run Soong in normal in-make mode where it creates
-  # .soong.in_make. That would clobber our real out directory, so we need to
-  # run it in a different one.
+  # .soong.kati_enabled. That would clobber our real out directory, so we need
+  # to run it in a different one.
   OUT_DIR=${OUT_DIR}/get_build_var get_build_var "$@"
 }
+
+readonly SOONG_OUT=${OUT_DIR}/soong
+mkdir -p ${SOONG_OUT}
+
+# Some Soong build rules may require this, and the failure mode if it's missing
+# is confusing (b/172548608).
+readonly BUILD_NUMBER="$(my_get_build_var BUILD_NUMBER)"
+echo -n ${BUILD_NUMBER} > ${SOONG_OUT}/build_number.txt
 
 readonly PLATFORM_SDK_VERSION="$(my_get_build_var PLATFORM_SDK_VERSION)"
 readonly PLATFORM_VERSION="$(my_get_build_var PLATFORM_VERSION)"
@@ -45,6 +53,11 @@ PLATFORM_VERSION_ALL_CODENAMES="$(my_get_build_var PLATFORM_VERSION_ALL_CODENAME
 # turn this into ["O","P"].
 PLATFORM_VERSION_ALL_CODENAMES="${PLATFORM_VERSION_ALL_CODENAMES/,/'","'}"
 PLATFORM_VERSION_ALL_CODENAMES="[\"${PLATFORM_VERSION_ALL_CODENAMES}\"]"
+
+# Get the list of missing <uses-library> modules and convert it to a JSON array
+# (quote module names, add comma separator and wrap in brackets).
+MISSING_USES_LIBRARIES="$(my_get_build_var INTERNAL_PLATFORM_MISSING_USES_LIBRARIES)"
+MISSING_USES_LIBRARIES="[$(echo $MISSING_USES_LIBRARIES | sed -e 's/\([^ ]\+\)/\"\1\"/g' -e 's/[ ]\+/, /g')]"
 
 # Logic from build/make/core/goma.mk
 if [ "${USE_GOMA}" = true ]; then
@@ -61,8 +74,6 @@ else
   USE_GOMA=false
 fi
 
-readonly SOONG_OUT=${OUT_DIR}/soong
-mkdir -p ${SOONG_OUT}
 readonly SOONG_VARS=${SOONG_OUT}/soong.variables
 
 # Aml_abis: true
@@ -71,8 +82,14 @@ readonly SOONG_VARS=${SOONG_OUT}/soong.variables
 # CrossHost: linux_bionic
 # CrossHostArch: x86_64
 #   -  Enable Bionic on host as ART needs prebuilts for it.
+# VendorVars.art_mdoule.source_build
+#   -  TODO(b/172480615): Change default to false when platform uses ART Module
+#      prebuilts by default.
 cat > ${SOONG_VARS}.new << EOF
 {
+    "BuildNumberFile": "build_number.txt",
+
+    "Platform_version_name": "${PLATFORM_VERSION}",
     "Platform_sdk_version": ${PLATFORM_SDK_VERSION},
     "Platform_sdk_codename": "${PLATFORM_VERSION}",
     "Platform_version_active_codenames": ${PLATFORM_VERSION_ALL_CODENAMES},
@@ -86,7 +103,15 @@ cat > ${SOONG_VARS}.new << EOF
 
     "Allow_missing_dependencies": ${SOONG_ALLOW_MISSING_DEPENDENCIES:-false},
     "Unbundled_build": ${TARGET_BUILD_UNBUNDLED:-false},
-    "UseGoma": ${USE_GOMA}
+    "UseGoma": ${USE_GOMA},
+
+    "VendorVars": {
+        "art_module": {
+            "source_build": "${ENABLE_ART_SOURCE_BUILD:-true}"
+        }
+    },
+
+    "MissingUsesLibraries": ${MISSING_USES_LIBRARIES}
 }
 EOF
 

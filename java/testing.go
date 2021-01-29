@@ -22,6 +22,7 @@ import (
 
 	"android/soong/android"
 	"android/soong/cc"
+	"android/soong/dexpreopt"
 	"android/soong/python"
 
 	"github.com/google/blueprint"
@@ -38,59 +39,8 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 		"api/test-current.txt":   nil,
 		"api/test-removed.txt":   nil,
 
-		"prebuilts/sdk/14/public/android.jar":                      nil,
-		"prebuilts/sdk/14/public/framework.aidl":                   nil,
-		"prebuilts/sdk/14/system/android.jar":                      nil,
-		"prebuilts/sdk/17/public/android.jar":                      nil,
-		"prebuilts/sdk/17/public/framework.aidl":                   nil,
-		"prebuilts/sdk/17/system/android.jar":                      nil,
-		"prebuilts/sdk/28/public/android.jar":                      nil,
-		"prebuilts/sdk/28/public/framework.aidl":                   nil,
-		"prebuilts/sdk/28/system/android.jar":                      nil,
-		"prebuilts/sdk/29/public/android.jar":                      nil,
-		"prebuilts/sdk/29/public/framework.aidl":                   nil,
-		"prebuilts/sdk/29/system/android.jar":                      nil,
-		"prebuilts/sdk/29/system/foo.jar":                          nil,
-		"prebuilts/sdk/30/public/android.jar":                      nil,
-		"prebuilts/sdk/30/public/framework.aidl":                   nil,
-		"prebuilts/sdk/30/system/android.jar":                      nil,
-		"prebuilts/sdk/30/system/foo.jar":                          nil,
-		"prebuilts/sdk/30/module-lib/android.jar":                  nil,
-		"prebuilts/sdk/30/module-lib/foo.jar":                      nil,
-		"prebuilts/sdk/30/public/core-for-system-modules.jar":      nil,
-		"prebuilts/sdk/current/core/android.jar":                   nil,
-		"prebuilts/sdk/current/public/android.jar":                 nil,
-		"prebuilts/sdk/current/public/framework.aidl":              nil,
-		"prebuilts/sdk/current/public/core.jar":                    nil,
-		"prebuilts/sdk/current/public/core-for-system-modules.jar": nil,
-		"prebuilts/sdk/current/system/android.jar":                 nil,
-		"prebuilts/sdk/current/test/android.jar":                   nil,
-		"prebuilts/sdk/28/public/api/foo.txt":                      nil,
-		"prebuilts/sdk/28/system/api/foo.txt":                      nil,
-		"prebuilts/sdk/28/test/api/foo.txt":                        nil,
-		"prebuilts/sdk/28/public/api/foo-removed.txt":              nil,
-		"prebuilts/sdk/28/system/api/foo-removed.txt":              nil,
-		"prebuilts/sdk/28/test/api/foo-removed.txt":                nil,
-		"prebuilts/sdk/28/public/api/bar.txt":                      nil,
-		"prebuilts/sdk/28/system/api/bar.txt":                      nil,
-		"prebuilts/sdk/28/test/api/bar.txt":                        nil,
-		"prebuilts/sdk/28/public/api/bar-removed.txt":              nil,
-		"prebuilts/sdk/28/system/api/bar-removed.txt":              nil,
-		"prebuilts/sdk/28/test/api/bar-removed.txt":                nil,
-		"prebuilts/sdk/30/public/api/foo.txt":                      nil,
-		"prebuilts/sdk/30/system/api/foo.txt":                      nil,
-		"prebuilts/sdk/30/test/api/foo.txt":                        nil,
-		"prebuilts/sdk/30/public/api/foo-removed.txt":              nil,
-		"prebuilts/sdk/30/system/api/foo-removed.txt":              nil,
-		"prebuilts/sdk/30/test/api/foo-removed.txt":                nil,
-		"prebuilts/sdk/30/public/api/bar.txt":                      nil,
-		"prebuilts/sdk/30/system/api/bar.txt":                      nil,
-		"prebuilts/sdk/30/test/api/bar.txt":                        nil,
-		"prebuilts/sdk/30/public/api/bar-removed.txt":              nil,
-		"prebuilts/sdk/30/system/api/bar-removed.txt":              nil,
-		"prebuilts/sdk/30/test/api/bar-removed.txt":                nil,
-		"prebuilts/sdk/tools/core-lambda-stubs.jar":                nil,
-		"prebuilts/sdk/Android.bp":                                 []byte(`prebuilt_apis { name: "sdk", api_dirs: ["14", "28", "30", "current"], imports_sdk_version: "none", imports_compile_dex:true,}`),
+		"prebuilts/sdk/tools/core-lambda-stubs.jar": nil,
+		"prebuilts/sdk/Android.bp":                  []byte(`prebuilt_apis { name: "sdk", api_dirs: ["14", "28", "30", "current"], imports_sdk_version: "none", imports_compile_dex:true,}`),
 
 		"bin.py": nil,
 		python.StubTemplateHost: []byte(`PYTHON_BINARY = '%interpreter%'
@@ -101,6 +51,16 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 		"api/module-lib-removed.txt":    nil,
 		"api/system-server-current.txt": nil,
 		"api/system-server-removed.txt": nil,
+	}
+
+	levels := []string{"14", "28", "29", "30", "current"}
+	libs := []string{
+		"android", "foo", "bar", "sdklib", "barney", "betty", "foo-shared_library",
+		"foo-no_shared_library", "core-for-system-modules", "quuz", "qux", "fred",
+		"runtime-library",
+	}
+	for k, v := range prebuiltApisFilesForLibs(levels, libs) {
+		mockFS[k] = v
 	}
 
 	cc.GatherRequiredFilesForTest(mockFS)
@@ -120,6 +80,51 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 	return config
 }
 
+func prebuiltApisFilesForLibs(apiLevels []string, sdkLibs []string) map[string][]byte {
+	fs := make(map[string][]byte)
+	for _, level := range apiLevels {
+		for _, lib := range sdkLibs {
+			for _, scope := range []string{"public", "system", "module-lib", "system-server", "test"} {
+				fs[fmt.Sprintf("prebuilts/sdk/%s/%s/%s.jar", level, scope, lib)] = nil
+				// No finalized API files for "current"
+				if level != "current" {
+					fs[fmt.Sprintf("prebuilts/sdk/%s/%s/api/%s.txt", level, scope, lib)] = nil
+					fs[fmt.Sprintf("prebuilts/sdk/%s/%s/api/%s-removed.txt", level, scope, lib)] = nil
+				}
+			}
+		}
+		fs[fmt.Sprintf("prebuilts/sdk/%s/public/framework.aidl", level)] = nil
+	}
+	return fs
+}
+
+// Register build components provided by this package that are needed by tests.
+//
+// In particular this must register all the components that are used in the `Android.bp` snippet
+// returned by GatherRequiredDepsForTest()
+func RegisterRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
+	RegisterAARBuildComponents(ctx)
+	RegisterAppBuildComponents(ctx)
+	RegisterAppImportBuildComponents(ctx)
+	RegisterAppSetBuildComponents(ctx)
+	RegisterBootImageBuildComponents(ctx)
+	RegisterDexpreoptBootJarsComponents(ctx)
+	RegisterDocsBuildComponents(ctx)
+	RegisterGenRuleBuildComponents(ctx)
+	RegisterJavaBuildComponents(ctx)
+	RegisterPrebuiltApisBuildComponents(ctx)
+	RegisterRuntimeResourceOverlayBuildComponents(ctx)
+	RegisterSdkLibraryBuildComponents(ctx)
+	RegisterStubsBuildComponents(ctx)
+	RegisterSystemModulesBuildComponents(ctx)
+
+	// Make sure that any tool related module types needed by dexpreopt have been registered.
+	dexpreopt.RegisterToolModulesForTest(ctx)
+}
+
+// Gather the module definitions needed by tests that depend upon code from this package.
+//
+// Returns an `Android.bp` snippet that defines the modules that are needed by this package.
 func GatherRequiredDepsForTest() string {
 	var bp string
 
@@ -152,6 +157,24 @@ func GatherRequiredDepsForTest() string {
 		`, extra)
 	}
 
+	// For class loader context and <uses-library> tests.
+	dexpreoptModules := []string{"android.test.runner"}
+	dexpreoptModules = append(dexpreoptModules, dexpreopt.CompatUsesLibs...)
+	dexpreoptModules = append(dexpreoptModules, dexpreopt.OptionalCompatUsesLibs...)
+
+	for _, extra := range dexpreoptModules {
+		bp += fmt.Sprintf(`
+			java_library {
+				name: "%s",
+				srcs: ["a.java"],
+				sdk_version: "none",
+				system_modules: "stable-core-platform-api-stubs-system-modules",
+				compile_dex: true,
+				installable: true,
+			}
+		`, extra)
+	}
+
 	bp += `
 		java_library {
 			name: "framework",
@@ -166,48 +189,7 @@ func GatherRequiredDepsForTest() string {
 		android_app {
 			name: "framework-res",
 			sdk_version: "core_platform",
-		}
-
-		java_library {
-			name: "android.hidl.base-V1.0-java",
-			srcs: ["a.java"],
-			sdk_version: "none",
-			system_modules: "stable-core-platform-api-stubs-system-modules",
-			installable: true,
-		}
-
-		java_library {
-			name: "android.hidl.manager-V1.0-java",
-			srcs: ["a.java"],
-			sdk_version: "none",
-			system_modules: "stable-core-platform-api-stubs-system-modules",
-			installable: true,
-		}
-
-		java_library {
-			name: "org.apache.http.legacy",
-			srcs: ["a.java"],
-			sdk_version: "none",
-			system_modules: "stable-core-platform-api-stubs-system-modules",
-			installable: true,
-		}
-
-		java_library {
-			name: "android.test.base",
-			srcs: ["a.java"],
-			sdk_version: "none",
-			system_modules: "stable-core-platform-api-stubs-system-modules",
-			installable: true,
-		}
-  
-		java_library {
-			name: "android.test.mock",
-			srcs: ["a.java"],
-			sdk_version: "none",
-			system_modules: "stable-core-platform-api-stubs-system-modules",
-			installable: true,
-		}
-	`
+		}`
 
 	systemModules := []string{
 		"core-current-stubs-system-modules",
@@ -228,6 +210,26 @@ func GatherRequiredDepsForTest() string {
 			}
 		`, extra)
 	}
+
+	// Make sure that any tools needed for dexpreopting are defined.
+	bp += dexpreopt.BpToolModulesForTest()
+
+	// Make sure that the dex_bootjars singleton module is instantiated for the tests.
+	bp += `
+		dex_bootjars {
+			name: "dex_bootjars",
+		}
+
+		boot_image {
+			name: "art-boot-image",
+			image_name: "art",
+		}
+
+		boot_image {
+			name: "framework-boot-image",
+			image_name: "boot",
+		}
+`
 
 	return bp
 }

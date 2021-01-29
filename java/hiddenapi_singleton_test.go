@@ -23,14 +23,15 @@ import (
 	"github.com/google/blueprint/proptools"
 )
 
-func testConfigWithBootJars(bp string, bootJars []string) android.Config {
+func testConfigWithBootJars(bp string, bootJars []string, prebuiltHiddenApiDir *string) android.Config {
 	config := testConfig(nil, bp, nil)
-	config.TestProductVariables.BootJars = bootJars
+	config.TestProductVariables.BootJars = android.CreateTestConfiguredJarList(bootJars)
+	config.TestProductVariables.PrebuiltHiddenApiDir = prebuiltHiddenApiDir
 	return config
 }
 
-func testContextWithHiddenAPI() *android.TestContext {
-	ctx := testContext()
+func testContextWithHiddenAPI(config android.Config) *android.TestContext {
+	ctx := testContext(config)
 	ctx.RegisterSingletonType("hiddenapi", hiddenAPISingletonFactory)
 	return ctx
 }
@@ -38,14 +39,14 @@ func testContextWithHiddenAPI() *android.TestContext {
 func testHiddenAPIWithConfig(t *testing.T, config android.Config) *android.TestContext {
 	t.Helper()
 
-	ctx := testContextWithHiddenAPI()
+	ctx := testContextWithHiddenAPI(config)
 
 	run(t, ctx, config)
 	return ctx
 }
 
-func testHiddenAPIBootJars(t *testing.T, bp string, bootJars []string) (*android.TestContext, android.Config) {
-	config := testConfigWithBootJars(bp, bootJars)
+func testHiddenAPIBootJars(t *testing.T, bp string, bootJars []string, prebuiltHiddenApiDir *string) (*android.TestContext, android.Config) {
+	config := testConfigWithBootJars(bp, bootJars, prebuiltHiddenApiDir)
 
 	return testHiddenAPIWithConfig(t, config), config
 }
@@ -64,7 +65,7 @@ func TestHiddenAPISingleton(t *testing.T) {
 			srcs: ["a.java"],
 			compile_dex: true,
 	}
-	`, []string{":foo"})
+	`, []string{":foo"}, nil)
 
 	hiddenAPI := ctx.SingletonForTests("hiddenapi")
 	hiddenapiRule := hiddenAPI.Rule("hiddenapi")
@@ -81,11 +82,11 @@ func TestHiddenAPISingletonWithPrebuilt(t *testing.T) {
 			jars: ["a.jar"],
 			compile_dex: true,
 	}
-	`, []string{":foo"})
+	`, []string{":foo"}, nil)
 
 	hiddenAPI := ctx.SingletonForTests("hiddenapi")
 	hiddenapiRule := hiddenAPI.Rule("hiddenapi")
-	want := "--boot-dex=" + buildDir + "/.intermediates/foo/android_common/dex/foo.jar"
+	want := "--boot-dex=" + buildDir + "/.intermediates/foo/android_common/aligned/foo.jar"
 	if !strings.Contains(hiddenapiRule.RuleParams.Command, want) {
 		t.Errorf("Expected %s in hiddenapi command, but it was not present: %s", want, hiddenapiRule.RuleParams.Command)
 	}
@@ -105,7 +106,7 @@ func TestHiddenAPISingletonWithPrebuiltUseSource(t *testing.T) {
 			compile_dex: true,
 			prefer: false,
 	}
-	`, []string{":foo"})
+	`, []string{":foo"}, nil)
 
 	hiddenAPI := ctx.SingletonForTests("hiddenapi")
 	hiddenapiRule := hiddenAPI.Rule("hiddenapi")
@@ -134,7 +135,7 @@ func TestHiddenAPISingletonWithPrebuiltOverrideSource(t *testing.T) {
 			compile_dex: true,
 			prefer: true,
 	}
-	`, []string{":foo"})
+	`, []string{":foo"}, nil)
 
 	hiddenAPI := ctx.SingletonForTests("hiddenapi")
 	hiddenapiRule := hiddenAPI.Rule("hiddenapi")
@@ -216,4 +217,49 @@ func generateSdkDexPath(module string, unbundled bool) string {
 		return generateDexedPath("prebuilts/sdk/"+module, "dex", module)
 	}
 	return generateDexPath(module)
+}
+
+func TestHiddenAPISingletonWithPrebuiltCsvFile(t *testing.T) {
+
+	// The idea behind this test is to ensure that when the build is
+	// confugured with a PrebuiltHiddenApiDir that the rules for the
+	// hiddenapi singleton copy the prebuilts to the typical output
+	// location, and then use that output location for the hiddenapi encode
+	// dex step.
+
+	// Where to find the prebuilt hiddenapi files:
+	prebuiltHiddenApiDir := "path/to/prebuilt/hiddenapi"
+
+	ctx, _ := testHiddenAPIBootJars(t, `
+		java_import {
+			name: "foo",
+			jars: ["a.jar"],
+			compile_dex: true,
+	}
+	`, []string{":foo"}, &prebuiltHiddenApiDir)
+
+	expectedCpInput := prebuiltHiddenApiDir + "/hiddenapi-flags.csv"
+	expectedCpOutput := buildDir + "/hiddenapi/hiddenapi-flags.csv"
+	expectedFlagsCsv := buildDir + "/hiddenapi/hiddenapi-flags.csv"
+
+	foo := ctx.ModuleForTests("foo", "android_common")
+
+	hiddenAPI := ctx.SingletonForTests("hiddenapi")
+	cpRule := hiddenAPI.Rule("Cp")
+	actualCpInput := cpRule.BuildParams.Input
+	actualCpOutput := cpRule.BuildParams.Output
+	encodeDexRule := foo.Rule("hiddenAPIEncodeDex")
+	actualFlagsCsv := encodeDexRule.BuildParams.Args["flagsCsv"]
+
+	if actualCpInput.String() != expectedCpInput {
+		t.Errorf("Prebuilt hiddenapi cp rule input mismatch, actual: %s, expected: %s", actualCpInput, expectedCpInput)
+	}
+
+	if actualCpOutput.String() != expectedCpOutput {
+		t.Errorf("Prebuilt hiddenapi cp rule output mismatch, actual: %s, expected: %s", actualCpOutput, expectedCpOutput)
+	}
+
+	if actualFlagsCsv != expectedFlagsCsv {
+		t.Errorf("Prebuilt hiddenapi encode dex rule flags csv mismatch, actual: %s, expected: %s", actualFlagsCsv, expectedFlagsCsv)
+	}
 }

@@ -80,14 +80,14 @@ func testSdkContext(bp string, fs map[string][]byte, extraOsTypes []android.OsTy
 		}
 	}
 
-	ctx := android.NewTestArchContext()
+	ctx := android.NewTestArchContext(config)
 
 	// Enable androidmk support.
 	// * Register the singleton
 	// * Configure that we are inside make
 	// * Add CommonOS to ensure that androidmk processing works.
 	android.RegisterAndroidMkBuildComponents(ctx)
-	android.SetInMakeForTests(config)
+	android.SetKatiEnabledForTests(config)
 	config.Targets[android.CommonOS] = []android.Target{
 		{android.CommonOS, android.Arch{ArchType: android.Common}, android.NativeBridgeDisabled, "", "", true},
 	}
@@ -107,11 +107,7 @@ func testSdkContext(bp string, fs map[string][]byte, extraOsTypes []android.OsTy
 	ctx.PostDepsMutators(android.RegisterVisibilityRuleEnforcer)
 
 	// from java package
-	java.RegisterJavaBuildComponents(ctx)
-	java.RegisterAppBuildComponents(ctx)
-	java.RegisterSdkLibraryBuildComponents(ctx)
-	java.RegisterStubsBuildComponents(ctx)
-	java.RegisterSystemModulesBuildComponents(ctx)
+	java.RegisterRequiredBuildComponentsForTest(ctx)
 
 	// from cc package
 	cc.RegisterRequiredBuildComponentsForTest(ctx)
@@ -129,7 +125,7 @@ func testSdkContext(bp string, fs map[string][]byte, extraOsTypes []android.OsTy
 	ctx.PreDepsMutators(RegisterPreDepsMutators)
 	ctx.PostDepsMutators(RegisterPostDepsMutators)
 
-	ctx.Register(config)
+	ctx.Register()
 
 	return ctx, config
 }

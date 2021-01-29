@@ -41,7 +41,7 @@ func (t *testSuiteFiles) GenerateBuildActions(ctx SingletonContext) {
 					files[testSuite] = make(map[string]InstallPaths)
 				}
 				name := ctx.ModuleName(m)
-				files[testSuite][name] = append(files[testSuite][name], tsm.filesToInstall()...)
+				files[testSuite][name] = append(files[testSuite][name], tsm.FilesToInstall()...)
 			}
 		}
 	})
@@ -63,13 +63,13 @@ func robolectricTestSuite(ctx SingletonContext, files map[string]InstallPaths) W
 	testCasesDir := pathForInstall(ctx, BuildOs, X86, "testcases", false).ToMakePath()
 
 	outputFile := PathForOutput(ctx, "packaging", "robolectric-tests.zip")
-	rule := NewRuleBuilder()
-	rule.Command().BuiltTool(ctx, "soong_zip").
+	rule := NewRuleBuilder(pctx, ctx)
+	rule.Command().BuiltTool("soong_zip").
 		FlagWithOutput("-o ", outputFile).
 		FlagWithArg("-P ", "host/testcases").
 		FlagWithArg("-C ", testCasesDir.String()).
 		FlagWithRspFileInputList("-r ", installedPaths.Paths())
-	rule.Build(pctx, ctx, "robolectric_tests_zip", "robolectric-tests.zip")
+	rule.Build("robolectric_tests_zip", "robolectric-tests.zip")
 
 	return outputFile
 }

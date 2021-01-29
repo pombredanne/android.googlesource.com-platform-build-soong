@@ -33,11 +33,9 @@ type dexpreopter struct {
 	isTest              bool
 	isPresignedPrebuilt bool
 
-	manifestFile     android.Path
-	usesLibs         []string
-	optionalUsesLibs []string
-	enforceUsesLibs  bool
-	libraryPaths     dexpreopt.LibraryPaths
+	manifestFile        android.Path
+	enforceUsesLibs     bool
+	classLoaderContexts dexpreopt.ClassLoaderContextMap
 
 	builtInstalled string
 }
@@ -94,7 +92,7 @@ func (d *dexpreopter) dexpreoptDisabled(ctx android.BaseModuleContext) bool {
 	}
 
 	// Don't preopt APEX variant module
-	if am, ok := ctx.Module().(android.ApexModule); ok && !am.IsForPlatform() {
+	if apexInfo := ctx.Provider(android.ApexInfoProvider).(android.ApexInfo); !apexInfo.IsForPlatform() {
 		return true
 	}
 
@@ -114,13 +112,13 @@ func odexOnSystemOther(ctx android.ModuleContext, installPath android.InstallPat
 	return dexpreopt.OdexOnSystemOtherByName(ctx.ModuleName(), android.InstallPathToOnDevicePath(ctx, installPath), dexpreopt.GetGlobalConfig(ctx))
 }
 
-func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.ModuleOutPath) android.ModuleOutPath {
+func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.ModuleOutPath) {
 	// TODO(b/148690468): The check on d.installPath is to bail out in cases where
 	// the dexpreopter struct hasn't been fully initialized before we're called,
 	// e.g. in aar.go. This keeps the behaviour that dexpreopting is effectively
 	// disabled, even if installable is true.
 	if d.dexpreoptDisabled(ctx) || d.installPath.Base() == "." {
-		return dexJarFile
+		return
 	}
 
 	globalSoong := dexpreopt.GetGlobalSoongConfig(ctx)
@@ -193,10 +191,8 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 		ProfileIsTextListing: profileIsTextListing,
 		ProfileBootListing:   profileBootListing,
 
-		EnforceUsesLibraries:  d.enforceUsesLibs,
-		OptionalUsesLibraries: d.optionalUsesLibs,
-		UsesLibraries:         d.usesLibs,
-		LibraryPaths:          d.libraryPaths,
+		EnforceUsesLibraries: d.enforceUsesLibs,
+		ClassLoaderContexts:  d.classLoaderContexts,
 
 		Archs:                   archs,
 		DexPreoptImages:         images,
@@ -217,12 +213,10 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 	dexpreoptRule, err := dexpreopt.GenerateDexpreoptRule(ctx, globalSoong, global, dexpreoptConfig)
 	if err != nil {
 		ctx.ModuleErrorf("error generating dexpreopt rule: %s", err.Error())
-		return dexJarFile
+		return
 	}
 
-	dexpreoptRule.Build(pctx, ctx, "dexpreopt", "dexpreopt")
+	dexpreoptRule.Build("dexpreopt", "dexpreopt")
 
 	d.builtInstalled = dexpreoptRule.Installs().String()
-
-	return dexJarFile
 }

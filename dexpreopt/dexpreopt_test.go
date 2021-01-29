@@ -44,9 +44,7 @@ func testModuleConfig(ctx android.PathContext, name, partition string) *ModuleCo
 		ProfileClassListing:             android.OptionalPath{},
 		ProfileIsTextListing:            false,
 		EnforceUsesLibraries:            false,
-		OptionalUsesLibraries:           nil,
-		UsesLibraries:                   nil,
-		LibraryPaths:                    nil,
+		ClassLoaderContexts:             nil,
 		Archs:                           []android.ArchType{android.Arm},
 		DexPreoptImages:                 android.Paths{android.PathForTesting("system/framework/arm/boot.art")},
 		DexPreoptImagesDeps:             []android.OutputPaths{android.OutputPaths{}},
@@ -62,8 +60,8 @@ func testModuleConfig(ctx android.PathContext, name, partition string) *ModuleCo
 
 func TestDexPreopt(t *testing.T) {
 	config := android.TestConfig("out", nil, "", nil)
-	ctx := android.PathContextForTesting(config)
-	globalSoong := GlobalSoongConfigForTests(config)
+	ctx := android.BuilderContextForTesting(config)
+	globalSoong := globalSoongConfigForTests()
 	global := GlobalConfigForTests(ctx)
 	module := testSystemModuleConfig(ctx, "test")
 
@@ -84,8 +82,8 @@ func TestDexPreopt(t *testing.T) {
 
 func TestDexPreoptSystemOther(t *testing.T) {
 	config := android.TestConfig("out", nil, "", nil)
-	ctx := android.PathContextForTesting(config)
-	globalSoong := GlobalSoongConfigForTests(config)
+	ctx := android.BuilderContextForTesting(config)
+	globalSoong := globalSoongConfigForTests()
 	global := GlobalConfigForTests(ctx)
 	systemModule := testSystemModuleConfig(ctx, "Stest")
 	systemProductModule := testSystemProductModuleConfig(ctx, "SPtest")
@@ -144,8 +142,8 @@ func TestDexPreoptSystemOther(t *testing.T) {
 
 func TestDexPreoptProfile(t *testing.T) {
 	config := android.TestConfig("out", nil, "", nil)
-	ctx := android.PathContextForTesting(config)
-	globalSoong := GlobalSoongConfigForTests(config)
+	ctx := android.BuilderContextForTesting(config)
+	globalSoong := globalSoongConfigForTests()
 	global := GlobalConfigForTests(ctx)
 	module := testSystemModuleConfig(ctx, "test")
 

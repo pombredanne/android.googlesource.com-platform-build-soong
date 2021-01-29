@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"android/soong/android"
+	"android/soong/cc"
 )
 
 var (
@@ -158,14 +159,6 @@ func (library *libraryDecorator) static() bool {
 	return library.MutatedProperties.VariantIsStatic
 }
 
-func (library *libraryDecorator) stdLinkage(ctx *depsContext) RustLinkage {
-	// libraries should only request the RlibLinkage when building a static FFI or when variant is StaticStd
-	if library.static() || library.MutatedProperties.VariantIsStaticStd {
-		return RlibLinkage
-	}
-	return DefaultLinkage
-}
-
 func (library *libraryDecorator) source() bool {
 	return library.MutatedProperties.VariantIsSource
 }
@@ -227,13 +220,24 @@ func (library *libraryDecorator) setSource() {
 }
 
 func (library *libraryDecorator) autoDep(ctx BaseModuleContext) autoDep {
-	if library.rlib() || library.static() {
+	if library.preferRlib() {
+		return rlibAutoDep
+	} else if library.rlib() || library.static() {
 		return rlibAutoDep
 	} else if library.dylib() || library.shared() {
 		return dylibAutoDep
 	} else {
 		panic(fmt.Errorf("autoDep called on library %q that has no enabled variants.", ctx.ModuleName()))
 	}
+}
+
+func (library *libraryDecorator) stdLinkage(ctx *depsContext) RustLinkage {
+	if library.static() || library.MutatedProperties.VariantIsStaticStd {
+		return RlibLinkage
+	} else if library.baseCompiler.preferRlib() {
+		return RlibLinkage
+	}
+	return DefaultLinkage
 }
 
 var _ compiler = (*libraryDecorator)(nil)
@@ -396,7 +400,7 @@ func (library *libraryDecorator) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	deps = library.baseCompiler.compilerDeps(ctx, deps)
 
 	if ctx.toolchain().Bionic() && (library.dylib() || library.shared()) {
-		deps = bionicDeps(deps)
+		deps = bionicDeps(deps, false)
 		deps.CrtBegin = "crtbegin_so"
 		deps.CrtEnd = "crtend_so"
 	}
@@ -427,7 +431,9 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 	var srcPath android.Path
 
 	if library.sourceProvider != nil {
+		// Assume the first source from the source provider is the library entry point.
 		srcPath = library.sourceProvider.Srcs()[0]
+		deps.srcProviderFiles = append(deps.srcProviderFiles, library.sourceProvider.Srcs()...)
 	} else {
 		srcPath, _ = srcPathFromModuleSrcs(ctx, library.baseCompiler.Properties.Srcs)
 	}
@@ -446,26 +452,22 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 		fileName = library.getStem(ctx) + ctx.toolchain().RlibSuffix()
 		outputFile = android.PathForModuleOut(ctx, fileName)
 
-		outputs := TransformSrctoRlib(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
-		library.coverageFile = outputs.coverageFile
+		TransformSrctoRlib(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
 	} else if library.dylib() {
 		fileName = library.getStem(ctx) + ctx.toolchain().DylibSuffix()
 		outputFile = android.PathForModuleOut(ctx, fileName)
 
-		outputs := TransformSrctoDylib(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
-		library.coverageFile = outputs.coverageFile
+		TransformSrctoDylib(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
 	} else if library.static() {
 		fileName = library.getStem(ctx) + ctx.toolchain().StaticLibSuffix()
 		outputFile = android.PathForModuleOut(ctx, fileName)
 
-		outputs := TransformSrctoStatic(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
-		library.coverageFile = outputs.coverageFile
+		TransformSrctoStatic(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
 	} else if library.shared() {
 		fileName = library.sharedLibFilename(ctx)
 		outputFile = android.PathForModuleOut(ctx, fileName)
 
-		outputs := TransformSrctoShared(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
-		library.coverageFile = outputs.coverageFile
+		TransformSrctoShared(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
 	}
 
 	if !library.rlib() && library.stripper.NeedsStrip(ctx) {
@@ -474,20 +476,35 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 		library.strippedOutputFile = android.OptionalPathForPath(strippedOutputFile)
 	}
 
-	var coverageFiles android.Paths
-	if library.coverageFile != nil {
-		coverageFiles = append(coverageFiles, library.coverageFile)
-	}
-	if len(deps.coverageFiles) > 0 {
-		coverageFiles = append(coverageFiles, deps.coverageFiles...)
-	}
-	library.coverageOutputZipFile = TransformCoverageFilesToZip(ctx, coverageFiles, library.getStem(ctx))
-
 	if library.rlib() || library.dylib() {
-		library.exportLinkDirs(deps.linkDirs...)
-		library.exportDepFlags(deps.depFlags...)
-		library.exportLinkObjects(deps.linkObjects...)
+		library.flagExporter.exportLinkDirs(deps.linkDirs...)
+		library.flagExporter.exportDepFlags(deps.depFlags...)
+		library.flagExporter.exportLinkObjects(deps.linkObjects...)
 	}
+
+	if library.static() || library.shared() {
+		ctx.SetProvider(cc.FlagExporterInfoProvider, cc.FlagExporterInfo{
+			IncludeDirs: library.includeDirs,
+		})
+	}
+
+	if library.shared() {
+		ctx.SetProvider(cc.SharedLibraryInfoProvider, cc.SharedLibraryInfo{
+			SharedLibrary:           outputFile,
+			UnstrippedSharedLibrary: outputFile,
+		})
+	}
+
+	if library.static() {
+		depSet := android.NewDepSetBuilder(android.TOPOLOGICAL).Direct(outputFile).Build()
+		ctx.SetProvider(cc.StaticLibraryInfoProvider, cc.StaticLibraryInfo{
+			StaticLibrary: outputFile,
+
+			TransitiveStaticLibrariesForOrdering: depSet,
+		})
+	}
+
+	library.flagExporter.setProvider(ctx)
 
 	return outputFile
 }
@@ -575,6 +592,11 @@ func LibraryMutator(mctx android.BottomUpMutatorContext) {
 			v.(*Module).compiler.(libraryInterface).setRlib()
 		case dylibVariation:
 			v.(*Module).compiler.(libraryInterface).setDylib()
+			if v.(*Module).ModuleBase.ImageVariation().Variation != android.CoreVariation {
+				// TODO(b/165791368)
+				// Disable dylib non-core variations until we support these.
+				v.(*Module).Disable()
+			}
 		case "source":
 			v.(*Module).compiler.(libraryInterface).setSource()
 			// The source variant does not produce any library.
@@ -611,6 +633,12 @@ func LibstdMutator(mctx android.BottomUpMutatorContext) {
 				dylib := modules[1].(*Module)
 				rlib.compiler.(libraryInterface).setRlibStd()
 				dylib.compiler.(libraryInterface).setDylibStd()
+				if dylib.ModuleBase.ImageVariation().Variation != android.CoreVariation {
+					// TODO(b/165791368)
+					// Disable rlibs that link against dylib-std on non-core variations until non-core dylib
+					// variants are properly supported.
+					dylib.Disable()
+				}
 				rlib.Properties.SubName += RlibStdlibSuffix
 				dylib.Properties.SubName += DylibStdlibSuffix
 			}

@@ -13,6 +13,8 @@
 // limitations under the License.
 package cc
 
+// This file contains utility types and functions for VNDK / vendor snapshot.
+
 import (
 	"android/soong/android"
 )
@@ -21,16 +23,24 @@ var (
 	headerExts = []string{".h", ".hh", ".hpp", ".hxx", ".h++", ".inl", ".inc", ".ipp", ".h.generic"}
 )
 
+// snapshotLibraryInterface is an interface for libraries captured to VNDK / vendor snapshots.
 type snapshotLibraryInterface interface {
-	exportedFlagsProducer
 	libraryInterface
+
+	// collectHeadersForSnapshot is called in GenerateAndroidBuildActions for snapshot aware
+	// modules (See isSnapshotAware below).
+	// This function should gather all headers needed for snapshot.
 	collectHeadersForSnapshot(ctx android.ModuleContext)
+
+	// snapshotHeaders should return collected headers by collectHeadersForSnapshot.
+	// Calling snapshotHeaders before collectHeadersForSnapshot is an error.
 	snapshotHeaders() android.Paths
 }
 
 var _ snapshotLibraryInterface = (*prebuiltLibraryLinker)(nil)
 var _ snapshotLibraryInterface = (*libraryDecorator)(nil)
 
+// snapshotMap is a helper wrapper to a map from base module name to snapshot module name.
 type snapshotMap struct {
 	snapshots map[string]string
 }
@@ -58,49 +68,21 @@ func (s *snapshotMap) get(name string, arch android.ArchType) (snapshot string, 
 	return snapshot, found
 }
 
-func isSnapshotAware(ctx android.ModuleContext, m *Module) bool {
-	if _, _, ok := isVndkSnapshotLibrary(ctx.DeviceConfig(), m); ok {
+// shouldCollectHeadersForSnapshot determines if the module is a possible candidate for snapshot.
+// If it's true, collectHeadersForSnapshot will be called in GenerateAndroidBuildActions.
+func shouldCollectHeadersForSnapshot(ctx android.ModuleContext, m *Module, apexInfo android.ApexInfo) bool {
+	if ctx.DeviceConfig().VndkVersion() != "current" &&
+		ctx.DeviceConfig().RecoverySnapshotVersion() != "current" {
+		return false
+	}
+	if _, _, ok := isVndkSnapshotAware(ctx.DeviceConfig(), m, apexInfo); ok {
 		return ctx.Config().VndkSnapshotBuildArtifacts()
-	} else if isVendorSnapshotModule(m, isVendorProprietaryPath(ctx.ModuleDir())) {
-		return true
+	}
+
+	for _, image := range []snapshotImage{vendorSnapshotImageSingleton, recoverySnapshotImageSingleton} {
+		if isSnapshotAware(ctx.DeviceConfig(), m, image.isProprietaryPath(ctx.ModuleDir()), apexInfo, image) {
+			return true
+		}
 	}
 	return false
-}
-
-func copyFile(ctx android.SingletonContext, path android.Path, out string) android.OutputPath {
-	outPath := android.PathForOutput(ctx, out)
-	ctx.Build(pctx, android.BuildParams{
-		Rule:        android.Cp,
-		Input:       path,
-		Output:      outPath,
-		Description: "Cp " + out,
-		Args: map[string]string{
-			"cpFlags": "-f -L",
-		},
-	})
-	return outPath
-}
-
-func combineNotices(ctx android.SingletonContext, paths android.Paths, out string) android.OutputPath {
-	outPath := android.PathForOutput(ctx, out)
-	ctx.Build(pctx, android.BuildParams{
-		Rule:        android.Cat,
-		Inputs:      paths,
-		Output:      outPath,
-		Description: "combine notices for " + out,
-	})
-	return outPath
-}
-
-func writeStringToFile(ctx android.SingletonContext, content, out string) android.OutputPath {
-	outPath := android.PathForOutput(ctx, out)
-	ctx.Build(pctx, android.BuildParams{
-		Rule:        android.WriteFile,
-		Output:      outPath,
-		Description: "WriteFile " + out,
-		Args: map[string]string{
-			"content": content,
-		},
-	})
-	return outPath
 }

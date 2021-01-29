@@ -28,6 +28,7 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
+	"android/soong/dexpreopt"
 )
 
 const (
@@ -257,7 +258,7 @@ var (
 	})
 	apiScopeTest = initApiScope(&apiScope{
 		name:                "test",
-		extends:             apiScopePublic,
+		extends:             apiScopeSystem,
 		legacyEnabledStatus: (*SdkLibrary).generateTestAndSystemScopesByDefault,
 		scopeSpecificProperties: func(module *SdkLibrary) *ApiScopeProperties {
 			return &module.sdkLibraryProperties.Test
@@ -388,6 +389,9 @@ type sdkLibraryProperties struct {
 	// visibility property.
 	Stubs_source_visibility []string
 
+	// List of Java libraries that will be in the classpath when building the implementation lib
+	Impl_only_libs []string `android:"arch_variant"`
+
 	// List of Java libraries that will be in the classpath when building stubs
 	Stub_only_libs []string `android:"arch_variant"`
 
@@ -432,8 +436,27 @@ type sdkLibraryProperties struct {
 	// If set to true, the path of dist files is apistubs/core. Defaults to false.
 	Core_lib *bool
 
-	// don't create dist rules.
-	No_dist *bool `blueprint:"mutated"`
+	// If set to true then don't create dist rules.
+	No_dist *bool
+
+	// The stem for the artifacts that are copied to the dist, if not specified
+	// then defaults to the base module name.
+	//
+	// For each scope the following artifacts are copied to the apistubs/<scope>
+	// directory in the dist.
+	// * stubs impl jar -> <dist-stem>.jar
+	// * API specification file -> api/<dist-stem>.txt
+	// * Removed API specification file -> api/<dist-stem>-removed.txt
+	//
+	// Also used to construct the name of the filegroup (created by prebuilt_apis)
+	// that references the latest released API and remove API specification files.
+	// * API specification filegroup -> <dist-stem>.api.<scope>.latest
+	// * Removed API specification filegroup -> <dist-stem>-removed.api.<scope>.latest
+	Dist_stem *string
+
+	// A compatibility mode that allows historical API-tracking files to not exist.
+	// Do not use.
+	Unsafe_ignore_missing_latest_api bool
 
 	// indicates whether system and test apis should be generated.
 	Generate_system_and_test_apis bool `blueprint:"mutated"`
@@ -870,6 +893,12 @@ func (e *EmbeddableSdkLibraryComponent) OptionalImplicitSdkLibrary() *string {
 	return e.sdkLibraryComponentProperties.SdkLibraryToImplicitlyTrack
 }
 
+// to satisfy SdkLibraryComponentDependency
+func (e *EmbeddableSdkLibraryComponent) OptionalSdkLibraryImplementation() *string {
+	// Currently implementation library name is the same as the SDK library name.
+	return e.sdkLibraryComponentProperties.SdkLibraryToImplicitlyTrack
+}
+
 // Implemented by modules that are (or possibly could be) a component of a java_sdk_library
 // (including the java_sdk_library) itself.
 type SdkLibraryComponentDependency interface {
@@ -880,6 +909,9 @@ type SdkLibraryComponentDependency interface {
 	//
 	// Returns the name of the optional implicit SDK library or nil, if there isn't one.
 	OptionalImplicitSdkLibrary() *string
+
+	// The name of the implementation library for the optional SDK library or nil, if there isn't one.
+	OptionalSdkLibraryImplementation() *string
 }
 
 // Make sure that all the module types that are components of java_sdk_library/_import
@@ -1016,6 +1048,30 @@ func (module *SdkLibrary) ComponentDepsMutator(ctx android.BottomUpMutatorContex
 
 // Add other dependencies as normal.
 func (module *SdkLibrary) DepsMutator(ctx android.BottomUpMutatorContext) {
+	var missingApiModules []string
+	for _, apiScope := range module.getGeneratedApiScopes(ctx) {
+		if apiScope.unstable {
+			continue
+		}
+		if m := android.SrcIsModule(module.latestApiFilegroupName(apiScope)); !ctx.OtherModuleExists(m) {
+			missingApiModules = append(missingApiModules, m)
+		}
+		if m := android.SrcIsModule(module.latestRemovedApiFilegroupName(apiScope)); !ctx.OtherModuleExists(m) {
+			missingApiModules = append(missingApiModules, m)
+		}
+	}
+	if len(missingApiModules) != 0 && !module.sdkLibraryProperties.Unsafe_ignore_missing_latest_api {
+		m := module.Name() + " is missing tracking files for previously released library versions.\n"
+		m += "You need to do one of the following:\n"
+		m += "- Add `unsafe_ignore_missing_latest_api: true` to your blueprint (to disable compat tracking)\n"
+		m += "- Add a set of prebuilt txt files representing the last released version of this library for compat checking.\n"
+		m += "  (the current set of API files can be used as a seed for this compatibility tracking\n"
+		m += "\n"
+		m += "The following filegroup modules are missing:\n  "
+		m += strings.Join(missingApiModules, "\n  ") + "\n"
+		m += "Please see the documentation of the prebuilt_apis module type (and a usage example in prebuilts/sdk) for a convenient way to generate these."
+		ctx.ModuleErrorf(m)
+	}
 	if module.requiresRuntimeImplementationLibrary() {
 		// Only add the deps for the library if it is actually going to be built.
 		module.Library.deps(ctx)
@@ -1097,12 +1153,16 @@ func (module *SdkLibrary) sdkVersionForStubsLibrary(mctx android.EarlyModuleCont
 	}
 }
 
+func (module *SdkLibrary) distStem() string {
+	return proptools.StringDefault(module.sdkLibraryProperties.Dist_stem, module.BaseModuleName())
+}
+
 func (module *SdkLibrary) latestApiFilegroupName(apiScope *apiScope) string {
-	return ":" + module.BaseModuleName() + ".api." + apiScope.name + ".latest"
+	return ":" + module.distStem() + ".api." + apiScope.name + ".latest"
 }
 
 func (module *SdkLibrary) latestRemovedApiFilegroupName(apiScope *apiScope) string {
-	return ":" + module.BaseModuleName() + "-removed.api." + apiScope.name + ".latest"
+	return ":" + module.distStem() + "-removed.api." + apiScope.name + ".latest"
 }
 
 func childModuleVisibility(childVisibility []string) []string {
@@ -1128,12 +1188,16 @@ func (module *SdkLibrary) createImplLibrary(mctx android.DefaultableHookContext)
 		Name              *string
 		Visibility        []string
 		Instrument        bool
+		Libs              []string
 		ConfigurationName *string
 	}{
 		Name:       proptools.StringPtr(module.implLibraryModuleName()),
 		Visibility: visibility,
 		// Set the instrument property to ensure it is instrumented when instrumentation is required.
 		Instrument: true,
+		// Set the impl_only libs. Note that the module's "Libs" get appended as well, via the
+		// addition of &module.properties below.
+		Libs: module.sdkLibraryProperties.Impl_only_libs,
 
 		// Make the created library behave as if it had the same name as this module.
 		ConfigurationName: moduleNamePtr,
@@ -1204,7 +1268,7 @@ func (module *SdkLibrary) createStubsLibrary(mctx android.DefaultableHookContext
 	// Dist the class jar artifact for sdk builds.
 	if !Bool(module.sdkLibraryProperties.No_dist) {
 		props.Dist.Targets = []string{"sdk", "win_sdk"}
-		props.Dist.Dest = proptools.StringPtr(fmt.Sprintf("%v.jar", module.BaseModuleName()))
+		props.Dist.Dest = proptools.StringPtr(fmt.Sprintf("%v.jar", module.distStem()))
 		props.Dist.Dir = proptools.StringPtr(module.apiDistPath(apiScope))
 		props.Dist.Tag = proptools.StringPtr(".jar")
 	}
@@ -1231,10 +1295,10 @@ func (module *SdkLibrary) createStubsSourcesAndApi(mctx android.DefaultableHookC
 		Merge_annotations_dirs           []string
 		Merge_inclusion_annotations_dirs []string
 		Generate_stubs                   *bool
+		Previous_api                     *string
 		Check_api                        struct {
-			Current                   ApiToCheck
-			Last_released             ApiToCheck
-			Ignore_missing_latest_api *bool
+			Current       ApiToCheck
+			Last_released ApiToCheck
 
 			Api_lint struct {
 				Enabled       *bool
@@ -1246,11 +1310,7 @@ func (module *SdkLibrary) createStubsSourcesAndApi(mctx android.DefaultableHookC
 			Include_dirs       []string
 			Local_include_dirs []string
 		}
-		Dist struct {
-			Targets []string
-			Dest    *string
-			Dir     *string
-		}
+		Dists []android.Dist
 	}{}
 
 	// The stubs source processing uses the same compile time classpath when extracting the
@@ -1322,13 +1382,13 @@ func (module *SdkLibrary) createStubsSourcesAndApi(mctx android.DefaultableHookC
 	props.Check_api.Current.Api_file = proptools.StringPtr(currentApiFileName)
 	props.Check_api.Current.Removed_api_file = proptools.StringPtr(removedApiFileName)
 
-	if !apiScope.unstable {
+	if !(apiScope.unstable || module.sdkLibraryProperties.Unsafe_ignore_missing_latest_api) {
 		// check against the latest released API
 		latestApiFilegroupName := proptools.StringPtr(module.latestApiFilegroupName(apiScope))
+		props.Previous_api = latestApiFilegroupName
 		props.Check_api.Last_released.Api_file = latestApiFilegroupName
 		props.Check_api.Last_released.Removed_api_file = proptools.StringPtr(
 			module.latestRemovedApiFilegroupName(apiScope))
-		props.Check_api.Ignore_missing_latest_api = proptools.BoolPtr(true)
 
 		if proptools.Bool(module.sdkLibraryProperties.Api_lint.Enabled) {
 			// Enable api lint.
@@ -1350,11 +1410,23 @@ func (module *SdkLibrary) createStubsSourcesAndApi(mctx android.DefaultableHookC
 		}
 	}
 
-	// Dist the api txt artifact for sdk builds.
 	if !Bool(module.sdkLibraryProperties.No_dist) {
-		props.Dist.Targets = []string{"sdk", "win_sdk"}
-		props.Dist.Dest = proptools.StringPtr(fmt.Sprintf("%v.txt", module.BaseModuleName()))
-		props.Dist.Dir = proptools.StringPtr(path.Join(module.apiDistPath(apiScope), "api"))
+		// Dist the api txt and removed api txt artifacts for sdk builds.
+		distDir := proptools.StringPtr(path.Join(module.apiDistPath(apiScope), "api"))
+		for _, p := range []struct {
+			tag     string
+			pattern string
+		}{
+			{tag: ".api.txt", pattern: "%s.txt"},
+			{tag: ".removed-api.txt", pattern: "%s-removed.txt"},
+		} {
+			props.Dists = append(props.Dists, android.Dist{
+				Targets: []string{"sdk", "win_sdk"},
+				Dir:     distDir,
+				Dest:    proptools.StringPtr(fmt.Sprintf(p.pattern, module.distStem())),
+				Tag:     proptools.StringPtr(p.tag),
+			})
+		}
 	}
 
 	mctx.CreateModule(DroidstubsFactory, &props)
@@ -1410,22 +1482,14 @@ func PrebuiltJars(ctx android.BaseModuleContext, baseName string, s sdkSpec) and
 	return android.Paths{jarPath.Path()}
 }
 
-// Get the apex names for module, nil if it is for platform.
-func getApexNamesForModule(module android.Module) []string {
-	if apex, ok := module.(android.ApexModule); ok {
-		return apex.InApexes()
-	}
-
-	return nil
-}
-
 // Check to see if the other module is within the same set of named APEXes as this module.
 //
 // If either this or the other module are on the platform then this will return
 // false.
-func withinSameApexesAs(module android.ApexModule, other android.Module) bool {
-	names := module.InApexes()
-	return len(names) > 0 && reflect.DeepEqual(names, getApexNamesForModule(other))
+func withinSameApexesAs(ctx android.BaseModuleContext, other android.Module) bool {
+	apexInfo := ctx.Provider(android.ApexInfoProvider).(android.ApexInfo)
+	otherApexInfo := ctx.OtherModuleProvider(other, android.ApexInfoProvider).(android.ApexInfo)
+	return len(otherApexInfo.InApexes) > 0 && reflect.DeepEqual(apexInfo.InApexes, otherApexInfo.InApexes)
 }
 
 func (module *SdkLibrary) sdkJars(ctx android.BaseModuleContext, sdkVersion sdkSpec, headerJars bool) android.Paths {
@@ -1444,7 +1508,7 @@ func (module *SdkLibrary) sdkJars(ctx android.BaseModuleContext, sdkVersion sdkS
 		// Only allow access to the implementation library in the following condition:
 		// * No sdk_version specified on the referencing module.
 		// * The referencing module is in the same apex as this.
-		if sdkVersion.kind == sdkPrivate || withinSameApexesAs(module, ctx.Module()) {
+		if sdkVersion.kind == sdkPrivate || withinSameApexesAs(ctx, module) {
 			if headerJars {
 				return module.HeaderJars()
 			} else {
@@ -1464,10 +1528,6 @@ func (module *SdkLibrary) SdkHeaderJars(ctx android.BaseModuleContext, sdkVersio
 // to satisfy SdkLibraryDependency interface
 func (module *SdkLibrary) SdkImplementationJars(ctx android.BaseModuleContext, sdkVersion sdkSpec) android.Paths {
 	return module.sdkJars(ctx, sdkVersion, false /*headerJars*/)
-}
-
-func (module *SdkLibrary) SetNoDist() {
-	module.sdkLibraryProperties.No_dist = proptools.BoolPtr(true)
 }
 
 var javaSdkLibrariesKey = android.NewOnceKey("javaSdkLibraries")
@@ -1497,14 +1557,12 @@ func (module *SdkLibrary) CreateInternalModules(mctx android.DefaultableHookCont
 	}
 
 	// If this builds against standard libraries (i.e. is not part of the core libraries)
-	// then assume it provides both system and test apis. Otherwise, assume it does not and
-	// also assume it does not contribute to the dist build.
+	// then assume it provides both system and test apis.
 	sdkDep := decodeSdkDep(mctx, sdkContext(&module.Library))
 	hasSystemAndTestApis := sdkDep.hasStandardLibs()
 	module.sdkLibraryProperties.Generate_system_and_test_apis = hasSystemAndTestApis
-	module.sdkLibraryProperties.No_dist = proptools.BoolPtr(!hasSystemAndTestApis)
 
-	missing_current_api := false
+	missingCurrentApi := false
 
 	generatedScopes := module.getGeneratedApiScopes(mctx)
 
@@ -1515,12 +1573,12 @@ func (module *SdkLibrary) CreateInternalModules(mctx android.DefaultableHookCont
 			p := android.ExistentPathForSource(mctx, path)
 			if !p.Valid() {
 				mctx.ModuleErrorf("Current api file %#v doesn't exist", path)
-				missing_current_api = true
+				missingCurrentApi = true
 			}
 		}
 	}
 
-	if missing_current_api {
+	if missingCurrentApi {
 		script := "build/soong/scripts/gen-java-current-api-files.sh"
 		p := android.ExistentPathForSource(mctx, script)
 
@@ -1564,6 +1622,9 @@ func (module *SdkLibrary) CreateInternalModules(mctx android.DefaultableHookCont
 		defer javaSdkLibrariesLock.Unlock()
 		*javaSdkLibraries = append(*javaSdkLibraries, module.BaseModuleName())
 	}
+
+	// Add the impl_only_libs *after* we're done using the Libs prop in submodules.
+	module.properties.Libs = append(module.properties.Libs, module.sdkLibraryProperties.Impl_only_libs...)
 }
 
 func (module *SdkLibrary) InitSdkLibraryProperties() {
@@ -1893,6 +1954,9 @@ func (module *SdkLibraryImport) DepsMutator(ctx android.BottomUpMutatorContext) 
 	}
 }
 
+var _ android.ApexModule = (*SdkLibraryImport)(nil)
+
+// Implements android.ApexModule
 func (module *SdkLibraryImport) DepIsInSameApex(mctx android.BaseModuleContext, dep android.Module) bool {
 	depTag := mctx.OtherModuleDependencyTag(dep)
 	if depTag == xmlPermissionsFileTag {
@@ -1904,6 +1968,7 @@ func (module *SdkLibraryImport) DepIsInSameApex(mctx android.BaseModuleContext, 
 	return false
 }
 
+// Implements android.ApexModule
 func (module *SdkLibraryImport) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
 	sdkVersion android.ApiLevel) error {
 	// we don't check prebuilt modules for sdk_version
@@ -1961,7 +2026,7 @@ func (module *SdkLibraryImport) sdkJars(ctx android.BaseModuleContext, sdkVersio
 	// For consistency with SdkLibrary make the implementation jar available to libraries that
 	// are within the same APEX.
 	implLibraryModule := module.implLibraryModule
-	if implLibraryModule != nil && withinSameApexesAs(module, ctx.Module()) {
+	if implLibraryModule != nil && withinSameApexesAs(ctx, module) {
 		if headerJars {
 			return implLibraryModule.HeaderJars()
 		} else {
@@ -1984,7 +2049,7 @@ func (module *SdkLibraryImport) SdkImplementationJars(ctx android.BaseModuleCont
 	return module.sdkJars(ctx, sdkVersion, false)
 }
 
-// to satisfy SdkLibraryDependency interface
+// to satisfy UsesLibraryDependency interface
 func (module *SdkLibraryImport) DexJarBuildPath() android.Path {
 	if module.implLibraryModule == nil {
 		return nil
@@ -1993,13 +2058,18 @@ func (module *SdkLibraryImport) DexJarBuildPath() android.Path {
 	}
 }
 
-// to satisfy SdkLibraryDependency interface
+// to satisfy UsesLibraryDependency interface
 func (module *SdkLibraryImport) DexJarInstallPath() android.Path {
 	if module.implLibraryModule == nil {
 		return nil
 	} else {
 		return module.implLibraryModule.DexJarInstallPath()
 	}
+}
+
+// to satisfy UsesLibraryDependency interface
+func (module *SdkLibraryImport) ClassLoaderContexts() dexpreopt.ClassLoaderContextMap {
+	return nil
 }
 
 // to satisfy apex.javaDependency interface
@@ -2057,6 +2127,8 @@ type sdkLibraryXml struct {
 
 	outputFilePath android.OutputPath
 	installDirPath android.InstallPath
+
+	hideApexVariantFromMake bool
 }
 
 type sdkLibraryXmlProperties struct {
@@ -2107,6 +2179,9 @@ func (module *sdkLibraryXml) DepsMutator(ctx android.BottomUpMutatorContext) {
 	// do nothing
 }
 
+var _ android.ApexModule = (*sdkLibraryXml)(nil)
+
+// Implements android.ApexModule
 func (module *sdkLibraryXml) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
 	sdkVersion android.ApiLevel) error {
 	// sdkLibraryXml doesn't need to be checked separately because java_sdk_library is checked
@@ -2114,13 +2189,13 @@ func (module *sdkLibraryXml) ShouldSupportSdkVersion(ctx android.BaseModuleConte
 }
 
 // File path to the runtime implementation library
-func (module *sdkLibraryXml) implPath() string {
+func (module *sdkLibraryXml) implPath(ctx android.ModuleContext) string {
 	implName := proptools.String(module.properties.Lib_name)
-	if apexName := module.ApexVariationName(); apexName != "" {
+	if apexInfo := ctx.Provider(android.ApexInfoProvider).(android.ApexInfo); !apexInfo.IsForPlatform() {
 		// TODO(b/146468504): ApexVariationName() is only a soong module name, not apex name.
 		// In most cases, this works fine. But when apex_name is set or override_apex is used
 		// this can be wrong.
-		return fmt.Sprintf("/apex/%s/javalib/%s.jar", apexName, implName)
+		return fmt.Sprintf("/apex/%s/javalib/%s.jar", apexInfo.ApexVariationName, implName)
 	}
 	partition := "system"
 	if module.SocSpecific() {
@@ -2136,22 +2211,24 @@ func (module *sdkLibraryXml) implPath() string {
 }
 
 func (module *sdkLibraryXml) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+	module.hideApexVariantFromMake = !ctx.Provider(android.ApexInfoProvider).(android.ApexInfo).IsForPlatform()
+
 	libName := proptools.String(module.properties.Lib_name)
-	xmlContent := fmt.Sprintf(permissionsTemplate, libName, module.implPath())
+	xmlContent := fmt.Sprintf(permissionsTemplate, libName, module.implPath(ctx))
 
 	module.outputFilePath = android.PathForModuleOut(ctx, libName+".xml").OutputPath
-	rule := android.NewRuleBuilder()
+	rule := android.NewRuleBuilder(pctx, ctx)
 	rule.Command().
 		Text("/bin/bash -c \"echo -e '" + xmlContent + "'\" > ").
 		Output(module.outputFilePath)
 
-	rule.Build(pctx, ctx, "java_sdk_xml", "Permission XML")
+	rule.Build("java_sdk_xml", "Permission XML")
 
 	module.installDirPath = android.PathForModuleInstall(ctx, "etc", module.SubDir())
 }
 
 func (module *sdkLibraryXml) AndroidMkEntries() []android.AndroidMkEntries {
-	if !module.IsForPlatform() {
+	if module.hideApexVariantFromMake {
 		return []android.AndroidMkEntries{android.AndroidMkEntries{
 			Disabled: true,
 		}}

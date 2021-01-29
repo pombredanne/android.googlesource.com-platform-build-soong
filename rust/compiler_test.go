@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"android/soong/android"
+	"android/soong/cc"
 )
 
 // Test that feature flags are being correctly generated.
@@ -132,6 +133,7 @@ func TestLints(t *testing.T) {
 		}`
 
 	bp = bp + GatherRequiredDepsForTest()
+	bp = bp + cc.GatherRequiredDepsForTest(android.NoOsType)
 
 	fs := map[string][]byte{
 		// Reuse the same blueprint file for subdirectories.
@@ -152,8 +154,8 @@ func TestLints(t *testing.T) {
 		t.Run("path="+tc.modulePath, func(t *testing.T) {
 
 			config := android.TestArchConfig(buildDir, nil, bp, fs)
-			ctx := CreateTestContext()
-			ctx.Register(config)
+			ctx := CreateTestContext(config)
+			ctx.Register()
 			_, errs := ctx.ParseFileList(".", []string{tc.modulePath + "Android.bp"})
 			android.FailIfErrored(t, errs)
 			_, errs = ctx.PrepareBuildActions(config)
