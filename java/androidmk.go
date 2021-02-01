@@ -125,6 +125,10 @@ func (library *Library) AndroidMkEntries() []android.AndroidMkEntries {
 					entries.SetString("LOCAL_MODULE_STEM", library.Stem())
 
 					entries.SetOptionalPaths("LOCAL_SOONG_LINT_REPORTS", library.linter.reports)
+
+					if library.dexpreopter.configPath != nil {
+						entries.SetPath("LOCAL_SOONG_DEXPREOPT_CONFIG", library.dexpreopter.configPath)
+					}
 				},
 			},
 		})
@@ -196,6 +200,9 @@ func (prebuilt *Import) AndroidMkEntries() []android.AndroidMkEntries {
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
 			func(entries *android.AndroidMkEntries) {
 				entries.SetBool("LOCAL_UNINSTALLABLE_MODULE", !Bool(prebuilt.properties.Installable))
+				if prebuilt.dexJarFile != nil {
+					entries.SetPath("LOCAL_SOONG_DEX_JAR", prebuilt.dexJarFile)
+				}
 				entries.SetPath("LOCAL_SOONG_HEADER_JAR", prebuilt.combinedClasspathFile)
 				entries.SetPath("LOCAL_SOONG_CLASSES_JAR", prebuilt.combinedClasspathFile)
 				entries.SetString("LOCAL_SDK_VERSION", prebuilt.makeSdkVersion())
@@ -274,7 +281,7 @@ func (binary *Binary) AndroidMkEntries() []android.AndroidMkEntries {
 				},
 			},
 			ExtraFooters: []android.AndroidMkExtraFootersFunc{
-				func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
+				func(w io.Writer, name, prefix, moduleDir string) {
 					fmt.Fprintln(w, "jar_installed_module := $(LOCAL_INSTALLED_MODULE)")
 				},
 			},
@@ -289,7 +296,7 @@ func (binary *Binary) AndroidMkEntries() []android.AndroidMkEntries {
 				},
 			},
 			ExtraFooters: []android.AndroidMkExtraFootersFunc{
-				func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
+				func(w io.Writer, name, prefix, moduleDir string) {
 					// Ensure that the wrapper script timestamp is always updated when the jar is updated
 					fmt.Fprintln(w, "$(LOCAL_INSTALLED_MODULE): $(jar_installed_module)")
 					fmt.Fprintln(w, "jar_installed_module :=")
@@ -393,7 +400,7 @@ func (app *AndroidApp) AndroidMkEntries() []android.AndroidMkEntries {
 			},
 		},
 		ExtraFooters: []android.AndroidMkExtraFootersFunc{
-			func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
+			func(w io.Writer, name, prefix, moduleDir string) {
 				if app.noticeOutputs.Merged.Valid() {
 					fmt.Fprintf(w, "$(call dist-for-goals,%s,%s:%s)\n",
 						app.installApkName, app.noticeOutputs.Merged.String(), app.installApkName+"_NOTICE")
@@ -548,7 +555,7 @@ func (dstubs *Droidstubs) AndroidMkEntries() []android.AndroidMkEntries {
 			},
 		},
 		ExtraFooters: []android.AndroidMkExtraFootersFunc{
-			func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
+			func(w io.Writer, name, prefix, moduleDir string) {
 				if dstubs.apiFile != nil {
 					fmt.Fprintf(w, ".PHONY: %s %s.txt\n", dstubs.Name(), dstubs.Name())
 					fmt.Fprintf(w, "%s %s.txt: %s\n", dstubs.Name(), dstubs.Name(), dstubs.apiFile)

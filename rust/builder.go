@@ -19,10 +19,8 @@ import (
 	"strings"
 
 	"github.com/google/blueprint"
-	"github.com/google/blueprint/pathtools"
 
 	"android/soong/android"
-	"android/soong/cc"
 	"android/soong/rust/config"
 )
 
@@ -76,8 +74,7 @@ var (
 )
 
 type buildOutput struct {
-	outputFile   android.Path
-	coverageFile android.Path
+	outputFile android.Path
 }
 
 func init() {
@@ -86,7 +83,7 @@ func init() {
 
 func TransformSrcToBinary(ctx ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags,
 	outputFile android.WritablePath, linkDirs []string) buildOutput {
-	flags.RustFlags = append(flags.RustFlags, "-C lto")
+	flags.GlobalRustFlags = append(flags.GlobalRustFlags, "-C lto")
 
 	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "bin", linkDirs)
 }
@@ -103,13 +100,13 @@ func TransformSrctoDylib(ctx ModuleContext, mainSrc android.Path, deps PathDeps,
 
 func TransformSrctoStatic(ctx ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags,
 	outputFile android.WritablePath, linkDirs []string) buildOutput {
-	flags.RustFlags = append(flags.RustFlags, "-C lto")
+	flags.GlobalRustFlags = append(flags.GlobalRustFlags, "-C lto")
 	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "staticlib", linkDirs)
 }
 
 func TransformSrctoShared(ctx ModuleContext, mainSrc android.Path, deps PathDeps, flags Flags,
 	outputFile android.WritablePath, linkDirs []string) buildOutput {
-	flags.RustFlags = append(flags.RustFlags, "-C lto")
+	flags.GlobalRustFlags = append(flags.GlobalRustFlags, "-C lto")
 	return transformSrctoCrate(ctx, mainSrc, deps, flags, outputFile, "cdylib", linkDirs)
 }
 
@@ -137,13 +134,13 @@ func transformSrctoCrate(ctx ModuleContext, main android.Path, deps PathDeps, fl
 	var implicitOutputs android.WritablePaths
 
 	output.outputFile = outputFile
-	crate_name := ctx.RustModule().CrateName()
+	crateName := ctx.RustModule().CrateName()
 	targetTriple := ctx.toolchain().RustTriple()
 
 	// libstd requires a specific environment variable to be set. This is
 	// not officially documented and may be removed in the future. See
 	// https://github.com/rust-lang/rust/blob/master/library/std/src/env.rs#L866.
-	if crate_name == "std" {
+	if crateName == "std" {
 		envVars = append(envVars, "STD_ENV_ARCH="+config.StdEnvArch[ctx.RustModule().Arch().ArchType])
 	}
 
@@ -153,8 +150,8 @@ func transformSrctoCrate(ctx ModuleContext, main android.Path, deps PathDeps, fl
 	rustcFlags = append(rustcFlags, flags.GlobalRustFlags...)
 	rustcFlags = append(rustcFlags, flags.RustFlags...)
 	rustcFlags = append(rustcFlags, "--crate-type="+crate_type)
-	if crate_name != "" {
-		rustcFlags = append(rustcFlags, "--crate-name="+crate_name)
+	if crateName != "" {
+		rustcFlags = append(rustcFlags, "--crate-name="+crateName)
 	}
 	if targetTriple != "" {
 		rustcFlags = append(rustcFlags, "--target="+targetTriple)
@@ -188,31 +185,11 @@ func transformSrctoCrate(ctx ModuleContext, main android.Path, deps PathDeps, fl
 	implicits = append(implicits, rustLibsToPaths(deps.DyLibs)...)
 	implicits = append(implicits, rustLibsToPaths(deps.ProcMacros)...)
 	implicits = append(implicits, deps.StaticLibs...)
-	implicits = append(implicits, deps.SharedLibs...)
+	implicits = append(implicits, deps.SharedLibDeps...)
+	implicits = append(implicits, deps.srcProviderFiles...)
 
 	if deps.CrtBegin.Valid() {
 		implicits = append(implicits, deps.CrtBegin.Path(), deps.CrtEnd.Path())
-	}
-
-	if flags.Coverage {
-		var gcnoFile android.WritablePath
-		// Provide consistency with cc gcda output, see cc/builder.go init()
-		profileEmitArg := strings.TrimPrefix(cc.PwdPrefix(), "PWD=") + "/"
-
-		if outputFile.Ext() != "" {
-			// rustc seems to split the output filename at the first '.' when determining the gcno filename
-			// so we need to do the same here.
-			gcnoFile = android.PathForModuleOut(ctx, strings.Split(outputFile.Base(), ".")[0]+".gcno")
-			rustcFlags = append(rustcFlags, "-Z profile-emit="+profileEmitArg+android.PathForModuleOut(
-				ctx, pathtools.ReplaceExtension(outputFile.Base(), "gcda")).String())
-		} else {
-			gcnoFile = android.PathForModuleOut(ctx, outputFile.Base()+".gcno")
-			rustcFlags = append(rustcFlags, "-Z profile-emit="+profileEmitArg+android.PathForModuleOut(
-				ctx, outputFile.Base()+".gcda").String())
-		}
-
-		implicitOutputs = append(implicitOutputs, gcnoFile)
-		output.coverageFile = gcnoFile
 	}
 
 	if len(deps.SrcDeps) > 0 {
@@ -290,22 +267,4 @@ func transformSrctoCrate(ctx ModuleContext, main android.Path, deps PathDeps, fl
 	})
 
 	return output
-}
-
-func TransformCoverageFilesToZip(ctx ModuleContext,
-	covFiles android.Paths, baseName string) android.OptionalPath {
-	if len(covFiles) > 0 {
-
-		outputFile := android.PathForModuleOut(ctx, baseName+".zip")
-
-		ctx.Build(pctx, android.BuildParams{
-			Rule:        zip,
-			Description: "zip " + outputFile.Base(),
-			Inputs:      covFiles,
-			Output:      outputFile,
-		})
-
-		return android.OptionalPathForPath(outputFile)
-	}
-	return android.OptionalPath{}
 }

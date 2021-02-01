@@ -90,6 +90,7 @@ type MakeVarsContext interface {
 	ModuleDir(module blueprint.Module) string
 	ModuleSubDir(module blueprint.Module) string
 	ModuleType(module blueprint.Module) string
+	ModuleProvider(module blueprint.Module, key blueprint.ProviderKey) interface{}
 	BlueprintFile(module blueprint.Module) string
 
 	ModuleErrorf(module blueprint.Module, format string, args ...interface{})
@@ -133,8 +134,6 @@ func RegisterMakeVarsProvider(pctx PackageContext, provider MakeVarsProvider) {
 
 // SingletonMakeVarsProvider is a Singleton with an extra method to provide extra values to be exported to Make.
 type SingletonMakeVarsProvider interface {
-	Singleton
-
 	// MakeVars uses a MakeVarsContext to provide extra values to be exported to Make.
 	MakeVars(ctx MakeVarsContext)
 }

@@ -43,6 +43,10 @@ type TestProperties struct {
 	// installed into.
 	Test_suites []string `android:"arch_variant"`
 
+	// list of files or filegroup modules that provide data that should be installed alongside
+	// the test
+	Data []string `android:"path,arch_variant"`
+
 	// Flag to indicate whether or not to create test config automatically. If AndroidTest.xml
 	// doesn't exist next to the Android.bp, this attribute doesn't need to be set to true
 	// explicitly.
@@ -62,6 +66,12 @@ type testDecorator struct {
 	*binaryDecorator
 	Properties TestProperties
 	testConfig android.Path
+
+	data []android.DataPath
+}
+
+func (test *testDecorator) dataPaths() []android.DataPath {
+	return test.data
 }
 
 func (test *testDecorator) nativeCoverage() bool {
@@ -89,7 +99,6 @@ func NewRustTest(hod android.HostOrDeviceSupported) (*Module, *testDecorator) {
 	}
 
 	module.compiler = test
-	module.AddProperties(&test.Properties)
 	return module, test
 }
 
@@ -105,6 +114,12 @@ func (test *testDecorator) install(ctx ModuleContext) {
 		nil,
 		test.Properties.Auto_gen_config)
 
+	dataSrcPaths := android.PathsForModuleSrc(ctx, test.Properties.Data)
+
+	for _, dataSrcPath := range dataSrcPaths {
+		test.data = append(test.data, android.DataPath{SrcPath: dataSrcPath})
+	}
+
 	// default relative install path is module name
 	if !Bool(test.Properties.No_named_install_directory) {
 		test.baseCompiler.relative = ctx.ModuleName()
@@ -119,6 +134,9 @@ func (test *testDecorator) compilerFlags(ctx ModuleContext, flags Flags) Flags {
 	flags = test.binaryDecorator.compilerFlags(ctx, flags)
 	if test.testHarness() {
 		flags.RustFlags = append(flags.RustFlags, "--test")
+	}
+	if ctx.Device() {
+		flags.RustFlags = append(flags.RustFlags, "-Z panic_abort_tests")
 	}
 	return flags
 }

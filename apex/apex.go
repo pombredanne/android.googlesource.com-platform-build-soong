@@ -29,7 +29,9 @@ import (
 	"android/soong/android"
 	"android/soong/bpf"
 	"android/soong/cc"
+	"android/soong/dexpreopt"
 	prebuilt_etc "android/soong/etc"
+	"android/soong/filesystem"
 	"android/soong/java"
 	"android/soong/python"
 	"android/soong/rust"
@@ -55,7 +57,7 @@ func RegisterPreDepsMutators(ctx android.RegisterMutatorsContext) {
 }
 
 func RegisterPostDepsMutators(ctx android.RegisterMutatorsContext) {
-	ctx.TopDown("apex_deps", apexDepsMutator).Parallel()
+	ctx.TopDown("apex_info", apexInfoMutator).Parallel()
 	ctx.BottomUp("apex_unique", apexUniqueVariationsMutator).Parallel()
 	ctx.BottomUp("apex_test_for_deps", apexTestForDepsMutator).Parallel()
 	ctx.BottomUp("apex_test_for", apexTestForMutator).Parallel()
@@ -87,6 +89,9 @@ type apexBundleProperties struct {
 
 	Multilib apexMultilibProperties
 
+	// List of boot images that are embedded inside this APEX bundle.
+	Boot_images []string
+
 	// List of java libraries that are embedded inside this APEX bundle.
 	Java_libs []string
 
@@ -95,6 +100,9 @@ type apexBundleProperties struct {
 
 	// List of BPF programs inside this APEX bundle.
 	Bpfs []string
+
+	// List of filesystem images that are embedded inside this APEX bundle.
+	Filesystems []string
 
 	// Name of the apex_key module that provides the private key to sign this APEX bundle.
 	Key *string
@@ -119,6 +127,12 @@ type apexBundleProperties struct {
 	// Whether this APEX is installable to one of the partitions like system, vendor, etc.
 	// Default: true.
 	Installable *bool
+
+	// Whether this APEX can be compressed or not. Setting this property to false means this
+	// APEX will never be compressed. When set to true, APEX will be compressed if other
+	// conditions, e.g, target device needs to support APEX compression, are also fulfilled.
+	// Default: true.
+	Compressible *bool
 
 	// For native libraries and binaries, use the vendor variant instead of the core (platform)
 	// variant. Default is false. DO NOT use this for APEXes that are installed to the system or
@@ -157,6 +171,10 @@ type apexBundleProperties struct {
 	// Whenever apex_payload.img of the APEX should not be dm-verity signed. Should be only
 	// used in tests.
 	Test_only_unsigned_payload *bool
+
+	// Whenever apex should be compressed, regardless of product flag used. Should be only
+	// used in tests.
+	Test_only_force_compression *bool
 
 	IsCoverageVariant bool `blueprint:"mutated"`
 
@@ -231,6 +249,23 @@ type apexTargetBundleProperties struct {
 	}
 }
 
+type apexArchBundleProperties struct {
+	Arch struct {
+		Arm struct {
+			ApexNativeDependencies
+		}
+		Arm64 struct {
+			ApexNativeDependencies
+		}
+		X86 struct {
+			ApexNativeDependencies
+		}
+		X86_64 struct {
+			ApexNativeDependencies
+		}
+	}
+}
+
 // These properties can be used in override_apex to override the corresponding properties in the
 // base apex.
 type overridableProperties struct {
@@ -267,6 +302,7 @@ type apexBundle struct {
 	// Properties
 	properties            apexBundleProperties
 	targetProperties      apexTargetBundleProperties
+	archProperties        apexArchBundleProperties
 	overridableProperties overridableProperties
 	vndkProperties        apexVndkProperties // only for apex_vndk modules
 
@@ -274,12 +310,12 @@ type apexBundle struct {
 	// Inputs
 
 	// Keys for apex_paylaod.img
-	public_key_file  android.Path
-	private_key_file android.Path
+	publicKeyFile  android.Path
+	privateKeyFile android.Path
 
 	// Cert/priv-key for the zip container
-	container_certificate_file android.Path
-	container_private_key_file android.Path
+	containerCertificateFile android.Path
+	containerPrivateKeyFile  android.Path
 
 	// Flags for special variants of APEX
 	testApex bool
@@ -354,8 +390,11 @@ type apexBundle struct {
 
 	prebuiltFileToDelete string
 
+	isCompressed bool
+
 	// Path of API coverage generate file
-	coverageOutputPath android.ModuleOutPath
+	apisUsedByModuleFile   android.ModuleOutPath
+	apisBackedByModuleFile android.ModuleOutPath
 }
 
 // apexFileClass represents a type of file that can be included in APEX.
@@ -406,6 +445,8 @@ type apexFile struct {
 	transitiveDep bool
 	isJniLib      bool
 
+	multilib string
+
 	// TODO(jiyong): remove this
 	module android.Module
 }
@@ -425,6 +466,7 @@ func newApexFile(ctx android.BaseModuleContext, builtFile android.Path, androidM
 		ret.requiredModuleNames = module.RequiredModuleNames()
 		ret.targetRequiredModuleNames = module.TargetRequiredModuleNames()
 		ret.hostRequiredModuleNames = module.HostRequiredModuleNames()
+		ret.multilib = module.Target().Arch.ArchType.Multilib
 	}
 	return ret
 }
@@ -483,12 +525,12 @@ func (af *apexFile) availableToPlatform() bool {
 // 1) DepsMutator: from the properties like native_shared_libs, java_libs, etc., modules are added
 // to the (direct) dependencies of this APEX bundle.
 //
-// 2) apexDepsMutator: this is a post-deps mutator, so runs after DepsMutator. Its goal is to
+// 2) apexInfoMutator: this is a post-deps mutator, so runs after DepsMutator. Its goal is to
 // collect modules that are direct and transitive dependencies of each APEX bundle. The collected
 // modules are marked as being included in the APEX via BuildForApex().
 //
-// 3) apexMutator: this is a post-deps mutator that runs after apexDepsMutator. For each module that
-// are marked by the apexDepsMutator, apex variations are created using CreateApexVariations().
+// 3) apexMutator: this is a post-deps mutator that runs after apexInfoMutator. For each module that
+// are marked by the apexInfoMutator, apex variations are created using CreateApexVariations().
 
 type dependencyTag struct {
 	blueprint.BaseDependencyTag
@@ -504,6 +546,8 @@ var (
 	bpfTag         = dependencyTag{name: "bpf", payload: true}
 	certificateTag = dependencyTag{name: "certificate"}
 	executableTag  = dependencyTag{name: "executable", payload: true}
+	fsTag          = dependencyTag{name: "filesystem", payload: true}
+	bootImageTag   = dependencyTag{name: "bootImage", payload: true}
 	javaLibTag     = dependencyTag{name: "javaLib", payload: true}
 	jniLibTag      = dependencyTag{name: "jniLib", payload: true}
 	keyTag         = dependencyTag{name: "key"}
@@ -522,11 +566,8 @@ func addDependenciesForNativeModules(ctx android.BottomUpMutatorContext, nativeM
 
 	if ctx.Device() {
 		binVariations = append(binVariations, blueprint.Variation{Mutator: "image", Variation: imageVariation})
-		libVariations = append(libVariations,
-			blueprint.Variation{Mutator: "image", Variation: imageVariation},
-			blueprint.Variation{Mutator: "version", Variation: ""}) // "" is the non-stub variant
-		rustLibVariations = append(rustLibVariations,
-			blueprint.Variation{Mutator: "image", Variation: imageVariation})
+		libVariations = append(libVariations, blueprint.Variation{Mutator: "image", Variation: imageVariation})
+		rustLibVariations = append(rustLibVariations, blueprint.Variation{Mutator: "image", Variation: imageVariation})
 	}
 
 	// Use *FarVariation* to be able to depend on modules having conflicting variations with
@@ -648,6 +689,20 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 			}
 		}
 
+		// Add native modules targeting a specific arch variant
+		switch target.Arch.ArchType {
+		case android.Arm:
+			depsList = append(depsList, a.archProperties.Arch.Arm.ApexNativeDependencies)
+		case android.Arm64:
+			depsList = append(depsList, a.archProperties.Arch.Arm64.ApexNativeDependencies)
+		case android.X86:
+			depsList = append(depsList, a.archProperties.Arch.X86.ApexNativeDependencies)
+		case android.X86_64:
+			depsList = append(depsList, a.archProperties.Arch.X86_64.ApexNativeDependencies)
+		default:
+			panic(fmt.Errorf("unsupported arch %v\n", ctx.Arch().ArchType))
+		}
+
 		for _, d := range depsList {
 			addDependenciesForNativeModules(ctx, d, target, imageVariation)
 		}
@@ -670,12 +725,16 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 
 	// Common-arch dependencies come next
 	commonVariation := ctx.Config().AndroidCommonTarget.Variations()
+	ctx.AddFarVariationDependencies(commonVariation, bootImageTag, a.properties.Boot_images...)
 	ctx.AddFarVariationDependencies(commonVariation, javaLibTag, a.properties.Java_libs...)
 	ctx.AddFarVariationDependencies(commonVariation, bpfTag, a.properties.Bpfs...)
+	ctx.AddFarVariationDependencies(commonVariation, fsTag, a.properties.Filesystems...)
 
-	// With EMMA_INSTRUMENT_FRAMEWORK=true the ART boot image includes jacoco library.
-	if a.artApex && ctx.Config().IsEnvTrue("EMMA_INSTRUMENT_FRAMEWORK") {
-		ctx.AddFarVariationDependencies(commonVariation, javaLibTag, "jacocoagent")
+	if a.artApex {
+		// With EMMA_INSTRUMENT_FRAMEWORK=true the ART boot image includes jacoco library.
+		if ctx.Config().IsEnvTrue("EMMA_INSTRUMENT_FRAMEWORK") {
+			ctx.AddFarVariationDependencies(commonVariation, javaLibTag, "jacocoagent")
+		}
 	}
 
 	// Dependencies for signing
@@ -721,22 +780,22 @@ type ApexBundleInfo struct {
 	Contents *android.ApexContents
 }
 
-var ApexBundleInfoProvider = blueprint.NewMutatorProvider(ApexBundleInfo{}, "apex_deps")
+var ApexBundleInfoProvider = blueprint.NewMutatorProvider(ApexBundleInfo{}, "apex_info")
 
-// apexDepsMutator is responsible for collecting modules that need to have apex variants. They are
+var _ ApexInfoMutator = (*apexBundle)(nil)
+
+// ApexInfoMutator is responsible for collecting modules that need to have apex variants. They are
 // identified by doing a graph walk starting from an apexBundle. Basically, all the (direct and
 // indirect) dependencies are collected. But a few types of modules that shouldn't be included in
 // the apexBundle (e.g. stub libraries) are not collected. Note that a single module can be depended
 // on by multiple apexBundles. In that case, the module is collected for all of the apexBundles.
-func apexDepsMutator(mctx android.TopDownMutatorContext) {
-	if !mctx.Module().Enabled() {
-		return
-	}
-
-	a, ok := mctx.Module().(*apexBundle)
-	if !ok {
-		return
-	}
+//
+// For each dependency between an apex and an ApexModule an ApexInfo object describing the apex
+// is passed to that module's BuildForApex(ApexInfo) method which collates them all in a list.
+// The apexMutator uses that list to create module variants for the apexes to which it belongs.
+// The relationship between module variants and apexes is not one-to-one as variants will be
+// shared between compatible apexes.
+func (a *apexBundle) ApexInfoMutator(mctx android.TopDownMutatorContext) {
 
 	// The VNDK APEX is special. For the APEX, the membership is described in a very different
 	// way. There is no dependency from the VNDK APEX to the VNDK libraries. Instead, VNDK
@@ -796,11 +855,17 @@ func apexDepsMutator(mctx android.TopDownMutatorContext) {
 		Contents: apexContents,
 	})
 
+	minSdkVersion := a.minSdkVersion(mctx)
+	// When min_sdk_version is not set, the apex is built against FutureApiLevel.
+	if minSdkVersion.IsNone() {
+		minSdkVersion = android.FutureApiLevel
+	}
+
 	// This is the main part of this mutator. Mark the collected dependencies that they need to
 	// be built for this apexBundle.
 	apexInfo := android.ApexInfo{
 		ApexVariationName: mctx.ModuleName(),
-		MinSdkVersionStr:  a.minSdkVersion(mctx).String(),
+		MinSdkVersionStr:  minSdkVersion.String(),
 		RequiredSdks:      a.RequiredSdks(),
 		Updatable:         a.Updatable(),
 		InApexes:          []string{mctx.ModuleName()},
@@ -813,6 +878,25 @@ func apexDepsMutator(mctx android.TopDownMutatorContext) {
 		child.(android.ApexModule).BuildForApex(apexInfo) // leave a mark!
 		return true
 	})
+}
+
+type ApexInfoMutator interface {
+	// ApexInfoMutator implementations must call BuildForApex(ApexInfo) on any modules that are
+	// depended upon by an apex and which require an apex specific variant.
+	ApexInfoMutator(android.TopDownMutatorContext)
+}
+
+// apexInfoMutator delegates the work of identifying which modules need an ApexInfo and apex
+// specific variant to modules that support the ApexInfoMutator.
+func apexInfoMutator(mctx android.TopDownMutatorContext) {
+	if !mctx.Module().Enabled() {
+		return
+	}
+
+	if a, ok := mctx.Module().(ApexInfoMutator); ok {
+		a.ApexInfoMutator(mctx)
+		return
+	}
 }
 
 // apexUniqueVariationsMutator checks if any dependencies use unique apex variations. If so, use
@@ -910,7 +994,7 @@ func markPlatformAvailability(mctx android.BottomUpMutatorContext) {
 }
 
 // apexMutator visits each module and creates apex variations if the module was marked in the
-// previous run of apexDepsMutator.
+// previous run of apexInfoMutator.
 func apexMutator(mctx android.BottomUpMutatorContext) {
 	if !mctx.Module().Enabled() {
 		return
@@ -1127,6 +1211,9 @@ func (a *apexBundle) PreventInstall() {
 // Implements cc.Coverage
 func (a *apexBundle) HideFromMake() {
 	a.properties.HideFromMake = true
+	// This HideFromMake is shadowing the ModuleBase one, call through to it for now.
+	// TODO(ccross): untangle these
+	a.ModuleBase.HideFromMake()
 }
 
 // Implements cc.Coverage
@@ -1174,6 +1261,11 @@ func (a *apexBundle) testOnlyShouldSkipHashtreeGeneration() bool {
 // See the test_only_unsigned_payload property
 func (a *apexBundle) testOnlyShouldSkipPayloadSign() bool {
 	return proptools.Bool(a.properties.Test_only_unsigned_payload)
+}
+
+// See the test_only_force_compression property
+func (a *apexBundle) testOnlyShouldForceCompression() bool {
+	return proptools.Bool(a.properties.Test_only_force_compression)
 }
 
 // These functions are interfacing with cc/sanitizer.go. The entire APEX (along with all of its
@@ -1354,6 +1446,7 @@ type javaModule interface {
 }
 
 var _ javaModule = (*java.Library)(nil)
+var _ javaModule = (*java.Import)(nil)
 var _ javaModule = (*java.SdkLibrary)(nil)
 var _ javaModule = (*java.DexImport)(nil)
 var _ javaModule = (*java.SdkLibraryImport)(nil)
@@ -1422,7 +1515,12 @@ func apexFileForBpfProgram(ctx android.BaseModuleContext, builtFile android.Path
 	return newApexFile(ctx, builtFile, builtFile.Base(), dirInApex, etc, bpfProgram)
 }
 
-// WalyPayloadDeps visits dependencies that contributes to the payload of this APEX. For each of the
+func apexFileForFilesystem(ctx android.BaseModuleContext, buildFile android.Path, fs filesystem.Filesystem) apexFile {
+	dirInApex := filepath.Join("etc", "fs")
+	return newApexFile(ctx, buildFile, buildFile.Base(), dirInApex, etc, fs)
+}
+
+// WalkPayloadDeps visits dependencies that contributes to the payload of this APEX. For each of the
 // visited module, the `do` callback is executed. Returning true in the callback continues the visit
 // to the child modules. Returning false makes the visit to continue in the sibling or the parent
 // modules. This is used in check* functions below.
@@ -1439,6 +1537,9 @@ func (a *apexBundle) WalkPayloadDeps(ctx android.ModuleContext, do android.Paylo
 			return false
 		}
 		if dt, ok := depTag.(dependencyTag); ok && !dt.payload {
+			return false
+		}
+		if depTag == dexpreopt.Dex2oatDepTag {
 			return false
 		}
 
@@ -1522,6 +1623,9 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 						provideNativeLibs = append(provideNativeLibs, fi.stem())
 					}
 					return true // track transitive dependencies
+				} else if r, ok := child.(*rust.Module); ok {
+					fi := apexFileForRustLibrary(ctx, r)
+					filesInfo = append(filesInfo, fi)
 				} else {
 					propertyName := "native_shared_libs"
 					if isJniLib {
@@ -1545,9 +1649,26 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 				} else {
 					ctx.PropertyErrorf("binaries", "%q is neither cc_binary, rust_binary, (embedded) py_binary, (host) blueprint_go_binary, (host) bootstrap_go_binary, nor sh_binary", depName)
 				}
+			case bootImageTag:
+				{
+					if _, ok := child.(*java.BootImageModule); !ok {
+						ctx.PropertyErrorf("boot_images", "%q is not a boot_image module", depName)
+						return false
+					}
+					bootImageInfo := ctx.OtherModuleProvider(child, java.BootImageInfoProvider).(java.BootImageInfo)
+					for arch, files := range bootImageInfo.AndroidBootImageFilesByArchType() {
+						dirInApex := filepath.Join("javalib", arch.String())
+						for _, f := range files {
+							androidMkModuleName := "javalib_" + arch.String() + "_" + filepath.Base(f.String())
+							// TODO(b/177892522) - consider passing in the boot image module here instead of nil
+							af := newApexFile(ctx, f, androidMkModuleName, dirInApex, etc, nil)
+							filesInfo = append(filesInfo, af)
+						}
+					}
+				}
 			case javaLibTag:
 				switch child.(type) {
-				case *java.Library, *java.SdkLibrary, *java.DexImport, *java.SdkLibraryImport:
+				case *java.Library, *java.SdkLibrary, *java.DexImport, *java.SdkLibraryImport, *java.Import:
 					af := apexFileForJavaModule(ctx, child.(javaModule))
 					if !af.ok() {
 						ctx.PropertyErrorf("java_libs", "%q is not configured to be compiled into dex", depName)
@@ -1593,6 +1714,12 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 				} else {
 					ctx.PropertyErrorf("bpfs", "%q is not a bpf module", depName)
 				}
+			case fsTag:
+				if fs, ok := child.(filesystem.Filesystem); ok {
+					filesInfo = append(filesInfo, apexFileForFilesystem(ctx, fs.OutputPath(), fs))
+				} else {
+					ctx.PropertyErrorf("filesystems", "%q is not a filesystem module", depName)
+				}
 			case prebuiltTag:
 				if prebuilt, ok := child.(prebuilt_etc.PrebuiltEtcModule); ok {
 					filesInfo = append(filesInfo, apexFileForPrebuiltEtc(ctx, prebuilt, depName))
@@ -1622,16 +1749,16 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 				}
 			case keyTag:
 				if key, ok := child.(*apexKey); ok {
-					a.private_key_file = key.private_key_file
-					a.public_key_file = key.public_key_file
+					a.privateKeyFile = key.privateKeyFile
+					a.publicKeyFile = key.publicKeyFile
 				} else {
 					ctx.PropertyErrorf("key", "%q is not an apex_key module", depName)
 				}
 				return false
 			case certificateTag:
 				if dep, ok := child.(*java.AndroidAppCertificate); ok {
-					a.container_certificate_file = dep.Certificate.Pem
-					a.container_private_key_file = dep.Certificate.Key
+					a.containerCertificateFile = dep.Certificate.Pem
+					a.containerPrivateKeyFile = dep.Certificate.Key
 				} else {
 					ctx.ModuleErrorf("certificate dependency %q must be an android_app_certificate module", depName)
 				}
@@ -1655,8 +1782,15 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 						}
 						af := apexFileForNativeLibrary(ctx, cc, handleSpecialLibs)
 						af.transitiveDep = true
+
+						// Always track transitive dependencies for host.
+						if a.Host() {
+							filesInfo = append(filesInfo, af)
+							return true
+						}
+
 						abInfo := ctx.Provider(ApexBundleInfoProvider).(ApexBundleInfo)
-						if !a.Host() && !abInfo.Contents.DirectlyInApex(depName) && (cc.IsStubs() || cc.HasStubsVariants()) {
+						if !abInfo.Contents.DirectlyInApex(depName) && (cc.IsStubs() || cc.HasStubsVariants()) {
 							// If the dependency is a stubs lib, don't include it in this APEX,
 							// but make sure that the lib is installed on the device.
 							// In case no APEX is having the lib, the lib is installed to the system
@@ -1681,6 +1815,25 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 							// Don't track further
 							return false
 						}
+
+						// If the dep is not considered to be in the same
+						// apex, don't add it to filesInfo so that it is not
+						// included in this APEX.
+						// TODO(jiyong): move this to at the top of the
+						// else-if clause for the indirect dependencies.
+						// Currently, that's impossible because we would
+						// like to record requiredNativeLibs even when
+						// DepIsInSameAPex is false. We also shouldn't do
+						// this for host.
+						if !am.DepIsInSameApex(ctx, am) {
+							return false
+						}
+
+						filesInfo = append(filesInfo, af)
+						return true // track transitive dependencies
+					} else if rm, ok := child.(*rust.Module); ok {
+						af := apexFileForRustLibrary(ctx, rm)
+						af.transitiveDep = true
 						filesInfo = append(filesInfo, af)
 						return true // track transitive dependencies
 					}
@@ -1697,6 +1850,8 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 						filesInfo = append(filesInfo, af)
 						return true // track transitive dependencies
 					}
+				} else if cc.IsHeaderDepTag(depTag) {
+					// nothing
 				} else if java.IsJniDepTag(depTag) {
 					// Because APK-in-APEX embeds jni_libs transitively, we don't need to track transitive deps
 					return false
@@ -1720,23 +1875,9 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		}
 		return false
 	})
-	if a.private_key_file == nil {
+	if a.privateKeyFile == nil {
 		ctx.PropertyErrorf("key", "private_key for %q could not be found", String(a.properties.Key))
 		return
-	}
-
-	// Specific to the ART apex: dexpreopt artifacts for libcore Java libraries. Build rules are
-	// generated by the dexpreopt singleton, and here we access build artifacts via the global
-	// boot image config.
-	if a.artApex {
-		for arch, files := range java.DexpreoptedArtApexJars(ctx) {
-			dirInApex := filepath.Join("javalib", arch.String())
-			for _, f := range files {
-				localModule := "javalib_" + arch.String() + "_" + filepath.Base(f.String())
-				af := newApexFile(ctx, f, localModule, dirInApex, etc, nil)
-				filesInfo = append(filesInfo, af)
-			}
-		}
 	}
 
 	// Remove duplicates in filesInfo
@@ -1823,9 +1964,11 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		a.linkToSystemLib = false
 	}
 
+	forced := ctx.Config().ForceApexSymlinkOptimization()
+
 	// We don't need the optimization for updatable APEXes, as it might give false signal
-	// to the system health when the APEXes are still bundled (b/149805758)
-	if a.Updatable() && a.properties.ApexType == imageApex {
+	// to the system health when the APEXes are still bundled (b/149805758).
+	if !forced && a.Updatable() && a.properties.ApexType == imageApex {
 		a.linkToSystemLib = false
 	}
 
@@ -1860,7 +2003,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		copiedPubkey := android.PathForModuleOut(ctx, "apex_pubkey")
 		ctx.Build(pctx, android.BuildParams{
 			Rule:   android.Cp,
-			Input:  a.public_key_file,
+			Input:  a.publicKeyFile,
 			Output: copiedPubkey,
 		})
 		a.filesInfo = append(a.filesInfo, newApexFile(ctx, copiedPubkey, "apex_pubkey", ".", etc, nil))
@@ -1876,6 +2019,7 @@ func newApexBundle() *apexBundle {
 
 	module.AddProperties(&module.properties)
 	module.AddProperties(&module.targetProperties)
+	module.AddProperties(&module.archProperties)
 	module.AddProperties(&module.overridableProperties)
 
 	android.InitAndroidMultiTargetsArchModule(module, android.HostAndDeviceSupported, android.MultilibCommon)
@@ -1977,16 +2121,12 @@ func (a *apexBundle) checkMinSdkVersion(ctx android.ModuleContext) {
 func (a *apexBundle) minSdkVersion(ctx android.BaseModuleContext) android.ApiLevel {
 	ver := proptools.String(a.properties.Min_sdk_version)
 	if ver == "" {
-		return android.FutureApiLevel
+		return android.NoneApiLevel
 	}
 	apiLevel, err := android.ApiLevelFromUser(ctx, ver)
 	if err != nil {
 		ctx.PropertyErrorf("min_sdk_version", "%s", err.Error())
 		return android.NoneApiLevel
-	}
-	if apiLevel.IsPreview() {
-		// All codenames should build against "current".
-		return android.FutureApiLevel
 	}
 	return apiLevel
 }
@@ -2131,7 +2271,7 @@ func baselineApexAvailable(apex, moduleName string) bool {
 func normalizeModuleName(moduleName string) string {
 	// Prebuilt modules (e.g. java_import, etc.) have "prebuilt_" prefix added by the build
 	// system. Trim the prefix for the check since they are confusing
-	moduleName = strings.TrimPrefix(moduleName, "prebuilt_")
+	moduleName = android.RemoveOptionalPrebuiltPrefix(moduleName)
 	if strings.HasPrefix(moduleName, "libclang_rt.") {
 		// This module has many arch variants that depend on the product being built.
 		// We don't want to list them all
@@ -2735,7 +2875,7 @@ func makeApexAvailableBaseline() map[string][]string {
 		"libprofile-clang-extras_ndk",
 		"libprofile-extras",
 		"libprofile-extras_ndk",
-		"libunwind_llvm",
+		"libunwind",
 	}
 	return m
 }
@@ -2748,14 +2888,14 @@ func init() {
 func createApexPermittedPackagesRules(modules_packages map[string][]string) []android.Rule {
 	rules := make([]android.Rule, 0, len(modules_packages))
 	for module_name, module_packages := range modules_packages {
-		permitted_packages_rule := android.NeverAllow().
+		permittedPackagesRule := android.NeverAllow().
 			BootclasspathJar().
 			With("apex_available", module_name).
 			WithMatcher("permitted_packages", android.NotInList(module_packages)).
 			Because("jars that are part of the " + module_name +
 				" module may only allow these packages: " + strings.Join(module_packages, ",") +
 				". Please jarjar or move code around.")
-		rules = append(rules, permitted_packages_rule)
+		rules = append(rules, permittedPackagesRule)
 	}
 	return rules
 }

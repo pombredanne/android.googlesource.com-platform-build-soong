@@ -156,6 +156,7 @@ func runSoong(ctx Context, config Config) {
 		cmd.Environment.Set("BAZEL_HOME", filepath.Join(config.BazelOutDir(), "bazelhome"))
 		cmd.Environment.Set("BAZEL_OUTPUT_BASE", filepath.Join(config.BazelOutDir(), "output"))
 		cmd.Environment.Set("BAZEL_WORKSPACE", absPath(ctx, "."))
+		cmd.Environment.Set("BAZEL_METRICS_DIR", config.BazelMetricsDir())
 
 		cmd.Environment.Set("SOONG_SANDBOX_SOONG_BUILD", "true")
 		cmd.Sandbox = soongSandbox
@@ -168,8 +169,11 @@ func runSoong(ctx Context, config Config) {
 	// This build generates <builddir>/build.ninja, which is used later by build/soong/ui/build/build.go#Build().
 	ninja("bootstrap", ".bootstrap/build.ninja")
 
-	soongBuildMetrics := loadSoongBuildMetrics(ctx, config)
-	logSoongBuildMetrics(ctx, soongBuildMetrics)
+	var soongBuildMetrics *soong_metrics_proto.SoongBuildMetrics
+	if shouldCollectBuildSoongMetrics(config) {
+		soongBuildMetrics := loadSoongBuildMetrics(ctx, config)
+		logSoongBuildMetrics(ctx, soongBuildMetrics)
+	}
 
 	distGzipFile(ctx, config, config.SoongNinjaFile(), "soong")
 
@@ -178,9 +182,14 @@ func runSoong(ctx Context, config Config) {
 		distGzipFile(ctx, config, config.SoongMakeVarsMk(), "soong")
 	}
 
-	if ctx.Metrics != nil {
+	if shouldCollectBuildSoongMetrics(config) && ctx.Metrics != nil {
 		ctx.Metrics.SetSoongBuildMetrics(soongBuildMetrics)
 	}
+}
+
+func shouldCollectBuildSoongMetrics(config Config) bool {
+	// Do not collect metrics protobuf if the soong_build binary ran as the bp2build converter.
+	return config.Environment().IsFalse("GENERATE_BAZEL_FILES")
 }
 
 func loadSoongBuildMetrics(ctx Context, config Config) *soong_metrics_proto.SoongBuildMetrics {

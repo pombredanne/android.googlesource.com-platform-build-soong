@@ -19,10 +19,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/google/blueprint/bootstrap"
 
 	"android/soong/android"
+	"android/soong/bp2build"
 )
 
 var (
@@ -51,10 +53,16 @@ func newNameResolver(config android.Config) *android.NameResolver {
 	return android.NewNameResolver(exportFilter)
 }
 
-func newContext(srcDir string, configuration android.Config) *android.Context {
+// bazelConversionRequested checks that the user is intending to convert
+// Blueprint to Bazel BUILD files.
+func bazelConversionRequested(configuration android.Config) bool {
+	return configuration.IsEnvTrue("GENERATE_BAZEL_FILES")
+}
+
+func newContext(configuration android.Config) *android.Context {
 	ctx := android.NewContext(configuration)
 	ctx.Register()
-	if !shouldPrepareBuildActions() {
+	if !shouldPrepareBuildActions(configuration) {
 		configuration.SetStopBefore(bootstrap.StopBeforePrepareBuildActions)
 	}
 	ctx.SetNameInterface(newNameResolver(configuration))
@@ -88,13 +96,22 @@ func main() {
 		// enabled even if it completed successfully.
 		extraNinjaDeps = append(extraNinjaDeps, filepath.Join(configuration.BuildDir(), "always_rerun_for_delve"))
 	}
+
+	if bazelConversionRequested(configuration) {
+		// Run the alternate pipeline of bp2build mutators and singleton to convert Blueprint to BUILD files
+		// before everything else.
+		runBp2Build(configuration, extraNinjaDeps)
+		// Short-circuit and return.
+		return
+	}
+
 	if configuration.BazelContext.BazelEnabled() {
 		// Bazel-enabled mode. Soong runs in two passes.
 		// First pass: Analyze the build tree, but only store all bazel commands
 		// needed to correctly evaluate the tree in the second pass.
 		// TODO(cparsons): Don't output any ninja file, as the second pass will overwrite
 		// the incorrect results from the first pass, and file I/O is expensive.
-		firstCtx := newContext(srcDir, configuration)
+		firstCtx := newContext(configuration)
 		configuration.SetStopBefore(bootstrap.StopBeforeWriteNinja)
 		bootstrap.Main(firstCtx.Context, configuration, extraNinjaDeps...)
 		// Invoke bazel commands and save results for second pass.
@@ -108,12 +125,14 @@ func main() {
 			fmt.Fprintf(os.Stderr, "%s", err)
 			os.Exit(1)
 		}
-		ctx = newContext(srcDir, secondPassConfig)
+		ctx = newContext(secondPassConfig)
 		bootstrap.Main(ctx.Context, secondPassConfig, extraNinjaDeps...)
 	} else {
-		ctx = newContext(srcDir, configuration)
+		ctx = newContext(configuration)
 		bootstrap.Main(ctx.Context, configuration, extraNinjaDeps...)
 	}
+
+	// Convert the Soong module graph into Bazel BUILD files.
 	if bazelQueryViewDir != "" {
 		if err := createBazelQueryView(ctx, bazelQueryViewDir); err != nil {
 			fmt.Fprintf(os.Stderr, "%s", err)
@@ -130,7 +149,7 @@ func main() {
 
 	// TODO(ccross): make this a command line argument.  Requires plumbing through blueprint
 	//  to affect the command line of the primary builder.
-	if shouldPrepareBuildActions() {
+	if shouldPrepareBuildActions(configuration) {
 		metricsFile := filepath.Join(bootstrap.BuildDir, "soong_build_metrics.pb")
 		err := android.WriteMetrics(configuration, metricsFile)
 		if err != nil {
@@ -140,8 +159,66 @@ func main() {
 	}
 }
 
-func shouldPrepareBuildActions() bool {
-	// If we're writing soong_docs or queryview, don't write build.ninja or
-	// collect metrics.
-	return docFile == "" && bazelQueryViewDir == ""
+// Run Soong in the bp2build mode. This creates a standalone context that registers
+// an alternate pipeline of mutators and singletons specifically for generating
+// Bazel BUILD files instead of Ninja files.
+func runBp2Build(configuration android.Config, extraNinjaDeps []string) {
+	// Register an alternate set of singletons and mutators for bazel
+	// conversion for Bazel conversion.
+	bp2buildCtx := android.NewContext(configuration)
+	bp2buildCtx.RegisterForBazelConversion()
+
+	// No need to generate Ninja build rules/statements from Modules and Singletons.
+	configuration.SetStopBefore(bootstrap.StopBeforePrepareBuildActions)
+	bp2buildCtx.SetNameInterface(newNameResolver(configuration))
+
+	// Run the loading and analysis pipeline.
+	bootstrap.Main(bp2buildCtx.Context, configuration, extraNinjaDeps...)
+
+	// Run the code-generation phase to convert BazelTargetModules to BUILD files.
+	codegenContext := bp2build.NewCodegenContext(configuration, *bp2buildCtx, bp2build.Bp2Build)
+	bp2build.Codegen(codegenContext)
+
+	// Workarounds to support running bp2build in a clean AOSP checkout with no
+	// prior builds, and exiting early as soon as the BUILD files get generated,
+	// therefore not creating build.ninja files that soong_ui and callers of
+	// soong_build expects.
+	//
+	// These files are: build.ninja and build.ninja.d. Since Kati hasn't been
+	// ran as well, and `nothing` is defined in a .mk file, there isn't a ninja
+	// target called `nothing`, so we manually create it here.
+	//
+	// Even though outFile (build.ninja) and depFile (build.ninja.d) are values
+	// passed into bootstrap.Main, they are package-private fields in bootstrap.
+	// Short of modifying Blueprint to add an exported getter, inlining them
+	// here is the next-best practical option.
+	ninjaFileName := "build.ninja"
+	ninjaFile := android.PathForOutput(codegenContext, ninjaFileName)
+	ninjaFileD := android.PathForOutput(codegenContext, ninjaFileName+".d")
+	extraNinjaDepsString := strings.Join(extraNinjaDeps, " \\\n ")
+	// A workaround to create the 'nothing' ninja target so `m nothing` works,
+	// since bp2build runs without Kati, and the 'nothing' target is declared in
+	// a Makefile.
+	android.WriteFileToOutputDir(ninjaFile, []byte("build nothing: phony\n  phony_output = true\n"), 0666)
+	android.WriteFileToOutputDir(
+		ninjaFileD,
+		[]byte(fmt.Sprintf("%s: \\\n %s\n", ninjaFileName, extraNinjaDepsString)),
+		0666)
+}
+
+// shouldPrepareBuildActions reads configuration and flags if build actions
+// should be generated.
+func shouldPrepareBuildActions(configuration android.Config) bool {
+	// Generating Soong docs
+	if docFile != "" {
+		return false
+	}
+
+	// Generating a directory for Soong query (queryview)
+	if bazelQueryViewDir != "" {
+		return false
+	}
+
+	// Generating a directory for converted Bazel BUILD files
+	return !bazelConversionRequested(configuration)
 }

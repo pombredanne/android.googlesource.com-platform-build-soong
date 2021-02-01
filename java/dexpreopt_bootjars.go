@@ -25,6 +25,25 @@ import (
 	"github.com/google/blueprint/proptools"
 )
 
+// =================================================================================================
+// WIP - see http://b/177892522 for details
+//
+// The build support for boot images is currently being migrated away from singleton to modules so
+// the documentation may not be strictly accurate. Rather than update the documentation at every
+// step which will create a lot of churn the changes that have been made will be listed here and the
+// documentation will be updated once it is closer to the final result.
+//
+// Changes:
+// 1) dex_bootjars is now a singleton module and not a plain singleton.
+// 2) Boot images are now represented by the boot_image module type.
+// 3) The art boot image is called "art-boot-image", the framework boot image is called
+//    "framework-boot-image".
+// 4) They are defined in art/build/boot/Android.bp and frameworks/base/boot/Android.bp
+//    respectively.
+// 5) Each boot_image retrieves the appropriate boot image configuration from the map returned by
+//    genBootImageConfigs() using the image_name specified in the boot_image module.
+// =================================================================================================
+
 // This comment describes:
 //   1. ART boot images in general (their types, structure, file layout, etc.)
 //   2. build system support for boot images
@@ -124,7 +143,7 @@ import (
 // The primary ART boot image needs to be compiled with one dex2oat invocation that depends on DEX
 // jars for the core libraries. Framework boot image extension needs to be compiled with one dex2oat
 // invocation that depends on the primary ART boot image and all bootclasspath DEX jars except the
-// Core libraries.
+// core libraries as they are already part of the primary ART boot image.
 //
 // 2.1. Libraries that go in the boot images
 // -----------------------------------------
@@ -339,20 +358,24 @@ func (image *bootImageVariant) imageLocations() (imageLocations []string) {
 	return append(imageLocations, dexpreopt.PathToLocation(image.images, image.target.Arch.ArchType))
 }
 
-func dexpreoptBootJarsFactory() android.Singleton {
-	return &dexpreoptBootJars{}
+func dexpreoptBootJarsFactory() android.SingletonModule {
+	m := &dexpreoptBootJars{}
+	android.InitAndroidModule(m)
+	return m
 }
 
 func RegisterDexpreoptBootJarsComponents(ctx android.RegistrationContext) {
-	ctx.RegisterSingletonType("dex_bootjars", dexpreoptBootJarsFactory)
+	ctx.RegisterSingletonModuleType("dex_bootjars", dexpreoptBootJarsFactory)
 }
 
-func skipDexpreoptBootJars(ctx android.PathContext) bool {
-	return dexpreopt.GetGlobalConfig(ctx).DisablePreopt
+func SkipDexpreoptBootJars(ctx android.PathContext) bool {
+	return dexpreopt.GetGlobalConfig(ctx).DisablePreoptBootImages
 }
 
-// Singleton for generating boot image build rules.
+// Singleton module for generating boot image build rules.
 type dexpreoptBootJars struct {
+	android.SingletonModuleBase
+
 	// Default boot image config (currently always the Framework boot image extension). It should be
 	// noted that JIT-Zygote builds use ART APEX image instead of the Framework boot image extension,
 	// but the switch is handled not here, but in the makefiles (triggered with
@@ -369,25 +392,16 @@ type dexpreoptBootJars struct {
 	dexpreoptConfigForMake android.WritablePath
 }
 
-// Accessor function for the apex package. Returns nil if dexpreopt is disabled.
-func DexpreoptedArtApexJars(ctx android.BuilderContext) map[android.ArchType]android.OutputPaths {
-	if skipDexpreoptBootJars(ctx) {
-		return nil
-	}
-	// Include dexpreopt files for the primary boot image.
-	files := map[android.ArchType]android.OutputPaths{}
-	for _, variant := range artBootImageConfig(ctx).variants {
-		// We also generate boot images for host (for testing), but we don't need those in the apex.
-		if variant.target.Os == android.Android {
-			files[variant.target.Arch.ArchType] = variant.imagesDeps
-		}
-	}
-	return files
+// Provide paths to boot images for use by modules that depend upon them.
+//
+// The build rules are created in GenerateSingletonBuildActions().
+func (d *dexpreoptBootJars) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+	// Placeholder for now.
 }
 
 // Generate build rules for boot images.
-func (d *dexpreoptBootJars) GenerateBuildActions(ctx android.SingletonContext) {
-	if skipDexpreoptBootJars(ctx) {
+func (d *dexpreoptBootJars) GenerateSingletonBuildActions(ctx android.SingletonContext) {
+	if SkipDexpreoptBootJars(ctx) {
 		return
 	}
 	if dexpreopt.GetCachedGlobalSoongConfig(ctx) == nil {
@@ -418,43 +432,56 @@ func (d *dexpreoptBootJars) GenerateBuildActions(ctx android.SingletonContext) {
 	dumpOatRules(ctx, d.defaultBootImage)
 }
 
-func isHostdex(module android.Module) bool {
-	if lib, ok := module.(*Library); ok {
-		return Bool(lib.deviceProperties.Hostdex)
-	}
-	return false
-}
-
 // Inspect this module to see if it contains a bootclasspath dex jar.
 // Note that the same jar may occur in multiple modules.
 // This logic is tested in the apex package to avoid import cycle apex <-> java.
 func getBootImageJar(ctx android.SingletonContext, image *bootImageConfig, module android.Module) (int, android.Path) {
-	// All apex Java libraries have non-installable platform variants, skip them.
-	if module.IsSkipInstall() {
-		return -1, nil
-	}
-
-	jar, hasJar := module.(interface{ DexJarBuildPath() android.Path })
-	if !hasJar {
-		return -1, nil
-	}
-
 	name := ctx.ModuleName(module)
+
+	// Strip a prebuilt_ prefix so that this can access the dex jar from a prebuilt module.
+	name = android.RemoveOptionalPrebuiltPrefix(name)
+
+	// Ignore any module that is not listed in the boot image configuration.
 	index := image.modules.IndexOfJar(name)
 	if index == -1 {
 		return -1, nil
 	}
 
-	// Check that this module satisfies constraints for a particular boot image.
-	_, isApexModule := module.(android.ApexModule)
+	// It is an error if a module configured in the boot image does not support accessing the dex jar.
+	// This is safe because every module that has the same name has to have the same module type.
+	jar, hasJar := module.(interface{ DexJarBuildPath() android.Path })
+	if !hasJar {
+		ctx.Errorf("module %q configured in boot image %q does not support accessing dex jar", module, image.name)
+		return -1, nil
+	}
+
+	// It is also an error if the module is not an ApexModule.
+	if _, ok := module.(android.ApexModule); !ok {
+		ctx.Errorf("module %q configured in boot image %q does not support being added to an apex", module, image.name)
+		return -1, nil
+	}
+
 	apexInfo := ctx.ModuleProvider(module, android.ApexInfoProvider).(android.ApexInfo)
-	fromUpdatableApex := isApexModule && apexInfo.Updatable
-	if image.name == artBootImageName {
-		if isApexModule && len(apexInfo.InApexes) > 0 && allHavePrefix(apexInfo.InApexes, "com.android.art") {
-			// ok: found the jar in the ART apex
-		} else if isApexModule && apexInfo.IsForPlatform() && isHostdex(module) {
-			// exception (skip and continue): special "hostdex" platform variant
+
+	// Now match the apex part of the boot image configuration.
+	requiredApex := image.modules.Apex(index)
+	if requiredApex == "platform" {
+		if len(apexInfo.InApexes) != 0 {
+			// A platform variant is required but this is for an apex so ignore it.
 			return -1, nil
+		}
+	} else if !apexInfo.InApexByBaseName(requiredApex) {
+		// An apex variant for a specific apex is required but this is the wrong apex.
+		return -1, nil
+	}
+
+	// Check that this module satisfies any boot image specific constraints.
+	fromUpdatableApex := apexInfo.Updatable
+
+	switch image.name {
+	case artBootImageName:
+		if apexInfo.InApexByBaseName("com.android.art") || apexInfo.InApexByBaseName("com.android.art.debug") || apexInfo.InApexByBaseName("com.android.art,testing") {
+			// ok: found the jar in the ART apex
 		} else if name == "jacocoagent" && ctx.Config().IsEnvTrue("EMMA_INSTRUMENT_FRAMEWORK") {
 			// exception (skip and continue): Jacoco platform variant for a coverage build
 			return -1, nil
@@ -465,27 +492,19 @@ func getBootImageJar(ctx android.SingletonContext, image *bootImageConfig, modul
 			// error: this jar is part of the platform or a non-updatable apex
 			ctx.Errorf("module %q is not allowed in the ART boot image", name)
 		}
-	} else if image.name == frameworkBootImageName {
+
+	case frameworkBootImageName:
 		if !fromUpdatableApex {
 			// ok: this jar is part of the platform or a non-updatable apex
 		} else {
 			// error: this jar is part of an updatable apex
 			ctx.Errorf("module %q from updatable apexes %q is not allowed in the framework boot image", name, apexInfo.InApexes)
 		}
-	} else {
+	default:
 		panic("unknown boot image: " + image.name)
 	}
 
 	return index, jar.DexJarBuildPath()
-}
-
-func allHavePrefix(list []string, prefix string) bool {
-	for _, s := range list {
-		if s != prefix && !strings.HasPrefix(s, prefix+".") {
-			return false
-		}
-	}
-	return true
 }
 
 // buildBootImage takes a bootImageConfig, creates rules to build it, and returns the image.
@@ -493,8 +512,19 @@ func buildBootImage(ctx android.SingletonContext, image *bootImageConfig) *bootI
 	// Collect dex jar paths for the boot image modules.
 	// This logic is tested in the apex package to avoid import cycle apex <-> java.
 	bootDexJars := make(android.Paths, image.modules.Len())
+
 	ctx.VisitAllModules(func(module android.Module) {
+		if !isActiveModule(module) {
+			return
+		}
+
 		if i, j := getBootImageJar(ctx, image, module); i != -1 {
+			if existing := bootDexJars[i]; existing != nil {
+				ctx.Errorf("Multiple dex jars found for %s:%s - %s and %s",
+					image.modules.Apex(i), image.modules.Jar(i), existing, j)
+				return
+			}
+
 			bootDexJars[i] = j
 		}
 	})
@@ -506,7 +536,7 @@ func buildBootImage(ctx android.SingletonContext, image *bootImageConfig) *bootI
 			m := image.modules.Jar(i)
 			if ctx.Config().AllowMissingDependencies() {
 				missingDeps = append(missingDeps, m)
-				bootDexJars[i] = android.PathForOutput(ctx, "missing")
+				bootDexJars[i] = android.PathForOutput(ctx, "missing/module", m, "from/apex", image.modules.Apex(i))
 			} else {
 				ctx.Errorf("failed to find a dex jar path for module '%s'"+
 					", note that some jars may be filtered out by module constraints", m)
@@ -605,8 +635,10 @@ func buildBootImageVariant(ctx android.SingletonContext, image *bootImageVariant
 		cmd.FlagWithInput("--profile-file=", profile)
 	}
 
-	if global.DirtyImageObjects.Valid() {
-		cmd.FlagWithInput("--dirty-image-objects=", global.DirtyImageObjects.Path())
+	dirtyImageFile := "frameworks/base/config/dirty-image-objects"
+	dirtyImagePath := android.ExistentPathForSource(ctx, dirtyImageFile)
+	if dirtyImagePath.Valid() {
+		cmd.FlagWithInput("--dirty-image-objects=", dirtyImagePath.Path())
 	}
 
 	if image.extends != nil {
@@ -707,7 +739,7 @@ func bootImageProfileRule(ctx android.SingletonContext, image *bootImageConfig, 
 	globalSoong := dexpreopt.GetCachedGlobalSoongConfig(ctx)
 	global := dexpreopt.GetGlobalConfig(ctx)
 
-	if global.DisableGenerateProfile || ctx.Config().UnbundledBuild() {
+	if global.DisableGenerateProfile {
 		return nil
 	}
 	profile := ctx.Config().Once(bootImageProfileRuleKey, func() interface{} {
@@ -779,7 +811,7 @@ func bootFrameworkProfileRule(ctx android.SingletonContext, image *bootImageConf
 			bootFrameworkProfile = path.Path()
 		} else {
 			missingDeps = append(missingDeps, defaultProfile)
-			bootFrameworkProfile = android.PathForOutput(ctx, "missing")
+			bootFrameworkProfile = android.PathForOutput(ctx, "missing", defaultProfile)
 		}
 
 		profile := image.dir.Join(ctx, "boot.bprof")
@@ -815,6 +847,9 @@ func updatableBcpPackagesRule(ctx android.SingletonContext, image *bootImageConf
 		// Collect `permitted_packages` for updatable boot jars.
 		var updatablePackages []string
 		ctx.VisitAllModules(func(module android.Module) {
+			if !isActiveModule(module) {
+				return
+			}
 			if j, ok := module.(PermittedPackagesForUpdatableBootJars); ok {
 				name := ctx.ModuleName(module)
 				if i := android.IndexList(name, updatableModules); i != -1 {

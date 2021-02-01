@@ -126,21 +126,18 @@ type variableProperties struct {
 		}
 
 		Arc struct {
-			Cflags       []string
-			Exclude_srcs []string
-			Include_dirs []string
-			Shared_libs  []string
-			Static_libs  []string
-			Srcs         []string
-		}
+			Cflags            []string `android:"arch_variant"`
+			Exclude_srcs      []string `android:"arch_variant"`
+			Include_dirs      []string `android:"arch_variant"`
+			Shared_libs       []string `android:"arch_variant"`
+			Static_libs       []string `android:"arch_variant"`
+			Srcs              []string `android:"arch_variant"`
+			Whole_static_libs []string `android:"arch_variant"`
+		} `android:"arch_variant"`
 
 		Flatten_apex struct {
 			Enabled *bool
 		}
-
-		Experimental_mte struct {
-			Cflags []string `android:"arch_variant"`
-		} `android:"arch_variant"`
 
 		Native_coverage struct {
 			Src          *string  `android:"arch_variant"`
@@ -179,6 +176,8 @@ type productVariables struct {
 	DeviceVndkVersion                     *string  `json:",omitempty"`
 	DeviceCurrentApiLevelForVendorModules *string  `json:",omitempty"`
 	DeviceSystemSdkVersions               []string `json:",omitempty"`
+
+	RecoverySnapshotVersion *string `json:",omitempty"`
 
 	DeviceSecondaryArch        *string  `json:",omitempty"`
 	DeviceSecondaryArchVariant *string  `json:",omitempty"`
@@ -261,7 +260,9 @@ type productVariables struct {
 
 	DisableScudo *bool `json:",omitempty"`
 
-	Experimental_mte *bool `json:",omitempty"`
+	MemtagHeapExcludePaths      []string `json:",omitempty"`
+	MemtagHeapAsyncIncludePaths []string `json:",omitempty"`
+	MemtagHeapSyncIncludePaths  []string `json:",omitempty"`
 
 	VendorPath    *string `json:",omitempty"`
 	OdmPath       *string `json:",omitempty"`
@@ -308,19 +309,28 @@ type productVariables struct {
 	VndkUseCoreVariant         *bool `json:",omitempty"`
 	VndkSnapshotBuildArtifacts *bool `json:",omitempty"`
 
+	DirectedVendorSnapshot bool            `json:",omitempty"`
+	VendorSnapshotModules  map[string]bool `json:",omitempty"`
+
 	BoardVendorSepolicyDirs      []string `json:",omitempty"`
 	BoardOdmSepolicyDirs         []string `json:",omitempty"`
+	BoardReqdMaskPolicy          []string `json:",omitempty"`
 	SystemExtPublicSepolicyDirs  []string `json:",omitempty"`
 	SystemExtPrivateSepolicyDirs []string `json:",omitempty"`
 	BoardSepolicyM4Defs          []string `json:",omitempty"`
+
+	BoardSepolicyVers       *string `json:",omitempty"`
+	PlatformSepolicyVersion *string `json:",omitempty"`
 
 	VendorVars map[string]map[string]string `json:",omitempty"`
 
 	Ndk_abis               *bool `json:",omitempty"`
 	Exclude_draft_ndk_apis *bool `json:",omitempty"`
 
-	Flatten_apex *bool `json:",omitempty"`
-	Aml_abis     *bool `json:",omitempty"`
+	Flatten_apex                 *bool `json:",omitempty"`
+	ForceApexSymlinkOptimization *bool `json:",omitempty"`
+	CompressedApex               *bool `json:",omitempty"`
+	Aml_abis                     *bool `json:",omitempty"`
 
 	DexpreoptGlobalConfig *string `json:",omitempty"`
 
@@ -337,7 +347,6 @@ type productVariables struct {
 
 	ProductPublicSepolicyDirs  []string `json:",omitempty"`
 	ProductPrivateSepolicyDirs []string `json:",omitempty"`
-	ProductCompatibleProperty  *bool    `json:",omitempty"`
 
 	ProductVndkVersion *string `json:",omitempty"`
 
@@ -358,6 +367,8 @@ type productVariables struct {
 	BoardKernelModuleInterfaceVersions []string `json:",omitempty"`
 
 	BoardMoveRecoveryResourcesToVendorBoot *bool `json:",omitempty"`
+
+	PrebuiltHiddenApiDir *string `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {
@@ -429,13 +440,15 @@ func VariableMutator(mctx BottomUpMutatorContext) {
 
 	variableValues := reflect.ValueOf(a.variableProperties).Elem().FieldByName("Product_variables")
 
+	productVariables := reflect.ValueOf(mctx.Config().productVariables)
+
 	for i := 0; i < variableValues.NumField(); i++ {
 		variableValue := variableValues.Field(i)
 		name := variableValues.Type().Field(i).Name
 		property := "product_variables." + proptools.PropertyNameForField(name)
 
 		// Check that the variable was set for the product
-		val := reflect.ValueOf(mctx.Config().productVariables).FieldByName(name)
+		val := productVariables.FieldByName(name)
 		if !val.IsValid() || val.Kind() != reflect.Ptr || val.IsNil() {
 			continue
 		}

@@ -51,8 +51,6 @@ var neverallows = []Rule{}
 func init() {
 	AddNeverAllowRules(createIncludeDirsRules()...)
 	AddNeverAllowRules(createTrebleRules()...)
-	AddNeverAllowRules(createLibcoreRules()...)
-	AddNeverAllowRules(createMediaRules()...)
 	AddNeverAllowRules(createJavaDeviceForHostRules()...)
 	AddNeverAllowRules(createCcSdkVariantRules()...)
 	AddNeverAllowRules(createUncompressDexRules()...)
@@ -130,46 +128,6 @@ func createTrebleRules() []Rule {
 
 		// Example:
 		// *NeverAllow().with("Srcs", "main.cpp"))
-	}
-}
-
-func createLibcoreRules() []Rule {
-	var coreLibraryProjects = []string{
-		"libcore",
-		"external/apache-harmony",
-		"external/apache-xml",
-		"external/bouncycastle",
-		"external/conscrypt",
-		"external/icu",
-		"external/okhttp",
-		"external/wycheproof",
-		"prebuilts",
-	}
-
-	// Additional whitelisted path only used for ART testing, which needs access to core library
-	// targets. This does not affect the contents of a device image (system, vendor, etc.).
-	var artTests = []string{
-		"art/test",
-	}
-
-	// Core library constraints. The sdk_version: "none" can only be used in core library projects and ART tests.
-	// Access to core library targets is restricted using visibility rules.
-	rules := []Rule{
-		NeverAllow().
-			NotIn(coreLibraryProjects...).
-			NotIn(artTests...).
-			With("sdk_version", "none").
-			WithoutMatcher("name", Regexp("^android_.*stubs_current$")),
-	}
-
-	return rules
-}
-
-func createMediaRules() []Rule {
-	return []Rule{
-		NeverAllow().
-			With("libs", "updatable-media").
-			Because("updatable-media includes private APIs. Use updatable_media_stubs instead."),
 	}
 }
 

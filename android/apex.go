@@ -64,6 +64,14 @@ type ApexInfo struct {
 	// module is part of. The ApexContents gives information about which modules the apexBundle
 	// has and whether a module became part of the apexBundle via a direct dependency or not.
 	ApexContents []*ApexContents
+
+	// True if this is for a prebuilt_apex.
+	//
+	// If true then this will customize the apex processing to make it suitable for handling
+	// prebuilt_apex, e.g. it will prevent ApexInfos from being merged together.
+	//
+	// See Prebuilt.ApexInfoMutator for more information.
+	ForPrebuiltApex bool
 }
 
 var ApexInfoProvider = blueprint.NewMutatorProvider(ApexInfo{}, "apex")
@@ -97,6 +105,19 @@ func (i ApexInfo) IsForPlatform() bool {
 func (i ApexInfo) InApex(apex string) bool {
 	for _, a := range i.InApexes {
 		if a == apex {
+			return true
+		}
+	}
+	return false
+}
+
+// InApexByBaseName tells whether this apex variant of the module is part of the given APEX or not,
+// where the APEX is specified by its canonical base name, i.e. typically beginning with
+// "com.android.". In particular this function doesn't differentiate between source and prebuilt
+// APEXes, where the latter may have "prebuilt_" prefixes.
+func (i ApexInfo) InApexByBaseName(apex string) bool {
+	for _, a := range i.InApexes {
+		if RemoveOptionalPrebuiltPrefix(a) == apex {
 			return true
 		}
 	}
@@ -153,13 +174,12 @@ type ApexModule interface {
 	// run.
 	DirectlyInAnyApex() bool
 
-	// Returns true in the primary variant of a module if _any_ variant of the module is
-	// directly in any apex. This includes host, arch, asan, etc. variants. It is unused in any
-	// variant that is not the primary variant. Ideally this wouldn't be used, as it incorrectly
-	// mixes arch variants if only one arch is in an apex, but a few places depend on it, for
-	// example when an ASAN variant is created before the apexMutator. Call this after
-	// apex.apexMutator is run.
-	AnyVariantDirectlyInAnyApex() bool
+	// NotInPlatform tells whether or not this module is included in an APEX and therefore
+	// shouldn't be exposed to the platform (i.e. outside of the APEX) directly. A module is
+	// considered to be included in an APEX either when there actually is an APEX that
+	// explicitly has the module as its dependency or the module is not available to the
+	// platform, which indicates that the module belongs to at least one or more other APEXes.
+	NotInPlatform() bool
 
 	// Tests if this module could have APEX variants. Even when a module type implements
 	// ApexModule interface, APEX variants are created only for the module instances that return
@@ -221,7 +241,12 @@ type ApexProperties struct {
 	// See ApexModule.DirectlyInAnyApex()
 	DirectlyInAnyApex bool `blueprint:"mutated"`
 
-	// See ApexModule.AnyVariantDirectlyInAnyApex()
+	// AnyVariantDirectlyInAnyApex is true in the primary variant of a module if _any_ variant
+	// of the module is directly in any apex. This includes host, arch, asan, etc. variants. It
+	// is unused in any variant that is not the primary variant. Ideally this wouldn't be used,
+	// as it incorrectly mixes arch variants if only one arch is in an apex, but a few places
+	// depend on it, for example when an ASAN variant is created before the apexMutator. Call
+	// this after apex.apexMutator is run.
 	AnyVariantDirectlyInAnyApex bool `blueprint:"mutated"`
 
 	// See ApexModule.NotAvailableForPlatform()
@@ -249,6 +274,12 @@ type CopyDirectlyInAnyApexTag interface {
 	CopyDirectlyInAnyApex()
 }
 
+// Interface that identifies dependencies to skip Apex dependency check
+type SkipApexAllowedDependenciesCheck interface {
+	// Returns true to skip the Apex dependency check, which limits the allowed dependency in build.
+	SkipApexAllowedDependenciesCheck() bool
+}
+
 // ApexModuleBase provides the default implementation for the ApexModule interface. APEX-aware
 // modules are expected to include this struct and call InitApexModule().
 type ApexModuleBase struct {
@@ -257,7 +288,7 @@ type ApexModuleBase struct {
 	canHaveApexVariants bool
 
 	apexInfos     []ApexInfo
-	apexInfosLock sync.Mutex // protects apexInfos during parallel apexDepsMutator
+	apexInfosLock sync.Mutex // protects apexInfos during parallel apexInfoMutator
 }
 
 // Initializes ApexModuleBase struct. Not calling this (even when inheriting from ApexModuleBase)
@@ -302,8 +333,8 @@ func (m *ApexModuleBase) DirectlyInAnyApex() bool {
 }
 
 // Implements ApexModule
-func (m *ApexModuleBase) AnyVariantDirectlyInAnyApex() bool {
-	return m.ApexProperties.AnyVariantDirectlyInAnyApex
+func (m *ApexModuleBase) NotInPlatform() bool {
+	return m.ApexProperties.AnyVariantDirectlyInAnyApex || !m.AvailableFor(AvailableToPlatform)
 }
 
 // Implements ApexModule
@@ -402,6 +433,16 @@ func mergeApexVariations(ctx PathContext, apexInfos []ApexInfo) (merged []ApexIn
 	sort.Sort(byApexName(apexInfos))
 	seen := make(map[string]int)
 	for _, apexInfo := range apexInfos {
+		// If this is for a prebuilt apex then use the actual name of the apex variation to prevent this
+		// from being merged with other ApexInfo. See Prebuilt.ApexInfoMutator for more information.
+		if apexInfo.ForPrebuiltApex {
+			merged = append(merged, apexInfo)
+			continue
+		}
+
+		// Merge the ApexInfo together. If a compatible ApexInfo exists then merge the information from
+		// this one into it, otherwise create a new merged ApexInfo from this one and save it away so
+		// other ApexInfo instances can be merged into it.
 		apexName := apexInfo.ApexVariationName
 		mergedName := apexInfo.mergedName(ctx)
 		if index, exists := seen[mergedName]; exists {
@@ -442,7 +483,7 @@ func CreateApexVariations(mctx BottomUpMutatorContext, module ApexModule) []Modu
 	} else {
 		apexInfos = base.apexInfos
 	}
-	// base.apexInfos is only needed to propagate the list of apexes from apexDepsMutator to
+	// base.apexInfos is only needed to propagate the list of apexes from apexInfoMutator to
 	// apexMutator. It is no longer accurate after mergeApexVariations, and won't be copied to
 	// all but the first created variant. Clear it so it doesn't accidentally get used later.
 	base.apexInfos = nil
@@ -572,10 +613,14 @@ const (
 // apexContents, and modules in that apex have a provider containing the apexContents of each
 // apexBundle they are part of.
 type ApexContents struct {
-	// map from a module name to its membership to this apexBUndle
+	// map from a module name to its membership in this apexBundle
 	contents map[string]ApexMembership
 }
 
+// NewApexContents creates and initializes an ApexContents that is suitable
+// for use with an apex module.
+// * contents is a map from a module name to information about its membership within
+//   the apex.
 func NewApexContents(contents map[string]ApexMembership) *ApexContents {
 	return &ApexContents{
 		contents: contents,
@@ -798,9 +843,8 @@ func CheckMinSdkVersion(m UpdatableModule, ctx ModuleContext, minSdkVersion ApiL
 		return
 	}
 
-	// do not enforce deps.min_sdk_version if APEX/APK doesn't set min_sdk_version or
-	// min_sdk_version is not finalized (e.g. current or codenames)
-	if minSdkVersion.IsCurrent() {
+	// do not enforce deps.min_sdk_version if APEX/APK doesn't set min_sdk_version
+	if minSdkVersion.IsNone() {
 		return
 	}
 

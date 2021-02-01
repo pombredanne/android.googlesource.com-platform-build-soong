@@ -28,6 +28,7 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
+	"android/soong/dexpreopt"
 )
 
 const (
@@ -452,6 +453,10 @@ type sdkLibraryProperties struct {
 	// * API specification filegroup -> <dist-stem>.api.<scope>.latest
 	// * Removed API specification filegroup -> <dist-stem>-removed.api.<scope>.latest
 	Dist_stem *string
+
+	// A compatibility mode that allows historical API-tracking files to not exist.
+	// Do not use.
+	Unsafe_ignore_missing_latest_api bool
 
 	// indicates whether system and test apis should be generated.
 	Generate_system_and_test_apis bool `blueprint:"mutated"`
@@ -1043,6 +1048,30 @@ func (module *SdkLibrary) ComponentDepsMutator(ctx android.BottomUpMutatorContex
 
 // Add other dependencies as normal.
 func (module *SdkLibrary) DepsMutator(ctx android.BottomUpMutatorContext) {
+	var missingApiModules []string
+	for _, apiScope := range module.getGeneratedApiScopes(ctx) {
+		if apiScope.unstable {
+			continue
+		}
+		if m := android.SrcIsModule(module.latestApiFilegroupName(apiScope)); !ctx.OtherModuleExists(m) {
+			missingApiModules = append(missingApiModules, m)
+		}
+		if m := android.SrcIsModule(module.latestRemovedApiFilegroupName(apiScope)); !ctx.OtherModuleExists(m) {
+			missingApiModules = append(missingApiModules, m)
+		}
+	}
+	if len(missingApiModules) != 0 && !module.sdkLibraryProperties.Unsafe_ignore_missing_latest_api {
+		m := module.Name() + " is missing tracking files for previously released library versions.\n"
+		m += "You need to do one of the following:\n"
+		m += "- Add `unsafe_ignore_missing_latest_api: true` to your blueprint (to disable compat tracking)\n"
+		m += "- Add a set of prebuilt txt files representing the last released version of this library for compat checking.\n"
+		m += "  (the current set of API files can be used as a seed for this compatibility tracking\n"
+		m += "\n"
+		m += "The following filegroup modules are missing:\n  "
+		m += strings.Join(missingApiModules, "\n  ") + "\n"
+		m += "Please see the documentation of the prebuilt_apis module type (and a usage example in prebuilts/sdk) for a convenient way to generate these."
+		ctx.ModuleErrorf(m)
+	}
 	if module.requiresRuntimeImplementationLibrary() {
 		// Only add the deps for the library if it is actually going to be built.
 		module.Library.deps(ctx)
@@ -1266,10 +1295,10 @@ func (module *SdkLibrary) createStubsSourcesAndApi(mctx android.DefaultableHookC
 		Merge_annotations_dirs           []string
 		Merge_inclusion_annotations_dirs []string
 		Generate_stubs                   *bool
+		Previous_api                     *string
 		Check_api                        struct {
-			Current                   ApiToCheck
-			Last_released             ApiToCheck
-			Ignore_missing_latest_api *bool
+			Current       ApiToCheck
+			Last_released ApiToCheck
 
 			Api_lint struct {
 				Enabled       *bool
@@ -1353,13 +1382,13 @@ func (module *SdkLibrary) createStubsSourcesAndApi(mctx android.DefaultableHookC
 	props.Check_api.Current.Api_file = proptools.StringPtr(currentApiFileName)
 	props.Check_api.Current.Removed_api_file = proptools.StringPtr(removedApiFileName)
 
-	if !apiScope.unstable {
+	if !(apiScope.unstable || module.sdkLibraryProperties.Unsafe_ignore_missing_latest_api) {
 		// check against the latest released API
 		latestApiFilegroupName := proptools.StringPtr(module.latestApiFilegroupName(apiScope))
+		props.Previous_api = latestApiFilegroupName
 		props.Check_api.Last_released.Api_file = latestApiFilegroupName
 		props.Check_api.Last_released.Removed_api_file = proptools.StringPtr(
 			module.latestRemovedApiFilegroupName(apiScope))
-		props.Check_api.Ignore_missing_latest_api = proptools.BoolPtr(true)
 
 		if proptools.Bool(module.sdkLibraryProperties.Api_lint.Enabled) {
 			// Enable api lint.
@@ -1533,7 +1562,7 @@ func (module *SdkLibrary) CreateInternalModules(mctx android.DefaultableHookCont
 	hasSystemAndTestApis := sdkDep.hasStandardLibs()
 	module.sdkLibraryProperties.Generate_system_and_test_apis = hasSystemAndTestApis
 
-	missing_current_api := false
+	missingCurrentApi := false
 
 	generatedScopes := module.getGeneratedApiScopes(mctx)
 
@@ -1544,12 +1573,12 @@ func (module *SdkLibrary) CreateInternalModules(mctx android.DefaultableHookCont
 			p := android.ExistentPathForSource(mctx, path)
 			if !p.Valid() {
 				mctx.ModuleErrorf("Current api file %#v doesn't exist", path)
-				missing_current_api = true
+				missingCurrentApi = true
 			}
 		}
 	}
 
-	if missing_current_api {
+	if missingCurrentApi {
 		script := "build/soong/scripts/gen-java-current-api-files.sh"
 		p := android.ExistentPathForSource(mctx, script)
 
@@ -1925,6 +1954,9 @@ func (module *SdkLibraryImport) DepsMutator(ctx android.BottomUpMutatorContext) 
 	}
 }
 
+var _ android.ApexModule = (*SdkLibraryImport)(nil)
+
+// Implements android.ApexModule
 func (module *SdkLibraryImport) DepIsInSameApex(mctx android.BaseModuleContext, dep android.Module) bool {
 	depTag := mctx.OtherModuleDependencyTag(dep)
 	if depTag == xmlPermissionsFileTag {
@@ -1936,6 +1968,7 @@ func (module *SdkLibraryImport) DepIsInSameApex(mctx android.BaseModuleContext, 
 	return false
 }
 
+// Implements android.ApexModule
 func (module *SdkLibraryImport) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
 	sdkVersion android.ApiLevel) error {
 	// we don't check prebuilt modules for sdk_version
@@ -2016,7 +2049,7 @@ func (module *SdkLibraryImport) SdkImplementationJars(ctx android.BaseModuleCont
 	return module.sdkJars(ctx, sdkVersion, false)
 }
 
-// to satisfy SdkLibraryDependency interface
+// to satisfy UsesLibraryDependency interface
 func (module *SdkLibraryImport) DexJarBuildPath() android.Path {
 	if module.implLibraryModule == nil {
 		return nil
@@ -2025,13 +2058,18 @@ func (module *SdkLibraryImport) DexJarBuildPath() android.Path {
 	}
 }
 
-// to satisfy SdkLibraryDependency interface
+// to satisfy UsesLibraryDependency interface
 func (module *SdkLibraryImport) DexJarInstallPath() android.Path {
 	if module.implLibraryModule == nil {
 		return nil
 	} else {
 		return module.implLibraryModule.DexJarInstallPath()
 	}
+}
+
+// to satisfy UsesLibraryDependency interface
+func (module *SdkLibraryImport) ClassLoaderContexts() dexpreopt.ClassLoaderContextMap {
+	return nil
 }
 
 // to satisfy apex.javaDependency interface
@@ -2141,6 +2179,9 @@ func (module *sdkLibraryXml) DepsMutator(ctx android.BottomUpMutatorContext) {
 	// do nothing
 }
 
+var _ android.ApexModule = (*sdkLibraryXml)(nil)
+
+// Implements android.ApexModule
 func (module *sdkLibraryXml) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
 	sdkVersion android.ApiLevel) error {
 	// sdkLibraryXml doesn't need to be checked separately because java_sdk_library is checked

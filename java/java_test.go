@@ -59,35 +59,18 @@ func TestMain(m *testing.M) {
 }
 
 func testConfig(env map[string]string, bp string, fs map[string][]byte) android.Config {
-	bp += dexpreopt.BpToolModulesForTest()
-
-	config := TestConfig(buildDir, env, bp, fs)
-
-	// Set up the global Once cache used for dexpreopt.GlobalSoongConfig, so that
-	// it doesn't create a real one, which would fail.
-	_ = dexpreopt.GlobalSoongConfigForTests(config)
-
-	return config
+	return TestConfig(buildDir, env, bp, fs)
 }
 
 func testContext(config android.Config) *android.TestContext {
 
 	ctx := android.NewTestArchContext(config)
-	RegisterJavaBuildComponents(ctx)
-	RegisterAppBuildComponents(ctx)
-	RegisterAARBuildComponents(ctx)
-	RegisterGenRuleBuildComponents(ctx)
-	RegisterSystemModulesBuildComponents(ctx)
+	RegisterRequiredBuildComponentsForTest(ctx)
 	ctx.RegisterModuleType("java_plugin", PluginFactory)
 	ctx.RegisterModuleType("filegroup", android.FileGroupFactory)
 	ctx.RegisterModuleType("python_binary_host", python.PythonBinaryHostFactory)
-	RegisterDocsBuildComponents(ctx)
-	RegisterStubsBuildComponents(ctx)
-	RegisterSdkLibraryBuildComponents(ctx)
 	ctx.PreArchMutators(android.RegisterDefaultsPreArchMutators)
 	ctx.PreArchMutators(android.RegisterComponentsMutator)
-
-	RegisterPrebuiltApisBuildComponents(ctx)
 
 	ctx.PreDepsMutators(python.RegisterPythonPreDepsMutators)
 	ctx.PostDepsMutators(android.RegisterOverridePostDepsMutators)
@@ -98,8 +81,6 @@ func testContext(config android.Config) *android.TestContext {
 
 	// Register module types and mutators from cc needed for JNI testing
 	cc.RegisterRequiredBuildComponentsForTest(ctx)
-
-	dexpreopt.RegisterToolModulesForTest(ctx)
 
 	ctx.PostDepsMutators(func(ctx android.RegisterMutatorsContext) {
 		ctx.TopDown("propagate_rro_enforcement", propagateRROEnforcementMutator).Parallel()
@@ -865,83 +846,43 @@ func TestJavaSdkLibraryEnforce(t *testing.T) {
 		return config
 	}
 
-	isValidDependency := func(configInfo testConfigInfo) bool {
-		if configInfo.enforceVendorInterface == false {
-			return true
-		}
-
-		if configInfo.enforceJavaSdkLibraryCheck == false {
-			return true
-		}
-
-		if inList("bar", configInfo.allowList) {
-			return true
-		}
-
-		if configInfo.libraryType == "java_library" {
-			if configInfo.fromPartition != configInfo.toPartition {
-				if !configInfo.enforceProductInterface &&
-					((configInfo.fromPartition == "system" && configInfo.toPartition == "product") ||
-						(configInfo.fromPartition == "product" && configInfo.toPartition == "system")) {
-					return true
-				}
-				return false
-			}
-		}
-
-		return true
-	}
-
 	errorMessage := "is not allowed across the partitions"
 
-	allPartitionCombinations := func() [][2]string {
-		var result [][2]string
-		partitions := []string{"system", "vendor", "product"}
+	testJavaWithConfig(t, createTestConfig(testConfigInfo{
+		libraryType:                "java_library",
+		fromPartition:              "product",
+		toPartition:                "system",
+		enforceVendorInterface:     true,
+		enforceProductInterface:    true,
+		enforceJavaSdkLibraryCheck: false,
+	}))
 
-		for _, fromPartition := range partitions {
-			for _, toPartition := range partitions {
-				result = append(result, [2]string{fromPartition, toPartition})
-			}
-		}
+	testJavaWithConfig(t, createTestConfig(testConfigInfo{
+		libraryType:                "java_library",
+		fromPartition:              "product",
+		toPartition:                "system",
+		enforceVendorInterface:     true,
+		enforceProductInterface:    false,
+		enforceJavaSdkLibraryCheck: true,
+	}))
 
-		return result
-	}
+	testJavaErrorWithConfig(t, errorMessage, createTestConfig(testConfigInfo{
+		libraryType:                "java_library",
+		fromPartition:              "product",
+		toPartition:                "system",
+		enforceVendorInterface:     true,
+		enforceProductInterface:    true,
+		enforceJavaSdkLibraryCheck: true,
+	}))
 
-	allFlagCombinations := func() [][3]bool {
-		var result [][3]bool
-		flagValues := [2]bool{false, true}
-
-		for _, vendorInterface := range flagValues {
-			for _, productInterface := range flagValues {
-				for _, enableEnforce := range flagValues {
-					result = append(result, [3]bool{vendorInterface, productInterface, enableEnforce})
-				}
-			}
-		}
-
-		return result
-	}
-
-	for _, libraryType := range []string{"java_library", "java_sdk_library"} {
-		for _, partitionValues := range allPartitionCombinations() {
-			for _, flagValues := range allFlagCombinations() {
-				testInfo := testConfigInfo{
-					libraryType:                libraryType,
-					fromPartition:              partitionValues[0],
-					toPartition:                partitionValues[1],
-					enforceVendorInterface:     flagValues[0],
-					enforceProductInterface:    flagValues[1],
-					enforceJavaSdkLibraryCheck: flagValues[2],
-				}
-
-				if isValidDependency(testInfo) {
-					testJavaWithConfig(t, createTestConfig(testInfo))
-				} else {
-					testJavaErrorWithConfig(t, errorMessage, createTestConfig(testInfo))
-				}
-			}
-		}
-	}
+	testJavaErrorWithConfig(t, errorMessage, createTestConfig(testConfigInfo{
+		libraryType:                "java_library",
+		fromPartition:              "vendor",
+		toPartition:                "system",
+		enforceVendorInterface:     true,
+		enforceProductInterface:    true,
+		enforceJavaSdkLibraryCheck: true,
+	}))
 
 	testJavaWithConfig(t, createTestConfig(testConfigInfo{
 		libraryType:                "java_library",
@@ -956,11 +897,37 @@ func TestJavaSdkLibraryEnforce(t *testing.T) {
 	testJavaErrorWithConfig(t, errorMessage, createTestConfig(testConfigInfo{
 		libraryType:                "java_library",
 		fromPartition:              "vendor",
+		toPartition:                "product",
+		enforceVendorInterface:     true,
+		enforceProductInterface:    true,
+		enforceJavaSdkLibraryCheck: true,
+	}))
+
+	testJavaWithConfig(t, createTestConfig(testConfigInfo{
+		libraryType:                "java_sdk_library",
+		fromPartition:              "product",
 		toPartition:                "system",
 		enforceVendorInterface:     true,
 		enforceProductInterface:    true,
 		enforceJavaSdkLibraryCheck: true,
-		allowList:                  []string{"foo"},
+	}))
+
+	testJavaWithConfig(t, createTestConfig(testConfigInfo{
+		libraryType:                "java_sdk_library",
+		fromPartition:              "vendor",
+		toPartition:                "system",
+		enforceVendorInterface:     true,
+		enforceProductInterface:    true,
+		enforceJavaSdkLibraryCheck: true,
+	}))
+
+	testJavaWithConfig(t, createTestConfig(testConfigInfo{
+		libraryType:                "java_sdk_library",
+		fromPartition:              "vendor",
+		toPartition:                "product",
+		enforceVendorInterface:     true,
+		enforceProductInterface:    true,
+		enforceJavaSdkLibraryCheck: true,
 	}))
 }
 
@@ -1813,7 +1780,7 @@ func TestJavaSdkLibrary(t *testing.T) {
 func TestJavaSdkLibrary_StubOrImplOnlyLibs(t *testing.T) {
 	ctx, _ := testJava(t, `
 		java_sdk_library {
-			name: "sdk_lib",
+			name: "sdklib",
 			srcs: ["a.java"],
 			impl_only_libs: ["foo"],
 			stub_only_libs: ["bar"],
@@ -1830,13 +1797,13 @@ func TestJavaSdkLibrary_StubOrImplOnlyLibs(t *testing.T) {
 		}
 		`)
 
-	for _, implName := range []string{"sdk_lib", "sdk_lib.impl"} {
+	for _, implName := range []string{"sdklib", "sdklib.impl"} {
 		implJavacCp := ctx.ModuleForTests(implName, "android_common").Rule("javac").Args["classpath"]
 		if !strings.Contains(implJavacCp, "/foo.jar") || strings.Contains(implJavacCp, "/bar.jar") {
 			t.Errorf("%v javac classpath %v does not contain foo and not bar", implName, implJavacCp)
 		}
 	}
-	stubName := apiScopePublic.stubsLibraryModuleName("sdk_lib")
+	stubName := apiScopePublic.stubsLibraryModuleName("sdklib")
 	stubsJavacCp := ctx.ModuleForTests(stubName, "android_common").Rule("javac").Args["classpath"]
 	if strings.Contains(stubsJavacCp, "/foo.jar") || !strings.Contains(stubsJavacCp, "/bar.jar") {
 		t.Errorf("stubs javac classpath %v does not contain bar and not foo", stubsJavacCp)
@@ -2417,6 +2384,22 @@ func TestAidlExportIncludeDirsFromImports(t *testing.T) {
 
 	aidlCommand := ctx.ModuleForTests("foo", "android_common").Rule("aidl").RuleParams.Command
 	expectedAidlFlag := "-Iaidl/bar"
+	if !strings.Contains(aidlCommand, expectedAidlFlag) {
+		t.Errorf("aidl command %q does not contain %q", aidlCommand, expectedAidlFlag)
+	}
+}
+
+func TestAidlFlagsArePassedToTheAidlCompiler(t *testing.T) {
+	ctx, _ := testJava(t, `
+		java_library {
+			name: "foo",
+			srcs: ["aidl/foo/IFoo.aidl"],
+			aidl: { flags: ["-Werror"], },
+		}
+	`)
+
+	aidlCommand := ctx.ModuleForTests("foo", "android_common").Rule("aidl").RuleParams.Command
+	expectedAidlFlag := "-Werror"
 	if !strings.Contains(aidlCommand, expectedAidlFlag) {
 		t.Errorf("aidl command %q does not contain %q", aidlCommand, expectedAidlFlag)
 	}

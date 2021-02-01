@@ -24,11 +24,6 @@ func init() {
 }
 
 type BinaryCompilerProperties struct {
-	// Change the rustlibs linkage to select rlib linkage by default for device targets.
-	// Also link libstd as an rlib as well on device targets.
-	// Note: This is the default behavior for host targets.
-	Prefer_rlib *bool `android:"arch_variant"`
-
 	// Builds this binary as a static binary. Implies prefer_rlib true.
 	//
 	// Static executables currently only support for bionic targets. Non-bionic targets will not produce a fully static
@@ -115,7 +110,7 @@ func (binary *binaryDecorator) nativeCoverage() bool {
 }
 
 func (binary *binaryDecorator) preferRlib() bool {
-	return Bool(binary.Properties.Prefer_rlib) || Bool(binary.Properties.Static_executable)
+	return Bool(binary.baseCompiler.Properties.Prefer_rlib) || Bool(binary.Properties.Static_executable)
 }
 
 func (binary *binaryDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) android.Path {
@@ -126,7 +121,7 @@ func (binary *binaryDecorator) compile(ctx ModuleContext, flags Flags, deps Path
 	flags.RustFlags = append(flags.RustFlags, deps.depFlags...)
 	flags.LinkFlags = append(flags.LinkFlags, deps.linkObjects...)
 
-	outputs := TransformSrcToBinary(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
+	TransformSrcToBinary(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
 
 	if binary.stripper.NeedsStrip(ctx) {
 		strippedOutputFile := android.PathForModuleOut(ctx, "stripped", fileName)
@@ -134,30 +129,14 @@ func (binary *binaryDecorator) compile(ctx ModuleContext, flags Flags, deps Path
 		binary.strippedOutputFile = android.OptionalPathForPath(strippedOutputFile)
 	}
 
-	binary.coverageFile = outputs.coverageFile
-
-	var coverageFiles android.Paths
-	if outputs.coverageFile != nil {
-		coverageFiles = append(coverageFiles, binary.coverageFile)
-	}
-	if len(deps.coverageFiles) > 0 {
-		coverageFiles = append(coverageFiles, deps.coverageFiles...)
-	}
-	binary.coverageOutputZipFile = TransformCoverageFilesToZip(ctx, coverageFiles, binary.getStem(ctx))
-
 	return outputFile
-}
-
-func (binary *binaryDecorator) coverageOutputZipPath() android.OptionalPath {
-	return binary.coverageOutputZipFile
 }
 
 func (binary *binaryDecorator) autoDep(ctx BaseModuleContext) autoDep {
 	// Binaries default to dylib dependencies for device, rlib for host.
 	if binary.preferRlib() {
 		return rlibAutoDep
-	}
-	if ctx.Device() {
+	} else if ctx.Device() {
 		return dylibAutoDep
 	} else {
 		return rlibAutoDep
@@ -169,4 +148,8 @@ func (binary *binaryDecorator) stdLinkage(ctx *depsContext) RustLinkage {
 		return RlibLinkage
 	}
 	return binary.baseCompiler.stdLinkage(ctx)
+}
+
+func (binary *binaryDecorator) isDependencyRoot() bool {
+	return true
 }

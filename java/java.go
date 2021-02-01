@@ -40,20 +40,55 @@ func init() {
 	// Register sdk member types.
 	android.RegisterSdkMemberType(javaHeaderLibsSdkMemberType)
 
+	// Register java implementation libraries for use only in module_exports (not sdk).
 	android.RegisterSdkMemberType(&librarySdkMemberType{
 		android.SdkMemberTypeBase{
 			PropertyName: "java_libs",
 		},
-		func(j *Library) android.Path {
+		func(_ android.SdkMemberContext, j *Library) android.Path {
 			implementationJars := j.ImplementationAndResourcesJars()
 			if len(implementationJars) != 1 {
 				panic(fmt.Errorf("there must be only one implementation jar from %q", j.Name()))
 			}
-
 			return implementationJars[0]
 		},
+		sdkSnapshotFilePathForJar,
+		copyEverythingToSnapshot,
 	})
 
+	// Register java boot libraries for use in sdk.
+	//
+	// The build has some implicit dependencies (via the boot jars configuration) on a number of
+	// modules, e.g. core-oj, apache-xml, that are part of the java boot class path and which are
+	// provided by mainline modules (e.g. art, conscrypt, runtime-i18n) but which are not otherwise
+	// used outside those mainline modules.
+	//
+	// As they are not needed outside the mainline modules adding them to the sdk/module-exports as
+	// either java_libs, or java_header_libs would end up exporting more information than was strictly
+	// necessary. The java_boot_libs property to allow those modules to be exported as part of the
+	// sdk/module_exports without exposing any unnecessary information.
+	android.RegisterSdkMemberType(&librarySdkMemberType{
+		android.SdkMemberTypeBase{
+			PropertyName: "java_boot_libs",
+			SupportsSdk:  true,
+		},
+		func(ctx android.SdkMemberContext, j *Library) android.Path {
+			// Java boot libs are only provided in the SDK to provide access to their dex implementation
+			// jar for use by dexpreopting and boot jars package check. They do not need to provide an
+			// actual implementation jar but the java_import will need a file that exists so just copy an
+			// empty file. Any attempt to use that file as a jar will cause a build error.
+			return ctx.SnapshotBuilder().EmptyFile()
+		},
+		func(osPrefix, name string) string {
+			// Create a special name for the implementation jar to try and provide some useful information
+			// to a developer that attempts to compile against this.
+			// TODO(b/175714559): Provide a proper error message in Soong not ninja.
+			return filepath.Join(osPrefix, "java_boot_libs", "snapshot", "jars", "are", "invalid", name+jarFileSuffix)
+		},
+		onlyCopyJarToSnapshot,
+	})
+
+	// Register java test libraries for use only in module_exports (not sdk).
 	android.RegisterSdkMemberType(&testSdkMemberType{
 		SdkMemberTypeBase: android.SdkMemberTypeBase{
 			PropertyName: "java_tests",
@@ -304,6 +339,9 @@ type CompilerDeviceProperties struct {
 
 		// whether to generate Binder#GetTransaction name method.
 		Generate_get_transaction_name *bool
+
+		// list of flags that will be passed to the AIDL compiler
+		Flags []string
 	}
 
 	// If true, export a copy of the module as a -hostdex module for host testing.
@@ -510,6 +548,7 @@ type ApexDependency interface {
 type UsesLibraryDependency interface {
 	DexJarBuildPath() android.Path
 	DexJarInstallPath() android.Path
+	ClassLoaderContexts() dexpreopt.ClassLoaderContextMap
 }
 
 type Dependency interface {
@@ -518,7 +557,6 @@ type Dependency interface {
 	ImplementationJars() android.Paths
 	ResourceJars() android.Paths
 	AidlIncludeDirs() android.Paths
-	ClassLoaderContexts() dexpreopt.ClassLoaderContextMap
 	ExportedPlugins() (android.Paths, []string, bool)
 	SrcJarArgs() ([]string, android.Paths)
 	BaseModuleName() string
@@ -872,6 +910,8 @@ func (j *Module) aidlFlags(ctx android.ModuleContext, aidlPreprocess android.Opt
 	var flags []string
 	var deps android.Paths
 
+	flags = append(flags, j.deviceProperties.Aidl.Flags...)
+
 	if aidlPreprocess.Valid() {
 		flags = append(flags, "-p"+aidlPreprocess.String())
 		deps = append(deps, aidlPreprocess.Path())
@@ -1081,9 +1121,6 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			switch tag {
 			case libTag:
 				deps.classpath = append(deps.classpath, dep.SdkHeaderJars(ctx, j.sdkVersion())...)
-				// names of sdk libs that are directly depended are exported
-				j.classLoaderContexts.MaybeAddContext(ctx, dep.OptionalImplicitSdkLibrary(),
-					dep.DexJarBuildPath(), dep.DexJarInstallPath())
 			case staticLibTag:
 				ctx.ModuleErrorf("dependency on java_sdk_library %q can only be in libs", otherName)
 			}
@@ -1093,8 +1130,6 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 				deps.bootClasspath = append(deps.bootClasspath, dep.HeaderJars()...)
 			case libTag, instrumentationForTag:
 				deps.classpath = append(deps.classpath, dep.HeaderJars()...)
-				// sdk lib names from dependencies are re-exported
-				j.classLoaderContexts.AddContextMap(dep.ClassLoaderContexts(), otherName)
 				deps.aidlIncludeDirs = append(deps.aidlIncludeDirs, dep.AidlIncludeDirs()...)
 				pluginJars, pluginClasses, disableTurbine := dep.ExportedPlugins()
 				addPlugins(&deps, pluginJars, pluginClasses...)
@@ -1106,8 +1141,6 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 				deps.staticJars = append(deps.staticJars, dep.ImplementationJars()...)
 				deps.staticHeaderJars = append(deps.staticHeaderJars, dep.HeaderJars()...)
 				deps.staticResourceJars = append(deps.staticResourceJars, dep.ResourceJars()...)
-				// sdk lib names from dependencies are re-exported
-				j.classLoaderContexts.AddContextMap(dep.ClassLoaderContexts(), otherName)
 				deps.aidlIncludeDirs = append(deps.aidlIncludeDirs, dep.AidlIncludeDirs()...)
 				pluginJars, pluginClasses, disableTurbine := dep.ExportedPlugins()
 				addPlugins(&deps, pluginJars, pluginClasses...)
@@ -1182,6 +1215,8 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 				deps.systemModules = &systemModules{outputDir, outputDeps}
 			}
 		}
+
+		addCLCFromDep(ctx, module, j.classLoaderContexts)
 	})
 
 	return deps
@@ -1510,11 +1545,11 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	j.compiledJavaSrcs = uniqueSrcFiles
 	j.compiledSrcJars = srcJars
 
-	enable_sharding := false
+	enableSharding := false
 	var headerJarFileWithoutJarjar android.Path
 	if ctx.Device() && !ctx.Config().IsEnvFalse("TURBINE_ENABLED") && !deps.disableTurbine {
 		if j.properties.Javac_shard_size != nil && *(j.properties.Javac_shard_size) > 0 {
-			enable_sharding = true
+			enableSharding = true
 			// Formerly, there was a check here that prevented annotation processors
 			// from being used when sharding was enabled, as some annotation processors
 			// do not function correctly in sharded environments. It was removed to
@@ -1540,7 +1575,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 			extraJarDeps = append(extraJarDeps, errorprone)
 		}
 
-		if enable_sharding {
+		if enableSharding {
 			flags.classpath = append(flags.classpath, headerJarFileWithoutJarjar)
 			shardSize := int(*(j.properties.Javac_shard_size))
 			var shardSrcs []android.Paths
@@ -1787,7 +1822,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		j.dexJarFile = dexOutputFile
 
 		// Dexpreopting
-		dexOutputFile = j.dexpreopt(ctx, dexOutputFile)
+		j.dexpreopt(ctx, dexOutputFile)
 
 		j.maybeStrippedDexJarFile = dexOutputFile
 
@@ -2022,10 +2057,12 @@ func (j *Module) hasCode(ctx android.ModuleContext) bool {
 	return len(srcFiles) > 0 || len(ctx.GetDirectDepsWithTag(staticLibTag)) > 0
 }
 
+// Implements android.ApexModule
 func (j *Module) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Module) bool {
 	return j.depIsInSameApex(ctx, dep)
 }
 
+// Implements android.ApexModule
 func (j *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
 	sdkVersion android.ApiLevel) error {
 	sdkSpec := j.minSdkVersion()
@@ -2070,6 +2107,8 @@ type Library struct {
 
 	InstallMixin func(ctx android.ModuleContext, installPath android.Path) (extraInstallDeps android.Paths)
 }
+
+var _ android.ApexModule = (*Library)(nil)
 
 // Provides access to the list of permitted packages from updatable boot jars.
 type PermittedPackagesForUpdatableBootJars interface {
@@ -2134,18 +2173,6 @@ func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		j.installFile = ctx.InstallFile(android.PathForModuleInstall(ctx, "framework"),
 			j.Stem()+".jar", j.outputFile, extraInstallDeps...)
 	}
-
-	// If this is a component library (stubs, etc.) for a java_sdk_library then
-	// add the name of that java_sdk_library to the exported sdk libs to make sure
-	// that, if necessary, a <uses-library> element for that java_sdk_library is
-	// added to the Android manifest.
-	j.classLoaderContexts.MaybeAddContext(ctx, j.OptionalImplicitSdkLibrary(),
-		j.DexJarBuildPath(), j.DexJarInstallPath())
-
-	// A non-SDK library may provide a <uses-library> (the name may be different from the module name).
-	if lib := proptools.String(j.usesLibraryProperties.Provides_uses_lib); lib != "" {
-		j.classLoaderContexts.AddContext(ctx, lib, j.DexJarBuildPath(), j.DexJarInstallPath())
-	}
 }
 
 func (j *Library) DepsMutator(ctx android.BottomUpMutatorContext) {
@@ -2173,8 +2200,21 @@ type librarySdkMemberType struct {
 
 	// Function to retrieve the appropriate output jar (implementation or header) from
 	// the library.
-	jarToExportGetter func(j *Library) android.Path
+	jarToExportGetter func(ctx android.SdkMemberContext, j *Library) android.Path
+
+	// Function to compute the snapshot relative path to which the named library's
+	// jar should be copied.
+	snapshotPathGetter func(osPrefix, name string) string
+
+	// True if only the jar should be copied to the snapshot, false if the jar plus any additional
+	// files like aidl files should also be copied.
+	onlyCopyJarToSnapshot bool
 }
+
+const (
+	onlyCopyJarToSnapshot    = true
+	copyEverythingToSnapshot = false
+)
 
 func (mt *librarySdkMemberType) AddDependencies(mctx android.BottomUpMutatorContext, dependencyTag blueprint.DependencyTag, names []string) {
 	mctx.AddVariationDependencies(nil, dependencyTag, names...)
@@ -2203,19 +2243,30 @@ type librarySdkMemberProperties struct {
 func (p *librarySdkMemberProperties) PopulateFromVariant(ctx android.SdkMemberContext, variant android.Module) {
 	j := variant.(*Library)
 
-	p.JarToExport = ctx.MemberType().(*librarySdkMemberType).jarToExportGetter(j)
+	p.JarToExport = ctx.MemberType().(*librarySdkMemberType).jarToExportGetter(ctx, j)
+
 	p.AidlIncludeDirs = j.AidlIncludeDirs()
 }
 
 func (p *librarySdkMemberProperties) AddToPropertySet(ctx android.SdkMemberContext, propertySet android.BpPropertySet) {
 	builder := ctx.SnapshotBuilder()
 
+	memberType := ctx.MemberType().(*librarySdkMemberType)
+
 	exportedJar := p.JarToExport
 	if exportedJar != nil {
-		snapshotRelativeJavaLibPath := sdkSnapshotFilePathForJar(p.OsPrefix(), ctx.Name())
+		// Delegate the creation of the snapshot relative path to the member type.
+		snapshotRelativeJavaLibPath := memberType.snapshotPathGetter(p.OsPrefix(), ctx.Name())
+
+		// Copy the exported jar to the snapshot.
 		builder.CopyToSnapshot(exportedJar, snapshotRelativeJavaLibPath)
 
 		propertySet.AddProperty("jars", []string{snapshotRelativeJavaLibPath})
+	}
+
+	// Do not copy anything else to the snapshot.
+	if memberType.onlyCopyJarToSnapshot {
+		return
 	}
 
 	aidlIncludeDirs := p.AidlIncludeDirs
@@ -2238,7 +2289,7 @@ var javaHeaderLibsSdkMemberType android.SdkMemberType = &librarySdkMemberType{
 		PropertyName: "java_header_libs",
 		SupportsSdk:  true,
 	},
-	func(j *Library) android.Path {
+	func(_ android.SdkMemberContext, j *Library) android.Path {
 		headerJars := j.HeaderJars()
 		if len(headerJars) != 1 {
 			panic(fmt.Errorf("there must be only one header jar from %q", j.Name()))
@@ -2246,6 +2297,8 @@ var javaHeaderLibsSdkMemberType android.SdkMemberType = &librarySdkMemberType{
 
 		return headerJars[0]
 	},
+	sdkSnapshotFilePathForJar,
+	copyEverythingToSnapshot,
 }
 
 // java_library builds and links sources into a `.jar` file for the device, and possibly for the host as well.
@@ -2720,6 +2773,7 @@ type Import struct {
 
 	hiddenAPI
 	dexer
+	dexpreopter
 
 	properties ImportProperties
 
@@ -2777,6 +2831,10 @@ func (a *Import) JacocoReportClassesFile() android.Path {
 	return nil
 }
 
+func (j *Import) LintDepSets() LintDepSets {
+	return LintDepSets{}
+}
+
 func (j *Import) DepsMutator(ctx android.BottomUpMutatorContext) {
 	ctx.AddVariationDependencies(nil, libTag, j.properties.Libs...)
 
@@ -2805,9 +2863,9 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	j.classLoaderContexts = make(dexpreopt.ClassLoaderContextMap)
 
 	var flags javaBuilderFlags
+	var deapexerModule android.Module
 
 	ctx.VisitDirectDeps(func(module android.Module) {
-		otherName := ctx.OtherModuleName(module)
 		tag := ctx.OtherModuleDependencyTag(module)
 
 		switch dep := module.(type) {
@@ -2815,8 +2873,6 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			switch tag {
 			case libTag, staticLibTag:
 				flags.classpath = append(flags.classpath, dep.HeaderJars()...)
-				// sdk lib names from dependencies are re-exported
-				j.classLoaderContexts.AddContextMap(dep.ClassLoaderContexts(), otherName)
 			case bootClasspathTag:
 				flags.bootClasspath = append(flags.bootClasspath, dep.HeaderJars()...)
 			}
@@ -2824,52 +2880,78 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			switch tag {
 			case libTag:
 				flags.classpath = append(flags.classpath, dep.SdkHeaderJars(ctx, j.sdkVersion())...)
-				// names of sdk libs that are directly depended are exported
-				j.classLoaderContexts.AddContext(ctx, otherName, dep.DexJarBuildPath(), dep.DexJarInstallPath())
 			}
+		}
+
+		addCLCFromDep(ctx, module, j.classLoaderContexts)
+
+		// Save away the `deapexer` module on which this depends, if any.
+		if tag == android.DeapexerTag {
+			deapexerModule = module
 		}
 	})
 
-	var installFile android.Path
 	if Bool(j.properties.Installable) {
-		installFile = ctx.InstallFile(android.PathForModuleInstall(ctx, "framework"),
+		ctx.InstallFile(android.PathForModuleInstall(ctx, "framework"),
 			jarName, outputFile)
 	}
 
-	// If this is a component library (impl, stubs, etc.) for a java_sdk_library then
-	// add the name of that java_sdk_library to the exported sdk libs to make sure
-	// that, if necessary, a <uses-library> element for that java_sdk_library is
-	// added to the Android manifest.
-	j.classLoaderContexts.MaybeAddContext(ctx, j.OptionalImplicitSdkLibrary(),
-		outputFile, installFile)
-
 	j.exportAidlIncludeDirs = android.PathsForModuleSrc(ctx, j.properties.Aidl.Export_include_dirs)
 
-	if ctx.Device() && Bool(j.dexProperties.Compile_dex) {
-		sdkDep := decodeSdkDep(ctx, sdkContext(j))
-		if sdkDep.invalidVersion {
-			ctx.AddMissingDependencies(sdkDep.bootclasspath)
-			ctx.AddMissingDependencies(sdkDep.java9Classpath)
-		} else if sdkDep.useFiles {
-			// sdkDep.jar is actually equivalent to turbine header.jar.
-			flags.classpath = append(flags.classpath, sdkDep.jars...)
+	if ctx.Device() {
+		// If this is a variant created for a prebuilt_apex then use the dex implementation jar
+		// obtained from the associated deapexer module.
+		ai := ctx.Provider(android.ApexInfoProvider).(android.ApexInfo)
+		if ai.ForPrebuiltApex {
+			if deapexerModule == nil {
+				// This should never happen as a variant for a prebuilt_apex is only created if the
+				// deapxer module has been configured to export the dex implementation jar for this module.
+				ctx.ModuleErrorf("internal error: module %q does not depend on a `deapexer` module for prebuilt_apex %q",
+					j.Name(), ai.ApexVariationName)
+			}
+
+			// Get the path of the dex implementation jar from the `deapexer` module.
+			di := ctx.OtherModuleProvider(deapexerModule, android.DeapexerProvider).(android.DeapexerInfo)
+			j.dexJarFile = di.PrebuiltExportPath(j.BaseModuleName(), ".dexjar")
+			if j.dexJarFile == nil {
+				// This should never happen as a variant for a prebuilt_apex is only created if the
+				// prebuilt_apex has been configured to export the java library dex file.
+				ctx.ModuleErrorf("internal error: no dex implementation jar available from prebuilt_apex %q", deapexerModule.Name())
+			}
+		} else if Bool(j.dexProperties.Compile_dex) {
+			sdkDep := decodeSdkDep(ctx, sdkContext(j))
+			if sdkDep.invalidVersion {
+				ctx.AddMissingDependencies(sdkDep.bootclasspath)
+				ctx.AddMissingDependencies(sdkDep.java9Classpath)
+			} else if sdkDep.useFiles {
+				// sdkDep.jar is actually equivalent to turbine header.jar.
+				flags.classpath = append(flags.classpath, sdkDep.jars...)
+			}
+
+			// Dex compilation
+
+			j.dexpreopter.installPath = android.PathForModuleInstall(ctx, "framework", jarName)
+			if j.dexProperties.Uncompress_dex == nil {
+				// If the value was not force-set by the user, use reasonable default based on the module.
+				j.dexProperties.Uncompress_dex = proptools.BoolPtr(shouldUncompressDex(ctx, &j.dexpreopter))
+			}
+			j.dexpreopter.uncompressedDex = *j.dexProperties.Uncompress_dex
+
+			var dexOutputFile android.ModuleOutPath
+			dexOutputFile = j.dexer.compileDex(ctx, flags, j.minSdkVersion(), outputFile, jarName)
+			if ctx.Failed() {
+				return
+			}
+
+			configurationName := j.BaseModuleName()
+			primary := j.Prebuilt().UsePrebuilt()
+
+			// Hidden API CSV generation and dex encoding
+			dexOutputFile = j.hiddenAPI.hiddenAPI(ctx, configurationName, primary, dexOutputFile, outputFile,
+				proptools.Bool(j.dexProperties.Uncompress_dex))
+
+			j.dexJarFile = dexOutputFile
 		}
-
-		// Dex compilation
-		var dexOutputFile android.ModuleOutPath
-		dexOutputFile = j.dexer.compileDex(ctx, flags, j.minSdkVersion(), outputFile, jarName)
-		if ctx.Failed() {
-			return
-		}
-
-		configurationName := j.BaseModuleName()
-		primary := j.Prebuilt().UsePrebuilt()
-
-		// Hidden API CSV generation and dex encoding
-		dexOutputFile = j.hiddenAPI.hiddenAPI(ctx, configurationName, primary, dexOutputFile, outputFile,
-			proptools.Bool(j.dexProperties.Uncompress_dex))
-
-		j.dexJarFile = dexOutputFile
 	}
 }
 
@@ -2935,10 +3017,14 @@ func (j *Import) SrcJarArgs() ([]string, android.Paths) {
 	return nil, nil
 }
 
+var _ android.ApexModule = (*Import)(nil)
+
+// Implements android.ApexModule
 func (j *Import) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Module) bool {
 	return j.depIsInSameApex(ctx, dep)
 }
 
+// Implements android.ApexModule
 func (j *Import) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
 	sdkVersion android.ApiLevel) error {
 	// Do not check for prebuilts against the min_sdk_version of enclosing APEX
@@ -2970,6 +3056,12 @@ func (j *Import) IDECustomizedModuleName() string {
 }
 
 var _ android.PrebuiltInterface = (*Import)(nil)
+
+func (j *Import) IsInstallable() bool {
+	return Bool(j.properties.Installable)
+}
+
+var _ dexpreopterInterface = (*Import)(nil)
 
 // java_import imports one or more `.jar` files into the build graph as if they were built by a java_library module.
 //
@@ -3116,7 +3208,7 @@ func (j *DexImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	j.dexJarFile = dexOutputFile
 
-	dexOutputFile = j.dexpreopt(ctx, dexOutputFile)
+	j.dexpreopt(ctx, dexOutputFile)
 
 	j.maybeStrippedDexJarFile = dexOutputFile
 
@@ -3130,6 +3222,9 @@ func (j *DexImport) DexJarBuildPath() android.Path {
 	return j.dexJarFile
 }
 
+var _ android.ApexModule = (*DexImport)(nil)
+
+// Implements android.ApexModule
 func (j *DexImport) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
 	sdkVersion android.ApiLevel) error {
 	// we don't check prebuilt modules for sdk_version
@@ -3248,3 +3343,64 @@ var Bool = proptools.Bool
 var BoolDefault = proptools.BoolDefault
 var String = proptools.String
 var inList = android.InList
+
+// TODO(b/132357300) Generalize SdkLibrarComponentDependency to non-SDK libraries and merge with
+// this interface.
+type ProvidesUsesLib interface {
+	ProvidesUsesLib() *string
+}
+
+func (j *Module) ProvidesUsesLib() *string {
+	return j.usesLibraryProperties.Provides_uses_lib
+}
+
+// Add class loader context (CLC) of a given dependency to the current CLC.
+func addCLCFromDep(ctx android.ModuleContext, depModule android.Module,
+	clcMap dexpreopt.ClassLoaderContextMap) {
+
+	dep, ok := depModule.(UsesLibraryDependency)
+	if !ok {
+		return
+	}
+
+	// Find out if the dependency is either an SDK library or an ordinary library that is disguised
+	// as an SDK library by the means of `provides_uses_lib` property. If yes, the library is itself
+	// a <uses-library> and should be added as a node in the CLC tree, and its CLC should be added
+	// as subtree of that node. Otherwise the library is not a <uses_library> and should not be
+	// added to CLC, but the transitive <uses-library> dependencies from its CLC should be added to
+	// the current CLC.
+	var implicitSdkLib *string
+	comp, isComp := depModule.(SdkLibraryComponentDependency)
+	if isComp {
+		implicitSdkLib = comp.OptionalImplicitSdkLibrary()
+		// OptionalImplicitSdkLibrary() may be nil so need to fall through to ProvidesUsesLib().
+	}
+	if implicitSdkLib == nil {
+		if ulib, ok := depModule.(ProvidesUsesLib); ok {
+			implicitSdkLib = ulib.ProvidesUsesLib()
+		}
+	}
+
+	depTag := ctx.OtherModuleDependencyTag(depModule)
+	if depTag == libTag || depTag == usesLibTag {
+		// Ok, propagate <uses-library> through non-static library dependencies.
+	} else if depTag == staticLibTag {
+		// Propagate <uses-library> through static library dependencies, unless it is a component
+		// library (such as stubs). Component libraries have a dependency on their SDK library,
+		// which should not be pulled just because of a static component library.
+		if implicitSdkLib != nil {
+			return
+		}
+	} else {
+		// Don't propagate <uses-library> for other dependency tags.
+		return
+	}
+
+	if implicitSdkLib != nil {
+		clcMap.AddContext(ctx, dexpreopt.AnySdkVersion, *implicitSdkLib,
+			dep.DexJarBuildPath(), dep.DexJarInstallPath(), dep.ClassLoaderContexts())
+	} else {
+		depName := ctx.OtherModuleName(depModule)
+		clcMap.AddContextMap(dep.ClassLoaderContexts(), depName)
+	}
+}

@@ -66,6 +66,7 @@ func init() {
 	pctx.HostBinToolVariable("extract_apks", "extract_apks")
 	pctx.HostBinToolVariable("make_f2fs", "make_f2fs")
 	pctx.HostBinToolVariable("sload_f2fs", "sload_f2fs")
+	pctx.HostBinToolVariable("apex_compression_tool", "apex_compression_tool")
 	pctx.SourcePathVariable("genNdkUsedbyApexPath", "build/soong/scripts/gen_ndk_usedby_apex.sh")
 }
 
@@ -576,8 +577,8 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		fileContexts := a.buildFileContexts(ctx)
 		implicitInputs = append(implicitInputs, fileContexts)
 
-		implicitInputs = append(implicitInputs, a.private_key_file, a.public_key_file)
-		optFlags = append(optFlags, "--pubkey "+a.public_key_file.String())
+		implicitInputs = append(implicitInputs, a.privateKeyFile, a.publicKeyFile)
+		optFlags = append(optFlags, "--pubkey "+a.publicKeyFile.String())
 
 		manifestPackageName := a.getOverrideManifestPackageName(ctx)
 		if manifestPackageName != "" {
@@ -597,7 +598,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 
 		// bundletool doesn't understand what "current" is. We need to transform it to
 		// codename
-		if moduleMinSdkVersion.IsCurrent() {
+		if moduleMinSdkVersion.IsCurrent() || moduleMinSdkVersion.IsNone() {
 			minSdkVersion = ctx.Config().DefaultAppTargetSdk(ctx).String()
 		}
 		// apex module doesn't have a concept of target_sdk_version, hence for the time
@@ -666,7 +667,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 				"manifest":         a.manifestPbOut.String(),
 				"file_contexts":    fileContexts.String(),
 				"canned_fs_config": cannedFsConfig.String(),
-				"key":              a.private_key_file.String(),
+				"key":              a.privateKeyFile.String(),
 				"opt_flags":        strings.Join(optFlags, " "),
 			},
 		})
@@ -686,7 +687,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		implicitInputs = append(implicitInputs, unsignedOutputFile)
 
 		// Run coverage analysis
-		apisUsedbyOutputFile := android.PathForModuleOut(ctx, a.Name()+".txt")
+		apisUsedbyOutputFile := android.PathForModuleOut(ctx, a.Name()+"_using.txt")
 		ctx.Build(pctx, android.BuildParams{
 			Rule:        generateAPIsUsedbyApexRule,
 			Implicits:   implicitInputs,
@@ -697,7 +698,19 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 				"readelf":   "${config.ClangBin}/llvm-readelf",
 			},
 		})
-		a.coverageOutputPath = apisUsedbyOutputFile
+		a.apisUsedByModuleFile = apisUsedbyOutputFile
+
+		apisBackedbyOutputFile := android.PathForModuleOut(ctx, a.Name()+"_backing.txt")
+		ndkLibraryList := android.PathForSource(ctx, "system/core/rootdir/etc/public.libraries.android.txt")
+		rule := android.NewRuleBuilder(pctx, ctx)
+		rule.Command().
+			Tool(android.PathForSource(ctx, "build/soong/scripts/gen_ndk_backedby_apex.sh")).
+			Text(imageDir.String()).
+			Implicits(implicitInputs).
+			Output(apisBackedbyOutputFile).
+			Input(ndkLibraryList)
+		rule.Build("ndk_backedby_list", "Generate API libraries backed by Apex")
+		a.apisBackedByModuleFile = apisBackedbyOutputFile
 
 		bundleConfig := a.buildBundleConfig(ctx)
 
@@ -738,7 +751,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 
 	////////////////////////////////////////////////////////////////////////////////////
 	// Step 4: Sign the APEX using signapk
-	a.outputFile = android.PathForModuleOut(ctx, a.Name()+suffix)
+	signedOutputFile := android.PathForModuleOut(ctx, a.Name()+suffix)
 
 	pem, key := a.getCertificateAndPrivateKey(ctx)
 	rule := java.Signapk
@@ -750,16 +763,54 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_SIGNAPK") {
 		rule = java.SignapkRE
 		args["implicits"] = strings.Join(implicits.Strings(), ",")
-		args["outCommaList"] = a.outputFile.String()
+		args["outCommaList"] = signedOutputFile.String()
 	}
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        rule,
 		Description: "signapk",
-		Output:      a.outputFile,
+		Output:      signedOutputFile,
 		Input:       unsignedOutputFile,
 		Implicits:   implicits,
 		Args:        args,
 	})
+	a.outputFile = signedOutputFile
+
+	// Process APEX compression if enabled or forced
+	if ctx.ModuleDir() != "system/apex/apexd/apexd_testdata" && a.testOnlyShouldForceCompression() {
+		ctx.PropertyErrorf("test_only_force_compression", "not available")
+		return
+	}
+	compressionEnabled := ctx.Config().CompressedApex() && proptools.BoolDefault(a.properties.Compressible, false)
+	if apexType == imageApex && (compressionEnabled || a.testOnlyShouldForceCompression()) {
+		a.isCompressed = true
+		unsignedCompressedOutputFile := android.PathForModuleOut(ctx, a.Name()+".capex.unsigned")
+
+		compressRule := android.NewRuleBuilder(pctx, ctx)
+		compressRule.Command().
+			Text("rm").
+			FlagWithOutput("-f ", unsignedCompressedOutputFile)
+		compressRule.Command().
+			BuiltTool("apex_compression_tool").
+			Flag("compress").
+			FlagWithArg("--apex_compression_tool ", outHostBinDir+":"+prebuiltSdkToolsBinDir).
+			FlagWithInput("--input ", signedOutputFile).
+			FlagWithOutput("--output ", unsignedCompressedOutputFile)
+		compressRule.Build("compressRule", "Generate unsigned compressed APEX file")
+
+		signedCompressedOutputFile := android.PathForModuleOut(ctx, a.Name()+".capex")
+		if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_SIGNAPK") {
+			args["outCommaList"] = signedCompressedOutputFile.String()
+		}
+		ctx.Build(pctx, android.BuildParams{
+			Rule:        rule,
+			Description: "sign compressedApex",
+			Output:      signedCompressedOutputFile,
+			Input:       unsignedCompressedOutputFile,
+			Implicits:   implicits,
+			Args:        args,
+		})
+		a.outputFile = signedCompressedOutputFile
+	}
 
 	// Install to $OUT/soong/{target,host}/.../apex
 	if a.installable() {
@@ -810,8 +861,8 @@ func (a *apexBundle) buildFlattenedApex(ctx android.ModuleContext) {
 // the zip container of this APEX. See the description of the 'certificate' property for how
 // the cert and the private key are found.
 func (a *apexBundle) getCertificateAndPrivateKey(ctx android.PathContext) (pem, key android.Path) {
-	if a.container_certificate_file != nil {
-		return a.container_certificate_file, a.container_private_key_file
+	if a.containerCertificateFile != nil {
+		return a.containerCertificateFile, a.containerPrivateKeyFile
 	}
 
 	cert := String(a.properties.Certificate)
@@ -867,6 +918,12 @@ func (a *apexBundle) buildApexDependencyInfo(ctx android.ModuleContext) {
 		if from.Name() == to.Name() {
 			// This can happen for cc.reuseObjTag. We are not interested in tracking this.
 			// As soon as the dependency graph crosses the APEX boundary, don't go further.
+			return !externalDep
+		}
+
+		depTag := ctx.OtherModuleDependencyTag(to)
+		if skipDepCheck, ok := depTag.(android.SkipApexAllowedDependenciesCheck); ok && skipDepCheck.SkipApexAllowedDependenciesCheck() {
+			// Check to see if dependency been marked to skip the dependency check
 			return !externalDep
 		}
 

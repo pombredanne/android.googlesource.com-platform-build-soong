@@ -16,6 +16,7 @@ package dexpreopt
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -238,8 +239,8 @@ var OptionalCompatUsesLibs30 = []string{
 	AndroidTestMock,
 }
 var CompatUsesLibs29 = []string{
-	AndroidHidlBase,
 	AndroidHidlManager,
+	AndroidHidlBase,
 }
 var OptionalCompatUsesLibs = append(android.CopyOf(OptionalCompatUsesLibs28), OptionalCompatUsesLibs30...)
 var CompatUsesLibs = android.CopyOf(CompatUsesLibs29)
@@ -254,24 +255,13 @@ const AnySdkVersion int = android.FutureApiLevelInt
 
 // Add class loader context for the given library to the map entry for the given SDK version.
 func (clcMap ClassLoaderContextMap) addContext(ctx android.ModuleInstallPathContext, sdkVer int, lib string,
-	hostPath, installPath android.Path, strict bool, nestedClcMap ClassLoaderContextMap) error {
-
-	// If missing dependencies are allowed, the build shouldn't fail when a <uses-library> is
-	// not found. However, this is likely to result is disabling dexpreopt, as it won't be
-	// possible to construct class loader context without on-host and on-device library paths.
-	strict = strict && !ctx.Config().AllowMissingDependencies()
-
-	if hostPath == nil && strict {
-		return fmt.Errorf("unknown build path to <uses-library> \"%s\"", lib)
-	}
+	hostPath, installPath android.Path, nestedClcMap ClassLoaderContextMap) error {
 
 	devicePath := UnknownInstallLibraryPath
 	if installPath == nil {
 		if android.InList(lib, CompatUsesLibs) || android.InList(lib, OptionalCompatUsesLibs) {
 			// Assume that compatibility libraries are installed in /system/framework.
 			installPath = android.PathForModuleInstall(ctx, "framework", lib+".jar")
-		} else if strict {
-			return fmt.Errorf("unknown install path to <uses-library> \"%s\"", lib)
 		} else {
 			// For some stub libraries the only known thing is the name of their implementation
 			// library, but the library itself is unavailable (missing or part of a prebuilt). In
@@ -309,37 +299,17 @@ func (clcMap ClassLoaderContextMap) addContext(ctx android.ModuleInstallPathCont
 	return nil
 }
 
-// Wrapper around addContext that reports errors.
-func (clcMap ClassLoaderContextMap) addContextOrReportError(ctx android.ModuleInstallPathContext, sdkVer int, lib string,
-	hostPath, installPath android.Path, strict bool, nestedClcMap ClassLoaderContextMap) {
+// Add class loader context for the given SDK version. Don't fail on unknown build/install paths, as
+// libraries with unknown paths still need to be processed by manifest_fixer (which doesn't care
+// about paths). For the subset of libraries that are used in dexpreopt, their build/install paths
+// are validated later before CLC is used (in validateClassLoaderContext).
+func (clcMap ClassLoaderContextMap) AddContext(ctx android.ModuleInstallPathContext, sdkVer int,
+	lib string, hostPath, installPath android.Path, nestedClcMap ClassLoaderContextMap) {
 
-	err := clcMap.addContext(ctx, sdkVer, lib, hostPath, installPath, strict, nestedClcMap)
+	err := clcMap.addContext(ctx, sdkVer, lib, hostPath, installPath, nestedClcMap)
 	if err != nil {
 		ctx.ModuleErrorf(err.Error())
 	}
-}
-
-// Add class loader context. Fail on unknown build/install paths.
-func (clcMap ClassLoaderContextMap) AddContext(ctx android.ModuleInstallPathContext, lib string,
-	hostPath, installPath android.Path) {
-
-	clcMap.addContextOrReportError(ctx, AnySdkVersion, lib, hostPath, installPath, true, nil)
-}
-
-// Add class loader context if the library exists. Don't fail on unknown build/install paths.
-func (clcMap ClassLoaderContextMap) MaybeAddContext(ctx android.ModuleInstallPathContext, lib *string,
-	hostPath, installPath android.Path) {
-
-	if lib != nil {
-		clcMap.addContextOrReportError(ctx, AnySdkVersion, *lib, hostPath, installPath, false, nil)
-	}
-}
-
-// Add class loader context for the given SDK version. Fail on unknown build/install paths.
-func (clcMap ClassLoaderContextMap) AddContextForSdk(ctx android.ModuleInstallPathContext, sdkVer int,
-	lib string, hostPath, installPath android.Path, nestedClcMap ClassLoaderContextMap) {
-
-	clcMap.addContextOrReportError(ctx, sdkVer, lib, hostPath, installPath, true, nestedClcMap)
 }
 
 // Merge the other class loader context map into this one, do not override existing entries.
@@ -437,7 +407,11 @@ func validateClassLoaderContextRec(sdkVer int, clcs []*ClassLoaderContext) (bool
 			if sdkVer == AnySdkVersion {
 				// Return error if dexpreopt doesn't know paths to one of the <uses-library>
 				// dependencies. In the future we may need to relax this and just disable dexpreopt.
-				return false, fmt.Errorf("invalid path for <uses-library> \"%s\"", clc.Name)
+				if clc.Host == nil {
+					return false, fmt.Errorf("invalid build path for <uses-library> \"%s\"", clc.Name)
+				} else {
+					return false, fmt.Errorf("invalid install path for <uses-library> \"%s\"", clc.Name)
+				}
 			} else {
 				// No error for compatibility libraries, as Soong doesn't know if they are needed
 				// (this depends on the targetSdkVersion in the manifest), but the CLC is invalid.
@@ -455,7 +429,26 @@ func validateClassLoaderContextRec(sdkVer int, clcs []*ClassLoaderContext) (bool
 // Perform a depth-first preorder traversal of the class loader context tree for each SDK version.
 // Return the resulting string and a slice of on-host build paths to all library dependencies.
 func ComputeClassLoaderContext(clcMap ClassLoaderContextMap) (clcStr string, paths android.Paths) {
-	for _, sdkVer := range android.SortedIntKeys(clcMap) { // determinisitc traversal order
+	// CLC for different SDK versions should come in specific order that agrees with PackageManager.
+	// Since PackageManager processes SDK versions in ascending order and prepends compatibility
+	// libraries at the front, the required order is descending, except for AnySdkVersion that has
+	// numerically the largest order, but must be the last one. Example of correct order: [30, 29,
+	// 28, AnySdkVersion]. There are Soong tests to ensure that someone doesn't change this by
+	// accident, but there is no way to guard against changes in the PackageManager, except for
+	// grepping logcat on the first boot for absence of the following messages:
+	//
+	//   `logcat | grep -E 'ClassLoaderContext [a-z ]+ mismatch`
+	//
+	versions := make([]int, 0, len(clcMap))
+	for ver, _ := range clcMap {
+		if ver != AnySdkVersion {
+			versions = append(versions, ver)
+		}
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(versions))) // descending order
+	versions = append(versions, AnySdkVersion)
+
+	for _, sdkVer := range versions {
 		sdkVerStr := fmt.Sprintf("%d", sdkVer)
 		if sdkVer == AnySdkVersion {
 			sdkVerStr = "any" // a special keyword that means any SDK version
@@ -495,25 +488,26 @@ func computeClassLoaderContextRec(clcs []*ClassLoaderContext) (string, string, a
 	return clcHost, clcTarget, paths
 }
 
-// JSON representation of <uses-library> paths on host and on device.
-type jsonLibraryPath struct {
-	Host   string
-	Device string
+// Class loader contexts that come from Make via JSON dexpreopt.config. JSON CLC representation is
+// slightly different: it uses a map of library names to their CLC (instead of a list of structs
+// that including the name, as in the Soong CLC representation). The difference is insubstantial, it
+// is caused only by the language differerences between Go and JSON.
+type jsonClassLoaderContext struct {
+	Host        string
+	Device      string
+	Subcontexts map[string]*jsonClassLoaderContext
 }
 
-// Class loader contexts that come from Make (via JSON dexpreopt.config) files have simpler
-// structure than Soong class loader contexts: they are flat maps from a <uses-library> name to its
-// on-host and on-device paths. There are no nested subcontexts. It is a limitation of the current
-// Make implementation.
-type jsonClassLoaderContext map[string]jsonLibraryPath
+// A map of <uses-library> name to its on-host and on-device build paths and CLC.
+type jsonClassLoaderContexts map[string]*jsonClassLoaderContext
 
-// A map from SDK version (represented with a JSON string) to JSON class loader context.
-type jsonClassLoaderContextMap map[string]jsonClassLoaderContext
+// A map from SDK version (represented with a JSON string) to JSON CLCs.
+type jsonClassLoaderContextMap map[string]map[string]*jsonClassLoaderContext
 
-// Convert JSON class loader context map to ClassLoaderContextMap.
+// Convert JSON CLC map to Soong represenation.
 func fromJsonClassLoaderContext(ctx android.PathContext, jClcMap jsonClassLoaderContextMap) ClassLoaderContextMap {
 	clcMap := make(ClassLoaderContextMap)
-	for sdkVerStr, clc := range jClcMap {
+	for sdkVerStr, clcs := range jClcMap {
 		sdkVer, ok := strconv.Atoi(sdkVerStr)
 		if ok != nil {
 			if sdkVerStr == "any" {
@@ -522,14 +516,44 @@ func fromJsonClassLoaderContext(ctx android.PathContext, jClcMap jsonClassLoader
 				android.ReportPathErrorf(ctx, "failed to parse SDK version in dexpreopt.config: '%s'", sdkVerStr)
 			}
 		}
-		for lib, path := range clc {
-			clcMap[sdkVer] = append(clcMap[sdkVer], &ClassLoaderContext{
-				Name:        lib,
-				Host:        constructPath(ctx, path.Host),
-				Device:      path.Device,
-				Subcontexts: nil,
-			})
-		}
+		clcMap[sdkVer] = fromJsonClassLoaderContextRec(ctx, clcs)
 	}
 	return clcMap
+}
+
+// Recursive helper for fromJsonClassLoaderContext.
+func fromJsonClassLoaderContextRec(ctx android.PathContext, jClcs map[string]*jsonClassLoaderContext) []*ClassLoaderContext {
+	clcs := make([]*ClassLoaderContext, 0, len(jClcs))
+	for lib, clc := range jClcs {
+		clcs = append(clcs, &ClassLoaderContext{
+			Name:        lib,
+			Host:        constructPath(ctx, clc.Host),
+			Device:      clc.Device,
+			Subcontexts: fromJsonClassLoaderContextRec(ctx, clc.Subcontexts),
+		})
+	}
+	return clcs
+}
+
+// Convert Soong CLC map to JSON representation for Make.
+func toJsonClassLoaderContext(clcMap ClassLoaderContextMap) jsonClassLoaderContextMap {
+	jClcMap := make(jsonClassLoaderContextMap)
+	for sdkVer, clcs := range clcMap {
+		sdkVerStr := fmt.Sprintf("%d", sdkVer)
+		jClcMap[sdkVerStr] = toJsonClassLoaderContextRec(clcs)
+	}
+	return jClcMap
+}
+
+// Recursive helper for toJsonClassLoaderContext.
+func toJsonClassLoaderContextRec(clcs []*ClassLoaderContext) map[string]*jsonClassLoaderContext {
+	jClcs := make(map[string]*jsonClassLoaderContext, len(clcs))
+	for _, clc := range clcs {
+		jClcs[clc.Name] = &jsonClassLoaderContext{
+			Host:        clc.Host.String(),
+			Device:      clc.Device,
+			Subcontexts: toJsonClassLoaderContextRec(clc.Subcontexts),
+		}
+	}
+	return jClcs
 }

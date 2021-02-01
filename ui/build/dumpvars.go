@@ -214,6 +214,9 @@ func runMakeProductConfig(ctx Context, config Config) {
 		// So that later Kati runs can find BoardConfig.mk faster
 		"TARGET_DEVICE_DIR",
 
+		// To decide whether to skip the old installed cleanup step.
+		"FULL_BUILD",
+
 		// Whether --werror_overriding_commands will work
 		"BUILD_BROKEN_DUP_RULES",
 
@@ -254,7 +257,7 @@ func runMakeProductConfig(ctx Context, config Config) {
 		"BUILD_BROKEN_USES_BUILD_STATIC_LIBRARY",
 	}, exportEnvVars...), BannerVars...)
 
-	make_vars, err := dumpMakeVars(ctx, config, config.Arguments(), allVars, true, "")
+	makeVars, err := dumpMakeVars(ctx, config, config.Arguments(), allVars, true, "")
 	if err != nil {
 		ctx.Fatalln("Error dumping make vars:", err)
 	}
@@ -262,24 +265,25 @@ func runMakeProductConfig(ctx Context, config Config) {
 	env := config.Environment()
 	// Print the banner like make does
 	if !env.IsEnvTrue("ANDROID_QUIET_BUILD") {
-		fmt.Fprintln(ctx.Writer, Banner(make_vars))
+		fmt.Fprintln(ctx.Writer, Banner(makeVars))
 	}
 
 	// Populate the environment
 	for _, name := range exportEnvVars {
-		if make_vars[name] == "" {
+		if makeVars[name] == "" {
 			env.Unset(name)
 		} else {
-			env.Set(name, make_vars[name])
+			env.Set(name, makeVars[name])
 		}
 	}
 
-	config.SetKatiArgs(strings.Fields(make_vars["KATI_GOALS"]))
-	config.SetNinjaArgs(strings.Fields(make_vars["NINJA_GOALS"]))
-	config.SetTargetDevice(make_vars["TARGET_DEVICE"])
-	config.SetTargetDeviceDir(make_vars["TARGET_DEVICE_DIR"])
+	config.SetKatiArgs(strings.Fields(makeVars["KATI_GOALS"]))
+	config.SetNinjaArgs(strings.Fields(makeVars["NINJA_GOALS"]))
+	config.SetTargetDevice(makeVars["TARGET_DEVICE"])
+	config.SetTargetDeviceDir(makeVars["TARGET_DEVICE_DIR"])
+	config.SetFullBuild(makeVars["FULL_BUILD"] == "true")
 
-	config.SetBuildBrokenDupRules(make_vars["BUILD_BROKEN_DUP_RULES"] == "true")
-	config.SetBuildBrokenUsesNetwork(make_vars["BUILD_BROKEN_USES_NETWORK"] == "true")
-	config.SetBuildBrokenNinjaUsesEnvVars(strings.Fields(make_vars["BUILD_BROKEN_NINJA_USES_ENV_VARS"]))
+	config.SetBuildBrokenDupRules(makeVars["BUILD_BROKEN_DUP_RULES"] == "true")
+	config.SetBuildBrokenUsesNetwork(makeVars["BUILD_BROKEN_USES_NETWORK"] == "true")
+	config.SetBuildBrokenNinjaUsesEnvVars(strings.Fields(makeVars["BUILD_BROKEN_NINJA_USES_ENV_VARS"]))
 }

@@ -74,7 +74,7 @@ func sockAddr(dir string) (string, error) {
 func getRBEVars(ctx Context, config Config) map[string]string {
 	vars := map[string]string{
 		"RBE_log_path":   config.rbeLogPath(),
-		"RBE_log_dir":    config.logDir(),
+		"RBE_log_dir":    config.rbeLogDir(),
 		"RBE_re_proxy":   config.rbeReproxy(),
 		"RBE_exec_root":  config.rbeExecRoot(),
 		"RBE_output_dir": config.rbeStatsOutputDir(),
@@ -106,7 +106,7 @@ func startRBE(ctx Context, config Config) {
 	cmd := Command(ctx, config, "startRBE bootstrap", rbeCommand(ctx, config, bootstrapCmd))
 
 	if output, err := cmd.CombinedOutput(); err != nil {
-		ctx.Fatalf("rbe bootstrap failed with: %v\n%s\n", err, output)
+		ctx.Fatalf("Unable to start RBE reproxy\nFAILED: RBE bootstrap failed with: %v\n%s\n", err, output)
 	}
 }
 

@@ -46,7 +46,7 @@ type AndroidMkContext interface {
 	InRamdisk() bool
 	InVendorRamdisk() bool
 	InRecovery() bool
-	AnyVariantDirectlyInAnyApex() bool
+	NotInPlatform() bool
 }
 
 type subAndroidMkProvider interface {
@@ -113,7 +113,7 @@ func (c *Module) AndroidMkEntries() []android.AndroidMkEntries {
 						entries.SetString("LOCAL_SOONG_VNDK_VERSION", c.VndkVersion())
 						// VNDK libraries available to vendor are not installed because
 						// they are packaged in VNDK APEX and installed by APEX packages (apex/apex.go)
-						if !c.isVndkExt() {
+						if !c.IsVndkExt() {
 							entries.SetBool("LOCAL_UNINSTALLABLE_MODULE", true)
 						}
 					}
@@ -130,7 +130,7 @@ func (c *Module) AndroidMkEntries() []android.AndroidMkEntries {
 			},
 		},
 		ExtraFooters: []android.AndroidMkExtraFootersFunc{
-			func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
+			func(w io.Writer, name, prefix, moduleDir string) {
 				if c.Properties.IsSdkVariant && c.Properties.SdkAndPlatformVariantVisibleToMake &&
 					c.CcLibraryInterface() && c.Shared() {
 					// Using the SDK variant as a JNI library needs a copy of the .so that
@@ -168,7 +168,7 @@ func androidMkWriteExtraTestConfigs(extraTestConfigs android.Paths, entries *and
 	}
 }
 
-func androidMkWriteTestData(data []android.DataPath, ctx AndroidMkContext, entries *android.AndroidMkEntries) {
+func AndroidMkWriteTestData(data []android.DataPath, entries *android.AndroidMkEntries) {
 	testFiles := android.AndroidMkDataPaths(data)
 	if len(testFiles) > 0 {
 		entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
@@ -232,8 +232,8 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 			if len(library.Properties.Overrides) > 0 {
 				entries.SetString("LOCAL_OVERRIDES_MODULES", strings.Join(makeOverrideModuleNames(ctx, library.Properties.Overrides), " "))
 			}
-			if len(library.post_install_cmds) > 0 {
-				entries.SetString("LOCAL_POST_INSTALL_CMD", strings.Join(library.post_install_cmds, "&& "))
+			if len(library.postInstallCmds) > 0 {
+				entries.SetString("LOCAL_POST_INSTALL_CMD", strings.Join(library.postInstallCmds, "&& "))
 			}
 		})
 	} else if library.header() {
@@ -269,11 +269,11 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 	if library.shared() && !library.buildStubs() {
 		ctx.subAndroidMk(entries, library.baseInstaller)
 	} else {
-		if library.buildStubs() {
+		if library.buildStubs() && library.stubsVersion() != "" {
 			entries.SubName = "." + library.stubsVersion()
 		}
 		entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
-			// library.makeUninstallable() depends on this to bypass SkipInstall() for
+			// library.makeUninstallable() depends on this to bypass HideFromMake() for
 			// static libraries.
 			entries.SetBool("LOCAL_UNINSTALLABLE_MODULE", true)
 			if library.buildStubs() {
@@ -281,10 +281,15 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 			}
 		})
 	}
-	if len(library.Properties.Stubs.Versions) > 0 && !ctx.Host() && ctx.AnyVariantDirectlyInAnyApex() &&
+	// If a library providing a stub is included in an APEX, the private APIs of the library
+	// is accessible only inside the APEX. From outside of the APEX, clients can only use the
+	// public APIs via the stub. To enforce this, the (latest version of the) stub gets the
+	// name of the library. The impl library instead gets the `.bootstrap` suffix to so that
+	// they can be exceptionally used directly when APEXes are not available (e.g. during the
+	// very early stage in the boot process).
+	if len(library.Properties.Stubs.Versions) > 0 && !ctx.Host() && ctx.NotInPlatform() &&
 		!ctx.InRamdisk() && !ctx.InVendorRamdisk() && !ctx.InRecovery() && !ctx.UseVndk() && !ctx.static() {
 		if library.buildStubs() && library.isLatestStubVersion() {
-			// reference the latest version via its name without suffix when it is provided by apex
 			entries.SubName = ""
 		}
 		if !library.buildStubs() {
@@ -296,7 +301,7 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 func (object *objectLinker) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
 	entries.Class = "STATIC_LIBRARIES"
 	entries.ExtraFooters = append(entries.ExtraFooters,
-		func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
+		func(w io.Writer, name, prefix, moduleDir string) {
 			out := entries.OutputFile.Path()
 			varname := fmt.Sprintf("SOONG_%sOBJECT_%s%s", prefix, name, entries.SubName)
 
@@ -323,8 +328,8 @@ func (binary *binaryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *a
 		if len(binary.Properties.Overrides) > 0 {
 			entries.SetString("LOCAL_OVERRIDES_MODULES", strings.Join(makeOverrideModuleNames(ctx, binary.Properties.Overrides), " "))
 		}
-		if len(binary.post_install_cmds) > 0 {
-			entries.SetString("LOCAL_POST_INSTALL_CMD", strings.Join(binary.post_install_cmds, "&& "))
+		if len(binary.postInstallCmds) > 0 {
+			entries.SetString("LOCAL_POST_INSTALL_CMD", strings.Join(binary.postInstallCmds, "&& "))
 		}
 	})
 }
@@ -348,7 +353,7 @@ func (benchmark *benchmarkDecorator) AndroidMkEntries(ctx AndroidMkContext, entr
 	for _, srcPath := range benchmark.data {
 		dataPaths = append(dataPaths, android.DataPath{SrcPath: srcPath})
 	}
-	androidMkWriteTestData(dataPaths, ctx, entries)
+	AndroidMkWriteTestData(dataPaths, entries)
 }
 
 func (test *testBinary) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
@@ -373,7 +378,7 @@ func (test *testBinary) AndroidMkEntries(ctx AndroidMkContext, entries *android.
 		}
 	})
 
-	androidMkWriteTestData(test.data, ctx, entries)
+	AndroidMkWriteTestData(test.data, entries)
 	androidMkWriteExtraTestConfigs(test.extraTestConfigs, entries)
 }
 
@@ -466,18 +471,9 @@ func (c *stubDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.
 }
 
 func (c *llndkStubDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
-	entries.Class = "SHARED_LIBRARIES"
-	entries.OverrideName = c.implementationModuleName(ctx.BaseModuleName())
-
-	entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
-		c.libraryDecorator.androidMkWriteExportedFlags(entries)
-		_, _, ext := android.SplitFileExt(entries.OutputFile.Path().Base())
-
-		entries.SetString("LOCAL_BUILT_MODULE_STEM", "$(LOCAL_MODULE)"+ext)
-		entries.SetBool("LOCAL_UNINSTALLABLE_MODULE", true)
-		entries.SetBool("LOCAL_NO_NOTICE_FILE", true)
-		entries.SetString("LOCAL_SOONG_TOC", c.toc().String())
-	})
+	// Don't write anything for an llndk_library module, the vendor variant of the cc_library
+	// module will write the Android.mk entries.
+	entries.Disabled = true
 }
 
 func (c *vndkPrebuiltLibraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
@@ -523,9 +519,7 @@ func (c *snapshotLibraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entrie
 		entries.SubName += ".cfi"
 	}
 
-	if c.androidMkVendorSuffix {
-		entries.SubName += vendorSuffix
-	}
+	entries.SubName += c.androidMkSuffix
 
 	entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
 		c.libraryDecorator.androidMkWriteExportedFlags(entries)
@@ -552,12 +546,7 @@ func (c *snapshotLibraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entrie
 
 func (c *snapshotBinaryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
 	entries.Class = "EXECUTABLES"
-
-	if c.androidMkVendorSuffix {
-		entries.SubName = vendorSuffix
-	} else {
-		entries.SubName = ""
-	}
+	entries.SubName = c.androidMkSuffix
 
 	entries.ExtraEntries = append(entries.ExtraEntries, func(entries *android.AndroidMkEntries) {
 		entries.AddStrings("LOCAL_MODULE_SYMLINKS", c.Properties.Symlinks...)
@@ -566,15 +555,10 @@ func (c *snapshotBinaryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries
 
 func (c *snapshotObjectLinker) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
 	entries.Class = "STATIC_LIBRARIES"
-
-	if c.androidMkVendorSuffix {
-		entries.SubName = vendorSuffix
-	} else {
-		entries.SubName = ""
-	}
+	entries.SubName = c.androidMkSuffix
 
 	entries.ExtraFooters = append(entries.ExtraFooters,
-		func(w io.Writer, name, prefix, moduleDir string, entries *android.AndroidMkEntries) {
+		func(w io.Writer, name, prefix, moduleDir string) {
 			out := entries.OutputFile.Path()
 			varname := fmt.Sprintf("SOONG_%sOBJECT_%s%s", prefix, name, entries.SubName)
 

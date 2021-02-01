@@ -19,9 +19,19 @@ type bazelModuleProperties struct {
 	Label string
 }
 
-// Properties contains common module properties for migration purposes.
+// Properties contains common module properties for Bazel migration purposes.
 type Properties struct {
 	// In USE_BAZEL_ANALYSIS=1 mode, this represents the Bazel target replacing
 	// this Soong module.
 	Bazel_module bazelModuleProperties
+}
+
+// BazelTargetModuleProperties contain properties and metadata used for
+// Blueprint to BUILD file conversion.
+type BazelTargetModuleProperties struct {
+	// The Bazel rule class for this target.
+	Rule_class string
+
+	// The target label for the bzl file containing the definition of the rule class.
+	Bzl_load_location string
 }

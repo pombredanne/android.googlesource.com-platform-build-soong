@@ -205,14 +205,14 @@ func (s *ShBinary) SetImageVariation(ctx android.BaseModuleContext, variation st
 func (s *ShBinary) generateAndroidBuildActions(ctx android.ModuleContext) {
 	s.sourceFilePath = android.PathForModuleSrc(ctx, proptools.String(s.properties.Src))
 	filename := proptools.String(s.properties.Filename)
-	filename_from_src := proptools.Bool(s.properties.Filename_from_src)
+	filenameFromSrc := proptools.Bool(s.properties.Filename_from_src)
 	if filename == "" {
-		if filename_from_src {
+		if filenameFromSrc {
 			filename = s.sourceFilePath.Base()
 		} else {
 			filename = ctx.ModuleName()
 		}
-	} else if filename_from_src {
+	} else if filenameFromSrc {
 		ctx.PropertyErrorf("filename_from_src", "filename is set. filename_from_src can't be true")
 		return
 	}
@@ -345,15 +345,8 @@ func (s *ShTest) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		depTag := ctx.OtherModuleDependencyTag(dep)
 		switch depTag {
 		case shTestDataBinsTag, shTestDataDeviceBinsTag:
-			if cc, isCc := dep.(*cc.Module); isCc {
-				s.addToDataModules(ctx, cc.OutputFile().Path().Base(), cc.OutputFile().Path())
-				return
-			}
-			property := "data_bins"
-			if depTag == shTestDataDeviceBinsTag {
-				property = "data_device_bins"
-			}
-			ctx.PropertyErrorf(property, "%q of type %q is not supported", dep.Name(), ctx.OtherModuleType(dep))
+			path := android.OutputFileForModule(ctx, dep, "")
+			s.addToDataModules(ctx, path.Base(), path)
 		case shTestDataLibsTag, shTestDataDeviceLibsTag:
 			if cc, isCc := dep.(*cc.Module); isCc {
 				// Copy to an intermediate output directory to append "lib[64]" to the path,

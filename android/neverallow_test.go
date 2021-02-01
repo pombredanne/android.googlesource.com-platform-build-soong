@@ -190,19 +190,6 @@ var neverallowTests = []struct {
 		},
 	},
 	{
-		name: "dependency on updatable-media",
-		fs: map[string][]byte{
-			"Android.bp": []byte(`
-				java_library {
-					name: "needs_updatable_media",
-					libs: ["updatable-media"],
-				}`),
-		},
-		expectedErrors: []string{
-			"updatable-media includes private APIs. Use updatable_media_stubs instead.",
-		},
-	},
-	{
 		name: "java_device_for_host",
 		fs: map[string][]byte{
 			"Android.bp": []byte(`
@@ -213,50 +200,6 @@ var neverallowTests = []struct {
 		},
 		expectedErrors: []string{
 			"java_device_for_host can only be used in allowed projects",
-		},
-	},
-	// Libcore rule tests
-	{
-		name: "sdk_version: \"none\" inside core libraries",
-		fs: map[string][]byte{
-			"libcore/Android.bp": []byte(`
-				java_library {
-					name: "inside_core_libraries",
-					sdk_version: "none",
-				}`),
-		},
-	},
-	{
-		name: "sdk_version: \"none\" on android_*stubs_current stub",
-		fs: map[string][]byte{
-			"frameworks/base/Android.bp": []byte(`
-				java_library {
-					name: "android_stubs_current",
-					sdk_version: "none",
-				}`),
-		},
-	},
-	{
-		name: "sdk_version: \"none\" outside core libraries",
-		fs: map[string][]byte{
-			"Android.bp": []byte(`
-				java_library {
-					name: "outside_core_libraries",
-					sdk_version: "none",
-				}`),
-		},
-		expectedErrors: []string{
-			"module \"outside_core_libraries\": violates neverallow",
-		},
-	},
-	{
-		name: "sdk_version: \"current\"",
-		fs: map[string][]byte{
-			"Android.bp": []byte(`
-				java_library {
-					name: "outside_core_libraries",
-					sdk_version: "current",
-				}`),
 		},
 	},
 	// CC sdk rule tests

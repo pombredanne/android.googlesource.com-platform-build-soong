@@ -252,6 +252,11 @@ func Build(ctx Context, config Config, what int) {
 	if what&BuildSoong != 0 {
 		// Run Soong
 		runSoong(ctx, config)
+
+		if config.Environment().IsEnvTrue("GENERATE_BAZEL_FILES") {
+			// Return early, if we're using Soong as the bp2build converter.
+			return
+		}
 	}
 
 	if what&BuildKati != 0 {
@@ -302,7 +307,7 @@ func distGzipFile(ctx Context, config Config, src string, subDirs ...string) {
 	}
 
 	subDir := filepath.Join(subDirs...)
-	destDir := filepath.Join(config.DistDir(), "soong_ui", subDir)
+	destDir := filepath.Join(config.RealDistDir(), "soong_ui", subDir)
 
 	if err := os.MkdirAll(destDir, 0777); err != nil { // a+rwx
 		ctx.Printf("failed to mkdir %s: %s", destDir, err.Error())
@@ -321,7 +326,7 @@ func distFile(ctx Context, config Config, src string, subDirs ...string) {
 	}
 
 	subDir := filepath.Join(subDirs...)
-	destDir := filepath.Join(config.DistDir(), "soong_ui", subDir)
+	destDir := filepath.Join(config.RealDistDir(), "soong_ui", subDir)
 
 	if err := os.MkdirAll(destDir, 0777); err != nil { // a+rwx
 		ctx.Printf("failed to mkdir %s: %s", destDir, err.Error())

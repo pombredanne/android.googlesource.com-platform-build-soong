@@ -28,9 +28,64 @@ func init() {
 }
 
 type hiddenAPISingletonPathsStruct struct {
-	flags     android.OutputPath
-	index     android.OutputPath
-	metadata  android.OutputPath
+	// The path to the CSV file that contains the flags that will be encoded into the dex boot jars.
+	//
+	// It is created by the generate_hiddenapi_lists.py tool that is passed the stubFlags along with
+	// a number of additional files that are used to augment the information in the stubFlags with
+	// manually curated data.
+	flags android.OutputPath
+
+	// The path to the CSV index file that contains mappings from Java signature to source location
+	// information for all Java elements annotated with the UnsupportedAppUsage annotation in the
+	// source of all the boot jars.
+	//
+	// It is created by the merge_csv tool which merges all the hiddenAPI.indexCSVPath files that have
+	// been created by the rest of the build. That includes the index files generated for
+	// <x>-hiddenapi modules.
+	index android.OutputPath
+
+	// The path to the CSV metadata file that contains mappings from Java signature to the value of
+	// properties specified on UnsupportedAppUsage annotations in the source of all the boot jars.
+	//
+	// It is created by the merge_csv tool which merges all the hiddenAPI.metadataCSVPath files that
+	// have been created by the rest of the build. That includes the metadata files generated for
+	// <x>-hiddenapi modules.
+	metadata android.OutputPath
+
+	// The path to the CSV metadata file that contains mappings from Java signature to flags obtained
+	// from the public, system and test API stubs.
+	//
+	// This is created by the hiddenapi tool which is given dex files for the public, system and test
+	// API stubs (including product specific stubs) along with dex boot jars, so does not include
+	// <x>-hiddenapi modules. For each API surface (i.e. public, system, test) it records which
+	// members in the dex boot jars match a member in the dex stub jars for that API surface and then
+	// outputs a file containing the signatures of all members in the dex boot jars along with the
+	// flags that indicate which API surface it belongs, if any.
+	//
+	// e.g. a dex member that matches a member in the public dex stubs would have flags
+	// "public-api,system-api,test-api" set (as system and test are both supersets of public). A dex
+	// member that didn't match a member in any of the dex stubs is still output it just has an empty
+	// set of flags.
+	//
+	// The notion of matching is quite complex, it is not restricted to just exact matching but also
+	// follows the Java inheritance rules. e.g. if a method is public then all overriding/implementing
+	// methods are also public. If an interface method is public and a class inherits an
+	// implementation of that method from a super class then that super class method is also public.
+	// That ensures that any method that can be called directly by an App through a public method is
+	// visible to that App.
+	//
+	// Propagating the visibility of members across the inheritance hierarchy at build time will cause
+	// problems when modularizing and unbundling as it that propagation can cross module boundaries.
+	// e.g. Say that a private framework class implements a public interface and inherits an
+	// implementation of one of its methods from a core platform ART class. In that case the ART
+	// implementation method needs to be marked as public which requires the build to have access to
+	// the framework implementation classes at build time. The work to rectify this is being tracked
+	// at http://b/178693149.
+	//
+	// This file (or at least those items marked as being in the public-api) is used by hiddenapi when
+	// creating the metadata and flags for the individual modules in order to perform consistency
+	// checks and filter out bridge methods that are part of the public API. The latter relies on the
+	// propagation of visibility across the inheritance hierarchy.
 	stubFlags android.OutputPath
 }
 
@@ -66,6 +121,19 @@ func (h *hiddenAPISingleton) GenerateBuildActions(ctx android.SingletonContext) 
 	}
 
 	stubFlagsRule(ctx)
+
+	// If there is a prebuilt hiddenapi dir, generate rules to use the
+	// files within. Generally, we build the hiddenapi files from source
+	// during the build, ensuring consistency. It's possible, in a split
+	// build (framework and vendor) scenario, for the vendor build to use
+	// prebuilt hiddenapi files from the framework build. In this scenario,
+	// the framework and vendor builds must use the same source to ensure
+	// consistency.
+
+	if ctx.Config().PrebuiltHiddenApiDir(ctx) != "" {
+		h.flags = prebuiltFlagsRule(ctx)
+		return
+	}
 
 	// These rules depend on files located in frameworks/base, skip them if running in a tree that doesn't have them.
 	if ctx.Config().FrameworksBaseDirExists(ctx) {
@@ -177,12 +245,13 @@ func stubFlagsRule(ctx android.SingletonContext) {
 	for moduleList, pathList := range moduleListToPathList {
 		for i := range pathList {
 			if pathList[i] == nil {
-				pathList[i] = android.PathForOutput(ctx, "missing")
+				moduleName := (*moduleList)[i]
+				pathList[i] = android.PathForOutput(ctx, "missing/module", moduleName)
 				if ctx.Config().AllowMissingDependencies() {
-					missingDeps = append(missingDeps, (*moduleList)[i])
+					missingDeps = append(missingDeps, moduleName)
 				} else {
 					ctx.Errorf("failed to find dex jar path for module %q",
-						(*moduleList)[i])
+						moduleName)
 				}
 			}
 		}
@@ -209,6 +278,19 @@ func stubFlagsRule(ctx android.SingletonContext) {
 	commitChangeForRestat(rule, tempPath, outputPath)
 
 	rule.Build("hiddenAPIStubFlagsFile", "hiddenapi stub flags")
+}
+
+func prebuiltFlagsRule(ctx android.SingletonContext) android.Path {
+	outputPath := hiddenAPISingletonPaths(ctx).flags
+	inputPath := android.PathForSource(ctx, ctx.Config().PrebuiltHiddenApiDir(ctx), "hiddenapi-flags.csv")
+
+	ctx.Build(pctx, android.BuildParams{
+		Rule:   android.Cp,
+		Output: outputPath,
+		Input:  inputPath,
+	})
+
+	return outputPath
 }
 
 // flagsRule creates a rule to build hiddenapi-flags.csv out of flags.csv files generated for boot image modules and
@@ -250,6 +332,8 @@ func flagsRule(ctx android.SingletonContext) android.Path {
 		FlagWithInput("--unsupported ",
 			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-unsupported.txt")).
 		FlagWithInput("--unsupported ", combinedRemovedApis).Flag("--ignore-conflicts ").FlagWithArg("--tag ", "removed").
+		FlagWithInput("--max-target-r ",
+			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-max-target-r-loprio.txt")).FlagWithArg("--tag ", "lo-prio").
 		FlagWithInput("--max-target-q ",
 			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-max-target-q.txt")).
 		FlagWithInput("--max-target-p ",
@@ -258,8 +342,6 @@ func flagsRule(ctx android.SingletonContext) android.Path {
 			ctx, "frameworks/base/config/hiddenapi-max-target-o.txt")).Flag("--ignore-conflicts ").FlagWithArg("--tag ", "lo-prio").
 		FlagWithInput("--blocked ",
 			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-force-blocked.txt")).
-		FlagWithInput("--blocked ",
-			android.PathForSource(ctx, "frameworks/base/config/hiddenapi-temp-blocklist.txt")).FlagWithArg("--tag ", "lo-prio").
 		FlagWithInput("--unsupported ", android.PathForSource(
 			ctx, "frameworks/base/config/hiddenapi-unsupported-packages.txt")).Flag("--packages ").
 		FlagWithOutput("--output ", tempPath)
@@ -387,6 +469,20 @@ type hiddenAPIIndexSingleton struct {
 func (h *hiddenAPIIndexSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 	// Don't run any hiddenapi rules if UNSAFE_DISABLE_HIDDENAPI_FLAGS=true
 	if ctx.Config().IsEnvTrue("UNSAFE_DISABLE_HIDDENAPI_FLAGS") {
+		return
+	}
+
+	if ctx.Config().PrebuiltHiddenApiDir(ctx) != "" {
+		outputPath := hiddenAPISingletonPaths(ctx).index
+		inputPath := android.PathForSource(ctx, ctx.Config().PrebuiltHiddenApiDir(ctx), "hiddenapi-index.csv")
+
+		ctx.Build(pctx, android.BuildParams{
+			Rule:   android.Cp,
+			Output: outputPath,
+			Input:  inputPath,
+		})
+
+		h.index = outputPath
 		return
 	}
 

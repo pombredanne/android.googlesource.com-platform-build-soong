@@ -106,14 +106,17 @@ func newTestRustCtx(t *testing.T, bp string) *testRustCtx {
 // useMockedFs setup a default mocked filesystem for the test environment.
 func (tctx *testRustCtx) useMockedFs() {
 	tctx.fs = map[string][]byte{
-		"foo.rs":      nil,
-		"foo.c":       nil,
-		"src/bar.rs":  nil,
-		"src/any.h":   nil,
-		"proto.proto": nil,
-		"buf.proto":   nil,
-		"liby.so":     nil,
-		"libz.so":     nil,
+		"foo.rs":          nil,
+		"foo.c":           nil,
+		"src/bar.rs":      nil,
+		"src/any.h":       nil,
+		"proto.proto":     nil,
+		"proto/buf.proto": nil,
+		"buf.proto":       nil,
+		"foo.proto":       nil,
+		"liby.so":         nil,
+		"libz.so":         nil,
+		"data.txt":        nil,
 	}
 }
 
@@ -132,7 +135,7 @@ func (tctx *testRustCtx) enableCoverage(t *testing.T) {
 	if tctx.config == nil {
 		t.Fatalf("tctx.config not been generated yet. Please call generateConfig first.")
 	}
-	tctx.config.TestProductVariables.GcovCoverage = proptools.BoolPtr(true)
+	tctx.config.TestProductVariables.ClangCoverage = proptools.BoolPtr(true)
 	tctx.config.TestProductVariables.Native_coverage = proptools.BoolPtr(true)
 	tctx.config.TestProductVariables.NativeCoveragePaths = []string{"*"}
 }

@@ -78,9 +78,17 @@ func GatherRequiredDepsForTest() string {
 			nocrt: true,
 			system_shared_libs: [],
 			apex_available: ["//apex_available:platform", "//apex_available:anyapex"],
+			min_sdk_version: "29",
 		}
 		cc_library {
 			name: "libprotobuf-cpp-full",
+			no_libcrt: true,
+			nocrt: true,
+			system_shared_libs: [],
+			export_include_dirs: ["libprotobuf-cpp-full-includes"],
+		}
+		cc_library {
+			name: "libclang_rt.asan-aarch64-android",
 			no_libcrt: true,
 			nocrt: true,
 			system_shared_libs: [],
@@ -92,9 +100,11 @@ func GatherRequiredDepsForTest() string {
 			srcs: ["foo.rs"],
 			no_stdlibs: true,
 			host_supported: true,
+			vendor_available: true,
                         native_coverage: false,
 			sysroot: true,
 			apex_available: ["//apex_available:platform", "//apex_available:anyapex"],
+			min_sdk_version: "29",
 		}
 		rust_library {
 			name: "libtest",
@@ -102,9 +112,11 @@ func GatherRequiredDepsForTest() string {
 			srcs: ["foo.rs"],
 			no_stdlibs: true,
 			host_supported: true,
+			vendor_available: true,
                         native_coverage: false,
 			sysroot: true,
 			apex_available: ["//apex_available:platform", "//apex_available:anyapex"],
+			min_sdk_version: "29",
 		}
 		rust_library {
 			name: "libprotobuf",
@@ -124,7 +136,12 @@ func GatherRequiredDepsForTest() string {
 			srcs: ["foo.rs"],
 			host_supported: true,
 		}
-
+		rust_library {
+			name: "liblibfuzzer_sys",
+			crate_name: "libfuzzer_sys",
+			srcs:["foo.rs"],
+			host_supported: true,
+		}
 `
 	return bp
 }
@@ -142,14 +159,13 @@ func RegisterRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("rust_library_host", RustLibraryHostFactory)
 	ctx.RegisterModuleType("rust_library_host_dylib", RustLibraryDylibHostFactory)
 	ctx.RegisterModuleType("rust_library_host_rlib", RustLibraryRlibHostFactory)
+	ctx.RegisterModuleType("rust_fuzz", RustFuzzFactory)
 	ctx.RegisterModuleType("rust_ffi", RustFFIFactory)
 	ctx.RegisterModuleType("rust_ffi_shared", RustFFISharedFactory)
 	ctx.RegisterModuleType("rust_ffi_static", RustFFIStaticFactory)
 	ctx.RegisterModuleType("rust_ffi_host", RustFFIHostFactory)
 	ctx.RegisterModuleType("rust_ffi_host_shared", RustFFISharedHostFactory)
 	ctx.RegisterModuleType("rust_ffi_host_static", RustFFIStaticHostFactory)
-	ctx.RegisterModuleType("rust_grpcio", RustGrpcioFactory)
-	ctx.RegisterModuleType("rust_grpcio_host", RustGrpcioHostFactory)
 	ctx.RegisterModuleType("rust_proc_macro", ProcMacroFactory)
 	ctx.RegisterModuleType("rust_protobuf", RustProtobufFactory)
 	ctx.RegisterModuleType("rust_protobuf_host", RustProtobufHostFactory)
