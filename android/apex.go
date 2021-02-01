@@ -111,6 +111,19 @@ func (i ApexInfo) InApex(apex string) bool {
 	return false
 }
 
+// InApexByBaseName tells whether this apex variant of the module is part of the given APEX or not,
+// where the APEX is specified by its canonical base name, i.e. typically beginning with
+// "com.android.". In particular this function doesn't differentiate between source and prebuilt
+// APEXes, where the latter may have "prebuilt_" prefixes.
+func (i ApexInfo) InApexByBaseName(apex string) bool {
+	for _, a := range i.InApexes {
+		if RemoveOptionalPrebuiltPrefix(a) == apex {
+			return true
+		}
+	}
+	return false
+}
+
 // ApexTestForInfo stores the contents of APEXes for which this module is a test - although this
 // module is not part of the APEX - and thus has access to APEX internals.
 type ApexTestForInfo struct {
@@ -830,9 +843,8 @@ func CheckMinSdkVersion(m UpdatableModule, ctx ModuleContext, minSdkVersion ApiL
 		return
 	}
 
-	// do not enforce deps.min_sdk_version if APEX/APK doesn't set min_sdk_version or
-	// min_sdk_version is not finalized (e.g. current or codenames)
-	if minSdkVersion.IsCurrent() {
+	// do not enforce deps.min_sdk_version if APEX/APK doesn't set min_sdk_version
+	if minSdkVersion.IsNone() {
 		return
 	}
 

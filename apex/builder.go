@@ -598,7 +598,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 
 		// bundletool doesn't understand what "current" is. We need to transform it to
 		// codename
-		if moduleMinSdkVersion.IsCurrent() {
+		if moduleMinSdkVersion.IsCurrent() || moduleMinSdkVersion.IsNone() {
 			minSdkVersion = ctx.Config().DefaultAppTargetSdk(ctx).String()
 		}
 		// apex module doesn't have a concept of target_sdk_version, hence for the time
@@ -780,7 +780,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		ctx.PropertyErrorf("test_only_force_compression", "not available")
 		return
 	}
-	compressionEnabled := ctx.Config().CompressedApex() && proptools.BoolDefault(a.properties.Compressible, true)
+	compressionEnabled := ctx.Config().CompressedApex() && proptools.BoolDefault(a.properties.Compressible, false)
 	if apexType == imageApex && (compressionEnabled || a.testOnlyShouldForceCompression()) {
 		a.isCompressed = true
 		unsignedCompressedOutputFile := android.PathForModuleOut(ctx, a.Name()+".capex.unsigned")
