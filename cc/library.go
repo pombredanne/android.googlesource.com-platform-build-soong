@@ -19,6 +19,7 @@ import (
 	"io"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -647,6 +648,11 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 		return objs
 	}
 	if library.buildStubs() {
+		symbolFile := String(library.Properties.Stubs.Symbol_file)
+		if symbolFile != "" && !strings.HasSuffix(symbolFile, ".map.txt") {
+			ctx.PropertyErrorf("symbol_file", "%q doesn't have .map.txt suffix", symbolFile)
+			return Objects{}
+		}
 		objs, versionScript := compileStubLibrary(ctx, flags, String(library.Properties.Stubs.Symbol_file), library.MutatedProperties.StubsVersion, "--apex")
 		library.versionScriptPath = android.OptionalPathForPath(versionScript)
 		return objs
@@ -1362,8 +1368,11 @@ func (library *libraryDecorator) link(ctx ModuleContext,
 func (library *libraryDecorator) exportVersioningMacroIfNeeded(ctx android.BaseModuleContext) {
 	if library.buildStubs() && library.stubsVersion() != "" && !library.skipAPIDefine {
 		name := versioningMacroName(ctx.Module().(*Module).ImplementationModuleName(ctx))
-		ver := library.stubsVersion()
-		library.reexportFlags("-D" + name + "=" + ver)
+		apiLevel, err := android.ApiLevelFromUser(ctx, library.stubsVersion())
+		if err != nil {
+			ctx.ModuleErrorf("Can't export version macro: %s", err.Error())
+		}
+		library.reexportFlags("-D" + name + "=" + strconv.Itoa(apiLevel.FinalOrPreviewInt()))
 	}
 }
 

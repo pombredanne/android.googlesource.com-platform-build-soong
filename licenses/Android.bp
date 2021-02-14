@@ -125,6 +125,22 @@ license_kind {
 }
 
 license_kind {
+    name: "SPDX-license-identifier-APSL-1.1",
+    conditions: [
+        "reciprocal",
+    ],
+    url: "https://spdx.org/licenses/APSL-1.1.html",
+}
+
+license_kind {
+    name: "SPDX-license-identifier-APSL-2.0",
+    conditions: [
+        "reciprocal",
+    ],
+    url: "https://spdx.org/licenses/APSL-2.0.html",
+}
+
+license_kind {
     name: "SPDX-license-identifier-Apache",
     conditions: ["notice"],
 }
@@ -291,10 +307,7 @@ license_kind {
 
 license_kind {
     name: "SPDX-license-identifier-Beerware",
-    conditions: [
-        "by_exception_only",
-        "not_allowed",
-    ],
+    conditions: ["notice"],
     url: "https://spdx.org/licenses/Beerware.html",
 }
 
@@ -555,6 +568,23 @@ license_kind {
     name: "SPDX-license-identifier-CC0-1.0",
     conditions: ["unencumbered"],
     url: "https://spdx.org/licenses/CC0-1.0.html",
+}
+
+license_kind {
+    name: "SPDX-license-identifier-CDDL",
+    conditions: ["reciprocal"],
+}
+
+license_kind {
+    name: "SPDX-license-identifier-CDDL-1.0",
+    conditions: ["reciprocal"],
+    url: "https://spdx.org/licenses/CDLL-1.0.html",
+}
+
+license_kind {
+    name: "SPDX-license-identifier-CDDL-1.1",
+    conditions: ["reciprocal"],
+    url: "https://spdx.org/licenses/CDLL-1.1.html",
 }
 
 license_kind {
@@ -1104,10 +1134,7 @@ license_kind {
 
 license_kind {
     name: "SPDX-license-identifier-WTFPL",
-    conditions: [
-        "by_exception_only",
-        "not_allowed",
-    ],
+    conditions: ["notice"],
     url: "https://spdx.org/licenses/WTFPL.html",
 }
 

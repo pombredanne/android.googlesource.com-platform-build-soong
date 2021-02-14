@@ -86,6 +86,10 @@ custom = rule(
         "soong_module_name": attr.string(mandatory = True),
         "soong_module_variant": attr.string(),
         "soong_module_deps": attr.label_list(providers = [SoongModuleInfo]),
+        # bazel_module start
+#         "label": attr.string(),
+#         "bp2build_available": attr.bool(),
+        # bazel_module end
         "bool_prop": attr.bool(),
         "bool_ptr_prop": attr.bool(),
         "int64_ptr_prop": attr.int(),
@@ -172,7 +176,7 @@ func TestGenerateSoongModuleBzl(t *testing.T) {
 			content: "irrelevant",
 		},
 	}
-	files := CreateBazelFiles(ruleShims, make(map[string][]BazelTarget), QueryView)
+	files := CreateBazelFiles(ruleShims, make(map[string]BazelTargets), QueryView)
 
 	var actualSoongModuleBzl BazelFile
 	for _, f := range files {

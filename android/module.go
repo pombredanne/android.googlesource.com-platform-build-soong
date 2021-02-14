@@ -1885,19 +1885,11 @@ type earlyModuleContext struct {
 }
 
 func (e *earlyModuleContext) Glob(globPattern string, excludes []string) Paths {
-	ret, err := e.GlobWithDeps(globPattern, excludes)
-	if err != nil {
-		e.ModuleErrorf("glob: %s", err.Error())
-	}
-	return pathsForModuleSrcFromFullPath(e, ret, true)
+	return Glob(e, globPattern, excludes)
 }
 
 func (e *earlyModuleContext) GlobFiles(globPattern string, excludes []string) Paths {
-	ret, err := e.GlobWithDeps(globPattern, excludes)
-	if err != nil {
-		e.ModuleErrorf("glob: %s", err.Error())
-	}
-	return pathsForModuleSrcFromFullPath(e, ret, false)
+	return GlobFiles(e, globPattern, excludes)
 }
 
 func (b *earlyModuleContext) IsSymlink(path Path) bool {
@@ -2228,10 +2220,17 @@ func (b *baseModuleContext) getDirectDepInternal(name string, tag blueprint.Depe
 	}
 	var deps []dep
 	b.VisitDirectDepsBlueprint(func(module blueprint.Module) {
-		if aModule, _ := module.(Module); aModule != nil && aModule.base().BaseModuleName() == name {
-			returnedTag := b.bp.OtherModuleDependencyTag(aModule)
+		if aModule, _ := module.(Module); aModule != nil {
+			if aModule.base().BaseModuleName() == name {
+				returnedTag := b.bp.OtherModuleDependencyTag(aModule)
+				if tag == nil || returnedTag == tag {
+					deps = append(deps, dep{aModule, returnedTag})
+				}
+			}
+		} else if b.bp.OtherModuleName(module) == name {
+			returnedTag := b.bp.OtherModuleDependencyTag(module)
 			if tag == nil || returnedTag == tag {
-				deps = append(deps, dep{aModule, returnedTag})
+				deps = append(deps, dep{module, returnedTag})
 			}
 		}
 	})
@@ -2373,6 +2372,16 @@ func (b *baseModuleContext) PrimaryModule() Module {
 
 func (b *baseModuleContext) FinalModule() Module {
 	return b.bp.FinalModule().(Module)
+}
+
+// IsMetaDependencyTag returns true for cross-cutting metadata dependencies.
+func IsMetaDependencyTag(tag blueprint.DependencyTag) bool {
+	if tag == licenseKindTag {
+		return true
+	} else if tag == licensesTag {
+		return true
+	}
+	return false
 }
 
 // A regexp for removing boilerplate from BaseDependencyTag from the string representation of

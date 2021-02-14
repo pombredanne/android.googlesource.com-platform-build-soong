@@ -598,7 +598,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 
 		// bundletool doesn't understand what "current" is. We need to transform it to
 		// codename
-		if moduleMinSdkVersion.IsCurrent() {
+		if moduleMinSdkVersion.IsCurrent() || moduleMinSdkVersion.IsNone() {
 			minSdkVersion = ctx.Config().DefaultAppTargetSdk(ctx).String()
 		}
 		// apex module doesn't have a concept of target_sdk_version, hence for the time
@@ -700,15 +700,20 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		})
 		a.apisUsedByModuleFile = apisUsedbyOutputFile
 
+		var libNames []string
+		for _, f := range a.filesInfo {
+			if f.class == nativeSharedLib {
+				libNames = append(libNames, f.stem())
+			}
+		}
 		apisBackedbyOutputFile := android.PathForModuleOut(ctx, a.Name()+"_backing.txt")
 		ndkLibraryList := android.PathForSource(ctx, "system/core/rootdir/etc/public.libraries.android.txt")
 		rule := android.NewRuleBuilder(pctx, ctx)
 		rule.Command().
 			Tool(android.PathForSource(ctx, "build/soong/scripts/gen_ndk_backedby_apex.sh")).
-			Text(imageDir.String()).
-			Implicits(implicitInputs).
 			Output(apisBackedbyOutputFile).
-			Input(ndkLibraryList)
+			Input(ndkLibraryList).
+			Flags(libNames)
 		rule.Build("ndk_backedby_list", "Generate API libraries backed by Apex")
 		a.apisBackedByModuleFile = apisBackedbyOutputFile
 
@@ -780,7 +785,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		ctx.PropertyErrorf("test_only_force_compression", "not available")
 		return
 	}
-	compressionEnabled := ctx.Config().CompressedApex() && proptools.BoolDefault(a.properties.Compressible, true)
+	compressionEnabled := ctx.Config().CompressedApex() && proptools.BoolDefault(a.properties.Compressible, false)
 	if apexType == imageApex && (compressionEnabled || a.testOnlyShouldForceCompression()) {
 		a.isCompressed = true
 		unsignedCompressedOutputFile := android.PathForModuleOut(ctx, a.Name()+".capex.unsigned")

@@ -1413,6 +1413,14 @@ func (c *deviceConfig) VendorSnapshotModules() map[string]bool {
 	return c.config.productVariables.VendorSnapshotModules
 }
 
+func (c *deviceConfig) DirectedRecoverySnapshot() bool {
+	return c.config.productVariables.DirectedRecoverySnapshot
+}
+
+func (c *deviceConfig) RecoverySnapshotModules() map[string]bool {
+	return c.config.productVariables.RecoverySnapshotModules
+}
+
 // The ConfiguredJarList struct provides methods for handling a list of (apex, jar) pairs.
 // Such lists are used in the build system for things like bootclasspath jars or system server jars.
 // The apex part is either an apex name, or a special names "platform" or "system_ext". Jar is a
@@ -1624,21 +1632,33 @@ func splitListOfPairsIntoPairOfLists(list []string) ([]string, []string, error) 
 func splitConfiguredJarPair(str string) (string, string, error) {
 	pair := strings.SplitN(str, ":", 2)
 	if len(pair) == 2 {
-		return pair[0], pair[1], nil
+		apex := pair[0]
+		jar := pair[1]
+		if apex == "" {
+			return apex, jar, fmt.Errorf("invalid apex '%s' in <apex>:<jar> pair '%s', expected format: <apex>:<jar>", apex, str)
+		}
+		return apex, jar, nil
 	} else {
 		return "error-apex", "error-jar", fmt.Errorf("malformed (apex, jar) pair: '%s', expected format: <apex>:<jar>", str)
 	}
 }
 
-// CreateTestConfiguredJarList is a function to create ConfiguredJarList for
-// tests.
+// CreateTestConfiguredJarList is a function to create ConfiguredJarList for tests.
 func CreateTestConfiguredJarList(list []string) ConfiguredJarList {
-	apexes, jars, err := splitListOfPairsIntoPairOfLists(list)
+	// Create the ConfiguredJarList in as similar way as it is created at runtime by marshalling to
+	// a json list of strings and then unmarshalling into a ConfiguredJarList instance.
+	b, err := json.Marshal(list)
 	if err != nil {
 		panic(err)
 	}
 
-	return ConfiguredJarList{apexes, jars}
+	var jarList ConfiguredJarList
+	err = json.Unmarshal(b, &jarList)
+	if err != nil {
+		panic(err)
+	}
+
+	return jarList
 }
 
 // EmptyConfiguredJarList returns an empty jar list.

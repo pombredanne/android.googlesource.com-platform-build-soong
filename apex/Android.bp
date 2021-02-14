@@ -1,3 +1,7 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
 bootstrap_go_package {
     name: "soong-apex",
     pkgPath: "android/soong/apex",
@@ -25,6 +29,7 @@ bootstrap_go_package {
     ],
     testSrcs: [
         "apex_test.go",
+        "boot_image_test.go",
         "vndk_test.go",
     ],
     pluginFor: ["soong_build"],

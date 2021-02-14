@@ -1,3 +1,7 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
 bootstrap_go_package {
     name: "soong-java",
     pkgPath: "android/soong/java",
@@ -24,6 +28,7 @@ bootstrap_go_package {
         "app.go",
         "app_import.go",
         "app_set.go",
+        "boot_image.go",
         "boot_jars.go",
         "builder.go",
         "device_host_converter.go",
@@ -63,6 +68,7 @@ bootstrap_go_package {
         "app_import_test.go",
         "app_set_test.go",
         "app_test.go",
+        "boot_image_test.go",
         "device_host_converter_test.go",
         "dexpreopt_test.go",
         "dexpreopt_bootjars_test.go",
