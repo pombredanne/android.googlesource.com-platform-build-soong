@@ -507,13 +507,17 @@ type Module interface {
 type BazelTargetModule interface {
 	Module
 
-	BazelTargetModuleProperties() *bazel.BazelTargetModuleProperties
+	bazelTargetModuleProperties() *bazel.BazelTargetModuleProperties
+	SetBazelTargetModuleProperties(props bazel.BazelTargetModuleProperties)
+
+	RuleClass() string
+	BzlLoadLocation() string
 }
 
 // InitBazelTargetModule is a wrapper function that decorates BazelTargetModule
 // with property structs containing metadata for bp2build conversion.
 func InitBazelTargetModule(module BazelTargetModule) {
-	module.AddProperties(module.BazelTargetModuleProperties())
+	module.AddProperties(module.bazelTargetModuleProperties())
 	InitAndroidModule(module)
 }
 
@@ -524,9 +528,24 @@ type BazelTargetModuleBase struct {
 	Properties bazel.BazelTargetModuleProperties
 }
 
-// BazelTargetModuleProperties getter.
-func (btmb *BazelTargetModuleBase) BazelTargetModuleProperties() *bazel.BazelTargetModuleProperties {
+// bazelTargetModuleProperties getter.
+func (btmb *BazelTargetModuleBase) bazelTargetModuleProperties() *bazel.BazelTargetModuleProperties {
 	return &btmb.Properties
+}
+
+// SetBazelTargetModuleProperties setter for BazelTargetModuleProperties
+func (btmb *BazelTargetModuleBase) SetBazelTargetModuleProperties(props bazel.BazelTargetModuleProperties) {
+	btmb.Properties = props
+}
+
+// RuleClass returns the rule class for this Bazel target
+func (b *BazelTargetModuleBase) RuleClass() string {
+	return b.bazelTargetModuleProperties().Rule_class
+}
+
+// BzlLoadLocation returns the rule class for this Bazel target
+func (b *BazelTargetModuleBase) BzlLoadLocation() string {
+	return b.bazelTargetModuleProperties().Bzl_load_location
 }
 
 // Qualified id for a module
@@ -2220,10 +2239,17 @@ func (b *baseModuleContext) getDirectDepInternal(name string, tag blueprint.Depe
 	}
 	var deps []dep
 	b.VisitDirectDepsBlueprint(func(module blueprint.Module) {
-		if aModule, _ := module.(Module); aModule != nil && aModule.base().BaseModuleName() == name {
-			returnedTag := b.bp.OtherModuleDependencyTag(aModule)
+		if aModule, _ := module.(Module); aModule != nil {
+			if aModule.base().BaseModuleName() == name {
+				returnedTag := b.bp.OtherModuleDependencyTag(aModule)
+				if tag == nil || returnedTag == tag {
+					deps = append(deps, dep{aModule, returnedTag})
+				}
+			}
+		} else if b.bp.OtherModuleName(module) == name {
+			returnedTag := b.bp.OtherModuleDependencyTag(module)
 			if tag == nil || returnedTag == tag {
-				deps = append(deps, dep{aModule, returnedTag})
+				deps = append(deps, dep{module, returnedTag})
 			}
 		}
 	})
@@ -2365,6 +2391,16 @@ func (b *baseModuleContext) PrimaryModule() Module {
 
 func (b *baseModuleContext) FinalModule() Module {
 	return b.bp.FinalModule().(Module)
+}
+
+// IsMetaDependencyTag returns true for cross-cutting metadata dependencies.
+func IsMetaDependencyTag(tag blueprint.DependencyTag) bool {
+	if tag == licenseKindTag {
+		return true
+	} else if tag == licensesTag {
+		return true
+	}
+	return false
 }
 
 // A regexp for removing boilerplate from BaseDependencyTag from the string representation of

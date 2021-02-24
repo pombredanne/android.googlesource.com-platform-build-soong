@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -127,7 +128,7 @@ type config struct {
 
 	// If testAllowNonExistentPaths is true then PathForSource and PathForModuleSrc won't error
 	// in tests when a path doesn't exist.
-	testAllowNonExistentPaths bool
+	TestAllowNonExistentPaths bool
 
 	// The list of files that when changed, must invalidate soong_build to
 	// regenerate build.ninja.
@@ -246,6 +247,7 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 			AAPTCharacteristics:               stringPtr("nosdcard"),
 			AAPTPrebuiltDPI:                   []string{"xhdpi", "xxhdpi"},
 			UncompressPrivAppDex:              boolPtr(true),
+			ShippingApiLevel:                  stringPtr("30"),
 		},
 
 		buildDir:     buildDir,
@@ -254,7 +256,7 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 
 		// Set testAllowNonExistentPaths so that test contexts don't need to specify every path
 		// passed to PathForSource or PathForModuleSrc.
-		testAllowNonExistentPaths: true,
+		TestAllowNonExistentPaths: true,
 
 		BazelContext: noopBazelContext{},
 	}
@@ -911,6 +913,25 @@ func (c *config) XrefCuEncoding() string {
 	return "json"
 }
 
+// XrefCuJavaSourceMax returns the maximum number of the Java source files
+// in a single compilation unit
+const xrefJavaSourceFileMaxDefault = "1000"
+
+func (c Config) XrefCuJavaSourceMax() string {
+	v := c.Getenv("KYTHE_JAVA_SOURCE_BATCH_SIZE")
+	if v == "" {
+		return xrefJavaSourceFileMaxDefault
+	}
+	if _, err := strconv.ParseUint(v, 0, 0); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"bad KYTHE_JAVA_SOURCE_BATCH_SIZE value: %s, will use %s",
+			err, xrefJavaSourceFileMaxDefault)
+		return xrefJavaSourceFileMaxDefault
+	}
+	return v
+
+}
+
 func (c *config) EmitXrefRules() bool {
 	return c.XrefCorpusName() != ""
 }
@@ -944,13 +965,7 @@ func (c *config) ArtUseReadBarrier() bool {
 // More info: https://source.android.com/devices/architecture/rros
 func (c *config) EnforceRROForModule(name string) bool {
 	enforceList := c.productVariables.EnforceRROTargets
-	// TODO(b/150820813) Some modules depend on static overlay, remove this after eliminating the dependency.
-	exemptedList := c.productVariables.EnforceRROExemptedTargets
-	if len(exemptedList) > 0 {
-		if InList(name, exemptedList) {
-			return false
-		}
-	}
+
 	if len(enforceList) > 0 {
 		if InList("*", enforceList) {
 			return true
@@ -959,11 +974,6 @@ func (c *config) EnforceRROForModule(name string) bool {
 	}
 	return false
 }
-
-func (c *config) EnforceRROExemptedForModule(name string) bool {
-	return InList(name, c.productVariables.EnforceRROExemptedTargets)
-}
-
 func (c *config) EnforceRROExcludedOverlay(path string) bool {
 	excluded := c.productVariables.EnforceRROExcludedOverlays
 	if len(excluded) > 0 {
@@ -1413,6 +1423,26 @@ func (c *deviceConfig) VendorSnapshotModules() map[string]bool {
 	return c.config.productVariables.VendorSnapshotModules
 }
 
+func (c *deviceConfig) DirectedRecoverySnapshot() bool {
+	return c.config.productVariables.DirectedRecoverySnapshot
+}
+
+func (c *deviceConfig) RecoverySnapshotModules() map[string]bool {
+	return c.config.productVariables.RecoverySnapshotModules
+}
+
+func (c *deviceConfig) ShippingApiLevel() ApiLevel {
+	if c.config.productVariables.ShippingApiLevel == nil {
+		return NoneApiLevel
+	}
+	apiLevel, _ := strconv.Atoi(*c.config.productVariables.ShippingApiLevel)
+	return uncheckedFinalApiLevel(apiLevel)
+}
+
+func (c *deviceConfig) BuildBrokenVendorPropertyNamespace() bool {
+	return c.config.productVariables.BuildBrokenVendorPropertyNamespace
+}
+
 // The ConfiguredJarList struct provides methods for handling a list of (apex, jar) pairs.
 // Such lists are used in the build system for things like bootclasspath jars or system server jars.
 // The apex part is either an apex name, or a special names "platform" or "system_ext". Jar is a
@@ -1624,21 +1654,33 @@ func splitListOfPairsIntoPairOfLists(list []string) ([]string, []string, error) 
 func splitConfiguredJarPair(str string) (string, string, error) {
 	pair := strings.SplitN(str, ":", 2)
 	if len(pair) == 2 {
-		return pair[0], pair[1], nil
+		apex := pair[0]
+		jar := pair[1]
+		if apex == "" {
+			return apex, jar, fmt.Errorf("invalid apex '%s' in <apex>:<jar> pair '%s', expected format: <apex>:<jar>", apex, str)
+		}
+		return apex, jar, nil
 	} else {
 		return "error-apex", "error-jar", fmt.Errorf("malformed (apex, jar) pair: '%s', expected format: <apex>:<jar>", str)
 	}
 }
 
-// CreateTestConfiguredJarList is a function to create ConfiguredJarList for
-// tests.
+// CreateTestConfiguredJarList is a function to create ConfiguredJarList for tests.
 func CreateTestConfiguredJarList(list []string) ConfiguredJarList {
-	apexes, jars, err := splitListOfPairsIntoPairOfLists(list)
+	// Create the ConfiguredJarList in as similar way as it is created at runtime by marshalling to
+	// a json list of strings and then unmarshalling into a ConfiguredJarList instance.
+	b, err := json.Marshal(list)
 	if err != nil {
 		panic(err)
 	}
 
-	return ConfiguredJarList{apexes, jars}
+	var jarList ConfiguredJarList
+	err = json.Unmarshal(b, &jarList)
+	if err != nil {
+		panic(err)
+	}
+
+	return jarList
 }
 
 // EmptyConfiguredJarList returns an empty jar list.

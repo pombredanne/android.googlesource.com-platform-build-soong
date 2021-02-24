@@ -64,6 +64,14 @@ func testRust(t *testing.T, bp string) *android.TestContext {
 	return tctx.parse(t)
 }
 
+func testRustVndk(t *testing.T, bp string) *android.TestContext {
+	tctx := newTestRustCtx(t, bp)
+	tctx.useMockedFs()
+	tctx.generateConfig()
+	tctx.setVndk(t)
+	return tctx.parse(t)
+}
+
 // testRustCov returns a TestContext in which a basic environment has been
 // setup. This environment explicitly enables coverage.
 func testRustCov(t *testing.T, bp string) *android.TestContext {
@@ -140,6 +148,15 @@ func (tctx *testRustCtx) enableCoverage(t *testing.T) {
 	tctx.config.TestProductVariables.NativeCoveragePaths = []string{"*"}
 }
 
+func (tctx *testRustCtx) setVndk(t *testing.T) {
+	if tctx.config == nil {
+		t.Fatalf("tctx.config not been generated yet. Please call generateConfig first.")
+	}
+	tctx.config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
+	tctx.config.TestProductVariables.ProductVndkVersion = StringPtr("current")
+	tctx.config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
+}
+
 // parse validates the configuration and parses the Blueprint file. It returns
 // a TestContext which can be used to retrieve the generated modules via
 // ModuleForTests.
@@ -213,6 +230,7 @@ func TestDepsTracking(t *testing.T) {
 			name: "librlib",
 			srcs: ["foo.rs"],
 			crate_name: "rlib",
+			static_libs: ["libstatic"],
 		}
 		rust_proc_macro {
 			name: "libpm",
@@ -230,6 +248,7 @@ func TestDepsTracking(t *testing.T) {
 		}
 	`)
 	module := ctx.ModuleForTests("fizz-buzz", "linux_glibc_x86_64").Module().(*Module)
+	rustc := ctx.ModuleForTests("librlib", "linux_glibc_x86_64_rlib_rlib-std").Rule("rustc")
 
 	// Since dependencies are added to AndroidMk* properties, we can check these to see if they've been picked up.
 	if !android.InList("libdylib", module.Properties.AndroidMkDylibs) {
@@ -251,6 +270,11 @@ func TestDepsTracking(t *testing.T) {
 	if !android.InList("libstatic", module.Properties.AndroidMkStaticLibs) {
 		t.Errorf("Static library dependency not detected (dependency missing from AndroidMkStaticLibs)")
 	}
+
+	if !strings.Contains(rustc.Args["rustcFlags"], "-lstatic=static") {
+		t.Errorf("-lstatic flag not being passed to rustc for static library")
+	}
+
 }
 
 func TestSourceProviderDeps(t *testing.T) {

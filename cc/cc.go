@@ -762,6 +762,7 @@ type Module struct {
 	android.DefaultableModuleBase
 	android.ApexModuleBase
 	android.SdkBase
+	android.BazelModuleBase
 
 	Properties       BaseProperties
 	VendorProperties VendorProperties
@@ -1051,6 +1052,7 @@ func (c *Module) Init() android.Module {
 	}
 
 	android.InitAndroidArchModule(c, c.hod, c.multilib)
+	android.InitBazelModule(c)
 	android.InitApexModule(c)
 	android.InitSdkAwareModule(c)
 	android.InitDefaultableModule(c)
@@ -1535,11 +1537,16 @@ func (c *Module) getNameSuffixWithVndkVersion(ctx android.ModuleContext) string 
 	var vndkVersion string
 	var nameSuffix string
 	if c.InProduct() {
+		if c.ProductSpecific() {
+			// If the module is product specific with 'product_specific: true',
+			// do not add a name suffix because it is a base module.
+			return ""
+		}
 		vndkVersion = ctx.DeviceConfig().ProductVndkVersion()
 		nameSuffix = productSuffix
 	} else {
 		vndkVersion = ctx.DeviceConfig().VndkVersion()
-		nameSuffix = vendorSuffix
+		nameSuffix = VendorSuffix
 	}
 	if vndkVersion == "current" {
 		vndkVersion = ctx.DeviceConfig().PlatformVndkVersion()
@@ -1586,11 +1593,11 @@ func (c *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 	} else if _, ok := c.linker.(*vndkPrebuiltLibraryDecorator); ok {
 		// .vendor suffix is added for backward compatibility with VNDK snapshot whose names with
 		// such suffixes are already hard-coded in prebuilts/vndk/.../Android.bp.
-		c.Properties.SubName += vendorSuffix
+		c.Properties.SubName += VendorSuffix
 	} else if c.InRamdisk() && !c.OnlyInRamdisk() {
 		c.Properties.SubName += ramdiskSuffix
 	} else if c.InVendorRamdisk() && !c.OnlyInVendorRamdisk() {
-		c.Properties.SubName += vendorRamdiskSuffix
+		c.Properties.SubName += VendorRamdiskSuffix
 	} else if c.InRecovery() && !c.OnlyInRecovery() {
 		c.Properties.SubName += recoverySuffix
 	} else if c.IsSdkVariant() && (c.Properties.SdkAndPlatformVariantVisibleToMake || c.SplitPerApiLevel()) {
@@ -1741,7 +1748,7 @@ func (c *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 
 func (c *Module) toolchain(ctx android.BaseModuleContext) config.Toolchain {
 	if c.cachedToolchain == nil {
-		c.cachedToolchain = config.FindToolchain(ctx.Os(), ctx.Arch())
+		c.cachedToolchain = config.FindToolchainWithContext(ctx)
 	}
 	return c.cachedToolchain
 }
@@ -1832,6 +1839,12 @@ func (c *Module) deps(ctx DepsContext) Deps {
 	deps.LateSharedLibs = android.LastUniqueStrings(deps.LateSharedLibs)
 	deps.HeaderLibs = android.LastUniqueStrings(deps.HeaderLibs)
 	deps.RuntimeLibs = android.LastUniqueStrings(deps.RuntimeLibs)
+
+	// In Bazel conversion mode, we dependency and build validations will occur in Bazel, so there is
+	// no need to do so in Soong.
+	if ctx.BazelConversionMode() {
+		return deps
+	}
 
 	for _, lib := range deps.ReexportSharedLibHeaders {
 		if !inList(lib, deps.SharedLibs) {
@@ -2891,12 +2904,12 @@ func (c *Module) makeLibName(ctx android.ModuleContext, ccDep LinkableInterface,
 	ccDepModule, _ := ccDep.(*Module)
 	isLLndk := ccDepModule != nil && ccDepModule.IsLlndk()
 	isVendorPublicLib := inList(libName, *vendorPublicLibraries)
-	bothVendorAndCoreVariantsExist := ccDep.HasVendorVariant() || isLLndk
+	nonSystemVariantsExist := ccDep.HasNonSystemVariants() || isLLndk
 
-	if c, ok := ccDep.(*Module); ok {
+	if ccDepModule != nil {
 		// Use base module name for snapshots when exporting to Makefile.
-		if snapshotPrebuilt, ok := c.linker.(snapshotInterface); ok {
-			baseName := c.BaseModuleName()
+		if snapshotPrebuilt, ok := ccDepModule.linker.(snapshotInterface); ok {
+			baseName := ccDepModule.BaseModuleName()
 
 			return baseName + snapshotPrebuilt.snapshotAndroidMkSuffix()
 		}
@@ -2907,16 +2920,16 @@ func (c *Module) makeLibName(ctx android.ModuleContext, ccDep LinkableInterface,
 		// The vendor module is a no-vendor-variant VNDK library.  Depend on the
 		// core module instead.
 		return libName
-	} else if c.UseVndk() && bothVendorAndCoreVariantsExist {
-		// The vendor module in Make will have been renamed to not conflict with the core
-		// module, so update the dependency name here accordingly.
-		return libName + c.getNameSuffixWithVndkVersion(ctx)
+	} else if ccDep.UseVndk() && nonSystemVariantsExist && ccDepModule != nil {
+		// The vendor and product modules in Make will have been renamed to not conflict with the
+		// core module, so update the dependency name here accordingly.
+		return libName + ccDepModule.Properties.SubName
 	} else if (ctx.Platform() || ctx.ProductSpecific()) && isVendorPublicLib {
 		return libName + vendorPublicLibrarySuffix
 	} else if ccDep.InRamdisk() && !ccDep.OnlyInRamdisk() {
 		return libName + ramdiskSuffix
 	} else if ccDep.InVendorRamdisk() && !ccDep.OnlyInVendorRamdisk() {
-		return libName + vendorRamdiskSuffix
+		return libName + VendorRamdiskSuffix
 	} else if ccDep.InRecovery() && !ccDep.OnlyInRecovery() {
 		return libName + recoverySuffix
 	} else if ccDep.Target().NativeBridge == android.NativeBridgeEnabled {

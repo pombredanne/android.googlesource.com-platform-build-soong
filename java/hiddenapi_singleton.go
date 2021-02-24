@@ -22,9 +22,13 @@ import (
 )
 
 func init() {
-	android.RegisterSingletonType("hiddenapi", hiddenAPISingletonFactory)
-	android.RegisterSingletonType("hiddenapi_index", hiddenAPIIndexSingletonFactory)
-	android.RegisterModuleType("hiddenapi_flags", hiddenAPIFlagsFactory)
+	RegisterHiddenApiSingletonComponents(android.InitRegistrationContext)
+}
+
+func RegisterHiddenApiSingletonComponents(ctx android.RegistrationContext) {
+	ctx.RegisterSingletonType("hiddenapi", hiddenAPISingletonFactory)
+	ctx.RegisterSingletonType("hiddenapi_index", hiddenAPIIndexSingletonFactory)
+	ctx.RegisterModuleType("hiddenapi_flags", hiddenAPIFlagsFactory)
 }
 
 type hiddenAPISingletonPathsStruct struct {
@@ -215,7 +219,7 @@ func stubFlagsRule(ctx android.SingletonContext) {
 
 	ctx.VisitAllModules(func(module android.Module) {
 		// Collect dex jar paths for the modules listed above.
-		if j, ok := module.(Dependency); ok {
+		if j, ok := module.(UsesLibraryDependency); ok {
 			name := ctx.ModuleName(module)
 			for moduleList, pathList := range moduleListToPathList {
 				if i := android.IndexList(name, *moduleList); i != -1 {
@@ -227,14 +231,6 @@ func stubFlagsRule(ctx android.SingletonContext) {
 		// Collect dex jar paths for modules that had hiddenapi encode called on them.
 		if h, ok := module.(hiddenAPIIntf); ok {
 			if jar := h.bootDexJar(); jar != nil {
-				// For a java lib included in an APEX, only take the one built for
-				// the platform variant, and skip the variants for APEXes.
-				// Otherwise, the hiddenapi tool will complain about duplicated classes
-				apexInfo := ctx.ModuleProvider(module, android.ApexInfoProvider).(android.ApexInfo)
-				if !apexInfo.IsForPlatform() {
-					return
-				}
-
 				bootDexJars = append(bootDexJars, jar)
 			}
 		}
@@ -278,6 +274,47 @@ func stubFlagsRule(ctx android.SingletonContext) {
 	commitChangeForRestat(rule, tempPath, outputPath)
 
 	rule.Build("hiddenAPIStubFlagsFile", "hiddenapi stub flags")
+}
+
+// Checks to see whether the supplied module variant is in the list of boot jars.
+//
+// This is similar to logic in getBootImageJar() so any changes needed here are likely to be needed
+// there too.
+//
+// TODO(b/179354495): Avoid having to perform this type of check or if necessary dedup it.
+func isModuleInConfiguredList(ctx android.BaseModuleContext, module android.Module, configuredBootJars android.ConfiguredJarList) bool {
+	name := ctx.OtherModuleName(module)
+
+	// Strip a prebuilt_ prefix so that this can match a prebuilt module that has not been renamed.
+	name = android.RemoveOptionalPrebuiltPrefix(name)
+
+	// Ignore any module that is not listed in the boot image configuration.
+	index := configuredBootJars.IndexOfJar(name)
+	if index == -1 {
+		return false
+	}
+
+	// It is an error if the module is not an ApexModule.
+	if _, ok := module.(android.ApexModule); !ok {
+		ctx.ModuleErrorf("is configured in boot jars but does not support being added to an apex")
+		return false
+	}
+
+	apexInfo := ctx.OtherModuleProvider(module, android.ApexInfoProvider).(android.ApexInfo)
+
+	// Now match the apex part of the boot image configuration.
+	requiredApex := configuredBootJars.Apex(index)
+	if requiredApex == "platform" {
+		if len(apexInfo.InApexes) != 0 {
+			// A platform variant is required but this is for an apex so ignore it.
+			return false
+		}
+	} else if !apexInfo.InApexByBaseName(requiredApex) {
+		// An apex variant for a specific apex is required but this is the wrong apex.
+		return false
+	}
+
+	return true
 }
 
 func prebuiltFlagsRule(ctx android.SingletonContext) android.Path {
@@ -326,7 +363,7 @@ func flagsRule(ctx android.SingletonContext) android.Path {
 	stubFlags := hiddenAPISingletonPaths(ctx).stubFlags
 
 	rule.Command().
-		Tool(android.PathForSource(ctx, "frameworks/base/tools/hiddenapi/generate_hiddenapi_lists.py")).
+		BuiltTool("generate_hiddenapi_lists").
 		FlagWithInput("--csv ", stubFlags).
 		Inputs(flagsCSV).
 		FlagWithInput("--unsupported ",
@@ -387,6 +424,7 @@ func metadataRule(ctx android.SingletonContext) android.Path {
 
 	rule.Command().
 		BuiltTool("merge_csv").
+		Flag("--key_field signature").
 		FlagWithOutput("--output=", outputPath).
 		Inputs(metadataCSV)
 
@@ -498,6 +536,7 @@ func (h *hiddenAPIIndexSingleton) GenerateBuildActions(ctx android.SingletonCont
 	rule := android.NewRuleBuilder(pctx, ctx)
 	rule.Command().
 		BuiltTool("merge_csv").
+		Flag("--key_field signature").
 		FlagWithArg("--header=", "signature,file,startline,startcol,endline,endcol,properties").
 		FlagWithOutput("--output=", hiddenAPISingletonPaths(ctx).index).
 		Inputs(indexes)

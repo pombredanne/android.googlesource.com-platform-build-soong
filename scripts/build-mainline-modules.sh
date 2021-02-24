@@ -8,6 +8,7 @@ MAINLINE_MODULES=(
   com.android.art.testing
   com.android.conscrypt
   com.android.i18n
+  com.android.os.statsd
   com.android.runtime
   com.android.tzdata
 )
@@ -26,6 +27,9 @@ MODULES_SDK_AND_EXPORTS=(
   platform-mainline-test-exports
   runtime-module-host-exports
   runtime-module-sdk
+  stats-log-api-gen-exports
+  statsd-module-sdk
+  statsd-module-sdk-for-art
   tzdata-module-test-exports
 )
 
@@ -60,6 +64,9 @@ lib_dir() {
     (aosp_arm64|aosp_x86_64) echo "lib64";;
   esac
 }
+
+# Make sure this build builds from source, regardless of the default.
+export SOONG_CONFIG_art_module_source_build=true
 
 OUT_DIR=$(source build/envsetup.sh > /dev/null; TARGET_PRODUCT= get_build_var OUT_DIR)
 DIST_DIR=$(source build/envsetup.sh > /dev/null; TARGET_PRODUCT= get_build_var DIST_DIR)

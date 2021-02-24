@@ -35,6 +35,7 @@ type dexpreopter struct {
 	isPresignedPrebuilt bool
 
 	manifestFile        android.Path
+	statusFile          android.WritablePath
 	enforceUsesLibs     bool
 	classLoaderContexts dexpreopt.ClassLoaderContextMap
 
@@ -118,7 +119,7 @@ func odexOnSystemOther(ctx android.ModuleContext, installPath android.InstallPat
 	return dexpreopt.OdexOnSystemOtherByName(ctx.ModuleName(), android.InstallPathToOnDevicePath(ctx, installPath), dexpreopt.GetGlobalConfig(ctx))
 }
 
-func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.ModuleOutPath) {
+func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.WritablePath) {
 	// TODO(b/148690468): The check on d.installPath is to bail out in cases where
 	// the dexpreopter struct hasn't been fully initialized before we're called,
 	// e.g. in aar.go. This keeps the behaviour that dexpreopting is effectively
@@ -128,8 +129,6 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 	}
 
 	dexLocation := android.InstallPathToOnDevicePath(ctx, d.installPath)
-
-	buildPath := android.PathForModuleOut(ctx, "dexpreopt", ctx.ModuleName()+".jar").OutputPath
 
 	providesUsesLib := ctx.ModuleName()
 	if ulib, ok := ctx.Module().(ProvidesUsesLib); ok {
@@ -146,7 +145,6 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 		slimDexpreoptConfig := &dexpreopt.ModuleConfig{
 			Name:                 ctx.ModuleName(),
 			DexLocation:          dexLocation,
-			BuildPath:            buildPath,
 			EnforceUsesLibraries: d.enforceUsesLibs,
 			ProvidesUsesLibrary:  providesUsesLib,
 			ClassLoaderContexts:  d.classLoaderContexts,
@@ -218,7 +216,7 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 	dexpreoptConfig := &dexpreopt.ModuleConfig{
 		Name:            ctx.ModuleName(),
 		DexLocation:     dexLocation,
-		BuildPath:       buildPath,
+		BuildPath:       android.PathForModuleOut(ctx, "dexpreopt", ctx.ModuleName()+".jar").OutputPath,
 		DexPath:         dexJarFile,
 		ManifestPath:    d.manifestFile,
 		UncompressedDex: d.uncompressedDex,
@@ -229,9 +227,10 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Mo
 		ProfileIsTextListing: profileIsTextListing,
 		ProfileBootListing:   profileBootListing,
 
-		EnforceUsesLibraries: d.enforceUsesLibs,
-		ProvidesUsesLibrary:  providesUsesLib,
-		ClassLoaderContexts:  d.classLoaderContexts,
+		EnforceUsesLibrariesStatusFile: dexpreopt.UsesLibrariesStatusFile(ctx),
+		EnforceUsesLibraries:           d.enforceUsesLibs,
+		ProvidesUsesLibrary:            providesUsesLib,
+		ClassLoaderContexts:            d.classLoaderContexts,
 
 		Archs:                   archs,
 		DexPreoptImages:         images,

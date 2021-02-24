@@ -54,6 +54,8 @@ func init() {
 func RegisterPreDepsMutators(ctx android.RegisterMutatorsContext) {
 	ctx.TopDown("apex_vndk", apexVndkMutator).Parallel()
 	ctx.BottomUp("apex_vndk_deps", apexVndkDepsMutator).Parallel()
+	ctx.BottomUp("prebuilt_apex_select_source", prebuiltSelectSourceMutator).Parallel()
+	ctx.BottomUp("deapexer_select_source", deapexerSelectSourceMutator).Parallel()
 }
 
 func RegisterPostDepsMutators(ctx android.RegisterMutatorsContext) {
@@ -206,6 +208,9 @@ type ApexNativeDependencies struct {
 
 	// List of native tests that are embedded inside this APEX.
 	Tests []string
+
+	// List of filesystem images that are embedded inside this APEX bundle.
+	Filesystems []string
 }
 
 type apexMultilibProperties struct {
@@ -578,6 +583,7 @@ func addDependenciesForNativeModules(ctx android.BottomUpMutatorContext, nativeM
 	ctx.AddFarVariationDependencies(libVariations, jniLibTag, nativeModules.Jni_libs...)
 	ctx.AddFarVariationDependencies(libVariations, sharedLibTag, nativeModules.Native_shared_libs...)
 	ctx.AddFarVariationDependencies(rustLibVariations, sharedLibTag, nativeModules.Rust_dyn_libs...)
+	ctx.AddFarVariationDependencies(target.Variations(), fsTag, nativeModules.Filesystems...)
 }
 
 func (a *apexBundle) combineProperties(ctx android.BottomUpMutatorContext) {
@@ -2346,7 +2352,6 @@ func makeApexAvailableBaseline() map[string][]string {
 		"libFraunhoferAAC",
 		"libaudio-a2dp-hw-utils",
 		"libaudio-hearing-aid-hw-utils",
-		"libbinder_headers",
 		"libbluetooth",
 		"libbluetooth-types",
 		"libbluetooth-types-header",
@@ -2477,7 +2482,6 @@ func makeApexAvailableBaseline() map[string][]string {
 		"libaudiopolicy",
 		"libaudioutils",
 		"libaudioutils_fixedfft",
-		"libbinder_headers",
 		"libbluetooth-types-header",
 		"libbufferhub",
 		"libbufferhub_headers",
@@ -2593,7 +2597,6 @@ func makeApexAvailableBaseline() map[string][]string {
 		"libavcenc",
 		"libavservices_minijail",
 		"libavservices_minijail",
-		"libbinder_headers",
 		"libbinderthreadstateutils",
 		"libbluetooth-types-header",
 		"libbufferhub_headers",
@@ -2840,14 +2843,6 @@ func makeApexAvailableBaseline() map[string][]string {
 		"wifi-nano-protos",
 		"wifi-service-pre-jarjar",
 		"wifi-service-resources",
-	}
-	//
-	// Module separator
-	//
-	m["com.android.sdkext"] = []string{
-		"fmtlib_ndk",
-		"libbase_ndk",
-		"libprotobuf-cpp-lite-ndk",
 	}
 	//
 	// Module separator

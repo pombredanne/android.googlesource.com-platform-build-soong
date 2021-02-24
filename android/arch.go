@@ -436,7 +436,7 @@ func osMutator(bpctx blueprint.BottomUpMutatorContext) {
 	// blueprint.BottomUpMutatorContext because android.BottomUpMutatorContext
 	// filters out non-Soong modules.  Now that we've handled them, create a
 	// normal android.BottomUpMutatorContext.
-	mctx := bottomUpMutatorContextFactory(bpctx, module, false)
+	mctx := bottomUpMutatorContextFactory(bpctx, module, false, false)
 
 	base := module.base()
 
@@ -576,7 +576,7 @@ func archMutator(bpctx blueprint.BottomUpMutatorContext) {
 	// blueprint.BottomUpMutatorContext because android.BottomUpMutatorContext
 	// filters out non-Soong modules.  Now that we've handled them, create a
 	// normal android.BottomUpMutatorContext.
-	mctx := bottomUpMutatorContextFactory(bpctx, module, false)
+	mctx := bottomUpMutatorContextFactory(bpctx, module, false, false)
 
 	base := module.base()
 
@@ -647,10 +647,11 @@ func archMutator(bpctx blueprint.BottomUpMutatorContext) {
 	}
 
 	// Recovery is always the primary architecture, filter out any other architectures.
+	// Common arch is also allowed
 	if image == RecoveryVariation {
 		primaryArch := mctx.Config().DevicePrimaryArchType()
-		targets = filterToArch(targets, primaryArch)
-		multiTargets = filterToArch(multiTargets, primaryArch)
+		targets = filterToArch(targets, primaryArch, Common)
+		multiTargets = filterToArch(multiTargets, primaryArch, Common)
 	}
 
 	// If there are no supported targets disable the module.
@@ -719,10 +720,17 @@ func decodeMultilib(base *ModuleBase, class OsClass) (multilib, extraMultilib st
 }
 
 // filterToArch takes a list of Targets and an ArchType, and returns a modified list that contains
-// only Targets that have the specified ArchType.
-func filterToArch(targets []Target, arch ArchType) []Target {
+// only Targets that have the specified ArchTypes.
+func filterToArch(targets []Target, archs ...ArchType) []Target {
 	for i := 0; i < len(targets); i++ {
-		if targets[i].Arch.ArchType != arch {
+		found := false
+		for _, arch := range archs {
+			if targets[i].Arch.ArchType == arch {
+				found = true
+				break
+			}
+		}
+		if !found {
 			targets = append(targets[:i], targets[i+1:]...)
 			i--
 		}
@@ -1434,7 +1442,7 @@ type archConfig struct {
 func getNdkAbisConfig() []archConfig {
 	return []archConfig{
 		{"arm", "armv7-a", "", []string{"armeabi-v7a"}},
-		{"arm64", "armv8-a", "", []string{"arm64-v8a"}},
+		{"arm64", "armv8-a-branchprot", "", []string{"arm64-v8a"}},
 		{"x86", "", "", []string{"x86"}},
 		{"x86_64", "", "", []string{"x86_64"}},
 	}
@@ -1601,13 +1609,15 @@ func decodeMultilibTargets(multilib string, targets []Target, prefer32 bool) ([]
 		} else {
 			buildTargets = firstTarget(targets, "lib64", "lib32")
 		}
+	case "first_prefer32":
+		buildTargets = firstTarget(targets, "lib32", "lib64")
 	case "prefer32":
 		buildTargets = filterMultilibTargets(targets, "lib32")
 		if len(buildTargets) == 0 {
 			buildTargets = filterMultilibTargets(targets, "lib64")
 		}
 	default:
-		return nil, fmt.Errorf(`compile_multilib must be "both", "first", "32", "64", or "prefer32" found %q`,
+		return nil, fmt.Errorf(`compile_multilib must be "both", "first", "32", "64", "prefer32" or "first_prefer32" found %q`,
 			multilib)
 	}
 

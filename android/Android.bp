@@ -1,3 +1,7 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
 bootstrap_go_package {
     name: "soong-android",
     pkgPath: "android/soong/android",
@@ -18,6 +22,7 @@ bootstrap_go_package {
         "api_levels.go",
         "arch.go",
         "arch_list.go",
+        "bazel.go",
         "bazel_handler.go",
         "config.go",
         "csuite_config.go",
