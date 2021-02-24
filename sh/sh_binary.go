@@ -246,7 +246,7 @@ func (s *ShBinary) AndroidMkEntries() []android.AndroidMkEntries {
 		OutputFile: android.OptionalPathForPath(s.outputFilePath),
 		Include:    "$(BUILD_SYSTEM)/soong_cc_prebuilt.mk",
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
-			func(entries *android.AndroidMkEntries) {
+			func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
 				s.customAndroidMkEntries(entries)
 				entries.SetString("LOCAL_MODULE_RELATIVE_PATH", proptools.String(s.properties.Sub_dir))
 			},
@@ -395,7 +395,7 @@ func (s *ShTest) AndroidMkEntries() []android.AndroidMkEntries {
 		OutputFile: android.OptionalPathForPath(s.outputFilePath),
 		Include:    "$(BUILD_SYSTEM)/soong_cc_prebuilt.mk",
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
-			func(entries *android.AndroidMkEntries) {
+			func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
 				s.customAndroidMkEntries(entries)
 				entries.SetPath("LOCAL_MODULE_PATH", s.installDir.ToMakePath())
 				entries.AddCompatibilityTestSuites(s.testProperties.Test_suites...)
@@ -514,9 +514,11 @@ func ShBinaryBp2Build(ctx android.TopDownMutatorContext) {
 		Srcs: srcs,
 	}
 
-	props := bazel.NewBazelTargetModuleProperties(m.Name(), "sh_binary", "")
+	props := bazel.BazelTargetModuleProperties{
+		Rule_class: "sh_binary",
+	}
 
-	ctx.CreateBazelTargetModule(BazelShBinaryFactory, props, attrs)
+	ctx.CreateBazelTargetModule(BazelShBinaryFactory, m.Name(), props, attrs)
 }
 
 func (m *bazelShBinary) Name() string {

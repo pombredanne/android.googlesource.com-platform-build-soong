@@ -16,68 +16,123 @@ package bp2build
 
 import (
 	"android/soong/android"
-	"android/soong/sh"
+	"android/soong/cc"
+	"fmt"
 	"strings"
 	"testing"
 )
 
-func TestShBinaryLoadStatement(t *testing.T) {
-	testCases := []struct {
-		bazelTargets           BazelTargets
-		expectedLoadStatements string
-	}{
-		{
-			bazelTargets: BazelTargets{
-				BazelTarget{
-					name:      "sh_binary_target",
-					ruleClass: "sh_binary",
-					// Note: no bzlLoadLocation for native rules
-					// TODO(ruperts): Could open source the existing, experimental Starlark sh_ rules?
-				},
-			},
-			expectedLoadStatements: ``,
-		},
-	}
-
-	for _, testCase := range testCases {
-		actual := testCase.bazelTargets.LoadStatements()
-		expected := testCase.expectedLoadStatements
-		if actual != expected {
-			t.Fatalf("Expected load statements to be %s, got %s", expected, actual)
-		}
-	}
-
-}
-
-func TestShBinaryBp2Build(t *testing.T) {
+func TestCcObjectBp2Build(t *testing.T) {
 	testCases := []struct {
 		description                        string
 		moduleTypeUnderTest                string
 		moduleTypeUnderTestFactory         android.ModuleFactory
 		moduleTypeUnderTestBp2BuildMutator func(android.TopDownMutatorContext)
-		preArchMutators                    []android.RegisterMutatorFunc
-		depsMutators                       []android.RegisterMutatorFunc
-		bp                                 string
+		blueprint                          string
 		expectedBazelTargets               []string
 		filesystem                         map[string]string
-		dir                                string
 	}{
 		{
-			description:                        "sh_binary test",
-			moduleTypeUnderTest:                "sh_binary",
-			moduleTypeUnderTestFactory:         sh.ShBinaryFactory,
-			moduleTypeUnderTestBp2BuildMutator: sh.ShBinaryBp2Build,
-			bp: `sh_binary {
+			description:                        "simple cc_object generates cc_object with include header dep",
+			moduleTypeUnderTest:                "cc_object",
+			moduleTypeUnderTestFactory:         cc.ObjectFactory,
+			moduleTypeUnderTestBp2BuildMutator: cc.ObjectBp2Build,
+			filesystem: map[string]string{
+				"a/b/foo.h": "",
+				"a/b/bar.h": "",
+				"a/b/c.c":   "",
+			},
+			blueprint: `cc_object {
     name: "foo",
-    src: "foo.sh",
-    bazel_module: { bp2build_available: true },
-}`,
-			expectedBazelTargets: []string{`sh_binary(
-    name = "foo",
-    srcs = [
-        "foo.sh",
+    local_include_dirs: ["include"],
+    cflags: [
+        "-Wno-gcc-compat",
+        "-Wall",
+        "-Werror",
     ],
-)`},
+    srcs: [
+        "a/b/*.h",
+        "a/b/c.c"
+    ],
+
+    bazel_module: { bp2build_available: true },
+}
+`,
+			expectedBazelTargets: []string{`cc_object(
+    name = "foo",
+    copts = [
+        "-fno-addrsig",
+        "-Wno-gcc-compat",
+        "-Wall",
+        "-Werror",
+    ],
+    local_include_dirs = [
+        "include",
+    ],
+    srcs = [
+        "a/b/bar.h",
+        "a/b/foo.h",
+        "a/b/c.c",
+    ],
+)`,
+			},
+		},
+		{
+			description:                        "simple cc_object with defaults",
+			moduleTypeUnderTest:                "cc_object",
+			moduleTypeUnderTestFactory:         cc.ObjectFactory,
+			moduleTypeUnderTestBp2BuildMutator: cc.ObjectBp2Build,
+			blueprint: `cc_object {
+    name: "foo",
+    local_include_dirs: ["include"],
+    srcs: [
+        "a/b/*.h",
+        "a/b/c.c"
+    ],
+
+    defaults: ["foo_defaults"],
+    bazel_module: { bp2build_available: true },
+}
+
+cc_defaults {
+    name: "foo_defaults",
+    defaults: ["foo_bar_defaults"],
+	// TODO(b/178130668): handle configurable attributes that depend on the platform
+    arch: {
+        x86: {
+            cflags: ["-fPIC"],
+        },
+        x86_64: {
+            cflags: ["-fPIC"],
+        },
+    },
+}
+
+cc_defaults {
+    name: "foo_bar_defaults",
+    cflags: [
+        "-Wno-gcc-compat",
+        "-Wall",
+        "-Werror",
+    ],
+}
+`,
+			expectedBazelTargets: []string{`cc_object(
+    name = "foo",
+    copts = [
+        "-Wno-gcc-compat",
+        "-Wall",
+        "-Werror",
+        "-fno-addrsig",
+    ],
+    local_include_dirs = [
+        "include",
+    ],
+    srcs = [
+        "a/b/c.c",
+    ],
+)`,
+			},
 		},
 	}
 
@@ -93,12 +148,12 @@ func TestShBinaryBp2Build(t *testing.T) {
 			}
 			filesystem[f] = []byte(content)
 		}
-		config := android.TestConfig(buildDir, nil, testCase.bp, filesystem)
+		config := android.TestConfig(buildDir, nil, testCase.blueprint, filesystem)
 		ctx := android.NewTestContext(config)
+		// Always register cc_defaults module factory
+		ctx.RegisterModuleType("cc_defaults", func() android.Module { return cc.DefaultsFactory() })
+
 		ctx.RegisterModuleType(testCase.moduleTypeUnderTest, testCase.moduleTypeUnderTestFactory)
-		for _, m := range testCase.depsMutators {
-			ctx.DepsBp2BuildMutators(m)
-		}
 		ctx.RegisterBp2BuildMutator(testCase.moduleTypeUnderTest, testCase.moduleTypeUnderTestBp2BuildMutator)
 		ctx.RegisterForBazelConversion()
 
@@ -111,13 +166,10 @@ func TestShBinaryBp2Build(t *testing.T) {
 			continue
 		}
 
-		checkDir := dir
-		if testCase.dir != "" {
-			checkDir = testCase.dir
-		}
 		codegenCtx := NewCodegenContext(config, *ctx.Context, Bp2Build)
-		bazelTargets := generateBazelTargetsForDir(codegenCtx, checkDir)
+		bazelTargets := generateBazelTargetsForDir(codegenCtx, dir)
 		if actualCount, expectedCount := len(bazelTargets), len(testCase.expectedBazelTargets); actualCount != expectedCount {
+			fmt.Println(bazelTargets)
 			t.Errorf("%s: Expected %d bazel target, got %d", testCase.description, expectedCount, actualCount)
 		} else {
 			for i, target := range bazelTargets {

@@ -128,7 +128,7 @@ type config struct {
 
 	// If testAllowNonExistentPaths is true then PathForSource and PathForModuleSrc won't error
 	// in tests when a path doesn't exist.
-	testAllowNonExistentPaths bool
+	TestAllowNonExistentPaths bool
 
 	// The list of files that when changed, must invalidate soong_build to
 	// regenerate build.ninja.
@@ -256,7 +256,7 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 
 		// Set testAllowNonExistentPaths so that test contexts don't need to specify every path
 		// passed to PathForSource or PathForModuleSrc.
-		testAllowNonExistentPaths: true,
+		TestAllowNonExistentPaths: true,
 
 		BazelContext: noopBazelContext{},
 	}
@@ -913,6 +913,25 @@ func (c *config) XrefCuEncoding() string {
 	return "json"
 }
 
+// XrefCuJavaSourceMax returns the maximum number of the Java source files
+// in a single compilation unit
+const xrefJavaSourceFileMaxDefault = "1000"
+
+func (c Config) XrefCuJavaSourceMax() string {
+	v := c.Getenv("KYTHE_JAVA_SOURCE_BATCH_SIZE")
+	if v == "" {
+		return xrefJavaSourceFileMaxDefault
+	}
+	if _, err := strconv.ParseUint(v, 0, 0); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"bad KYTHE_JAVA_SOURCE_BATCH_SIZE value: %s, will use %s",
+			err, xrefJavaSourceFileMaxDefault)
+		return xrefJavaSourceFileMaxDefault
+	}
+	return v
+
+}
+
 func (c *config) EmitXrefRules() bool {
 	return c.XrefCorpusName() != ""
 }
@@ -946,13 +965,7 @@ func (c *config) ArtUseReadBarrier() bool {
 // More info: https://source.android.com/devices/architecture/rros
 func (c *config) EnforceRROForModule(name string) bool {
 	enforceList := c.productVariables.EnforceRROTargets
-	// TODO(b/150820813) Some modules depend on static overlay, remove this after eliminating the dependency.
-	exemptedList := c.productVariables.EnforceRROExemptedTargets
-	if len(exemptedList) > 0 {
-		if InList(name, exemptedList) {
-			return false
-		}
-	}
+
 	if len(enforceList) > 0 {
 		if InList("*", enforceList) {
 			return true
@@ -961,11 +974,6 @@ func (c *config) EnforceRROForModule(name string) bool {
 	}
 	return false
 }
-
-func (c *config) EnforceRROExemptedForModule(name string) bool {
-	return InList(name, c.productVariables.EnforceRROExemptedTargets)
-}
-
 func (c *config) EnforceRROExcludedOverlay(path string) bool {
 	excluded := c.productVariables.EnforceRROExcludedOverlays
 	if len(excluded) > 0 {

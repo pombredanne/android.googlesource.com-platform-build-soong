@@ -86,6 +86,10 @@ func CcLibraryHeadersBp2Build(ctx android.TopDownMutatorContext) {
 		return
 	}
 
+	if !module.Properties.Bazel_module.Bp2build_available {
+		return
+	}
+
 	lib, ok := module.linker.(*libraryDecorator)
 	if !ok {
 		// Not a cc_library module
@@ -93,10 +97,6 @@ func CcLibraryHeadersBp2Build(ctx android.TopDownMutatorContext) {
 	}
 	if !lib.header() {
 		// Not a cc_library_headers module
-		return
-	}
-
-	if !lib.Properties.Bazel_module.Bp2build_available {
 		return
 	}
 
@@ -129,13 +129,12 @@ func CcLibraryHeadersBp2Build(ctx android.TopDownMutatorContext) {
 		Deps:     headerLibLabels,
 	}
 
-	props := bazel.NewBazelTargetModuleProperties(
-		module.Name(),
-		"cc_library_headers",
-		"//build/bazel/rules:cc_library_headers.bzl",
-	)
+	props := bazel.BazelTargetModuleProperties{
+		Rule_class:        "cc_library_headers",
+		Bzl_load_location: "//build/bazel/rules:cc_library_headers.bzl",
+	}
 
-	ctx.CreateBazelTargetModule(BazelCcLibraryHeadersFactory, props, attrs)
+	ctx.CreateBazelTargetModule(BazelCcLibraryHeadersFactory, module.Name(), props, attrs)
 }
 
 func (m *bazelCcLibraryHeaders) Name() string {
