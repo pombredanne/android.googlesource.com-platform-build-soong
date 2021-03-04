@@ -211,6 +211,7 @@ func TestBasicSdkWithJavaLibrary(t *testing.T) {
 			uses_sdks: ["mysdk@1"],
 			key: "myapex.key",
 			certificate: ":myapex.cert",
+			updatable: false,
 		}
 
 		apex {
@@ -219,6 +220,7 @@ func TestBasicSdkWithJavaLibrary(t *testing.T) {
 			uses_sdks: ["mysdk@2"],
 			key: "myapex.key",
 			certificate: ":myapex.cert",
+			updatable: false,
 		}
 	`)
 
@@ -503,7 +505,7 @@ java_import {
     sdk_member_name: "myjavalib",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
-    jars: ["java_boot_libs/snapshot/jars/are/invalid/myjavalib.jar"],
+    jars: ["java/myjavalib.jar"],
 }
 
 java_import {
@@ -511,7 +513,7 @@ java_import {
     prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
-    jars: ["java_boot_libs/snapshot/jars/are/invalid/myjavalib.jar"],
+    jars: ["java/myjavalib.jar"],
 }
 
 module_exports_snapshot {
@@ -519,10 +521,9 @@ module_exports_snapshot {
     visibility: ["//visibility:public"],
     java_boot_libs: ["myexports_myjavalib@current"],
 }
-
 `),
 		checkAllCopyRules(`
-.intermediates/myexports/common_os/empty -> java_boot_libs/snapshot/jars/are/invalid/myjavalib.jar
+.intermediates/myjavalib/android_common/withres/myjavalib.jar -> java/myjavalib.jar
 `),
 	)
 }

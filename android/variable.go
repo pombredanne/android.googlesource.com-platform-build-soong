@@ -121,10 +121,6 @@ type variableProperties struct {
 			Cppflags []string
 		}
 
-		Use_lmkd_stats_log struct {
-			Cflags []string
-		}
-
 		Arc struct {
 			Cflags            []string `android:"arch_variant"`
 			Exclude_srcs      []string `android:"arch_variant"`
@@ -203,11 +199,9 @@ type productVariables struct {
 	CrossHostArch          *string `json:",omitempty"`
 	CrossHostSecondaryArch *string `json:",omitempty"`
 
-	DeviceResourceOverlays  []string `json:",omitempty"`
-	ProductResourceOverlays []string `json:",omitempty"`
-	EnforceRROTargets       []string `json:",omitempty"`
-	// TODO(b/150820813) Some modules depend on static overlay, remove this after eliminating the dependency.
-	EnforceRROExemptedTargets  []string `json:",omitempty"`
+	DeviceResourceOverlays     []string `json:",omitempty"`
+	ProductResourceOverlays    []string `json:",omitempty"`
+	EnforceRROTargets          []string `json:",omitempty"`
 	EnforceRROExcludedOverlays []string `json:",omitempty"`
 
 	AAPTCharacteristics *string  `json:",omitempty"`
@@ -240,7 +234,6 @@ type productVariables struct {
 	Treble_linker_namespaces     *bool `json:",omitempty"`
 	Enforce_vintf_manifest       *bool `json:",omitempty"`
 	Uml                          *bool `json:",omitempty"`
-	Use_lmkd_stats_log           *bool `json:",omitempty"`
 	Arc                          *bool `json:",omitempty"`
 	MinimizeJavaDebugInfo        *bool `json:",omitempty"`
 
@@ -312,6 +305,9 @@ type productVariables struct {
 	DirectedVendorSnapshot bool            `json:",omitempty"`
 	VendorSnapshotModules  map[string]bool `json:",omitempty"`
 
+	DirectedRecoverySnapshot bool            `json:",omitempty"`
+	RecoverySnapshotModules  map[string]bool `json:",omitempty"`
+
 	BoardVendorSepolicyDirs      []string `json:",omitempty"`
 	BoardOdmSepolicyDirs         []string `json:",omitempty"`
 	BoardReqdMaskPolicy          []string `json:",omitempty"`
@@ -369,6 +365,10 @@ type productVariables struct {
 	BoardMoveRecoveryResourcesToVendorBoot *bool `json:",omitempty"`
 
 	PrebuiltHiddenApiDir *string `json:",omitempty"`
+
+	ShippingApiLevel *string `json:",omitempty"`
+
+	BuildBrokenVendorPropertyNamespace bool `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {

@@ -19,8 +19,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
+	"android/soong/shared"
 	soong_metrics_proto "android/soong/ui/metrics/metrics_proto"
 
 	"github.com/golang/protobuf/proto"
@@ -79,29 +79,12 @@ func runSoong(ctx Context, config Config) {
 		defer ctx.EndTrace()
 
 		envFile := filepath.Join(config.SoongOutDir(), ".soong.environment")
-		envTool := filepath.Join(config.SoongOutDir(), ".bootstrap/bin/soong_env")
-		if _, err := os.Stat(envFile); err == nil {
-			if _, err := os.Stat(envTool); err == nil {
-				cmd := Command(ctx, config, "soong_env", envTool, envFile)
-				cmd.Sandbox = soongSandbox
-
-				var buf strings.Builder
-				cmd.Stdout = &buf
-				cmd.Stderr = &buf
-				if err := cmd.Run(); err != nil {
-					ctx.Verboseln("soong_env failed, forcing manifest regeneration")
-					os.Remove(envFile)
-				}
-
-				if buf.Len() > 0 {
-					ctx.Verboseln(buf.String())
-				}
-			} else {
-				ctx.Verboseln("Missing soong_env tool, forcing manifest regeneration")
-				os.Remove(envFile)
-			}
-		} else if !os.IsNotExist(err) {
-			ctx.Fatalf("Failed to stat %f: %v", envFile, err)
+		getenv := func(k string) string {
+			v, _ := config.Environment().Get(k)
+			return v
+		}
+		if stale, _ := shared.StaleEnvFile(envFile, getenv); stale {
+			os.Remove(envFile)
 		}
 	}()
 
@@ -169,8 +152,11 @@ func runSoong(ctx Context, config Config) {
 	// This build generates <builddir>/build.ninja, which is used later by build/soong/ui/build/build.go#Build().
 	ninja("bootstrap", ".bootstrap/build.ninja")
 
-	soongBuildMetrics := loadSoongBuildMetrics(ctx, config)
-	logSoongBuildMetrics(ctx, soongBuildMetrics)
+	var soongBuildMetrics *soong_metrics_proto.SoongBuildMetrics
+	if shouldCollectBuildSoongMetrics(config) {
+		soongBuildMetrics := loadSoongBuildMetrics(ctx, config)
+		logSoongBuildMetrics(ctx, soongBuildMetrics)
+	}
 
 	distGzipFile(ctx, config, config.SoongNinjaFile(), "soong")
 
@@ -179,9 +165,14 @@ func runSoong(ctx Context, config Config) {
 		distGzipFile(ctx, config, config.SoongMakeVarsMk(), "soong")
 	}
 
-	if ctx.Metrics != nil {
+	if shouldCollectBuildSoongMetrics(config) && ctx.Metrics != nil {
 		ctx.Metrics.SetSoongBuildMetrics(soongBuildMetrics)
 	}
+}
+
+func shouldCollectBuildSoongMetrics(config Config) bool {
+	// Do not collect metrics protobuf if the soong_build binary ran as the bp2build converter.
+	return config.Environment().IsFalse("GENERATE_BAZEL_FILES")
 }
 
 func loadSoongBuildMetrics(ctx Context, config Config) *soong_metrics_proto.SoongBuildMetrics {

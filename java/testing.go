@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"android/soong/android"
@@ -219,16 +220,6 @@ func GatherRequiredDepsForTest() string {
 		dex_bootjars {
 			name: "dex_bootjars",
 		}
-
-		boot_image {
-			name: "art-boot-image",
-			image_name: "art",
-		}
-
-		boot_image {
-			name: "framework-boot-image",
-			image_name: "boot",
-		}
 `
 
 	return bp
@@ -245,5 +236,14 @@ func CheckModuleDependencies(t *testing.T, ctx *android.TestContext, name, varia
 
 	if actual := deps; !reflect.DeepEqual(expected, actual) {
 		t.Errorf("expected %#q, found %#q", expected, actual)
+	}
+}
+
+func CheckHiddenAPIRuleInputs(t *testing.T, expected string, hiddenAPIRule android.TestingBuildParams) {
+	t.Helper()
+	actual := strings.TrimSpace(strings.Join(android.NormalizePathsForTesting(hiddenAPIRule.Implicits), "\n"))
+	expected = strings.TrimSpace(expected)
+	if actual != expected {
+		t.Errorf("Expected hiddenapi rule inputs:\n%s\nactual inputs:\n%s", expected, actual)
 	}
 }

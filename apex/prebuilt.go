@@ -109,8 +109,10 @@ type Prebuilt struct {
 
 type ApexFileProperties struct {
 	// the path to the prebuilt .apex file to import.
-	Source string `blueprint:"mutated"`
-
+	//
+	// This cannot be marked as `android:"arch_variant"` because the `prebuilt_apex` is only mutated
+	// for android_common. That is so that it will have the same arch variant as, and so be compatible
+	// with, the source `apex` module type that it replaces.
 	Src  *string
 	Arch struct {
 		Arm struct {
@@ -128,15 +130,20 @@ type ApexFileProperties struct {
 	}
 }
 
-func (p *ApexFileProperties) selectSource(ctx android.BottomUpMutatorContext) error {
-	// This is called before prebuilt_select and prebuilt_postdeps mutators
-	// The mutators requires that src to be set correctly for each arch so that
-	// arch variants are disabled when src is not provided for the arch.
-	if len(ctx.MultiTargets()) != 1 {
-		return fmt.Errorf("compile_multilib shouldn't be \"both\" for prebuilt_apex")
+// prebuiltApexSelector selects the correct prebuilt APEX file for the build target.
+//
+// The ctx parameter can be for any module not just the prebuilt module so care must be taken not
+// to use methods on it that are specific to the current module.
+//
+// See the ApexFileProperties.Src property.
+func (p *ApexFileProperties) prebuiltApexSelector(ctx android.BaseModuleContext, prebuilt android.Module) []string {
+	multiTargets := prebuilt.MultiTargets()
+	if len(multiTargets) != 1 {
+		ctx.OtherModuleErrorf(prebuilt, "compile_multilib shouldn't be \"both\" for prebuilt_apex")
+		return nil
 	}
 	var src string
-	switch ctx.MultiTargets()[0].Arch.ArchType {
+	switch multiTargets[0].Arch.ArchType {
 	case android.Arm:
 		src = String(p.Arch.Arm.Src)
 	case android.Arm64:
@@ -146,14 +153,14 @@ func (p *ApexFileProperties) selectSource(ctx android.BottomUpMutatorContext) er
 	case android.X86_64:
 		src = String(p.Arch.X86_64.Src)
 	default:
-		return fmt.Errorf("prebuilt_apex does not support %q", ctx.MultiTargets()[0].Arch.String())
+		ctx.OtherModuleErrorf(prebuilt, "prebuilt_apex does not support %q", multiTargets[0].Arch.String())
+		return nil
 	}
 	if src == "" {
 		src = String(p.Src)
 	}
-	p.Source = src
 
-	return nil
+	return []string{src}
 }
 
 type PrebuiltProperties struct {
@@ -217,7 +224,7 @@ func (p *Prebuilt) Name() string {
 func PrebuiltFactory() android.Module {
 	module := &Prebuilt{}
 	module.AddProperties(&module.properties)
-	android.InitSingleSourcePrebuiltModule(module, &module.properties, "Source")
+	android.InitPrebuiltModuleWithSrcSupplier(module, module.properties.prebuiltApexSelector, "src")
 	android.InitAndroidMultiTargetsArchModule(module, android.DeviceSupported, android.MultilibCommon)
 
 	android.AddLoadHook(module, func(ctx android.LoadHookContext) {
@@ -250,17 +257,36 @@ func prebuiltApexExportedModuleName(ctx android.BottomUpMutatorContext, name str
 	return name
 }
 
-func (p *Prebuilt) DepsMutator(ctx android.BottomUpMutatorContext) {
-	if err := p.properties.selectSource(ctx); err != nil {
-		ctx.ModuleErrorf("%s", err)
-		return
-	}
+type exportedDependencyTag struct {
+	blueprint.BaseDependencyTag
+	name string
+}
 
+// Mark this tag so dependencies that use it are excluded from visibility enforcement.
+//
+// This does allow any prebuilt_apex to reference any module which does open up a small window for
+// restricted visibility modules to be referenced from the wrong prebuilt_apex. However, doing so
+// avoids opening up a much bigger window by widening the visibility of modules that need files
+// provided by the prebuilt_apex to include all the possible locations they may be defined, which
+// could include everything below vendor/.
+//
+// A prebuilt_apex that references a module via this tag will have to contain the appropriate files
+// corresponding to that module, otherwise it will fail when attempting to retrieve the files from
+// the .apex file. It will also have to be included in the module's apex_available property too.
+// That makes it highly unlikely that a prebuilt_apex would reference a restricted module
+// incorrectly.
+func (t exportedDependencyTag) ExcludeFromVisibilityEnforcement() {}
+
+var (
+	exportedJavaLibTag = exportedDependencyTag{name: "exported_java_lib"}
+)
+
+func (p *Prebuilt) DepsMutator(ctx android.BottomUpMutatorContext) {
 	// Add dependencies onto the java modules that represent the java libraries that are provided by
 	// and exported from this prebuilt apex.
 	for _, lib := range p.properties.Exported_java_libs {
 		dep := prebuiltApexExportedModuleName(ctx, lib)
-		ctx.AddFarVariationDependencies(ctx.Config().AndroidCommonTarget.Variations(), javaLibTag, dep)
+		ctx.AddFarVariationDependencies(ctx.Config().AndroidCommonTarget.Variations(), exportedJavaLibTag, dep)
 	}
 }
 
@@ -300,7 +326,7 @@ func (p *Prebuilt) ApexInfoMutator(mctx android.TopDownMutatorContext) {
 	var dependencies []android.ApexModule
 	mctx.VisitDirectDeps(func(m android.Module) {
 		tag := mctx.OtherModuleDependencyTag(m)
-		if tag == javaLibTag {
+		if tag == exportedJavaLibTag {
 			depName := mctx.OtherModuleName(m)
 
 			// It is an error if the other module is not a prebuilt.
@@ -385,7 +411,7 @@ func (p *Prebuilt) AndroidMkEntries() []android.AndroidMkEntries {
 		OutputFile: android.OptionalPathForPath(p.inputApex),
 		Include:    "$(BUILD_PREBUILT)",
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
-			func(entries *android.AndroidMkEntries) {
+			func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
 				entries.SetString("LOCAL_MODULE_PATH", p.installDir.ToMakePath().String())
 				entries.SetString("LOCAL_MODULE_STEM", p.installFilename)
 				entries.SetBoolIfTrue("LOCAL_UNINSTALLABLE_MODULE", !p.installable())
@@ -506,7 +532,7 @@ func apexSetFactory() android.Module {
 	module := &ApexSet{}
 	module.AddProperties(&module.properties)
 
-	srcsSupplier := func(ctx android.BaseModuleContext) []string {
+	srcsSupplier := func(ctx android.BaseModuleContext, _ android.Module) []string {
 		return module.prebuiltSrcs(ctx)
 	}
 
@@ -580,7 +606,7 @@ func (a *ApexSet) AndroidMkEntries() []android.AndroidMkEntries {
 		Include:       "$(BUILD_PREBUILT)",
 		Host_required: a.hostRequired,
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
-			func(entries *android.AndroidMkEntries) {
+			func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
 				entries.SetString("LOCAL_MODULE_PATH", a.installDir.ToMakePath().String())
 				entries.SetString("LOCAL_MODULE_STEM", a.installFilename)
 				entries.SetBoolIfTrue("LOCAL_UNINSTALLABLE_MODULE", !a.installable())

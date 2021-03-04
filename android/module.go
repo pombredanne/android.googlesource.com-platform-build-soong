@@ -443,6 +443,7 @@ type Module interface {
 	Disable()
 	Enabled() bool
 	Target() Target
+	MultiTargets() []Target
 	Owner() string
 	InstallInData() bool
 	InstallInTestcases() bool
@@ -507,13 +508,17 @@ type Module interface {
 type BazelTargetModule interface {
 	Module
 
-	BazelTargetModuleProperties() *bazel.BazelTargetModuleProperties
+	bazelTargetModuleProperties() *bazel.BazelTargetModuleProperties
+	SetBazelTargetModuleProperties(props bazel.BazelTargetModuleProperties)
+
+	RuleClass() string
+	BzlLoadLocation() string
 }
 
 // InitBazelTargetModule is a wrapper function that decorates BazelTargetModule
 // with property structs containing metadata for bp2build conversion.
 func InitBazelTargetModule(module BazelTargetModule) {
-	module.AddProperties(module.BazelTargetModuleProperties())
+	module.AddProperties(module.bazelTargetModuleProperties())
 	InitAndroidModule(module)
 }
 
@@ -524,9 +529,24 @@ type BazelTargetModuleBase struct {
 	Properties bazel.BazelTargetModuleProperties
 }
 
-// BazelTargetModuleProperties getter.
-func (btmb *BazelTargetModuleBase) BazelTargetModuleProperties() *bazel.BazelTargetModuleProperties {
+// bazelTargetModuleProperties getter.
+func (btmb *BazelTargetModuleBase) bazelTargetModuleProperties() *bazel.BazelTargetModuleProperties {
 	return &btmb.Properties
+}
+
+// SetBazelTargetModuleProperties setter for BazelTargetModuleProperties
+func (btmb *BazelTargetModuleBase) SetBazelTargetModuleProperties(props bazel.BazelTargetModuleProperties) {
+	btmb.Properties = props
+}
+
+// RuleClass returns the rule class for this Bazel target
+func (b *BazelTargetModuleBase) RuleClass() string {
+	return b.bazelTargetModuleProperties().Rule_class
+}
+
+// BzlLoadLocation returns the rule class for this Bazel target
+func (b *BazelTargetModuleBase) BzlLoadLocation() string {
+	return b.bazelTargetModuleProperties().Bzl_load_location
 }
 
 // Qualified id for a module
@@ -733,7 +753,7 @@ type commonProperties struct {
 	// Whether this module is installed to vendor ramdisk
 	Vendor_ramdisk *bool
 
-	// Whether this module is built for non-native architecures (also known as native bridge binary)
+	// Whether this module is built for non-native architectures (also known as native bridge binary)
 	Native_bridge_supported *bool `android:"arch_variant"`
 
 	// init.rc files to be installed if this module is installed
@@ -1104,8 +1124,15 @@ type ModuleBase struct {
 	variableProperties      interface{}
 	hostAndDeviceProperties hostAndDeviceProperties
 	generalProperties       []interface{}
-	archProperties          [][]interface{}
-	customizableProperties  []interface{}
+
+	// Arch specific versions of structs in generalProperties. The outer index
+	// has the same order as generalProperties as initialized in
+	// InitAndroidArchModule, and the inner index chooses the props specific to
+	// the architecture. The interface{} value is an archPropRoot that is
+	// filled with arch specific values by the arch mutator.
+	archProperties [][]interface{}
+
+	customizableProperties []interface{}
 
 	// Properties specific to the Blueprint to BUILD migration.
 	bazelTargetModuleProperties bazel.BazelTargetModuleProperties
@@ -1149,8 +1176,6 @@ type ModuleBase struct {
 
 	initRcPaths         Paths
 	vintfFragmentsPaths Paths
-
-	prefer32 func(ctx BaseModuleContext, base *ModuleBase, os OsType) bool
 }
 
 func (m *ModuleBase) ComponentDepsMutator(BottomUpMutatorContext) {}
@@ -1175,10 +1200,6 @@ func (m *ModuleBase) RuleParamsForTests() map[blueprint.Rule]blueprint.RuleParam
 
 func (m *ModuleBase) VariablesForTests() map[string]string {
 	return m.variables
-}
-
-func (m *ModuleBase) Prefer32(prefer32 func(ctx BaseModuleContext, base *ModuleBase, os OsType) bool) {
-	m.prefer32 = prefer32
 }
 
 // Name returns the name of the module.  It may be overridden by individual module types, for
@@ -2220,10 +2241,17 @@ func (b *baseModuleContext) getDirectDepInternal(name string, tag blueprint.Depe
 	}
 	var deps []dep
 	b.VisitDirectDepsBlueprint(func(module blueprint.Module) {
-		if aModule, _ := module.(Module); aModule != nil && aModule.base().BaseModuleName() == name {
-			returnedTag := b.bp.OtherModuleDependencyTag(aModule)
+		if aModule, _ := module.(Module); aModule != nil {
+			if aModule.base().BaseModuleName() == name {
+				returnedTag := b.bp.OtherModuleDependencyTag(aModule)
+				if tag == nil || returnedTag == tag {
+					deps = append(deps, dep{aModule, returnedTag})
+				}
+			}
+		} else if b.bp.OtherModuleName(module) == name {
+			returnedTag := b.bp.OtherModuleDependencyTag(module)
 			if tag == nil || returnedTag == tag {
-				deps = append(deps, dep{aModule, returnedTag})
+				deps = append(deps, dep{module, returnedTag})
 			}
 		}
 	})
@@ -2365,6 +2393,16 @@ func (b *baseModuleContext) PrimaryModule() Module {
 
 func (b *baseModuleContext) FinalModule() Module {
 	return b.bp.FinalModule().(Module)
+}
+
+// IsMetaDependencyTag returns true for cross-cutting metadata dependencies.
+func IsMetaDependencyTag(tag blueprint.DependencyTag) bool {
+	if tag == licenseKindTag {
+		return true
+	} else if tag == licensesTag {
+		return true
+	}
+	return false
 }
 
 // A regexp for removing boilerplate from BaseDependencyTag from the string representation of

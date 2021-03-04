@@ -17,8 +17,6 @@ package android
 import (
 	"android/soong/bazel"
 	"strings"
-
-	"github.com/google/blueprint/proptools"
 )
 
 func init() {
@@ -26,10 +24,13 @@ func init() {
 	RegisterBp2BuildMutator("filegroup", FilegroupBp2Build)
 }
 
+var PrepareForTestWithFilegroup = FixtureRegisterWithContext(func(ctx RegistrationContext) {
+	ctx.RegisterModuleType("filegroup", FileGroupFactory)
+})
+
 // https://docs.bazel.build/versions/master/be/general.html#filegroup
 type bazelFilegroupAttributes struct {
-	Name *string
-	Srcs []string
+	Srcs bazel.LabelList
 }
 
 type bazelFilegroup struct {
@@ -50,17 +51,19 @@ func (bfg *bazelFilegroup) Name() string {
 
 func (bfg *bazelFilegroup) GenerateAndroidBuildActions(ctx ModuleContext) {}
 
-// TODO: Create helper functions to avoid this boilerplate.
 func FilegroupBp2Build(ctx TopDownMutatorContext) {
-	if m, ok := ctx.Module().(*fileGroup); ok {
-		name := "__bp2build__" + m.base().BaseModuleName()
-		ctx.CreateModule(BazelFileGroupFactory, &bazelFilegroupAttributes{
-			Name: proptools.StringPtr(name),
-			Srcs: m.properties.Srcs,
-		}, &bazel.BazelTargetModuleProperties{
-			Rule_class: "filegroup",
-		})
+	fg, ok := ctx.Module().(*fileGroup)
+	if !ok || !fg.ConvertWithBp2build() {
+		return
 	}
+
+	attrs := &bazelFilegroupAttributes{
+		Srcs: BazelLabelForModuleSrcExcludes(ctx, fg.properties.Srcs, fg.properties.Exclude_srcs),
+	}
+
+	props := bazel.BazelTargetModuleProperties{Rule_class: "filegroup"}
+
+	ctx.CreateBazelTargetModule(BazelFileGroupFactory, fg.Name(), props, attrs)
 }
 
 type fileGroupProperties struct {
@@ -78,13 +81,11 @@ type fileGroupProperties struct {
 	// Create a make variable with the specified name that contains the list of files in the
 	// filegroup, relative to the root of the source tree.
 	Export_to_make_var *string
-
-	// Properties for Bazel migration purposes.
-	bazel.Properties
 }
 
 type fileGroup struct {
 	ModuleBase
+	BazelModuleBase
 	properties fileGroupProperties
 	srcs       Paths
 }
@@ -98,6 +99,7 @@ func FileGroupFactory() Module {
 	module := &fileGroup{}
 	module.AddProperties(&module.properties)
 	InitAndroidModule(module)
+	InitBazelModule(module)
 	return module
 }
 

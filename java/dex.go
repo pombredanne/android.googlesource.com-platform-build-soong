@@ -204,8 +204,9 @@ func (d *dexer) r8Flags(ctx android.ModuleContext, flags javaBuilderFlags) (r8Fl
 	// - prevent ProGuard stripping subclass in the support library that extends class added in the higher SDK version.
 	// See b/20667396
 	var proguardRaiseDeps classpath
-	ctx.VisitDirectDepsWithTag(proguardRaiseTag, func(dep android.Module) {
-		proguardRaiseDeps = append(proguardRaiseDeps, dep.(Dependency).HeaderJars()...)
+	ctx.VisitDirectDepsWithTag(proguardRaiseTag, func(m android.Module) {
+		dep := ctx.OtherModuleProvider(m, JavaInfoProvider).(JavaInfo)
+		proguardRaiseDeps = append(proguardRaiseDeps, dep.HeaderJars...)
 	})
 
 	r8Flags = append(r8Flags, proguardRaiseDeps.FormJavaClassPath("-libraryjars"))
@@ -259,14 +260,17 @@ func (d *dexer) r8Flags(ctx android.ModuleContext, flags javaBuilderFlags) (r8Fl
 		r8Flags = append(r8Flags, "--debug")
 	}
 
+	// TODO(b/180878971): missing classes should be added to the relevant builds.
+	r8Flags = append(r8Flags, "-ignorewarnings")
+
 	return r8Flags, r8Deps
 }
 
 func (d *dexer) compileDex(ctx android.ModuleContext, flags javaBuilderFlags, minSdkVersion sdkSpec,
-	classesJar android.Path, jarName string) android.ModuleOutPath {
+	classesJar android.Path, jarName string) android.OutputPath {
 
 	// Compile classes.jar into classes.dex and then javalib.jar
-	javalibJar := android.PathForModuleOut(ctx, "dex", jarName)
+	javalibJar := android.PathForModuleOut(ctx, "dex", jarName).OutputPath
 	outDir := android.PathForModuleOut(ctx, "dex")
 
 	zipFlags := "--ignore_missing_files"
@@ -329,7 +333,7 @@ func (d *dexer) compileDex(ctx android.ModuleContext, flags javaBuilderFlags, mi
 		})
 	}
 	if proptools.Bool(d.dexProperties.Uncompress_dex) {
-		alignedJavalibJar := android.PathForModuleOut(ctx, "aligned", jarName)
+		alignedJavalibJar := android.PathForModuleOut(ctx, "aligned", jarName).OutputPath
 		TransformZipAlign(ctx, alignedJavalibJar, javalibJar)
 		javalibJar = alignedJavalibJar
 	}

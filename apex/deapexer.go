@@ -65,7 +65,7 @@ func privateDeapexerFactory() android.Module {
 		&module.properties,
 		&module.apexFileProperties,
 	)
-	android.InitSingleSourcePrebuiltModule(module, &module.apexFileProperties, "Source")
+	android.InitPrebuiltModuleWithSrcSupplier(module, module.apexFileProperties.prebuiltApexSelector, "src")
 	android.InitAndroidMultiTargetsArchModule(module, android.DeviceSupported, android.MultilibCommon)
 	return module
 }
@@ -79,11 +79,6 @@ func (p *Deapexer) Name() string {
 }
 
 func (p *Deapexer) DepsMutator(ctx android.BottomUpMutatorContext) {
-	if err := p.apexFileProperties.selectSource(ctx); err != nil {
-		ctx.ModuleErrorf("%s", err)
-		return
-	}
-
 	// Add dependencies from the java modules to which this exports files from the `.apex` file onto
 	// this module so that they can access the `DeapexerInfo` object that this provides.
 	for _, lib := range p.properties.Exported_java_libs {

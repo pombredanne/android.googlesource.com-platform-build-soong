@@ -14,9 +14,14 @@
 
 package bazel
 
+import "fmt"
+
 type bazelModuleProperties struct {
 	// The label of the Bazel target replacing this Soong module.
 	Label string
+
+	// If true, bp2build will generate the converted Bazel target for this module.
+	Bp2build_available bool
 }
 
 // Properties contains common module properties for Bazel migration purposes.
@@ -30,8 +35,102 @@ type Properties struct {
 // Blueprint to BUILD file conversion.
 type BazelTargetModuleProperties struct {
 	// The Bazel rule class for this target.
-	Rule_class string
+	Rule_class string `blueprint:"mutated"`
 
 	// The target label for the bzl file containing the definition of the rule class.
-	Bzl_load_location string
+	Bzl_load_location string `blueprint:"mutated"`
+}
+
+const BazelTargetModuleNamePrefix = "__bp2build__"
+
+// Label is used to represent a Bazel compatible Label. Also stores the original bp text to support
+// string replacement.
+type Label struct {
+	Bp_text string
+	Label   string
+}
+
+// LabelList is used to represent a list of Bazel labels.
+type LabelList struct {
+	Includes []Label
+	Excludes []Label
+}
+
+// Append appends the fields of other labelList to the corresponding fields of ll.
+func (ll *LabelList) Append(other LabelList) {
+	if len(ll.Includes) > 0 || len(other.Includes) > 0 {
+		ll.Includes = append(ll.Includes, other.Includes...)
+	}
+	if len(ll.Excludes) > 0 || len(other.Excludes) > 0 {
+		ll.Excludes = append(other.Excludes, other.Excludes...)
+	}
+}
+
+// StringListAttribute corresponds to the string_list Bazel attribute type with
+// support for additional metadata, like configurations.
+type StringListAttribute struct {
+	// The base value of the string list attribute.
+	Value []string
+
+	// Optional additive set of list values to the base value.
+	ArchValues stringListArchValues
+}
+
+// Arch-specific string_list typed Bazel attribute values. This should correspond
+// to the types of architectures supported for compilation in arch.go.
+type stringListArchValues struct {
+	X86     []string
+	X86_64  []string
+	Arm     []string
+	Arm64   []string
+	Default []string
+	// TODO(b/181299724): this is currently missing the "common" arch, which
+	// doesn't have an equivalent platform() definition yet.
+}
+
+// HasArchSpecificValues returns true if the attribute contains
+// architecture-specific string_list values.
+func (attrs *StringListAttribute) HasArchSpecificValues() bool {
+	for _, arch := range []string{"x86", "x86_64", "arm", "arm64", "default"} {
+		if len(attrs.GetValueForArch(arch)) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// GetValueForArch returns the string_list attribute value for an architecture.
+func (attrs *StringListAttribute) GetValueForArch(arch string) []string {
+	switch arch {
+	case "x86":
+		return attrs.ArchValues.X86
+	case "x86_64":
+		return attrs.ArchValues.X86_64
+	case "arm":
+		return attrs.ArchValues.Arm
+	case "arm64":
+		return attrs.ArchValues.Arm64
+	case "default":
+		return attrs.ArchValues.Default
+	default:
+		panic(fmt.Errorf("Unknown arch: %s", arch))
+	}
+}
+
+// SetValueForArch sets the string_list attribute value for an architecture.
+func (attrs *StringListAttribute) SetValueForArch(arch string, value []string) {
+	switch arch {
+	case "x86":
+		attrs.ArchValues.X86 = value
+	case "x86_64":
+		attrs.ArchValues.X86_64 = value
+	case "arm":
+		attrs.ArchValues.Arm = value
+	case "arm64":
+		attrs.ArchValues.Arm64 = value
+	case "default":
+		attrs.ArchValues.Default = value
+	default:
+		panic(fmt.Errorf("Unknown arch: %s", arch))
+	}
 }

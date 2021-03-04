@@ -1,7 +1,12 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
 bootstrap_go_package {
     name: "soong-shared",
     pkgPath: "android/soong/shared",
     srcs: [
+        "env.go",
         "paths.go",
     ],
     deps: [

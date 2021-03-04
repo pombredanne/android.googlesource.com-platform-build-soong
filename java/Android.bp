@@ -1,3 +1,7 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
 bootstrap_go_package {
     name: "soong-java",
     pkgPath: "android/soong/java",
@@ -54,7 +58,6 @@ bootstrap_go_package {
         "sdk_library.go",
         "sdk_library_external.go",
         "support_libraries.go",
-        "sysprop.go",
         "system_modules.go",
         "testing.go",
         "tradefed.go",

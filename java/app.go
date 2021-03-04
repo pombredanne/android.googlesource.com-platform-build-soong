@@ -455,6 +455,7 @@ func (a *AndroidApp) installPath(ctx android.ModuleContext) android.InstallPath 
 
 func (a *AndroidApp) dexBuildActions(ctx android.ModuleContext) android.Path {
 	a.dexpreopter.installPath = a.installPath(ctx)
+	a.dexpreopter.isApp = true
 	if a.dexProperties.Uncompress_dex == nil {
 		// If the value was not force-set by the user, use reasonable default based on the module.
 		a.dexProperties.Uncompress_dex = proptools.BoolPtr(a.shouldUncompressDex(ctx))
@@ -468,7 +469,7 @@ func (a *AndroidApp) dexBuildActions(ctx android.ModuleContext) android.Path {
 		a.Module.compile(ctx, a.aaptSrcJar)
 	}
 
-	return a.maybeStrippedDexJarFile
+	return a.dexJarFile
 }
 
 func (a *AndroidApp) jniBuildActions(jniLibs []jniLib, ctx android.ModuleContext) android.WritablePath {
@@ -1216,6 +1217,15 @@ func (u *usesLibrary) presentOptionalUsesLibs(ctx android.BaseModuleContext) []s
 	return optionalUsesLibs
 }
 
+// Helper function to replace string in a list.
+func replaceInList(list []string, oldstr, newstr string) {
+	for i, str := range list {
+		if str == oldstr {
+			list[i] = newstr
+		}
+	}
+}
+
 // Returns a map of module names of shared library dependencies to the paths
 // to their dex jars on host and on device.
 func (u *usesLibrary) classLoaderContextForUsesLibDeps(ctx android.ModuleContext) dexpreopt.ClassLoaderContextMap {
@@ -1226,7 +1236,16 @@ func (u *usesLibrary) classLoaderContextForUsesLibDeps(ctx android.ModuleContext
 			if tag, ok := ctx.OtherModuleDependencyTag(m).(usesLibraryDependencyTag); ok {
 				dep := ctx.OtherModuleName(m)
 				if lib, ok := m.(UsesLibraryDependency); ok {
-					clcMap.AddContext(ctx, tag.sdkVersion, dep,
+					libName := dep
+					if ulib, ok := m.(ProvidesUsesLib); ok && ulib.ProvidesUsesLib() != nil {
+						libName = *ulib.ProvidesUsesLib()
+						// Replace module name with library name in `uses_libs`/`optional_uses_libs`
+						// in order to pass verify_uses_libraries check (which compares these
+						// properties against library names written in the manifest).
+						replaceInList(u.usesLibraryProperties.Uses_libs, dep, libName)
+						replaceInList(u.usesLibraryProperties.Optional_uses_libs, dep, libName)
+					}
+					clcMap.AddContext(ctx, tag.sdkVersion, libName,
 						lib.DexJarBuildPath(), lib.DexJarInstallPath(), lib.ClassLoaderContexts())
 				} else if ctx.Config().AllowMissingDependencies() {
 					ctx.AddMissingDependencies([]string{dep})
@@ -1259,12 +1278,18 @@ func (u *usesLibrary) freezeEnforceUsesLibraries() {
 // in the uses_libs and optional_uses_libs properties.  It returns the path to a copy of the manifest.
 func (u *usesLibrary) verifyUsesLibrariesManifest(ctx android.ModuleContext, manifest android.Path) android.Path {
 	outputFile := android.PathForModuleOut(ctx, "manifest_check", "AndroidManifest.xml")
+	statusFile := dexpreopt.UsesLibrariesStatusFile(ctx)
 
 	rule := android.NewRuleBuilder(pctx, ctx)
 	cmd := rule.Command().BuiltTool("manifest_check").
 		Flag("--enforce-uses-libraries").
 		Input(manifest).
+		FlagWithOutput("--enforce-uses-libraries-status ", statusFile).
 		FlagWithOutput("-o ", outputFile)
+
+	if dexpreopt.GetGlobalConfig(ctx).RelaxUsesLibraryCheck {
+		cmd.Flag("--enforce-uses-libraries-relax")
+	}
 
 	for _, lib := range u.usesLibraryProperties.Uses_libs {
 		cmd.FlagWithArg("--uses-library ", lib)
@@ -1283,6 +1308,7 @@ func (u *usesLibrary) verifyUsesLibrariesManifest(ctx android.ModuleContext, man
 // in the uses_libs and optional_uses_libs properties.  It returns the path to a copy of the APK.
 func (u *usesLibrary) verifyUsesLibrariesAPK(ctx android.ModuleContext, apk android.Path) android.Path {
 	outputFile := android.PathForModuleOut(ctx, "verify_uses_libraries", apk.Base())
+	statusFile := dexpreopt.UsesLibrariesStatusFile(ctx)
 
 	rule := android.NewRuleBuilder(pctx, ctx)
 	aapt := ctx.Config().HostToolPath(ctx, "aapt")
@@ -1290,7 +1316,8 @@ func (u *usesLibrary) verifyUsesLibrariesAPK(ctx android.ModuleContext, apk andr
 		Textf("aapt_binary=%s", aapt.String()).Implicit(aapt).
 		Textf(`uses_library_names="%s"`, strings.Join(u.usesLibraryProperties.Uses_libs, " ")).
 		Textf(`optional_uses_library_names="%s"`, strings.Join(u.usesLibraryProperties.Optional_uses_libs, " ")).
-		Tool(android.PathForSource(ctx, "build/make/core/verify_uses_libraries.sh")).Input(apk)
+		Textf(`relax_check="%t"`, dexpreopt.GetGlobalConfig(ctx).RelaxUsesLibraryCheck).
+		Tool(android.PathForSource(ctx, "build/make/core/verify_uses_libraries.sh")).Input(apk).Output(statusFile)
 	rule.Command().Text("cp -f").Input(apk).Output(outputFile)
 
 	rule.Build("verify_uses_libraries", "verify <uses-library>")
