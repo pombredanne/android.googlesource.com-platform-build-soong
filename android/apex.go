@@ -719,6 +719,8 @@ func (d *ApexBundleDepsInfo) FullListPath() Path {
 // Generate two module out files:
 // 1. FullList with transitive deps and their parents in the dep graph
 // 2. FlatList with a flat list of transitive deps
+// In both cases transitive deps of external deps are not included. Neither are deps that are only
+// available to APEXes; they are developed with updatability in mind and don't need manual approval.
 func (d *ApexBundleDepsInfo) BuildDepsInfoLists(ctx ModuleContext, minSdkVersion string, depInfos DepNameToDepInfoMap) {
 	var fullContent strings.Builder
 	var flatContent strings.Builder
@@ -849,8 +851,12 @@ func CheckMinSdkVersion(m UpdatableModule, ctx ModuleContext, minSdkVersion ApiL
 		if err := to.ShouldSupportSdkVersion(ctx, minSdkVersion); err != nil {
 			toName := ctx.OtherModuleName(to)
 			if ver, ok := minSdkVersionAllowlist[toName]; !ok || ver.GreaterThan(minSdkVersion) {
-				ctx.OtherModuleErrorf(to, "should support min_sdk_version(%v) for %q: %v. Dependency path: %s",
-					minSdkVersion, ctx.ModuleName(), err.Error(), ctx.GetPathString(false))
+				ctx.OtherModuleErrorf(to, "should support min_sdk_version(%v) for %q: %v."+
+					"\n\nDependency path: %s\n\n"+
+					"Consider adding 'min_sdk_version: %q' to %q",
+					minSdkVersion, ctx.ModuleName(), err.Error(),
+					ctx.GetPathString(false),
+					minSdkVersion, ctx.ModuleName())
 				return false
 			}
 		}

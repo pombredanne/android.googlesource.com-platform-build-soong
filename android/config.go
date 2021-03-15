@@ -232,7 +232,7 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 
 	// Copy the real PATH value to the test environment, it's needed by
 	// NonHermeticHostSystemTool() used in x86_darwin_host.go
-	envCopy["PATH"] = originalEnv["PATH"]
+	envCopy["PATH"] = os.Getenv("PATH")
 
 	config := &config{
 		productVariables: productVariables{
@@ -287,28 +287,22 @@ func TestArchConfigNativeBridge(buildDir string, env map[string]string, bp strin
 	return testConfig
 }
 
-// TestArchConfigFuchsia returns a Config object suitable for using for
-// tests that need to run the arch mutator for the Fuchsia arch.
-func TestArchConfigFuchsia(buildDir string, env map[string]string, bp string, fs map[string][]byte) Config {
-	testConfig := TestConfig(buildDir, env, bp, fs)
-	config := testConfig.config
-
-	config.Targets = map[OsType][]Target{
-		Fuchsia: []Target{
+func fuchsiaTargets() map[OsType][]Target {
+	return map[OsType][]Target{
+		Fuchsia: {
 			{Fuchsia, Arch{ArchType: Arm64, ArchVariant: "", Abi: []string{"arm64-v8a"}}, NativeBridgeDisabled, "", "", false},
 		},
-		BuildOs: []Target{
+		BuildOs: {
 			{BuildOs, Arch{ArchType: X86_64}, NativeBridgeDisabled, "", "", false},
 		},
 	}
-
-	return testConfig
 }
 
-// TestArchConfig returns a Config object suitable for using for tests that
-// need to run the arch mutator.
-func TestArchConfig(buildDir string, env map[string]string, bp string, fs map[string][]byte) Config {
-	testConfig := TestConfig(buildDir, env, bp, fs)
+var PrepareForTestSetDeviceToFuchsia = FixtureModifyConfig(func(config Config) {
+	config.Targets = fuchsiaTargets()
+})
+
+func modifyTestConfigToSupportArchMutator(testConfig Config) {
 	config := testConfig.config
 
 	config.Targets = map[OsType][]Target{
@@ -334,7 +328,13 @@ func TestArchConfig(buildDir string, env map[string]string, bp string, fs map[st
 	config.TestProductVariables.DeviceArchVariant = proptools.StringPtr("armv8-a")
 	config.TestProductVariables.DeviceSecondaryArch = proptools.StringPtr("arm")
 	config.TestProductVariables.DeviceSecondaryArchVariant = proptools.StringPtr("armv7-a-neon")
+}
 
+// TestArchConfig returns a Config object suitable for using for tests that
+// need to run the arch mutator.
+func TestArchConfig(buildDir string, env map[string]string, bp string, fs map[string][]byte) Config {
+	testConfig := TestConfig(buildDir, env, bp, fs)
+	modifyTestConfigToSupportArchMutator(testConfig)
 	return testConfig
 }
 
@@ -522,26 +522,6 @@ func (c *config) HostJNIToolPath(ctx PathContext, path string) Path {
 
 func (c *config) HostJavaToolPath(ctx PathContext, path string) Path {
 	return PathForOutput(ctx, "host", c.PrebuiltOS(), "framework", path)
-}
-
-// NonHermeticHostSystemTool looks for non-hermetic tools from the system we're
-// running on. These tools are not checked-in to AOSP, and therefore could lead
-// to reproducibility problems. Should not be used for other than finding the
-// XCode SDK (xcrun, sw_vers), etc. See ui/build/paths/config.go for the
-// allowlist of host system tools.
-func (c *config) NonHermeticHostSystemTool(name string) string {
-	for _, dir := range filepath.SplitList(c.Getenv("PATH")) {
-		path := filepath.Join(dir, name)
-		if s, err := os.Stat(path); err != nil {
-			continue
-		} else if m := s.Mode(); !s.IsDir() && m&0111 != 0 {
-			return path
-		}
-	}
-	panic(fmt.Errorf(
-		"Unable to use '%s' as a host system tool for build system "+
-			"hermeticity reasons. See build/soong/ui/build/paths/config.go "+
-			"for the full list of allowed host tools on your system.", name))
 }
 
 // PrebuiltOS returns the name of the host OS used in prebuilts directories.

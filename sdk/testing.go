@@ -19,20 +19,25 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
 	"android/soong/android"
 	"android/soong/apex"
 	"android/soong/cc"
+	"android/soong/genrule"
 	"android/soong/java"
 )
 
-func testSdkContext(bp string, fs map[string][]byte, extraOsTypes []android.OsType) (*android.TestContext, android.Config) {
-	extraOsTypes = append(extraOsTypes, android.Android, android.Windows)
+var sdkFixtureFactory = android.NewFixtureFactory(
+	&buildDir,
+	apex.PrepareForTestWithApexBuildComponents,
+	cc.PrepareForTestWithCcDefaultModules,
+	genrule.PrepareForTestWithGenRuleBuildComponents,
+	java.PrepareForTestWithJavaBuildComponents,
+	PrepareForTestWithSdkBuildComponents,
 
-	bp = bp + `
+	android.FixtureAddTextFile("sdk/tests/Android.bp", `
 		apex_key {
 			name: "myapex.key",
 			public_key: "myapex.avbpubkey",
@@ -43,9 +48,9 @@ func testSdkContext(bp string, fs map[string][]byte, extraOsTypes []android.OsTy
 			name: "myapex.cert",
 			certificate: "myapex",
 		}
-	` + cc.GatherRequiredDepsForTest(extraOsTypes...)
+	`),
 
-	mockFS := map[string][]byte{
+	android.FixtureMergeMockFs(map[string][]byte{
 		"build/make/target/product/security":           nil,
 		"apex_manifest.json":                           nil,
 		"system/sepolicy/apex/myapex-file_contexts":    nil,
@@ -55,115 +60,33 @@ func testSdkContext(bp string, fs map[string][]byte, extraOsTypes []android.OsTy
 		"myapex.pem":                                   nil,
 		"myapex.x509.pem":                              nil,
 		"myapex.pk8":                                   nil,
-	}
+	}),
 
-	cc.GatherRequiredFilesForTest(mockFS)
-
-	for k, v := range fs {
-		mockFS[k] = v
-	}
-
-	config := android.TestArchConfig(buildDir, nil, bp, mockFS)
-
-	// Add windows as a default disable OS to test behavior when some OS variants
-	// are disabled.
-	config.Targets[android.Windows] = []android.Target{
-		{android.Windows, android.Arch{ArchType: android.X86_64}, android.NativeBridgeDisabled, "", "", true},
-	}
-
-	for _, extraOsType := range extraOsTypes {
-		switch extraOsType {
-		case android.LinuxBionic:
-			config.Targets[android.LinuxBionic] = []android.Target{
-				{android.LinuxBionic, android.Arch{ArchType: android.X86_64}, android.NativeBridgeDisabled, "", "", false},
-			}
+	cc.PrepareForTestOnWindows,
+	android.FixtureModifyConfig(func(config android.Config) {
+		// Add windows as a default disable OS to test behavior when some OS variants
+		// are disabled.
+		config.Targets[android.Windows] = []android.Target{
+			{android.Windows, android.Arch{ArchType: android.X86_64}, android.NativeBridgeDisabled, "", "", true},
 		}
-	}
+	}),
+)
 
-	ctx := android.NewTestArchContext(config)
+var PrepareForTestWithSdkBuildComponents = android.GroupFixturePreparers(
+	android.FixtureRegisterWithContext(registerModuleExportsBuildComponents),
+	android.FixtureRegisterWithContext(registerSdkBuildComponents),
+)
 
-	// Enable androidmk support.
-	// * Register the singleton
-	// * Configure that we are inside make
-	// * Add CommonOS to ensure that androidmk processing works.
-	android.RegisterAndroidMkBuildComponents(ctx)
-	android.SetKatiEnabledForTests(config)
-	config.Targets[android.CommonOS] = []android.Target{
-		{android.CommonOS, android.Arch{ArchType: android.Common}, android.NativeBridgeDisabled, "", "", true},
-	}
-
-	// from android package
-	android.RegisterPackageBuildComponents(ctx)
-	ctx.RegisterModuleType("filegroup", android.FileGroupFactory)
-	ctx.PreArchMutators(android.RegisterVisibilityRuleChecker)
-	ctx.PreArchMutators(android.RegisterDefaultsPreArchMutators)
-	ctx.PreArchMutators(android.RegisterComponentsMutator)
-
-	android.RegisterPrebuiltMutators(ctx)
-
-	// Register these after the prebuilt mutators have been registered to match what
-	// happens at runtime.
-	ctx.PreArchMutators(android.RegisterVisibilityRuleGatherer)
-	ctx.PostDepsMutators(android.RegisterVisibilityRuleEnforcer)
-
-	// from java package
-	java.RegisterRequiredBuildComponentsForTest(ctx)
-
-	// from cc package
-	cc.RegisterRequiredBuildComponentsForTest(ctx)
-
-	// from apex package
-	ctx.RegisterModuleType("apex", apex.BundleFactory)
-	ctx.RegisterModuleType("apex_key", apex.ApexKeyFactory)
-	ctx.PostDepsMutators(apex.RegisterPostDepsMutators)
-
-	// from this package
-	ctx.RegisterModuleType("sdk", SdkModuleFactory)
-	ctx.RegisterModuleType("sdk_snapshot", SnapshotModuleFactory)
-	ctx.RegisterModuleType("module_exports", ModuleExportsFactory)
-	ctx.RegisterModuleType("module_exports_snapshot", ModuleExportsSnapshotsFactory)
-	ctx.PreDepsMutators(RegisterPreDepsMutators)
-	ctx.PostDepsMutators(RegisterPostDepsMutators)
-
-	ctx.Register()
-
-	return ctx, config
-}
-
-func runTests(t *testing.T, ctx *android.TestContext, config android.Config) *testSdkResult {
+func testSdkWithFs(t *testing.T, bp string, fs android.MockFS) *android.TestResult {
 	t.Helper()
-	_, errs := ctx.ParseBlueprintsFiles(".")
-	android.FailIfErrored(t, errs)
-	_, errs = ctx.PrepareBuildActions(config)
-	android.FailIfErrored(t, errs)
-	return &testSdkResult{
-		TestHelper: TestHelper{t: t},
-		ctx:        ctx,
-		config:     config,
-	}
-}
-
-func testSdkWithFs(t *testing.T, bp string, fs map[string][]byte) *testSdkResult {
-	t.Helper()
-	ctx, config := testSdkContext(bp, fs, nil)
-	return runTests(t, ctx, config)
+	return sdkFixtureFactory.RunTest(t, fs.AddToFixture(), android.FixtureWithRootAndroidBp(bp))
 }
 
 func testSdkError(t *testing.T, pattern, bp string) {
 	t.Helper()
-	ctx, config := testSdkContext(bp, nil, nil)
-	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
-	if len(errs) > 0 {
-		android.FailIfNoMatchingErrors(t, pattern, errs)
-		return
-	}
-	_, errs = ctx.PrepareBuildActions(config)
-	if len(errs) > 0 {
-		android.FailIfNoMatchingErrors(t, pattern, errs)
-		return
-	}
-
-	t.Fatalf("missing expected error %q (0 errors are returned)", pattern)
+	sdkFixtureFactory.
+		ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(pattern)).
+		RunTestWithBp(t, bp)
 }
 
 func ensureListContains(t *testing.T, result []string, expected string) {
@@ -181,74 +104,14 @@ func pathsToStrings(paths android.Paths) []string {
 	return ret
 }
 
-// Provides general test support.
-type TestHelper struct {
-	t *testing.T
-}
-
-func (h *TestHelper) AssertStringEquals(message string, expected string, actual string) {
-	h.t.Helper()
-	if actual != expected {
-		h.t.Errorf("%s: expected %s, actual %s", message, expected, actual)
-	}
-}
-
-func (h *TestHelper) AssertErrorMessageEquals(message string, expected string, actual error) {
-	h.t.Helper()
-	if actual == nil {
-		h.t.Errorf("Expected error but was nil")
-	} else if actual.Error() != expected {
-		h.t.Errorf("%s: expected %s, actual %s", message, expected, actual.Error())
-	}
-}
-
-func (h *TestHelper) AssertTrimmedStringEquals(message string, expected string, actual string) {
-	h.t.Helper()
-	expected = strings.TrimSpace(expected)
-	actual = strings.TrimSpace(actual)
-	if actual != expected {
-		h.t.Errorf("%s: expected:\n%s\nactual:\n%s\n", message, expected, actual)
-	}
-}
-
-func (h *TestHelper) AssertDeepEquals(message string, expected interface{}, actual interface{}) {
-	h.t.Helper()
-	if !reflect.DeepEqual(actual, expected) {
-		h.t.Errorf("%s: expected %#v, actual %#v", message, expected, actual)
-	}
-}
-
-func (h *TestHelper) AssertPanic(message string, funcThatShouldPanic func()) {
-	h.t.Helper()
-	panicked := false
-	func() {
-		defer func() {
-			if x := recover(); x != nil {
-				panicked = true
-			}
-		}()
-		funcThatShouldPanic()
-	}()
-	if !panicked {
-		h.t.Error(message)
-	}
-}
-
-// Encapsulates result of processing an SDK definition. Provides support for
-// checking the state of the build structures.
-type testSdkResult struct {
-	TestHelper
-	ctx    *android.TestContext
-	config android.Config
-}
-
 // Analyse the sdk build rules to extract information about what it is doing.
-
+//
 // e.g. find the src/dest pairs from each cp command, the various zip files
 // generated, etc.
-func (r *testSdkResult) getSdkSnapshotBuildInfo(sdk *sdk) *snapshotBuildInfo {
+func getSdkSnapshotBuildInfo(t *testing.T, result *android.TestResult, sdk *sdk) *snapshotBuildInfo {
 	info := &snapshotBuildInfo{
-		r:                            r,
+		t:                            t,
+		r:                            result,
 		androidBpContents:            sdk.GetAndroidBpContentsForTests(),
 		androidUnversionedBpContents: sdk.GetUnversionedAndroidBpContentsForTests(),
 		androidVersionedBpContents:   sdk.GetVersionedAndroidBpContentsForTests(),
@@ -291,7 +154,7 @@ func (r *testSdkResult) getSdkSnapshotBuildInfo(sdk *sdk) *snapshotBuildInfo {
 			info.intermediateZip = info.outputZip
 			mergeInput := android.NormalizePathForTesting(bp.Input)
 			if info.intermediateZip != mergeInput {
-				r.t.Errorf("Expected intermediate zip %s to be an input to merge zips but found %s instead",
+				t.Errorf("Expected intermediate zip %s to be an input to merge zips but found %s instead",
 					info.intermediateZip, mergeInput)
 			}
 
@@ -310,28 +173,20 @@ func (r *testSdkResult) getSdkSnapshotBuildInfo(sdk *sdk) *snapshotBuildInfo {
 	return info
 }
 
-func (r *testSdkResult) Module(name string, variant string) android.Module {
-	return r.ctx.ModuleForTests(name, variant).Module()
-}
-
-func (r *testSdkResult) ModuleForTests(name string, variant string) android.TestingModule {
-	return r.ctx.ModuleForTests(name, variant)
-}
-
 // Check the snapshot build rules.
 //
 // Takes a list of functions which check different facets of the snapshot build rules.
 // Allows each test to customize what is checked without duplicating lots of code
 // or proliferating check methods of different flavors.
-func (r *testSdkResult) CheckSnapshot(name string, dir string, checkers ...snapshotBuildInfoChecker) {
-	r.t.Helper()
+func CheckSnapshot(t *testing.T, result *android.TestResult, name string, dir string, checkers ...snapshotBuildInfoChecker) {
+	t.Helper()
 
 	// The sdk CommonOS variant is always responsible for generating the snapshot.
 	variant := android.CommonOS.Name
 
-	sdk := r.Module(name, variant).(*sdk)
+	sdk := result.Module(name, variant).(*sdk)
 
-	snapshotBuildInfo := r.getSdkSnapshotBuildInfo(sdk)
+	snapshotBuildInfo := getSdkSnapshotBuildInfo(t, result, sdk)
 
 	// Check state of the snapshot build.
 	for _, checker := range checkers {
@@ -343,7 +198,7 @@ func (r *testSdkResult) CheckSnapshot(name string, dir string, checkers ...snaps
 	if dir != "" {
 		dir = filepath.Clean(dir) + "/"
 	}
-	r.AssertStringEquals("Snapshot zip file in wrong place",
+	android.AssertStringEquals(t, "Snapshot zip file in wrong place",
 		fmt.Sprintf(".intermediates/%s%s/%s/%s-current.zip", dir, name, variant, name), actual)
 
 	// Populate a mock filesystem with the files that would have been copied by
@@ -354,7 +209,7 @@ func (r *testSdkResult) CheckSnapshot(name string, dir string, checkers ...snaps
 	}
 
 	// Process the generated bp file to make sure it is valid.
-	testSdkWithFs(r.t, snapshotBuildInfo.androidBpContents, fs)
+	testSdkWithFs(t, snapshotBuildInfo.androidBpContents, fs)
 }
 
 type snapshotBuildInfoChecker func(info *snapshotBuildInfo)
@@ -364,8 +219,8 @@ type snapshotBuildInfoChecker func(info *snapshotBuildInfo)
 // Both the expected and actual string are both trimmed before comparing.
 func checkAndroidBpContents(expected string) snapshotBuildInfoChecker {
 	return func(info *snapshotBuildInfo) {
-		info.r.t.Helper()
-		info.r.AssertTrimmedStringEquals("Android.bp contents do not match", expected, info.androidBpContents)
+		info.t.Helper()
+		android.AssertTrimmedStringEquals(info.t, "Android.bp contents do not match", expected, info.androidBpContents)
 	}
 }
 
@@ -376,8 +231,8 @@ func checkAndroidBpContents(expected string) snapshotBuildInfoChecker {
 // Both the expected and actual string are both trimmed before comparing.
 func checkUnversionedAndroidBpContents(expected string) snapshotBuildInfoChecker {
 	return func(info *snapshotBuildInfo) {
-		info.r.t.Helper()
-		info.r.AssertTrimmedStringEquals("unversioned Android.bp contents do not match", expected, info.androidUnversionedBpContents)
+		info.t.Helper()
+		android.AssertTrimmedStringEquals(info.t, "unversioned Android.bp contents do not match", expected, info.androidUnversionedBpContents)
 	}
 }
 
@@ -391,8 +246,8 @@ func checkUnversionedAndroidBpContents(expected string) snapshotBuildInfoChecker
 // Both the expected and actual string are both trimmed before comparing.
 func checkVersionedAndroidBpContents(expected string) snapshotBuildInfoChecker {
 	return func(info *snapshotBuildInfo) {
-		info.r.t.Helper()
-		info.r.AssertTrimmedStringEquals("versioned Android.bp contents do not match", expected, info.androidVersionedBpContents)
+		info.t.Helper()
+		android.AssertTrimmedStringEquals(info.t, "versioned Android.bp contents do not match", expected, info.androidVersionedBpContents)
 	}
 }
 
@@ -403,27 +258,27 @@ func checkVersionedAndroidBpContents(expected string) snapshotBuildInfoChecker {
 // before comparing.
 func checkAllCopyRules(expected string) snapshotBuildInfoChecker {
 	return func(info *snapshotBuildInfo) {
-		info.r.t.Helper()
-		info.r.AssertTrimmedStringEquals("Incorrect copy rules", expected, info.copyRules)
+		info.t.Helper()
+		android.AssertTrimmedStringEquals(info.t, "Incorrect copy rules", expected, info.copyRules)
 	}
 }
 
 func checkAllOtherCopyRules(expected string) snapshotBuildInfoChecker {
 	return func(info *snapshotBuildInfo) {
-		info.r.t.Helper()
-		info.r.AssertTrimmedStringEquals("Incorrect copy rules", expected, info.otherCopyRules)
+		info.t.Helper()
+		android.AssertTrimmedStringEquals(info.t, "Incorrect copy rules", expected, info.otherCopyRules)
 	}
 }
 
 // Check that the specified paths match the list of zips to merge with the intermediate zip.
 func checkMergeZips(expected ...string) snapshotBuildInfoChecker {
 	return func(info *snapshotBuildInfo) {
-		info.r.t.Helper()
+		info.t.Helper()
 		if info.intermediateZip == "" {
-			info.r.t.Errorf("No intermediate zip file was created")
+			info.t.Errorf("No intermediate zip file was created")
 		}
 
-		info.r.AssertDeepEquals("mismatching merge zip files", expected, info.mergeZips)
+		android.AssertDeepEquals(info.t, "mismatching merge zip files", expected, info.mergeZips)
 	}
 }
 
@@ -433,7 +288,10 @@ func checkMergeZips(expected ...string) snapshotBuildInfoChecker {
 // All source/input paths are relative either the build directory. All dest/output paths are
 // relative to the snapshot root directory.
 type snapshotBuildInfo struct {
-	r *testSdkResult
+	t *testing.T
+
+	// The result from RunTest()
+	r *android.TestResult
 
 	// The contents of the generated Android.bp file
 	androidBpContents string

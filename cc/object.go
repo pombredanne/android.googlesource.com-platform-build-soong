@@ -46,6 +46,26 @@ type objectLinker struct {
 	Properties ObjectLinkerProperties
 }
 
+type objectBazelHandler struct {
+	bazelHandler
+
+	module *Module
+}
+
+func (handler *objectBazelHandler) generateBazelBuildActions(ctx android.ModuleContext, label string) bool {
+	bazelCtx := ctx.Config().BazelContext
+	objPaths, ok := bazelCtx.GetCcObjectFiles(label, ctx.Arch().ArchType)
+	if ok {
+		if len(objPaths) != 1 {
+			ctx.ModuleErrorf("expected exactly one object file for '%s', but got %s", label, objPaths)
+			return false
+		}
+
+		handler.module.outputFile = android.OptionalPathForPath(android.PathForBazelOut(ctx, objPaths[0]))
+	}
+	return ok
+}
+
 type ObjectLinkerProperties struct {
 	// list of modules that should only provide headers for this module.
 	Header_libs []string `android:"arch_variant,variant_prepend"`
@@ -80,6 +100,7 @@ func ObjectFactory() android.Module {
 		baseLinker: NewBaseLinker(module.sanitize),
 	}
 	module.compiler = NewBaseCompiler()
+	module.bazelHandler = &objectBazelHandler{module: module}
 
 	// Clang's address-significance tables are incompatible with ld -r.
 	module.compiler.appendCflags([]string{"-fno-addrsig"})
@@ -93,7 +114,7 @@ func ObjectFactory() android.Module {
 type bazelObjectAttributes struct {
 	Srcs               bazel.LabelList
 	Deps               bazel.LabelList
-	Copts              []string
+	Copts              bazel.StringListAttribute
 	Local_include_dirs []string
 }
 
@@ -133,13 +154,14 @@ func ObjectBp2Build(ctx android.TopDownMutatorContext) {
 		ctx.ModuleErrorf("compiler must not be nil for a cc_object module")
 	}
 
-	var copts []string
+	// Set arch-specific configurable attributes
+	var copts bazel.StringListAttribute
 	var srcs []string
 	var excludeSrcs []string
 	var localIncludeDirs []string
 	for _, props := range m.compiler.compilerProps() {
 		if baseCompilerProps, ok := props.(*BaseCompilerProperties); ok {
-			copts = baseCompilerProps.Cflags
+			copts.Value = baseCompilerProps.Cflags
 			srcs = baseCompilerProps.Srcs
 			excludeSrcs = baseCompilerProps.Exclude_srcs
 			localIncludeDirs = baseCompilerProps.Local_include_dirs
@@ -153,6 +175,13 @@ func ObjectBp2Build(ctx android.TopDownMutatorContext) {
 			deps = android.BazelLabelForModuleDeps(ctx, objectLinkerProps.Objs)
 		}
 	}
+
+	for arch, p := range m.GetArchProperties(&BaseCompilerProperties{}) {
+		if cProps, ok := p.(*BaseCompilerProperties); ok {
+			copts.SetValueForArch(arch.Name, cProps.Cflags)
+		}
+	}
+	copts.SetValueForArch("default", []string{})
 
 	attrs := &bazelObjectAttributes{
 		Srcs:               android.BazelLabelForModuleSrcExcludes(ctx, srcs, excludeSrcs),

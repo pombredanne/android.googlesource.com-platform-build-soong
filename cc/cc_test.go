@@ -52,29 +52,49 @@ func TestMain(m *testing.M) {
 	os.Exit(run())
 }
 
+var ccFixtureFactory = android.NewFixtureFactory(
+	&buildDir,
+	PrepareForTestWithCcIncludeVndk,
+	android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+		variables.DeviceVndkVersion = StringPtr("current")
+		variables.ProductVndkVersion = StringPtr("current")
+		variables.Platform_vndk_version = StringPtr("VER")
+	}),
+)
+
+// testCcWithConfig runs tests using the ccFixtureFactory
+//
+// See testCc for an explanation as to how to stop using this deprecated method.
+//
+// deprecated
 func testCcWithConfig(t *testing.T, config android.Config) *android.TestContext {
 	t.Helper()
-	ctx := CreateTestContext(config)
-	ctx.Register()
-
-	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
-	android.FailIfErrored(t, errs)
-	_, errs = ctx.PrepareBuildActions(config)
-	android.FailIfErrored(t, errs)
-
-	return ctx
+	result := ccFixtureFactory.RunTestWithConfig(t, config)
+	return result.TestContext
 }
 
+// testCc runs tests using the ccFixtureFactory
+//
+// Do not add any new usages of this, instead use the ccFixtureFactory directly as it makes it much
+// easier to customize the test behavior.
+//
+// If it is necessary to customize the behavior of an existing test that uses this then please first
+// convert the test to using ccFixtureFactory first and then in a following change add the
+// appropriate fixture preparers. Keeping the conversion change separate makes it easy to verify
+// that it did not change the test behavior unexpectedly.
+//
+// deprecated
 func testCc(t *testing.T, bp string) *android.TestContext {
 	t.Helper()
-	config := TestConfig(buildDir, android.Android, nil, bp, nil)
-	config.TestProductVariables.DeviceVndkVersion = StringPtr("current")
-	config.TestProductVariables.ProductVndkVersion = StringPtr("current")
-	config.TestProductVariables.Platform_vndk_version = StringPtr("VER")
-
-	return testCcWithConfig(t, config)
+	result := ccFixtureFactory.RunTestWithBp(t, bp)
+	return result.TestContext
 }
 
+// testCcNoVndk runs tests using the ccFixtureFactory
+//
+// See testCc for an explanation as to how to stop using this deprecated method.
+//
+// deprecated
 func testCcNoVndk(t *testing.T, bp string) *android.TestContext {
 	t.Helper()
 	config := TestConfig(buildDir, android.Android, nil, bp, nil)
@@ -83,6 +103,11 @@ func testCcNoVndk(t *testing.T, bp string) *android.TestContext {
 	return testCcWithConfig(t, config)
 }
 
+// testCcNoProductVndk runs tests using the ccFixtureFactory
+//
+// See testCc for an explanation as to how to stop using this deprecated method.
+//
+// deprecated
 func testCcNoProductVndk(t *testing.T, bp string) *android.TestContext {
 	t.Helper()
 	config := TestConfig(buildDir, android.Android, nil, bp, nil)
@@ -92,27 +117,24 @@ func testCcNoProductVndk(t *testing.T, bp string) *android.TestContext {
 	return testCcWithConfig(t, config)
 }
 
+// testCcErrorWithConfig runs tests using the ccFixtureFactory
+//
+// See testCc for an explanation as to how to stop using this deprecated method.
+//
+// deprecated
 func testCcErrorWithConfig(t *testing.T, pattern string, config android.Config) {
 	t.Helper()
 
-	ctx := CreateTestContext(config)
-	ctx.Register()
-
-	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
-	if len(errs) > 0 {
-		android.FailIfNoMatchingErrors(t, pattern, errs)
-		return
-	}
-
-	_, errs = ctx.PrepareBuildActions(config)
-	if len(errs) > 0 {
-		android.FailIfNoMatchingErrors(t, pattern, errs)
-		return
-	}
-
-	t.Fatalf("missing expected error %q (0 errors are returned)", pattern)
+	ccFixtureFactory.Extend().
+		ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(pattern)).
+		RunTestWithConfig(t, config)
 }
 
+// testCcError runs tests using the ccFixtureFactory
+//
+// See testCc for an explanation as to how to stop using this deprecated method.
+//
+// deprecated
 func testCcError(t *testing.T, pattern string, bp string) {
 	t.Helper()
 	config := TestConfig(buildDir, android.Android, nil, bp, nil)
@@ -122,6 +144,11 @@ func testCcError(t *testing.T, pattern string, bp string) {
 	return
 }
 
+// testCcErrorProductVndk runs tests using the ccFixtureFactory
+//
+// See testCc for an explanation as to how to stop using this deprecated method.
+//
+// deprecated
 func testCcErrorProductVndk(t *testing.T, pattern string, bp string) {
 	t.Helper()
 	config := TestConfig(buildDir, android.Android, nil, bp, nil)
@@ -153,13 +180,12 @@ func TestFuchsiaDeps(t *testing.T) {
 			},
 		}`
 
-	config := TestConfig(buildDir, android.Fuchsia, nil, bp, nil)
-	ctx := testCcWithConfig(t, config)
+	result := ccFixtureFactory.Extend(PrepareForTestOnFuchsia).RunTestWithBp(t, bp)
 
 	rt := false
 	fb := false
 
-	ld := ctx.ModuleForTests("libTest", "fuchsia_arm64_shared").Rule("ld")
+	ld := result.ModuleForTests("libTest", "fuchsia_arm64_shared").Rule("ld")
 	implicits := ld.Implicits
 	for _, lib := range implicits {
 		if strings.Contains(lib.Rel(), "libcompiler_rt") {
@@ -190,16 +216,13 @@ func TestFuchsiaTargetDecl(t *testing.T) {
 			},
 		}`
 
-	config := TestConfig(buildDir, android.Fuchsia, nil, bp, nil)
-	ctx := testCcWithConfig(t, config)
-	ld := ctx.ModuleForTests("libTest", "fuchsia_arm64_shared").Rule("ld")
+	result := ccFixtureFactory.Extend(PrepareForTestOnFuchsia).RunTestWithBp(t, bp)
+	ld := result.ModuleForTests("libTest", "fuchsia_arm64_shared").Rule("ld")
 	var objs []string
 	for _, o := range ld.Inputs {
 		objs = append(objs, o.Base())
 	}
-	if len(objs) != 2 || objs[0] != "foo.o" || objs[1] != "bar.o" {
-		t.Errorf("inputs of libTest must be []string{\"foo.o\", \"bar.o\"}, but was %#v.", objs)
-	}
+	android.AssertArrayString(t, "libTest inputs", []string{"foo.o", "bar.o"}, objs)
 }
 
 func TestVendorSrc(t *testing.T) {
@@ -3397,24 +3420,16 @@ func TestProductVariableDefaults(t *testing.T) {
 		}
 	`
 
-	config := TestConfig(buildDir, android.Android, nil, bp, nil)
-	config.TestProductVariables.Debuggable = BoolPtr(true)
+	result := ccFixtureFactory.Extend(
+		android.PrepareForTestWithVariables,
 
-	ctx := CreateTestContext(config)
-	ctx.PreDepsMutators(func(ctx android.RegisterMutatorsContext) {
-		ctx.BottomUp("variable", android.VariableMutator).Parallel()
-	})
-	ctx.Register()
+		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+			variables.Debuggable = BoolPtr(true)
+		}),
+	).RunTestWithBp(t, bp)
 
-	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
-	android.FailIfErrored(t, errs)
-	_, errs = ctx.PrepareBuildActions(config)
-	android.FailIfErrored(t, errs)
-
-	libfoo := ctx.ModuleForTests("libfoo", "android_arm64_armv8-a_static").Module().(*Module)
-	if !android.InList("-DBAR", libfoo.flags.Local.CppFlags) {
-		t.Errorf("expected -DBAR in cppflags, got %q", libfoo.flags.Local.CppFlags)
-	}
+	libfoo := result.Module("libfoo", "android_arm64_armv8-a_static").(*Module)
+	android.AssertStringListContains(t, "cppflags", libfoo.flags.Local.CppFlags, "-DBAR")
 }
 
 func TestEmptyWholeStaticLibsAllowMissingDependencies(t *testing.T) {
@@ -3432,32 +3447,17 @@ func TestEmptyWholeStaticLibsAllowMissingDependencies(t *testing.T) {
 		}
 	`
 
-	config := TestConfig(buildDir, android.Android, nil, bp, nil)
-	config.TestProductVariables.Allow_missing_dependencies = BoolPtr(true)
+	result := ccFixtureFactory.Extend(
+		android.PrepareForTestWithAllowMissingDependencies,
+	).RunTestWithBp(t, bp)
 
-	ctx := CreateTestContext(config)
-	ctx.SetAllowMissingDependencies(true)
-	ctx.Register()
+	libbar := result.ModuleForTests("libbar", "android_arm64_armv8-a_static").Output("libbar.a")
+	android.AssertDeepEquals(t, "libbar rule", android.ErrorRule, libbar.Rule)
 
-	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
-	android.FailIfErrored(t, errs)
-	_, errs = ctx.PrepareBuildActions(config)
-	android.FailIfErrored(t, errs)
+	android.AssertStringDoesContain(t, "libbar error", libbar.Args["error"], "missing dependencies: libmissing")
 
-	libbar := ctx.ModuleForTests("libbar", "android_arm64_armv8-a_static").Output("libbar.a")
-	if g, w := libbar.Rule, android.ErrorRule; g != w {
-		t.Fatalf("Expected libbar rule to be %q, got %q", w, g)
-	}
-
-	if g, w := libbar.Args["error"], "missing dependencies: libmissing"; !strings.Contains(g, w) {
-		t.Errorf("Expected libbar error to contain %q, was %q", w, g)
-	}
-
-	libfoo := ctx.ModuleForTests("libfoo", "android_arm64_armv8-a_static").Output("libfoo.a")
-	if g, w := libfoo.Inputs.Strings(), libbar.Output.String(); !android.InList(w, g) {
-		t.Errorf("Expected libfoo.a to depend on %q, got %q", w, g)
-	}
-
+	libfoo := result.ModuleForTests("libfoo", "android_arm64_armv8-a_static").Output("libfoo.a")
+	android.AssertStringListContains(t, "libfoo.a dependencies", libfoo.Inputs.Strings(), libbar.Output.String())
 }
 
 func TestInstallSharedLibs(t *testing.T) {
@@ -3647,8 +3647,9 @@ func checkHasMemtagNote(t *testing.T, m android.TestingModule, expected MemtagNo
 	}
 }
 
-func makeMemtagTestConfig(t *testing.T) android.Config {
-	templateBp := `
+var prepareForTestWithMemtagHeap = android.GroupFixturePreparers(
+	android.FixtureModifyMockFS(func(fs android.MockFS) {
+		templateBp := `
 		cc_test {
 			name: "%[1]s_test",
 			gtest: false,
@@ -3702,35 +3703,30 @@ func makeMemtagTestConfig(t *testing.T) android.Config {
 			sanitize: { memtag_heap: true, diag: { memtag_heap: true }  },
 		}
 		`
-	subdirDefaultBp := fmt.Sprintf(templateBp, "default")
-	subdirExcludeBp := fmt.Sprintf(templateBp, "exclude")
-	subdirSyncBp := fmt.Sprintf(templateBp, "sync")
-	subdirAsyncBp := fmt.Sprintf(templateBp, "async")
+		subdirDefaultBp := fmt.Sprintf(templateBp, "default")
+		subdirExcludeBp := fmt.Sprintf(templateBp, "exclude")
+		subdirSyncBp := fmt.Sprintf(templateBp, "sync")
+		subdirAsyncBp := fmt.Sprintf(templateBp, "async")
 
-	mockFS := map[string][]byte{
-		"subdir_default/Android.bp": []byte(subdirDefaultBp),
-		"subdir_exclude/Android.bp": []byte(subdirExcludeBp),
-		"subdir_sync/Android.bp":    []byte(subdirSyncBp),
-		"subdir_async/Android.bp":   []byte(subdirAsyncBp),
-	}
-
-	return TestConfig(buildDir, android.Android, nil, "", mockFS)
-}
+		fs.Merge(android.MockFS{
+			"subdir_default/Android.bp": []byte(subdirDefaultBp),
+			"subdir_exclude/Android.bp": []byte(subdirExcludeBp),
+			"subdir_sync/Android.bp":    []byte(subdirSyncBp),
+			"subdir_async/Android.bp":   []byte(subdirAsyncBp),
+		})
+	}),
+	android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+		variables.MemtagHeapExcludePaths = []string{"subdir_exclude"}
+		variables.MemtagHeapSyncIncludePaths = []string{"subdir_sync"}
+		variables.MemtagHeapAsyncIncludePaths = []string{"subdir_async"}
+	}),
+)
 
 func TestSanitizeMemtagHeap(t *testing.T) {
 	variant := "android_arm64_armv8-a"
 
-	config := makeMemtagTestConfig(t)
-	config.TestProductVariables.MemtagHeapExcludePaths = []string{"subdir_exclude"}
-	config.TestProductVariables.MemtagHeapSyncIncludePaths = []string{"subdir_sync"}
-	config.TestProductVariables.MemtagHeapAsyncIncludePaths = []string{"subdir_async"}
-	ctx := CreateTestContext(config)
-	ctx.Register()
-
-	_, errs := ctx.ParseFileList(".", []string{"Android.bp", "subdir_default/Android.bp", "subdir_exclude/Android.bp", "subdir_sync/Android.bp", "subdir_async/Android.bp"})
-	android.FailIfErrored(t, errs)
-	_, errs = ctx.PrepareBuildActions(config)
-	android.FailIfErrored(t, errs)
+	result := ccFixtureFactory.Extend(prepareForTestWithMemtagHeap).RunTest(t)
+	ctx := result.TestContext
 
 	checkHasMemtagNote(t, ctx.ModuleForTests("default_test", variant), Sync)
 	checkHasMemtagNote(t, ctx.ModuleForTests("default_test_false", variant), None)
@@ -3784,18 +3780,13 @@ func TestSanitizeMemtagHeap(t *testing.T) {
 func TestSanitizeMemtagHeapWithSanitizeDevice(t *testing.T) {
 	variant := "android_arm64_armv8-a"
 
-	config := makeMemtagTestConfig(t)
-	config.TestProductVariables.MemtagHeapExcludePaths = []string{"subdir_exclude"}
-	config.TestProductVariables.MemtagHeapSyncIncludePaths = []string{"subdir_sync"}
-	config.TestProductVariables.MemtagHeapAsyncIncludePaths = []string{"subdir_async"}
-	config.TestProductVariables.SanitizeDevice = []string{"memtag_heap"}
-	ctx := CreateTestContext(config)
-	ctx.Register()
-
-	_, errs := ctx.ParseFileList(".", []string{"Android.bp", "subdir_default/Android.bp", "subdir_exclude/Android.bp", "subdir_sync/Android.bp", "subdir_async/Android.bp"})
-	android.FailIfErrored(t, errs)
-	_, errs = ctx.PrepareBuildActions(config)
-	android.FailIfErrored(t, errs)
+	result := ccFixtureFactory.Extend(
+		prepareForTestWithMemtagHeap,
+		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+			variables.SanitizeDevice = []string{"memtag_heap"}
+		}),
+	).RunTest(t)
+	ctx := result.TestContext
 
 	checkHasMemtagNote(t, ctx.ModuleForTests("default_test", variant), Sync)
 	checkHasMemtagNote(t, ctx.ModuleForTests("default_test_false", variant), None)
@@ -3849,19 +3840,14 @@ func TestSanitizeMemtagHeapWithSanitizeDevice(t *testing.T) {
 func TestSanitizeMemtagHeapWithSanitizeDeviceDiag(t *testing.T) {
 	variant := "android_arm64_armv8-a"
 
-	config := makeMemtagTestConfig(t)
-	config.TestProductVariables.MemtagHeapExcludePaths = []string{"subdir_exclude"}
-	config.TestProductVariables.MemtagHeapSyncIncludePaths = []string{"subdir_sync"}
-	config.TestProductVariables.MemtagHeapAsyncIncludePaths = []string{"subdir_async"}
-	config.TestProductVariables.SanitizeDevice = []string{"memtag_heap"}
-	config.TestProductVariables.SanitizeDeviceDiag = []string{"memtag_heap"}
-	ctx := CreateTestContext(config)
-	ctx.Register()
-
-	_, errs := ctx.ParseFileList(".", []string{"Android.bp", "subdir_default/Android.bp", "subdir_exclude/Android.bp", "subdir_sync/Android.bp", "subdir_async/Android.bp"})
-	android.FailIfErrored(t, errs)
-	_, errs = ctx.PrepareBuildActions(config)
-	android.FailIfErrored(t, errs)
+	result := ccFixtureFactory.Extend(
+		prepareForTestWithMemtagHeap,
+		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+			variables.SanitizeDevice = []string{"memtag_heap"}
+			variables.SanitizeDeviceDiag = []string{"memtag_heap"}
+		}),
+	).RunTest(t)
+	ctx := result.TestContext
 
 	checkHasMemtagNote(t, ctx.ModuleForTests("default_test", variant), Sync)
 	checkHasMemtagNote(t, ctx.ModuleForTests("default_test_false", variant), None)

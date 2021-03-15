@@ -28,70 +28,68 @@ import (
 	"android/soong/cc"
 )
 
-var (
-	resourceFiles = []string{
+// testAppConfig is a legacy way of creating a test Config for testing java app modules.
+//
+// See testJava for an explanation as to how to stop using this deprecated method.
+//
+// deprecated
+func testAppConfig(env map[string]string, bp string, fs map[string][]byte) android.Config {
+	return testConfig(env, bp, fs)
+}
+
+// testApp runs tests using the javaFixtureFactory
+//
+// See testJava for an explanation as to how to stop using this deprecated method.
+//
+// deprecated
+func testApp(t *testing.T, bp string) *android.TestContext {
+	t.Helper()
+	result := javaFixtureFactory.RunTestWithBp(t, bp)
+	return result.TestContext
+}
+
+func TestApp(t *testing.T) {
+	resourceFiles := []string{
 		"res/layout/layout.xml",
 		"res/values/strings.xml",
 		"res/values-en-rUS/strings.xml",
 	}
 
-	compiledResourceFiles = []string{
+	compiledResourceFiles := []string{
 		"aapt2/res/layout_layout.xml.flat",
 		"aapt2/res/values_strings.arsc.flat",
 		"aapt2/res/values-en-rUS_strings.arsc.flat",
 	}
-)
 
-func testAppConfig(env map[string]string, bp string, fs map[string][]byte) android.Config {
-	appFS := map[string][]byte{}
-	for k, v := range fs {
-		appFS[k] = v
-	}
-
-	for _, file := range resourceFiles {
-		appFS[file] = nil
-	}
-
-	return testConfig(env, bp, appFS)
-}
-
-func testApp(t *testing.T, bp string) *android.TestContext {
-	config := testAppConfig(nil, bp, nil)
-
-	ctx := testContext(config)
-
-	run(t, ctx, config)
-
-	return ctx
-}
-
-func TestApp(t *testing.T) {
 	for _, moduleType := range []string{"android_app", "android_library"} {
 		t.Run(moduleType, func(t *testing.T) {
-			ctx := testApp(t, moduleType+` {
+			result := javaFixtureFactory.Extend(
+				android.FixtureModifyMockFS(func(fs android.MockFS) {
+					for _, file := range resourceFiles {
+						fs[file] = nil
+					}
+				}),
+			).RunTestWithBp(t, moduleType+` {
 					name: "foo",
 					srcs: ["a.java"],
 					sdk_version: "current"
 				}
 			`)
 
-			foo := ctx.ModuleForTests("foo", "android_common")
+			foo := result.ModuleForTests("foo", "android_common")
 
 			var expectedLinkImplicits []string
 
 			manifestFixer := foo.Output("manifest_fixer/AndroidManifest.xml")
 			expectedLinkImplicits = append(expectedLinkImplicits, manifestFixer.Output.String())
 
-			frameworkRes := ctx.ModuleForTests("framework-res", "android_common")
+			frameworkRes := result.ModuleForTests("framework-res", "android_common")
 			expectedLinkImplicits = append(expectedLinkImplicits,
 				frameworkRes.Output("package-res.apk").Output.String())
 
 			// Test the mapping from input files to compiled output file names
 			compile := foo.Output(compiledResourceFiles[0])
-			if !reflect.DeepEqual(resourceFiles, compile.Inputs.Strings()) {
-				t.Errorf("expected aapt2 compile inputs expected:\n  %#v\n got:\n  %#v",
-					resourceFiles, compile.Inputs.Strings())
-			}
+			android.AssertDeepEquals(t, "aapt2 compile inputs", resourceFiles, compile.Inputs.Strings())
 
 			compiledResourceOutputs := compile.Outputs.Strings()
 			sort.Strings(compiledResourceOutputs)
@@ -102,11 +100,8 @@ func TestApp(t *testing.T) {
 			expectedLinkImplicits = append(expectedLinkImplicits, list.Output.String())
 
 			// Check that the link rule uses
-			res := ctx.ModuleForTests("foo", "android_common").Output("package-res.apk")
-			if !reflect.DeepEqual(expectedLinkImplicits, res.Implicits.Strings()) {
-				t.Errorf("expected aapt2 link implicits expected:\n  %#v\n got:\n  %#v",
-					expectedLinkImplicits, res.Implicits.Strings())
-			}
+			res := result.ModuleForTests("foo", "android_common").Output("package-res.apk")
+			android.AssertDeepEquals(t, "aapt2 link implicits", expectedLinkImplicits, res.Implicits.Strings())
 		})
 	}
 }
@@ -682,6 +677,51 @@ func TestLibraryAssets(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAppJavaResources(t *testing.T) {
+	bp := `
+			android_app {
+				name: "foo",
+				sdk_version: "current",
+				java_resources: ["resources/a"],
+				srcs: ["a.java"],
+			}
+
+			android_app {
+				name: "bar",
+				sdk_version: "current",
+				java_resources: ["resources/a"],
+			}
+		`
+
+	ctx := testApp(t, bp)
+
+	foo := ctx.ModuleForTests("foo", "android_common")
+	fooResources := foo.Output("res/foo.jar")
+	fooDexJar := foo.Output("dex-withres/foo.jar")
+	fooDexJarAligned := foo.Output("dex-withres-aligned/foo.jar")
+	fooApk := foo.Rule("combineApk")
+
+	if g, w := fooDexJar.Inputs.Strings(), fooResources.Output.String(); !android.InList(w, g) {
+		t.Errorf("expected resource jar %q in foo dex jar inputs %q", w, g)
+	}
+
+	if g, w := fooDexJarAligned.Input.String(), fooDexJar.Output.String(); g != w {
+		t.Errorf("expected dex jar %q in foo aligned dex jar inputs %q", w, g)
+	}
+
+	if g, w := fooApk.Inputs.Strings(), fooDexJarAligned.Output.String(); !android.InList(w, g) {
+		t.Errorf("expected aligned dex jar %q in foo apk inputs %q", w, g)
+	}
+
+	bar := ctx.ModuleForTests("bar", "android_common")
+	barResources := bar.Output("res/bar.jar")
+	barApk := bar.Rule("combineApk")
+
+	if g, w := barApk.Inputs.Strings(), barResources.Output.String(); !android.InList(w, g) {
+		t.Errorf("expected resources jar %q in bar apk inputs %q", w, g)
 	}
 }
 
@@ -1531,6 +1571,31 @@ func TestCertificates(t *testing.T) {
 			expectedLineage:     "--lineage lineage.bin",
 			expectedCertificate: "cert/new_cert.x509.pem cert/new_cert.pk8",
 		},
+		{
+			name: "lineage from filegroup",
+			bp: `
+				android_app {
+					name: "foo",
+					srcs: ["a.java"],
+					certificate: ":new_certificate",
+					lineage: ":lineage_bin",
+					sdk_version: "current",
+				}
+
+				android_app_certificate {
+					name: "new_certificate",
+					certificate: "cert/new_cert",
+				}
+
+				filegroup {
+					name: "lineage_bin",
+					srcs: ["lineage.bin"],
+				}
+			`,
+			certificateOverride: "",
+			expectedLineage:     "--lineage lineage.bin",
+			expectedCertificate: "cert/new_cert.x509.pem cert/new_cert.pk8",
+		},
 	}
 
 	for _, test := range testCases {
@@ -2245,17 +2310,33 @@ func TestUsesLibraries(t *testing.T) {
 			sdk_version: "current",
 		}
 
+		// A library that has to use "provides_uses_lib", because:
+		//    - it is not an SDK library
+		//    - its library name is different from its module name
+		java_library {
+			name: "non-sdk-lib",
+			provides_uses_lib: "com.non.sdk.lib",
+			installable: true,
+			srcs: ["a.java"],
+		}
+
 		android_app {
 			name: "app",
 			srcs: ["a.java"],
-			libs: ["qux", "quuz.stubs"],
+			libs: [
+				"qux",
+				"quuz.stubs"
+			],
 			static_libs: [
 				"static-runtime-helper",
 				// statically linked component libraries should not pull their SDK libraries,
 				// so "fred" should not be added to class loader context
 				"fred.stubs",
 			],
-			uses_libs: ["foo"],
+			uses_libs: [
+				"foo",
+				"non-sdk-lib"
+			],
 			sdk_version: "current",
 			optional_uses_libs: [
 				"bar",
@@ -2267,7 +2348,11 @@ func TestUsesLibraries(t *testing.T) {
 			name: "prebuilt",
 			apk: "prebuilts/apk/app.apk",
 			certificate: "platform",
-			uses_libs: ["foo", "android.test.runner"],
+			uses_libs: [
+				"foo",
+				"non-sdk-lib",
+				"android.test.runner"
+			],
 			optional_uses_libs: [
 				"bar",
 				"baz",
@@ -2286,39 +2371,51 @@ func TestUsesLibraries(t *testing.T) {
 	prebuilt := ctx.ModuleForTests("prebuilt", "android_common")
 
 	// Test that implicit dependencies on java_sdk_library instances are passed to the manifest.
-	manifestFixerArgs := app.Output("manifest_fixer/AndroidManifest.xml").Args["args"]
-	for _, w := range []string{"qux", "quuz", "runtime-library"} {
-		if !strings.Contains(manifestFixerArgs, "--uses-library "+w) {
-			t.Errorf("unexpected manifest_fixer args: wanted %q in %q", w, manifestFixerArgs)
-		}
+	// This should not include explicit `uses_libs`/`optional_uses_libs` entries.
+	actualManifestFixerArgs := app.Output("manifest_fixer/AndroidManifest.xml").Args["args"]
+	expectManifestFixerArgs := `--extract-native-libs=true ` +
+		`--uses-library qux ` +
+		`--uses-library quuz ` +
+		`--uses-library foo ` + // TODO(b/132357300): "foo" should not be passed to manifest_fixer
+		`--uses-library com.non.sdk.lib ` + // TODO(b/132357300): "com.non.sdk.lib" should not be passed to manifest_fixer
+		`--uses-library bar ` + // TODO(b/132357300): "bar" should not be passed to manifest_fixer
+		`--uses-library runtime-library`
+	if actualManifestFixerArgs != expectManifestFixerArgs {
+		t.Errorf("unexpected manifest_fixer args:\n\texpect: %q\n\tactual: %q",
+			expectManifestFixerArgs, actualManifestFixerArgs)
 	}
 
-	// Test that all libraries are verified
-	cmd := app.Rule("verify_uses_libraries").RuleParams.Command
-	if w := "--uses-library foo"; !strings.Contains(cmd, w) {
-		t.Errorf("wanted %q in %q", w, cmd)
+	// Test that all libraries are verified (library order matters).
+	verifyCmd := app.Rule("verify_uses_libraries").RuleParams.Command
+	verifyArgs := `--uses-library foo ` +
+		`--uses-library com.non.sdk.lib ` +
+		`--uses-library qux ` +
+		`--uses-library quuz ` +
+		`--uses-library runtime-library ` +
+		`--optional-uses-library bar ` +
+		`--optional-uses-library baz `
+	if !strings.Contains(verifyCmd, verifyArgs) {
+		t.Errorf("wanted %q in %q", verifyArgs, verifyCmd)
 	}
 
-	if w := "--optional-uses-library bar --optional-uses-library baz"; !strings.Contains(cmd, w) {
-		t.Errorf("wanted %q in %q", w, cmd)
+	// Test that all libraries are verified for an APK (library order matters).
+	verifyApkCmd := prebuilt.Rule("verify_uses_libraries").RuleParams.Command
+	verifyApkReqLibs := `uses_library_names="foo com.non.sdk.lib android.test.runner"`
+	verifyApkOptLibs := `optional_uses_library_names="bar baz"`
+	if !strings.Contains(verifyApkCmd, verifyApkReqLibs) {
+		t.Errorf("wanted %q in %q", verifyApkReqLibs, verifyApkCmd)
 	}
-
-	cmd = prebuilt.Rule("verify_uses_libraries").RuleParams.Command
-
-	if w := `uses_library_names="foo android.test.runner"`; !strings.Contains(cmd, w) {
-		t.Errorf("wanted %q in %q", w, cmd)
-	}
-
-	if w := `optional_uses_library_names="bar baz"`; !strings.Contains(cmd, w) {
-		t.Errorf("wanted %q in %q", w, cmd)
+	if !strings.Contains(verifyApkCmd, verifyApkOptLibs) {
+		t.Errorf("wanted %q in %q", verifyApkOptLibs, verifyApkCmd)
 	}
 
 	// Test that all present libraries are preopted, including implicit SDK dependencies, possibly stubs
-	cmd = app.Rule("dexpreopt").RuleParams.Command
+	cmd := app.Rule("dexpreopt").RuleParams.Command
 	w := `--target-context-for-sdk any ` +
 		`PCL[/system/framework/qux.jar]#` +
 		`PCL[/system/framework/quuz.jar]#` +
 		`PCL[/system/framework/foo.jar]#` +
+		`PCL[/system/framework/non-sdk-lib.jar]#` +
 		`PCL[/system/framework/bar.jar]#` +
 		`PCL[/system/framework/runtime-library.jar]`
 	if !strings.Contains(cmd, w) {
@@ -2348,6 +2445,7 @@ func TestUsesLibraries(t *testing.T) {
 	cmd = prebuilt.Rule("dexpreopt").RuleParams.Command
 	if w := `--target-context-for-sdk any` +
 		` PCL[/system/framework/foo.jar]` +
+		`#PCL[/system/framework/non-sdk-lib.jar]` +
 		`#PCL[/system/framework/android.test.runner.jar]` +
 		`#PCL[/system/framework/bar.jar] `; !strings.Contains(cmd, w) {
 		t.Errorf("wanted %q in %q", w, cmd)

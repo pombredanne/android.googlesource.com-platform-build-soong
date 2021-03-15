@@ -3,6 +3,7 @@ package sh
 import (
 	"io/ioutil"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -36,28 +37,32 @@ func TestMain(m *testing.M) {
 	os.Exit(run())
 }
 
-func testShBinary(t *testing.T, bp string) (*android.TestContext, android.Config) {
-	fs := map[string][]byte{
+var shFixtureFactory = android.NewFixtureFactory(
+	&buildDir,
+	cc.PrepareForTestWithCcBuildComponents,
+	PrepareForTestWithShBuildComponents,
+	android.FixtureMergeMockFs(android.MockFS{
 		"test.sh":            nil,
 		"testdata/data1":     nil,
 		"testdata/sub/data2": nil,
-	}
+	}),
+)
 
-	config := android.TestArchConfig(buildDir, nil, bp, fs)
+// testShBinary runs tests using the shFixtureFactory
+//
+// Do not add any new usages of this, instead use the shFixtureFactory directly as it makes it much
+// easier to customize the test behavior.
+//
+// If it is necessary to customize the behavior of an existing test that uses this then please first
+// convert the test to using shFixtureFactory first and then in a following change add the
+// appropriate fixture preparers. Keeping the conversion change separate makes it easy to verify
+// that it did not change the test behavior unexpectedly.
+//
+// deprecated
+func testShBinary(t *testing.T, bp string) (*android.TestContext, android.Config) {
+	result := shFixtureFactory.RunTestWithBp(t, bp)
 
-	ctx := android.NewTestArchContext(config)
-	ctx.RegisterModuleType("sh_test", ShTestFactory)
-	ctx.RegisterModuleType("sh_test_host", ShTestHostFactory)
-
-	cc.RegisterRequiredBuildComponentsForTest(ctx)
-
-	ctx.Register()
-	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
-	android.FailIfErrored(t, errs)
-	_, errs = ctx.PrepareBuildActions(config)
-	android.FailIfErrored(t, errs)
-
-	return ctx, config
+	return result.TestContext, result.Config
 }
 
 func TestShTestSubDir(t *testing.T) {
@@ -73,7 +78,8 @@ func TestShTestSubDir(t *testing.T) {
 
 	entries := android.AndroidMkEntriesForTest(t, ctx, mod)[0]
 
-	expectedPath := "/tmp/target/product/test_device/data/nativetest64/foo_test"
+	expectedPath := path.Join(buildDir,
+		"../target/product/test_device/data/nativetest64/foo_test")
 	actualPath := entries.EntryMap["LOCAL_MODULE_PATH"][0]
 	if expectedPath != actualPath {
 		t.Errorf("Unexpected LOCAL_MODULE_PATH expected: %q, actual: %q", expectedPath, actualPath)
@@ -97,7 +103,8 @@ func TestShTest(t *testing.T) {
 
 	entries := android.AndroidMkEntriesForTest(t, ctx, mod)[0]
 
-	expectedPath := "/tmp/target/product/test_device/data/nativetest64/foo"
+	expectedPath := path.Join(buildDir,
+		"../target/product/test_device/data/nativetest64/foo")
 	actualPath := entries.EntryMap["LOCAL_MODULE_PATH"][0]
 	if expectedPath != actualPath {
 		t.Errorf("Unexpected LOCAL_MODULE_PATH expected: %q, actual: %q", expectedPath, actualPath)

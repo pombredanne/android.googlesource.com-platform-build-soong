@@ -29,29 +29,127 @@ import (
 	"github.com/google/blueprint"
 )
 
-func TestConfig(buildDir string, env map[string]string, bp string, fs map[string][]byte) android.Config {
-	bp += GatherRequiredDepsForTest()
+const defaultJavaDir = "default/java"
 
-	mockFS := map[string][]byte{
-		"api/current.txt":        nil,
-		"api/removed.txt":        nil,
-		"api/system-current.txt": nil,
-		"api/system-removed.txt": nil,
-		"api/test-current.txt":   nil,
-		"api/test-removed.txt":   nil,
+// Test fixture preparer that will register most java build components.
+//
+// Singletons and mutators should only be added here if they are needed for a majority of java
+// module types, otherwise they should be added under a separate preparer to allow them to be
+// selected only when needed to reduce test execution time.
+//
+// Module types do not have much of an overhead unless they are used so this should include as many
+// module types as possible. The exceptions are those module types that require mutators and/or
+// singletons in order to function in which case they should be kept together in a separate
+// preparer.
+var PrepareForTestWithJavaBuildComponents = android.FixtureRegisterWithContext(RegisterRequiredBuildComponentsForTest)
 
+// Test fixture preparer that will define default java modules, e.g. standard prebuilt modules.
+var PrepareForTestWithJavaDefaultModules = android.GroupFixturePreparers(
+	// Make sure that mutators and module types, e.g. prebuilt mutators available.
+	android.PrepareForTestWithAndroidBuildComponents,
+	// Make sure that all the module types used in the defaults are registered.
+	PrepareForTestWithJavaBuildComponents,
+	// The java default module definitions.
+	android.FixtureAddTextFile(defaultJavaDir+"/Android.bp", GatherRequiredDepsForTest()),
+)
+
+// Prepare a fixture to use all java module types, mutators and singletons fully.
+//
+// This should only be used by tests that want to run with as much of the build enabled as possible.
+var PrepareForIntegrationTestWithJava = android.GroupFixturePreparers(
+	cc.PrepareForIntegrationTestWithCc,
+	PrepareForTestWithJavaDefaultModules,
+)
+
+// Prepare a fixture with the standard files required by a java_sdk_library module.
+var PrepareForTestWithJavaSdkLibraryFiles = android.FixtureMergeMockFs(javaSdkLibraryFiles)
+
+var javaSdkLibraryFiles = android.MockFS{
+	"api/current.txt":               nil,
+	"api/removed.txt":               nil,
+	"api/system-current.txt":        nil,
+	"api/system-removed.txt":        nil,
+	"api/test-current.txt":          nil,
+	"api/test-removed.txt":          nil,
+	"api/module-lib-current.txt":    nil,
+	"api/module-lib-removed.txt":    nil,
+	"api/system-server-current.txt": nil,
+	"api/system-server-removed.txt": nil,
+}
+
+// FixtureWithLastReleaseApis creates a preparer that creates prebuilt versions of the specified
+// modules for the `last` API release. By `last` it just means last in the list of supplied versions
+// and as this only provides one version it can be any value.
+//
+// This uses FixtureWithPrebuiltApis under the covers so the limitations of that apply to this.
+func FixtureWithLastReleaseApis(moduleNames ...string) android.FixturePreparer {
+	return FixtureWithPrebuiltApis(map[string][]string{
+		"30": moduleNames,
+	})
+}
+
+// PrepareForTestWithPrebuiltsOfCurrentApi is a preparer that creates prebuilt versions of the
+// standard modules for the current version.
+//
+// This uses FixtureWithPrebuiltApis under the covers so the limitations of that apply to this.
+var PrepareForTestWithPrebuiltsOfCurrentApi = FixtureWithPrebuiltApis(map[string][]string{
+	"current": {},
+	// Can't have current on its own as it adds a prebuilt_apis module but doesn't add any
+	// .txt files which causes the prebuilt_apis module to fail.
+	"30": {},
+})
+
+// FixtureWithPrebuiltApis creates a preparer that will define prebuilt api modules for the
+// specified releases and modules.
+//
+// The supplied map keys are the releases, e.g. current, 29, 30, etc. The values are a list of
+// modules for that release. Due to limitations in the prebuilt_apis module which this preparer
+// uses the set of releases must include at least one numbered release, i.e. it cannot just include
+// "current".
+//
+// This defines a file in the mock file system in a predefined location (prebuilts/sdk/Android.bp)
+// and so only one instance of this can be used in each fixture.
+func FixtureWithPrebuiltApis(release2Modules map[string][]string) android.FixturePreparer {
+	mockFS := android.MockFS{}
+	path := "prebuilts/sdk/Android.bp"
+
+	bp := fmt.Sprintf(`
+			prebuilt_apis {
+				name: "sdk",
+				api_dirs: ["%s"],
+				imports_sdk_version: "none",
+				imports_compile_dex: true,
+			}
+		`, strings.Join(android.SortedStringKeys(release2Modules), `", "`))
+
+	for release, modules := range release2Modules {
+		libs := append([]string{"android", "core-for-system-modules"}, modules...)
+		mockFS.Merge(prebuiltApisFilesForLibs([]string{release}, libs))
+	}
+	return android.GroupFixturePreparers(
+		// A temporary measure to discard the definitions provided by default by javaMockFS() to allow
+		// the changes that use this preparer to fix tests to be separated from the change to remove
+		// javaMockFS().
+		android.FixtureModifyMockFS(func(fs android.MockFS) {
+			for k, _ := range fs {
+				if strings.HasPrefix(k, "prebuilts/sdk/") {
+					delete(fs, k)
+				}
+			}
+		}),
+		android.FixtureAddTextFile(path, bp),
+		android.FixtureMergeMockFs(mockFS),
+	)
+}
+
+func javaMockFS() android.MockFS {
+	mockFS := android.MockFS{
 		"prebuilts/sdk/tools/core-lambda-stubs.jar": nil,
 		"prebuilts/sdk/Android.bp":                  []byte(`prebuilt_apis { name: "sdk", api_dirs: ["14", "28", "30", "current"], imports_sdk_version: "none", imports_compile_dex:true,}`),
 
 		"bin.py": nil,
 		python.StubTemplateHost: []byte(`PYTHON_BINARY = '%interpreter%'
 		MAIN_FILE = '%main%'`),
-
-		// For java_sdk_library
-		"api/module-lib-current.txt":    nil,
-		"api/module-lib-removed.txt":    nil,
-		"api/system-server-current.txt": nil,
-		"api/system-server-removed.txt": nil,
 	}
 
 	levels := []string{"14", "28", "29", "30", "current"}
@@ -63,6 +161,15 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 	for k, v := range prebuiltApisFilesForLibs(levels, libs) {
 		mockFS[k] = v
 	}
+
+	return mockFS
+}
+
+func TestConfig(buildDir string, env map[string]string, bp string, fs map[string][]byte) android.Config {
+	bp += GatherRequiredDepsForTest()
+
+	mockFS := javaMockFS()
+	mockFS.Merge(javaSdkLibraryFiles)
 
 	cc.GatherRequiredFilesForTest(mockFS)
 
@@ -240,6 +347,7 @@ func CheckModuleDependencies(t *testing.T, ctx *android.TestContext, name, varia
 }
 
 func CheckHiddenAPIRuleInputs(t *testing.T, expected string, hiddenAPIRule android.TestingBuildParams) {
+	t.Helper()
 	actual := strings.TrimSpace(strings.Join(android.NormalizePathsForTesting(hiddenAPIRule.Implicits), "\n"))
 	expected = strings.TrimSpace(expected)
 	if actual != expected {

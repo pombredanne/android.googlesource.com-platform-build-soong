@@ -39,23 +39,25 @@ import (
 )
 
 func init() {
-	android.RegisterModuleType("apex", BundleFactory)
-	android.RegisterModuleType("apex_test", testApexBundleFactory)
-	android.RegisterModuleType("apex_vndk", vndkApexBundleFactory)
-	android.RegisterModuleType("apex_defaults", defaultsFactory)
-	android.RegisterModuleType("prebuilt_apex", PrebuiltFactory)
-	android.RegisterModuleType("override_apex", overrideApexFactory)
-	android.RegisterModuleType("apex_set", apexSetFactory)
+	registerApexBuildComponents(android.InitRegistrationContext)
+}
 
-	android.PreDepsMutators(RegisterPreDepsMutators)
-	android.PostDepsMutators(RegisterPostDepsMutators)
+func registerApexBuildComponents(ctx android.RegistrationContext) {
+	ctx.RegisterModuleType("apex", BundleFactory)
+	ctx.RegisterModuleType("apex_test", testApexBundleFactory)
+	ctx.RegisterModuleType("apex_vndk", vndkApexBundleFactory)
+	ctx.RegisterModuleType("apex_defaults", defaultsFactory)
+	ctx.RegisterModuleType("prebuilt_apex", PrebuiltFactory)
+	ctx.RegisterModuleType("override_apex", overrideApexFactory)
+	ctx.RegisterModuleType("apex_set", apexSetFactory)
+
+	ctx.PreDepsMutators(RegisterPreDepsMutators)
+	ctx.PostDepsMutators(RegisterPostDepsMutators)
 }
 
 func RegisterPreDepsMutators(ctx android.RegisterMutatorsContext) {
 	ctx.TopDown("apex_vndk", apexVndkMutator).Parallel()
 	ctx.BottomUp("apex_vndk_deps", apexVndkDepsMutator).Parallel()
-	ctx.BottomUp("prebuilt_apex_select_source", prebuiltSelectSourceMutator).Parallel()
-	ctx.BottomUp("deapexer_select_source", deapexerSelectSourceMutator).Parallel()
 }
 
 func RegisterPostDepsMutators(ctx android.RegisterMutatorsContext) {
@@ -123,7 +125,7 @@ type apexBundleProperties struct {
 	// Whether this APEX is considered updatable or not. When set to true, this will enforce
 	// additional rules for making sure that the APEX is truly updatable. To be updatable,
 	// min_sdk_version should be set as well. This will also disable the size optimizations like
-	// symlinking to the system libs. Default is false.
+	// symlinking to the system libs. Default is true.
 	Updatable *bool
 
 	// Whether this APEX is installable to one of the partitions like system, vendor, etc.
@@ -972,6 +974,10 @@ func markPlatformAvailability(mctx android.BottomUpMutatorContext) {
 	// If any of the dep is not available to platform, this module is also considered as being
 	// not available to platform even if it has "//apex_available:platform"
 	mctx.VisitDirectDeps(func(child android.Module) {
+		depTag := mctx.OtherModuleDependencyTag(child)
+		if _, ok := depTag.(android.ExcludeFromApexContentsTag); ok {
+			return
+		}
 		if !am.DepIsInSameApex(mctx, child) {
 			// if the dependency crosses apex boundary, don't consider it
 			return
@@ -1234,7 +1240,7 @@ var _ android.ApexBundleDepsInfoIntf = (*apexBundle)(nil)
 
 // Implements android.ApexBudleDepsInfoIntf
 func (a *apexBundle) Updatable() bool {
-	return proptools.Bool(a.properties.Updatable)
+	return proptools.BoolDefault(a.properties.Updatable, true)
 }
 
 // getCertString returns the name of the cert that should be used to sign this APEX. This is
@@ -2246,8 +2252,10 @@ func (a *apexBundle) checkApexAvailability(ctx android.ModuleContext) {
 		if to.AvailableFor(apexName) || baselineApexAvailable(apexName, toName) {
 			return true
 		}
-		ctx.ModuleErrorf("%q requires %q that doesn't list the APEX under 'apex_available'. Dependency path:%s",
-			fromName, toName, ctx.GetPathString(true))
+		ctx.ModuleErrorf("%q requires %q that doesn't list the APEX under 'apex_available'."+
+			"\n\nDependency path:%s\n\n"+
+			"Consider adding %q to 'apex_available' property of %q",
+			fromName, toName, ctx.GetPathString(true), apexName, toName)
 		// Visit this module's dependencies to check and report any issues with their availability.
 		return true
 	})
