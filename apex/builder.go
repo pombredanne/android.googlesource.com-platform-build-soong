@@ -577,7 +577,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		var libNames []string
 		for _, f := range a.filesInfo {
 			if f.class == nativeSharedLib {
-				libNames = append(libNames, f.stem)
+				libNames = append(libNames, f.Stem())
 			}
 		}
 		apisBackedbyOutputFile := android.PathForModuleOut(ctx, a.Name()+"_backing.txt")
@@ -756,6 +756,12 @@ func (a *apexBundle) buildApexDependencyInfo(ctx android.ModuleContext) {
 		if from.Name() == to.Name() {
 			// This can happen for cc.reuseObjTag. We are not interested in tracking this.
 			// As soon as the dependency graph crosses the APEX boundary, don't go further.
+			return !externalDep
+		}
+
+		// Skip dependencies that are only available to APEXes; they are developed with updatability
+		// in mind and don't need manual approval.
+		if to.(android.ApexModule).NotAvailableForPlatform() {
 			return !externalDep
 		}
 
