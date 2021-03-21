@@ -30,11 +30,12 @@ func TestFixtureDedup(t *testing.T) {
 	preparer1 := appendToList("preparer1")
 	preparer2 := appendToList("preparer2")
 	preparer3 := appendToList("preparer3")
-	preparer4 := appendToList("preparer4")
+	preparer4 := OptionalFixturePreparer(appendToList("preparer4"))
+	nilPreparer := OptionalFixturePreparer(nil)
 
-	preparer1Then2 := FixturePreparers(preparer1, preparer2)
+	preparer1Then2 := GroupFixturePreparers(preparer1, preparer2, nilPreparer)
 
-	preparer2Then1 := FixturePreparers(preparer2, preparer1)
+	preparer2Then1 := GroupFixturePreparers(preparer2, preparer1)
 
 	buildDir := "build"
 	factory := NewFixtureFactory(&buildDir, preparer1, preparer2, preparer1, preparer1Then2)
@@ -43,7 +44,6 @@ func TestFixtureDedup(t *testing.T) {
 
 	extension.Fixture(t, preparer1, preparer2, preparer2Then1, preparer3)
 
-	h := TestHelper{t}
-	h.AssertDeepEquals("preparers called in wrong order",
+	AssertDeepEquals(t, "preparers called in wrong order",
 		[]string{"preparer1", "preparer2", "preparer4", "preparer3"}, list)
 }

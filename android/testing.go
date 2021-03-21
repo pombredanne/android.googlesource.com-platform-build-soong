@@ -20,9 +20,11 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/blueprint"
+	"github.com/google/blueprint/proptools"
 )
 
 func NewTestContext(config Config) *TestContext {
@@ -48,7 +50,7 @@ func NewTestContext(config Config) *TestContext {
 	return ctx
 }
 
-var PrepareForTestWithArchMutator = FixturePreparers(
+var PrepareForTestWithArchMutator = GroupFixturePreparers(
 	// Configure architecture targets in the fixture config.
 	FixtureModifyConfig(modifyTestConfigToSupportArchMutator),
 
@@ -72,17 +74,47 @@ var PrepareForTestWithOverrides = FixtureRegisterWithContext(func(ctx Registrati
 	ctx.PostDepsMutators(RegisterOverridePostDepsMutators)
 })
 
-// Prepares an integration test with build components from the android package.
-var PrepareForIntegrationTestWithAndroid = FixturePreparers(
-	// Mutators. Must match order in mutator.go.
+// Test fixture preparer that will register most java build components.
+//
+// Singletons and mutators should only be added here if they are needed for a majority of java
+// module types, otherwise they should be added under a separate preparer to allow them to be
+// selected only when needed to reduce test execution time.
+//
+// Module types do not have much of an overhead unless they are used so this should include as many
+// module types as possible. The exceptions are those module types that require mutators and/or
+// singletons in order to function in which case they should be kept together in a separate
+// preparer.
+//
+// The mutators in this group were chosen because they are needed by the vast majority of tests.
+var PrepareForTestWithAndroidBuildComponents = GroupFixturePreparers(
+	// Sorted alphabetically as the actual order does not matter as tests automatically enforce the
+	// correct order.
 	PrepareForTestWithArchMutator,
-	PrepareForTestWithDefaults,
 	PrepareForTestWithComponentsMutator,
-	PrepareForTestWithPrebuilts,
-	PrepareForTestWithOverrides,
-
-	// Modules
+	PrepareForTestWithDefaults,
 	PrepareForTestWithFilegroup,
+	PrepareForTestWithOverrides,
+	PrepareForTestWithPackageModule,
+	PrepareForTestWithPrebuilts,
+	PrepareForTestWithVisibility,
+)
+
+// Prepares an integration test with all build components from the android package.
+//
+// This should only be used by tests that want to run with as much of the build enabled as possible.
+var PrepareForIntegrationTestWithAndroid = GroupFixturePreparers(
+	PrepareForTestWithAndroidBuildComponents,
+)
+
+// Prepares a test that may be missing dependencies by setting allow_missing_dependencies to
+// true.
+var PrepareForTestWithAllowMissingDependencies = GroupFixturePreparers(
+	FixtureModifyProductVariables(func(variables FixtureProductVariables) {
+		variables.Allow_missing_dependencies = proptools.BoolPtr(true)
+	}),
+	FixtureModifyContext(func(ctx *TestContext) {
+		ctx.SetAllowMissingDependencies(true)
+	}),
 )
 
 func NewTestArchContext(config Config) *TestContext {
@@ -96,6 +128,13 @@ type TestContext struct {
 	preArch, preDeps, postDeps, finalDeps           []RegisterMutatorFunc
 	bp2buildPreArch, bp2buildDeps, bp2buildMutators []RegisterMutatorFunc
 	NameResolver                                    *NameResolver
+
+	// The list of pre-singletons and singletons registered for the test.
+	preSingletons, singletons sortableComponents
+
+	// The order in which the pre-singletons, mutators and singletons will be run in this test
+	// context; for debugging.
+	preSingletonOrder, mutatorOrder, singletonOrder []string
 }
 
 func (ctx *TestContext) PreArchMutators(f RegisterMutatorFunc) {
@@ -140,15 +179,244 @@ func (ctx *TestContext) DepsBp2BuildMutators(f RegisterMutatorFunc) {
 	ctx.bp2buildDeps = append(ctx.bp2buildDeps, f)
 }
 
-func (ctx *TestContext) Register() {
-	registerMutators(ctx.Context.Context, ctx.preArch, ctx.preDeps, ctx.postDeps, ctx.finalDeps)
+// registeredComponentOrder defines the order in which a sortableComponent type is registered at
+// runtime and provides support for reordering the components registered for a test in the same
+// way.
+type registeredComponentOrder struct {
+	// The name of the component type, used for error messages.
+	componentType string
 
+	// The names of the registered components in the order in which they were registered.
+	namesInOrder []string
+
+	// Maps from the component name to its position in the runtime ordering.
+	namesToIndex map[string]int
+
+	// A function that defines the order between two named components that can be used to sort a slice
+	// of component names into the same order as they appear in namesInOrder.
+	less func(string, string) bool
+}
+
+// registeredComponentOrderFromExistingOrder takes an existing slice of sortableComponents and
+// creates a registeredComponentOrder that contains a less function that can be used to sort a
+// subset of that list of names so it is in the same order as the original sortableComponents.
+func registeredComponentOrderFromExistingOrder(componentType string, existingOrder sortableComponents) registeredComponentOrder {
+	// Only the names from the existing order are needed for this so create a list of component names
+	// in the correct order.
+	namesInOrder := componentsToNames(existingOrder)
+
+	// Populate the map from name to position in the list.
+	nameToIndex := make(map[string]int)
+	for i, n := range namesInOrder {
+		nameToIndex[n] = i
+	}
+
+	// A function to use to map from a name to an index in the original order.
+	indexOf := func(name string) int {
+		index, ok := nameToIndex[name]
+		if !ok {
+			// Should never happen as tests that use components that are not known at runtime do not sort
+			// so should never use this function.
+			panic(fmt.Errorf("internal error: unknown %s %q should be one of %s", componentType, name, strings.Join(namesInOrder, ", ")))
+		}
+		return index
+	}
+
+	// The less function.
+	less := func(n1, n2 string) bool {
+		i1 := indexOf(n1)
+		i2 := indexOf(n2)
+		return i1 < i2
+	}
+
+	return registeredComponentOrder{
+		componentType: componentType,
+		namesInOrder:  namesInOrder,
+		namesToIndex:  nameToIndex,
+		less:          less,
+	}
+}
+
+// componentsToNames maps from the slice of components to a slice of their names.
+func componentsToNames(components sortableComponents) []string {
+	names := make([]string, len(components))
+	for i, c := range components {
+		names[i] = c.componentName()
+	}
+	return names
+}
+
+// enforceOrdering enforces the supplied components are in the same order as is defined in this
+// object.
+//
+// If the supplied components contains any components that are not registered at runtime, i.e. test
+// specific components, then it is impossible to sort them into an order that both matches the
+// runtime and also preserves the implicit ordering defined in the test. In that case it will not
+// sort the components, instead it will just check that the components are in the correct order.
+//
+// Otherwise, this will sort the supplied components in place.
+func (o *registeredComponentOrder) enforceOrdering(components sortableComponents) {
+	// Check to see if the list of components contains any components that are
+	// not registered at runtime.
+	var unknownComponents []string
+	testOrder := componentsToNames(components)
+	for _, name := range testOrder {
+		if _, ok := o.namesToIndex[name]; !ok {
+			unknownComponents = append(unknownComponents, name)
+			break
+		}
+	}
+
+	// If the slice contains some unknown components then it is not possible to
+	// sort them into an order that matches the runtime while also preserving the
+	// order expected from the test, so in that case don't sort just check that
+	// the order of the known mutators does match.
+	if len(unknownComponents) > 0 {
+		// Check order.
+		o.checkTestOrder(testOrder, unknownComponents)
+	} else {
+		// Sort the components.
+		sort.Slice(components, func(i, j int) bool {
+			n1 := components[i].componentName()
+			n2 := components[j].componentName()
+			return o.less(n1, n2)
+		})
+	}
+}
+
+// checkTestOrder checks that the supplied testOrder matches the one defined by this object,
+// panicking if it does not.
+func (o *registeredComponentOrder) checkTestOrder(testOrder []string, unknownComponents []string) {
+	lastMatchingTest := -1
+	matchCount := 0
+	// Take a copy of the runtime order as it is modified during the comparison.
+	runtimeOrder := append([]string(nil), o.namesInOrder...)
+	componentType := o.componentType
+	for i, j := 0, 0; i < len(testOrder) && j < len(runtimeOrder); {
+		test := testOrder[i]
+		runtime := runtimeOrder[j]
+
+		if test == runtime {
+			testOrder[i] = test + fmt.Sprintf(" <-- matched with runtime %s %d", componentType, j)
+			runtimeOrder[j] = runtime + fmt.Sprintf(" <-- matched with test %s %d", componentType, i)
+			lastMatchingTest = i
+			i += 1
+			j += 1
+			matchCount += 1
+		} else if _, ok := o.namesToIndex[test]; !ok {
+			// The test component is not registered globally so assume it is the correct place, treat it
+			// as having matched and skip it.
+			i += 1
+			matchCount += 1
+		} else {
+			// Assume that the test list is in the same order as the runtime list but the runtime list
+			// contains some components that are not present in the tests. So, skip the runtime component
+			// to try and find the next one that matches the current test component.
+			j += 1
+		}
+	}
+
+	// If every item in the test order was either test specific or matched one in the runtime then
+	// it is in the correct order. Otherwise, it was not so fail.
+	if matchCount != len(testOrder) {
+		// The test component names were not all matched with a runtime component name so there must
+		// either be a component present in the test that is not present in the runtime or they must be
+		// in the wrong order.
+		testOrder[lastMatchingTest+1] = testOrder[lastMatchingTest+1] + " <--- unmatched"
+		panic(fmt.Errorf("the tests uses test specific components %q and so cannot be automatically sorted."+
+			" Unfortunately it uses %s components in the wrong order.\n"+
+			"test order:\n    %s\n"+
+			"runtime order\n    %s\n",
+			SortedUniqueStrings(unknownComponents),
+			componentType,
+			strings.Join(testOrder, "\n    "),
+			strings.Join(runtimeOrder, "\n    ")))
+	}
+}
+
+// registrationSorter encapsulates the information needed to ensure that the test mutators are
+// registered, and thereby executed, in the same order as they are at runtime.
+//
+// It MUST be populated lazily AFTER all package initialization has been done otherwise it will
+// only define the order for a subset of all the registered build components that are available for
+// the packages being tested.
+//
+// e.g if this is initialized during say the cc package initialization then any tests run in the
+// java package will not sort build components registered by the java package's init() functions.
+type registrationSorter struct {
+	// Used to ensure that this is only created once.
+	once sync.Once
+
+	// The order of pre-singletons
+	preSingletonOrder registeredComponentOrder
+
+	// The order of mutators
+	mutatorOrder registeredComponentOrder
+
+	// The order of singletons
+	singletonOrder registeredComponentOrder
+}
+
+// populate initializes this structure from globally registered build components.
+//
+// Only the first call has any effect.
+func (s *registrationSorter) populate() {
+	s.once.Do(func() {
+		// Create an ordering from the globally registered pre-singletons.
+		s.preSingletonOrder = registeredComponentOrderFromExistingOrder("pre-singleton", preSingletons)
+
+		// Created an ordering from the globally registered mutators.
+		globallyRegisteredMutators := collateGloballyRegisteredMutators()
+		s.mutatorOrder = registeredComponentOrderFromExistingOrder("mutator", globallyRegisteredMutators)
+
+		// Create an ordering from the globally registered singletons.
+		globallyRegisteredSingletons := collateGloballyRegisteredSingletons()
+		s.singletonOrder = registeredComponentOrderFromExistingOrder("singleton", globallyRegisteredSingletons)
+	})
+}
+
+// Provides support for enforcing the same order in which build components are registered globally
+// to the order in which they are registered during tests.
+//
+// MUST only be accessed via the globallyRegisteredComponentsOrder func.
+var globalRegistrationSorter registrationSorter
+
+// globallyRegisteredComponentsOrder returns the globalRegistrationSorter after ensuring it is
+// correctly populated.
+func globallyRegisteredComponentsOrder() *registrationSorter {
+	globalRegistrationSorter.populate()
+	return &globalRegistrationSorter
+}
+
+func (ctx *TestContext) Register() {
+	globalOrder := globallyRegisteredComponentsOrder()
+
+	// Ensure that the pre-singletons used in the test are in the same order as they are used at
+	// runtime.
+	globalOrder.preSingletonOrder.enforceOrdering(ctx.preSingletons)
+	ctx.preSingletons.registerAll(ctx.Context)
+
+	mutators := collateRegisteredMutators(ctx.preArch, ctx.preDeps, ctx.postDeps, ctx.finalDeps)
+	// Ensure that the mutators used in the test are in the same order as they are used at runtime.
+	globalOrder.mutatorOrder.enforceOrdering(mutators)
+	mutators.registerAll(ctx.Context)
+
+	// Register the env singleton with this context before sorting.
 	ctx.RegisterSingletonType("env", EnvSingleton)
+
+	// Ensure that the singletons used in the test are in the same order as they are used at runtime.
+	globalOrder.singletonOrder.enforceOrdering(ctx.singletons)
+	ctx.singletons.registerAll(ctx.Context)
+
+	// Save the sorted components order away to make them easy to access while debugging.
+	ctx.preSingletonOrder = componentsToNames(preSingletons)
+	ctx.mutatorOrder = componentsToNames(mutators)
+	ctx.singletonOrder = componentsToNames(singletons)
 }
 
 // RegisterForBazelConversion prepares a test context for bp2build conversion.
 func (ctx *TestContext) RegisterForBazelConversion() {
-	RegisterMutatorsForBazelConversion(ctx.Context.Context, ctx.bp2buildPreArch, ctx.bp2buildDeps, ctx.bp2buildMutators)
+	RegisterMutatorsForBazelConversion(ctx.Context, ctx.bp2buildPreArch, ctx.bp2buildDeps, ctx.bp2buildMutators)
 }
 
 func (ctx *TestContext) ParseFileList(rootDir string, filePaths []string) (deps []string, errs []error) {
@@ -174,11 +442,11 @@ func (ctx *TestContext) RegisterSingletonModuleType(name string, factory Singlet
 }
 
 func (ctx *TestContext) RegisterSingletonType(name string, factory SingletonFactory) {
-	ctx.Context.RegisterSingletonType(name, SingletonFactoryAdaptor(ctx.Context, factory))
+	ctx.singletons = append(ctx.singletons, newSingleton(name, factory))
 }
 
 func (ctx *TestContext) RegisterPreSingletonType(name string, factory SingletonFactory) {
-	ctx.Context.RegisterPreSingletonType(name, SingletonFactoryAdaptor(ctx.Context, factory))
+	ctx.preSingletons = append(ctx.preSingletons, newPreSingleton(name, factory))
 }
 
 func (ctx *TestContext) ModuleForTests(name, variant string) TestingModule {
@@ -456,12 +724,15 @@ func FailIfErrored(t *testing.T, errs []error) {
 	}
 }
 
-func FailIfNoMatchingErrors(t *testing.T, pattern string, errs []error) {
+// Fail if no errors that matched the regular expression were found.
+//
+// Returns true if a matching error was found, false otherwise.
+func FailIfNoMatchingErrors(t *testing.T, pattern string, errs []error) bool {
 	t.Helper()
 
 	matcher, err := regexp.Compile(pattern)
 	if err != nil {
-		t.Errorf("failed to compile regular expression %q because %s", pattern, err)
+		t.Fatalf("failed to compile regular expression %q because %s", pattern, err)
 	}
 
 	found := false
@@ -477,6 +748,8 @@ func FailIfNoMatchingErrors(t *testing.T, pattern string, errs []error) {
 			t.Errorf("errs[%d] = %q", i, err)
 		}
 	}
+
+	return found
 }
 
 func CheckErrorsAgainstExpectations(t *testing.T, errs []error, expectedErrorPatterns []string) {
@@ -497,9 +770,9 @@ func CheckErrorsAgainstExpectations(t *testing.T, errs []error, expectedErrorPat
 			for i, err := range errs {
 				t.Errorf("errs[%d] = %s", i, err)
 			}
+			t.FailNow()
 		}
 	}
-
 }
 
 func SetKatiEnabledForTests(config Config) {
@@ -540,15 +813,14 @@ func AndroidMkDataForTest(t *testing.T, ctx *TestContext, mod blueprint.Module) 
 // that is relative to the root of the source tree.
 //
 // The build and source paths should be distinguishable based on their contents.
+//
+// deprecated: use PathRelativeToTop instead as it handles make install paths and differentiates
+// between output and source properly.
 func NormalizePathForTesting(path Path) string {
 	if path == nil {
 		return "<nil path>"
 	}
 	p := path.String()
-	// Allow absolute paths to /dev/
-	if strings.HasPrefix(p, "/dev/") {
-		return p
-	}
 	if w, ok := path.(WritablePath); ok {
 		rel, err := filepath.Rel(w.buildDir(), p)
 		if err != nil {
@@ -559,10 +831,112 @@ func NormalizePathForTesting(path Path) string {
 	return p
 }
 
+// NormalizePathsForTesting creates a slice of strings where each string is the result of applying
+// NormalizePathForTesting to the corresponding Path in the input slice.
+//
+// deprecated: use PathsRelativeToTop instead as it handles make install paths and differentiates
+// between output and source properly.
 func NormalizePathsForTesting(paths Paths) []string {
 	var result []string
 	for _, path := range paths {
 		relative := NormalizePathForTesting(path)
+		result = append(result, relative)
+	}
+	return result
+}
+
+// PathRelativeToTop returns a string representation of the path relative to a notional top
+// directory.
+//
+// For a WritablePath it applies StringPathRelativeToTop to it, using the buildDir returned from the
+// WritablePath's buildDir() method. For all other paths, i.e. source paths, that are already
+// relative to the top it just returns their string representation.
+func PathRelativeToTop(path Path) string {
+	if path == nil {
+		return "<nil path>"
+	}
+	p := path.String()
+	if w, ok := path.(WritablePath); ok {
+		buildDir := w.buildDir()
+		return StringPathRelativeToTop(buildDir, p)
+	}
+	return p
+}
+
+// PathsRelativeToTop creates a slice of strings where each string is the result of applying
+// PathRelativeToTop to the corresponding Path in the input slice.
+func PathsRelativeToTop(paths Paths) []string {
+	var result []string
+	for _, path := range paths {
+		relative := PathRelativeToTop(path)
+		result = append(result, relative)
+	}
+	return result
+}
+
+// StringPathRelativeToTop returns a string representation of the path relative to a notional top
+// directory.
+//
+// A standard build has the following structure:
+//   ../top/
+//          out/ - make install files go here.
+//          out/soong - this is the buildDir passed to NewTestConfig()
+//          ... - the source files
+//
+// This function converts a path so that it appears relative to the ../top/ directory, i.e.
+// * Make install paths, which have the pattern "buildDir/../<path>" are converted into the top
+//   relative path "out/<path>"
+// * Soong install paths and other writable paths, which have the pattern "buildDir/<path>" are
+//   converted into the top relative path "out/soong/<path>".
+// * Source paths are already relative to the top.
+//
+// This is provided for processing paths that have already been converted into a string, e.g. paths
+// in AndroidMkEntries structures. As a result it needs to be supplied the soong output dir against
+// which it can try and relativize paths. PathRelativeToTop must be used for process Path objects.
+func StringPathRelativeToTop(soongOutDir string, path string) string {
+
+	// A relative path must be a source path so leave it as it is.
+	if !filepath.IsAbs(path) {
+		return path
+	}
+
+	// Check to see if the path is relative to the soong out dir.
+	rel, isRel, err := maybeRelErr(soongOutDir, path)
+	if err != nil {
+		panic(err)
+	}
+
+	if isRel {
+		// The path is in the soong out dir so indicate that in the relative path.
+		return filepath.Join("out/soong", rel)
+	}
+
+	// Check to see if the path is relative to the top level out dir.
+	outDir := filepath.Dir(soongOutDir)
+	rel, isRel, err = maybeRelErr(outDir, path)
+	if err != nil {
+		panic(err)
+	}
+
+	if isRel {
+		// The path is in the out dir so indicate that in the relative path.
+		return filepath.Join("out", rel)
+	}
+
+	// This should never happen.
+	panic(fmt.Errorf("internal error: absolute path %s is not relative to the out dir %s", path, outDir))
+}
+
+// StringPathsRelativeToTop creates a slice of strings where each string is the result of applying
+// StringPathRelativeToTop to the corresponding string path in the input slice.
+//
+// This is provided for processing paths that have already been converted into a string, e.g. paths
+// in AndroidMkEntries structures. As a result it needs to be supplied the soong output dir against
+// which it can try and relativize paths. PathsRelativeToTop must be used for process Paths objects.
+func StringPathsRelativeToTop(soongOutDir string, paths []string) []string {
+	var result []string
+	for _, path := range paths {
+		relative := StringPathRelativeToTop(soongOutDir, path)
 		result = append(result, relative)
 	}
 	return result

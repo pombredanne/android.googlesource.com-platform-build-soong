@@ -21,7 +21,7 @@ import (
 	"android/soong/cc"
 )
 
-var ccTestFs = map[string][]byte{
+var ccTestFs = android.MockFS{
 	"Test.cpp":                        nil,
 	"myinclude/Test.h":                nil,
 	"myinclude-android/AndroidTest.h": nil,
@@ -32,7 +32,7 @@ var ccTestFs = map[string][]byte{
 	"some/where/stubslib.map.txt":     nil,
 }
 
-func testSdkWithCc(t *testing.T, bp string) *testSdkResult {
+func testSdkWithCc(t *testing.T, bp string) *android.TestResult {
 	t.Helper()
 	return testSdkWithFs(t, bp, ccTestFs)
 }
@@ -101,7 +101,7 @@ func TestSdkCompileMultilibOverride(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -353,7 +353,7 @@ func TestSnapshotWithObject(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -440,7 +440,7 @@ func TestSnapshotWithCcDuplicateHeaders(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkAllCopyRules(`
 myinclude/Test.h -> include/myinclude/Test.h
 .intermediates/mynativelib1/android_arm64_armv8-a_shared/mynativelib1.so -> arm64/lib/mynativelib1.so
@@ -486,7 +486,7 @@ func TestSnapshotWithCcExportGeneratedHeaders(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -556,7 +556,7 @@ func TestSnapshotWithCcSharedLibraryCommonProperties(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -615,7 +615,7 @@ func TestSnapshotWithCcBinary(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mymodule_exports", "",
+	CheckSnapshot(t, result, "mymodule_exports", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -700,7 +700,7 @@ func TestMultipleHostOsTypesSnapshotWithCcBinary(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("myexports", "",
+	CheckSnapshot(t, result, "myexports", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -808,7 +808,15 @@ module_exports_snapshot {
 }
 
 func TestSnapshotWithSingleHostOsType(t *testing.T) {
-	ctx, config := testSdkContext(`
+	result := sdkFixtureFactory.Extend(
+		ccTestFs.AddToFixture(),
+		cc.PrepareForTestOnLinuxBionic,
+		android.FixtureModifyConfig(func(config android.Config) {
+			config.Targets[android.LinuxBionic] = []android.Target{
+				{android.LinuxBionic, android.Arch{ArchType: android.X86_64}, android.NativeBridgeDisabled, "", "", false},
+			}
+		}),
+	).RunTestWithBp(t, `
 		cc_defaults {
 			name: "mydefaults",
 			device_supported: false,
@@ -849,11 +857,9 @@ func TestSnapshotWithSingleHostOsType(t *testing.T) {
 			],
 			stl: "none",
 		}
-	`, ccTestFs, []android.OsType{android.LinuxBionic})
+	`)
 
-	result := runTests(t, ctx, config)
-
-	result.CheckSnapshot("myexports", "",
+	CheckSnapshot(t, result, "myexports", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -991,7 +997,7 @@ func TestSnapshotWithCcStaticNocrtBinary(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mymodule_exports", "",
+	CheckSnapshot(t, result, "mymodule_exports", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -1099,7 +1105,7 @@ func TestSnapshotWithCcSharedLibrary(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -1200,7 +1206,7 @@ func TestSnapshotWithCcSharedLibrarySharedLibs(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -1297,7 +1303,7 @@ func TestHostSnapshotWithCcSharedLibrary(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -1424,7 +1430,7 @@ func TestMultipleHostOsTypesSnapshotWithCcSharedLibrary(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -1552,7 +1558,7 @@ func TestSnapshotWithCcStaticLibrary(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("myexports", "",
+	CheckSnapshot(t, result, "myexports", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -1615,7 +1621,7 @@ func TestHostSnapshotWithCcStaticLibrary(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("myexports", "",
+	CheckSnapshot(t, result, "myexports", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -1729,7 +1735,7 @@ func TestSnapshotWithCcLibrary(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("myexports", "",
+	CheckSnapshot(t, result, "myexports", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -1843,7 +1849,7 @@ func TestHostSnapshotWithMultiLib64(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("myexports", "",
+	CheckSnapshot(t, result, "myexports", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -1940,7 +1946,7 @@ func TestSnapshotWithCcHeadersLibrary(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -1978,7 +1984,7 @@ func TestHostSnapshotWithCcHeadersLibrary(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -2080,7 +2086,7 @@ func TestDeviceAndHostSnapshotWithCcHeadersLibrary(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -2112,7 +2118,6 @@ cc_prebuilt_library_headers {
     },
 }
 `),
-		// Verifi
 		checkVersionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -2193,7 +2198,7 @@ func TestSystemSharedLibPropagation(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -2266,7 +2271,7 @@ cc_prebuilt_library_shared {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -2377,7 +2382,7 @@ func TestStubsLibrary(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -2430,7 +2435,7 @@ func TestDeviceAndHostSnapshotWithStubsLibrary(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -2543,7 +2548,7 @@ func TestUniqueHostSoname(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
@@ -2658,7 +2663,7 @@ func TestNoSanitizerMembers(t *testing.T) {
 		}
 	`)
 
-	result.CheckSnapshot("mysdk", "",
+	CheckSnapshot(t, result, "mysdk", "",
 		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 

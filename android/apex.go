@@ -257,11 +257,25 @@ type ApexProperties struct {
 }
 
 // Marker interface that identifies dependencies that are excluded from APEX contents.
+//
+// Unless the tag also implements the AlwaysRequireApexVariantTag this will prevent an apex variant
+// from being created for the module.
 type ExcludeFromApexContentsTag interface {
 	blueprint.DependencyTag
 
 	// Method that differentiates this interface from others.
 	ExcludeFromApexContents()
+}
+
+// Marker interface that identifies dependencies that always requires an APEX variant to be created.
+//
+// It is possible for a dependency to require an apex variant but exclude the module from the APEX
+// contents. See sdk.sdkMemberDependencyTag.
+type AlwaysRequireApexVariantTag interface {
+	blueprint.DependencyTag
+
+	// Return true if this tag requires that the target dependency has an apex variant.
+	AlwaysRequireApexVariant() bool
 }
 
 // Marker interface that identifies dependencies that should inherit the DirectlyInAnyApex state
@@ -719,6 +733,8 @@ func (d *ApexBundleDepsInfo) FullListPath() Path {
 // Generate two module out files:
 // 1. FullList with transitive deps and their parents in the dep graph
 // 2. FlatList with a flat list of transitive deps
+// In both cases transitive deps of external deps are not included. Neither are deps that are only
+// available to APEXes; they are developed with updatability in mind and don't need manual approval.
 func (d *ApexBundleDepsInfo) BuildDepsInfoLists(ctx ModuleContext, minSdkVersion string, depInfos DepNameToDepInfoMap) {
 	var fullContent strings.Builder
 	var flatContent strings.Builder

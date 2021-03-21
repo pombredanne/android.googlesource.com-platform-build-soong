@@ -812,7 +812,7 @@ func javadocCmd(ctx android.ModuleContext, rule *android.RuleBuilder, srcs andro
 		BuiltTool("soong_javac_wrapper").Tool(config.JavadocCmd(ctx)).
 		Flag(config.JavacVmFlags).
 		FlagWithArg("-encoding ", "UTF-8").
-		FlagWithRspFileInputList("@", srcs).
+		FlagWithRspFileInputList("@", android.PathForModuleOut(ctx, "javadoc.rsp"), srcs).
 		FlagWithInput("@", srcJarList)
 
 	// TODO(ccross): Remove this if- statement once we finish migration for all Doclava
@@ -1203,8 +1203,14 @@ func (d *Droidstubs) apiLevelsAnnotationsFlags(ctx android.ModuleContext, cmd *a
 }
 
 func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersion javaVersion, srcs android.Paths,
-	srcJarList android.Path, bootclasspath, classpath classpath, sourcepaths android.Paths, implicitsRsp android.WritablePath, sandbox bool) *android.RuleBuilderCommand {
+	srcJarList android.Path, bootclasspath, classpath classpath, sourcepaths android.Paths,
+	implicitsRsp, homeDir android.WritablePath, sandbox bool) *android.RuleBuilderCommand {
+	rule.Command().Text("rm -rf").Flag(homeDir.String())
+	rule.Command().Text("mkdir -p").Flag(homeDir.String())
+
 	cmd := rule.Command()
+	cmd.FlagWithArg("ANDROID_SDK_HOME=", homeDir.String())
+
 	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_METALAVA") {
 		rule.Remoteable(android.RemoteRuleSupports{RBE: true})
 		pool := ctx.Config().GetenvWithDefault("RBE_METALAVA_POOL", "metalava")
@@ -1214,18 +1220,22 @@ func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersi
 			execStrategy = remoteexec.LocalExecStrategy
 			labels["shallow"] = "true"
 		}
-		inputs := []string{android.PathForOutput(ctx, "host", ctx.Config().PrebuiltOS(), "framework", "metalava.jar").String()}
+		inputs := []string{
+			ctx.Config().HostJavaToolPath(ctx, "metalava").String(),
+			homeDir.String(),
+		}
 		if v := ctx.Config().Getenv("RBE_METALAVA_INPUTS"); v != "" {
 			inputs = append(inputs, strings.Split(v, ",")...)
 		}
 		cmd.Text((&remoteexec.REParams{
-			Labels:          labels,
-			ExecStrategy:    execStrategy,
-			Inputs:          inputs,
-			RSPFile:         implicitsRsp.String(),
-			ToolchainInputs: []string{config.JavaCmd(ctx).String()},
-			Platform:        map[string]string{remoteexec.PoolKey: pool},
-		}).NoVarTemplate(ctx.Config()))
+			Labels:               labels,
+			ExecStrategy:         execStrategy,
+			Inputs:               inputs,
+			RSPFile:              implicitsRsp.String(),
+			ToolchainInputs:      []string{config.JavaCmd(ctx).String()},
+			Platform:             map[string]string{remoteexec.PoolKey: pool},
+			EnvironmentVariables: []string{"ANDROID_SDK_HOME"},
+		}).NoVarTemplate(ctx.Config().RBEWrapper()))
 	}
 
 	cmd.BuiltTool("metalava").
@@ -1233,7 +1243,7 @@ func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersi
 		Flag("-J--add-opens=java.base/java.util=ALL-UNNAMED").
 		FlagWithArg("-encoding ", "UTF-8").
 		FlagWithArg("-source ", javaVersion.String()).
-		FlagWithRspFileInputList("@", srcs).
+		FlagWithRspFileInputList("@", android.PathForModuleOut(ctx, "metalava.rsp"), srcs).
 		FlagWithInput("@", srcJarList)
 
 	if javaHome := ctx.Config().Getenv("ANDROID_JAVA_HOME"); javaHome != "" {
@@ -1302,9 +1312,9 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	srcJarList := zipSyncCmd(ctx, rule, srcJarDir, d.Javadoc.srcJars)
 
 	implicitsRsp := android.PathForModuleOut(ctx, ctx.ModuleName()+"-"+"implicits.rsp")
-
+	homeDir := android.PathForModuleOut(ctx, "metalava-home")
 	cmd := metalavaCmd(ctx, rule, javaVersion, d.Javadoc.srcFiles, srcJarList,
-		deps.bootClasspath, deps.classpath, d.Javadoc.sourcepaths, implicitsRsp,
+		deps.bootClasspath, deps.classpath, d.Javadoc.sourcepaths, implicitsRsp, homeDir,
 		Bool(d.Javadoc.properties.Sandbox))
 	cmd.Implicits(d.Javadoc.implicits)
 
@@ -1436,7 +1446,9 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	// add a large number of inputs to a file without exceeding bash command length limits (which
 	// would happen if we use the WriteFile rule). The cp is needed because RuleBuilder sets the
 	// rsp file to be ${output}.rsp.
-	impCmd.Text("cp").FlagWithRspFileInputList("", cmd.GetImplicits()).Output(implicitsRsp)
+	impCmd.Text("cp").
+		FlagWithRspFileInputList("", android.PathForModuleOut(ctx, "metalava-implicits.rsp"), cmd.GetImplicits()).
+		Output(implicitsRsp)
 	impRule.Build("implicitsGen", "implicits generation")
 	cmd.Implicit(implicitsRsp)
 
@@ -1666,14 +1678,17 @@ func StubsDefaultsFactory() android.Module {
 func zipSyncCmd(ctx android.ModuleContext, rule *android.RuleBuilder,
 	srcJarDir android.ModuleOutPath, srcJars android.Paths) android.OutputPath {
 
-	rule.Command().Text("rm -rf").Text(srcJarDir.String())
-	rule.Command().Text("mkdir -p").Text(srcJarDir.String())
+	cmd := rule.Command()
+	cmd.Text("rm -rf").Text(cmd.PathForOutput(srcJarDir))
+	cmd = rule.Command()
+	cmd.Text("mkdir -p").Text(cmd.PathForOutput(srcJarDir))
 	srcJarList := srcJarDir.Join(ctx, "list")
 
 	rule.Temporary(srcJarList)
 
-	rule.Command().BuiltTool("zipsync").
-		FlagWithArg("-d ", srcJarDir.String()).
+	cmd = rule.Command()
+	cmd.BuiltTool("zipsync").
+		FlagWithArg("-d ", cmd.PathForOutput(srcJarDir)).
 		FlagWithOutput("-l ", srcJarList).
 		FlagWithArg("-f ", `"*.java"`).
 		Inputs(srcJars)
@@ -1740,7 +1755,7 @@ func (p *PrebuiltStubsSources) GenerateAndroidBuildActions(ctx android.ModuleCon
 		Flag("-jar").
 		FlagWithOutput("-o ", p.stubsSrcJar).
 		FlagWithArg("-C ", srcDir.String()).
-		FlagWithRspFileInputList("-r ", srcPaths)
+		FlagWithRspFileInputList("-r ", p.stubsSrcJar.ReplaceExtension(ctx, "rsp"), srcPaths)
 
 	rule.Restat()
 

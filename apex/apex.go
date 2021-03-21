@@ -39,16 +39,20 @@ import (
 )
 
 func init() {
-	android.RegisterModuleType("apex", BundleFactory)
-	android.RegisterModuleType("apex_test", testApexBundleFactory)
-	android.RegisterModuleType("apex_vndk", vndkApexBundleFactory)
-	android.RegisterModuleType("apex_defaults", defaultsFactory)
-	android.RegisterModuleType("prebuilt_apex", PrebuiltFactory)
-	android.RegisterModuleType("override_apex", overrideApexFactory)
-	android.RegisterModuleType("apex_set", apexSetFactory)
+	registerApexBuildComponents(android.InitRegistrationContext)
+}
 
-	android.PreDepsMutators(RegisterPreDepsMutators)
-	android.PostDepsMutators(RegisterPostDepsMutators)
+func registerApexBuildComponents(ctx android.RegistrationContext) {
+	ctx.RegisterModuleType("apex", BundleFactory)
+	ctx.RegisterModuleType("apex_test", testApexBundleFactory)
+	ctx.RegisterModuleType("apex_vndk", vndkApexBundleFactory)
+	ctx.RegisterModuleType("apex_defaults", defaultsFactory)
+	ctx.RegisterModuleType("prebuilt_apex", PrebuiltFactory)
+	ctx.RegisterModuleType("override_apex", overrideApexFactory)
+	ctx.RegisterModuleType("apex_set", apexSetFactory)
+
+	ctx.PreDepsMutators(RegisterPreDepsMutators)
+	ctx.PostDepsMutators(RegisterPostDepsMutators)
 }
 
 func RegisterPreDepsMutators(ctx android.RegisterMutatorsContext) {
@@ -97,6 +101,9 @@ type apexBundleProperties struct {
 
 	// List of prebuilt files that are embedded inside this APEX bundle.
 	Prebuilts []string
+
+	// List of platform_compat_config files that are embedded inside this APEX bundle.
+	Compat_configs []string
 
 	// List of BPF programs inside this APEX bundle.
 	Bpfs []string
@@ -542,23 +549,35 @@ type dependencyTag struct {
 	// Determines if the dependent will be part of the APEX payload. Can be false for the
 	// dependencies to the signing key module, etc.
 	payload bool
+
+	// True if the dependent can only be a source module, false if a prebuilt module is a suitable
+	// replacement. This is needed because some prebuilt modules do not provide all the information
+	// needed by the apex.
+	sourceOnly bool
 }
 
+func (d dependencyTag) ReplaceSourceWithPrebuilt() bool {
+	return !d.sourceOnly
+}
+
+var _ android.ReplaceSourceWithPrebuilt = &dependencyTag{}
+
 var (
-	androidAppTag  = dependencyTag{name: "androidApp", payload: true}
-	bpfTag         = dependencyTag{name: "bpf", payload: true}
-	certificateTag = dependencyTag{name: "certificate"}
-	executableTag  = dependencyTag{name: "executable", payload: true}
-	fsTag          = dependencyTag{name: "filesystem", payload: true}
-	bootImageTag   = dependencyTag{name: "bootImage", payload: true}
-	javaLibTag     = dependencyTag{name: "javaLib", payload: true}
-	jniLibTag      = dependencyTag{name: "jniLib", payload: true}
-	keyTag         = dependencyTag{name: "key"}
-	prebuiltTag    = dependencyTag{name: "prebuilt", payload: true}
-	rroTag         = dependencyTag{name: "rro", payload: true}
-	sharedLibTag   = dependencyTag{name: "sharedLib", payload: true}
-	testForTag     = dependencyTag{name: "test for"}
-	testTag        = dependencyTag{name: "test", payload: true}
+	androidAppTag   = dependencyTag{name: "androidApp", payload: true}
+	bpfTag          = dependencyTag{name: "bpf", payload: true}
+	certificateTag  = dependencyTag{name: "certificate"}
+	executableTag   = dependencyTag{name: "executable", payload: true}
+	fsTag           = dependencyTag{name: "filesystem", payload: true}
+	bootImageTag    = dependencyTag{name: "bootImage", payload: true}
+	compatConfigTag = dependencyTag{name: "compatConfig", payload: true, sourceOnly: true}
+	javaLibTag      = dependencyTag{name: "javaLib", payload: true}
+	jniLibTag       = dependencyTag{name: "jniLib", payload: true}
+	keyTag          = dependencyTag{name: "key"}
+	prebuiltTag     = dependencyTag{name: "prebuilt", payload: true}
+	rroTag          = dependencyTag{name: "rro", payload: true}
+	sharedLibTag    = dependencyTag{name: "sharedLib", payload: true}
+	testForTag      = dependencyTag{name: "test for"}
+	testTag         = dependencyTag{name: "test", payload: true}
 )
 
 // TODO(jiyong): shorten this function signature
@@ -733,6 +752,7 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 	ctx.AddFarVariationDependencies(commonVariation, javaLibTag, a.properties.Java_libs...)
 	ctx.AddFarVariationDependencies(commonVariation, bpfTag, a.properties.Bpfs...)
 	ctx.AddFarVariationDependencies(commonVariation, fsTag, a.properties.Filesystems...)
+	ctx.AddFarVariationDependencies(commonVariation, compatConfigTag, a.properties.Compat_configs...)
 
 	if a.artApex {
 		// With EMMA_INSTRUMENT_FRAMEWORK=true the ART boot image includes jacoco library.
@@ -824,6 +844,19 @@ func (a *apexBundle) ApexInfoMutator(mctx android.TopDownMutatorContext) {
 	continueApexDepsWalk := func(child, parent android.Module) bool {
 		am, ok := child.(android.ApexModule)
 		if !ok || !am.CanHaveApexVariants() {
+			return false
+		}
+		depTag := mctx.OtherModuleDependencyTag(child)
+
+		// Check to see if the tag always requires that the child module has an apex variant for every
+		// apex variant of the parent module. If it does not then it is still possible for something
+		// else, e.g. the DepIsInSameApex(...) method to decide that a variant is required.
+		if required, ok := depTag.(android.AlwaysRequireApexVariantTag); ok && required.AlwaysRequireApexVariant() {
+			return true
+		}
+		if _, ok := depTag.(android.ExcludeFromApexContentsTag); ok {
+			// The tag defines a dependency that never requires the child module to be part of the same
+			// apex as the parent so it does not need an apex variant created.
 			return false
 		}
 		if !parent.(android.DepIsInSameApex).DepIsInSameApex(mctx, child) {
@@ -970,6 +1003,10 @@ func markPlatformAvailability(mctx android.BottomUpMutatorContext) {
 	// If any of the dep is not available to platform, this module is also considered as being
 	// not available to platform even if it has "//apex_available:platform"
 	mctx.VisitDirectDeps(func(child android.Module) {
+		depTag := mctx.OtherModuleDependencyTag(child)
+		if _, ok := depTag.(android.ExcludeFromApexContentsTag); ok {
+			return
+		}
 		if !am.DepIsInSameApex(mctx, child) {
 			// if the dependency crosses apex boundary, don't consider it
 			return
@@ -1727,10 +1764,14 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			case prebuiltTag:
 				if prebuilt, ok := child.(prebuilt_etc.PrebuiltEtcModule); ok {
 					filesInfo = append(filesInfo, apexFileForPrebuiltEtc(ctx, prebuilt, depName))
-				} else if prebuilt, ok := child.(java.PlatformCompatConfigIntf); ok {
-					filesInfo = append(filesInfo, apexFileForCompatConfig(ctx, prebuilt, depName))
 				} else {
-					ctx.PropertyErrorf("prebuilts", "%q is not a prebuilt_etc and not a platform_compat_config module", depName)
+					ctx.PropertyErrorf("prebuilts", "%q is not a prebuilt_etc module", depName)
+				}
+			case compatConfigTag:
+				if compatConfig, ok := child.(java.PlatformCompatConfigIntf); ok {
+					filesInfo = append(filesInfo, apexFileForCompatConfig(ctx, compatConfig, depName))
+				} else {
+					ctx.PropertyErrorf("compat_configs", "%q is not a platform_compat_config module", depName)
 				}
 			case testTag:
 				if ccTest, ok := child.(*cc.Module); ok {

@@ -165,6 +165,12 @@ type syspropLibraryProperties struct {
 		// Forwarded to cc_library.min_sdk_version
 		Min_sdk_version *string
 	}
+
+	Java struct {
+		// Minimum sdk version that the artifact should support when it runs as part of mainline modules(APEX).
+		// Forwarded to java_library.min_sdk_version
+		Min_sdk_version *string
+	}
 }
 
 var (
@@ -187,7 +193,11 @@ func SyspropLibraries(config android.Config) []string {
 }
 
 func init() {
-	android.RegisterModuleType("sysprop_library", syspropLibraryFactory)
+	registerSyspropBuildComponents(android.InitRegistrationContext)
+}
+
+func registerSyspropBuildComponents(ctx android.RegistrationContext) {
+	ctx.RegisterModuleType("sysprop_library", syspropLibraryFactory)
 }
 
 func (m *syspropLibrary) Name() string {
@@ -403,6 +413,8 @@ type javaLibraryProperties struct {
 	Libs              []string
 	Stem              *string
 	SyspropPublicStub string
+	Apex_available    []string
+	Min_sdk_version   *string
 }
 
 func syspropLibraryHook(ctx android.LoadHookContext, m *syspropLibrary) {
@@ -508,6 +520,8 @@ func syspropLibraryHook(ctx android.LoadHookContext, m *syspropLibrary) {
 		Sdk_version:       proptools.StringPtr("core_current"),
 		Libs:              []string{javaSyspropStub},
 		SyspropPublicStub: publicStub,
+		Apex_available:    m.ApexProperties.Apex_available,
+		Min_sdk_version:   m.properties.Java.Min_sdk_version,
 	})
 
 	if publicStub != "" {

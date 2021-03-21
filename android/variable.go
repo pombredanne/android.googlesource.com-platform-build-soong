@@ -24,10 +24,16 @@ import (
 )
 
 func init() {
-	PreDepsMutators(func(ctx RegisterMutatorsContext) {
+	registerVariableBuildComponents(InitRegistrationContext)
+}
+
+func registerVariableBuildComponents(ctx RegistrationContext) {
+	ctx.PreDepsMutators(func(ctx RegisterMutatorsContext) {
 		ctx.BottomUp("variable", VariableMutator).Parallel()
 	})
 }
+
+var PrepareForTestWithVariables = FixtureRegisterWithContext(registerVariableBuildComponents)
 
 type variableProperties struct {
 	Product_variables struct {
@@ -308,6 +314,11 @@ type productVariables struct {
 	DirectedRecoverySnapshot bool            `json:",omitempty"`
 	RecoverySnapshotModules  map[string]bool `json:",omitempty"`
 
+	VendorSnapshotDirsIncluded   []string `json:",omitempty"`
+	VendorSnapshotDirsExcluded   []string `json:",omitempty"`
+	RecoverySnapshotDirsExcluded []string `json:",omitempty"`
+	RecoverySnapshotDirsIncluded []string `json:",omitempty"`
+
 	BoardVendorSepolicyDirs      []string `json:",omitempty"`
 	BoardOdmSepolicyDirs         []string `json:",omitempty"`
 	BoardReqdMaskPolicy          []string `json:",omitempty"`
@@ -368,7 +379,15 @@ type productVariables struct {
 
 	ShippingApiLevel *string `json:",omitempty"`
 
+	BuildBrokenEnforceSyspropOwner     bool `json:",omitempty"`
+	BuildBrokenTrebleSyspropNeverallow bool `json:",omitempty"`
 	BuildBrokenVendorPropertyNamespace bool `json:",omitempty"`
+
+	RequiresInsecureExecmemForSwiftshader bool `json:",omitempty"`
+
+	SelinuxIgnoreNeverallows bool `json:",omitempty"`
+
+	SepolicySplit bool `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {
@@ -415,6 +434,9 @@ func (v *productVariables) SetDefaultConfig() {
 		Malloc_zero_contents:         boolPtr(true),
 		Malloc_pattern_fill_contents: boolPtr(false),
 		Safestack:                    boolPtr(false),
+
+		BootJars:          ConfiguredJarList{apexes: []string{}, jars: []string{}},
+		UpdatableBootJars: ConfiguredJarList{apexes: []string{}, jars: []string{}},
 	}
 
 	if runtime.GOOS == "linux" {

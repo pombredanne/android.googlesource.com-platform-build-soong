@@ -261,21 +261,17 @@ func dexpreoptCommand(ctx android.PathContext, globalSoong *GlobalSoongConfig, g
 
 	} else if module.EnforceUsesLibraries {
 		// Generate command that saves target SDK version in a shell variable.
-		if module.ManifestPath != nil {
-			rule.Command().Text(`target_sdk_version="$(`).
-				Tool(globalSoong.ManifestCheck).
-				Flag("--extract-target-sdk-version").
-				Input(module.ManifestPath).
-				Text(`)"`)
-		} else {
-			// No manifest to extract targetSdkVersion from, hope that DexJar is an APK
-			rule.Command().Text(`target_sdk_version="$(`).
-				Tool(globalSoong.Aapt).
-				Flag("dump badging").
-				Input(module.DexPath).
-				Text(`| grep "targetSdkVersion" | sed -n "s/targetSdkVersion:'\(.*\)'/\1/p"`).
-				Text(`)"`)
+		manifestOrApk := module.ManifestPath
+		if manifestOrApk == nil {
+			// No manifest to extract targetSdkVersion from, hope that dexjar is an APK.
+			manifestOrApk = module.DexPath
 		}
+		rule.Command().Text(`target_sdk_version="$(`).
+			Tool(globalSoong.ManifestCheck).
+			Flag("--extract-target-sdk-version").
+			Input(manifestOrApk).
+			FlagWithInput("--aapt ", ctx.Config().HostToolPath(ctx, "aapt")).
+			Text(`)"`)
 
 		// Generate command that saves host and target class loader context in shell variables.
 		clc, paths := ComputeClassLoaderContext(module.ClassLoaderContexts)
@@ -288,12 +284,9 @@ func dexpreoptCommand(ctx android.PathContext, globalSoong *GlobalSoongConfig, g
 
 	} else {
 		// Other libraries or APKs for which the exact <uses-library> list is unknown.
-		// Pass special class loader context to skip the classpath and collision check.
-		// This will get removed once LOCAL_USES_LIBRARIES is enforced.
-		// Right now LOCAL_USES_LIBRARIES is opt in, for the case where it's not specified we still default
-		// to the &.
+		// We assume the class loader context is empty.
 		rule.Command().
-			Text(`class_loader_context_arg=--class-loader-context=\&`).
+			Text(`class_loader_context_arg=--class-loader-context=PCL[]`).
 			Text(`stored_class_loader_context_arg=""`)
 	}
 

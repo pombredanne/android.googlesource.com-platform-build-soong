@@ -28,70 +28,68 @@ import (
 	"android/soong/cc"
 )
 
-var (
-	resourceFiles = []string{
+// testAppConfig is a legacy way of creating a test Config for testing java app modules.
+//
+// See testJava for an explanation as to how to stop using this deprecated method.
+//
+// deprecated
+func testAppConfig(env map[string]string, bp string, fs map[string][]byte) android.Config {
+	return testConfig(env, bp, fs)
+}
+
+// testApp runs tests using the javaFixtureFactory
+//
+// See testJava for an explanation as to how to stop using this deprecated method.
+//
+// deprecated
+func testApp(t *testing.T, bp string) *android.TestContext {
+	t.Helper()
+	result := javaFixtureFactory.RunTestWithBp(t, bp)
+	return result.TestContext
+}
+
+func TestApp(t *testing.T) {
+	resourceFiles := []string{
 		"res/layout/layout.xml",
 		"res/values/strings.xml",
 		"res/values-en-rUS/strings.xml",
 	}
 
-	compiledResourceFiles = []string{
+	compiledResourceFiles := []string{
 		"aapt2/res/layout_layout.xml.flat",
 		"aapt2/res/values_strings.arsc.flat",
 		"aapt2/res/values-en-rUS_strings.arsc.flat",
 	}
-)
 
-func testAppConfig(env map[string]string, bp string, fs map[string][]byte) android.Config {
-	appFS := map[string][]byte{}
-	for k, v := range fs {
-		appFS[k] = v
-	}
-
-	for _, file := range resourceFiles {
-		appFS[file] = nil
-	}
-
-	return testConfig(env, bp, appFS)
-}
-
-func testApp(t *testing.T, bp string) *android.TestContext {
-	config := testAppConfig(nil, bp, nil)
-
-	ctx := testContext(config)
-
-	run(t, ctx, config)
-
-	return ctx
-}
-
-func TestApp(t *testing.T) {
 	for _, moduleType := range []string{"android_app", "android_library"} {
 		t.Run(moduleType, func(t *testing.T) {
-			ctx := testApp(t, moduleType+` {
+			result := javaFixtureFactory.Extend(
+				android.FixtureModifyMockFS(func(fs android.MockFS) {
+					for _, file := range resourceFiles {
+						fs[file] = nil
+					}
+				}),
+			).RunTestWithBp(t, moduleType+` {
 					name: "foo",
 					srcs: ["a.java"],
 					sdk_version: "current"
 				}
 			`)
 
-			foo := ctx.ModuleForTests("foo", "android_common")
+			foo := result.ModuleForTests("foo", "android_common")
 
 			var expectedLinkImplicits []string
 
 			manifestFixer := foo.Output("manifest_fixer/AndroidManifest.xml")
 			expectedLinkImplicits = append(expectedLinkImplicits, manifestFixer.Output.String())
 
-			frameworkRes := ctx.ModuleForTests("framework-res", "android_common")
+			frameworkRes := result.ModuleForTests("framework-res", "android_common")
 			expectedLinkImplicits = append(expectedLinkImplicits,
 				frameworkRes.Output("package-res.apk").Output.String())
 
 			// Test the mapping from input files to compiled output file names
 			compile := foo.Output(compiledResourceFiles[0])
-			if !reflect.DeepEqual(resourceFiles, compile.Inputs.Strings()) {
-				t.Errorf("expected aapt2 compile inputs expected:\n  %#v\n got:\n  %#v",
-					resourceFiles, compile.Inputs.Strings())
-			}
+			android.AssertDeepEquals(t, "aapt2 compile inputs", resourceFiles, compile.Inputs.Strings())
 
 			compiledResourceOutputs := compile.Outputs.Strings()
 			sort.Strings(compiledResourceOutputs)
@@ -102,11 +100,8 @@ func TestApp(t *testing.T) {
 			expectedLinkImplicits = append(expectedLinkImplicits, list.Output.String())
 
 			// Check that the link rule uses
-			res := ctx.ModuleForTests("foo", "android_common").Output("package-res.apk")
-			if !reflect.DeepEqual(expectedLinkImplicits, res.Implicits.Strings()) {
-				t.Errorf("expected aapt2 link implicits expected:\n  %#v\n got:\n  %#v",
-					expectedLinkImplicits, res.Implicits.Strings())
-			}
+			res := result.ModuleForTests("foo", "android_common").Output("package-res.apk")
+			android.AssertDeepEquals(t, "aapt2 link implicits", expectedLinkImplicits, res.Implicits.Strings())
 		})
 	}
 }
@@ -375,11 +370,15 @@ func TestUpdatableApps(t *testing.T) {
 
 	for _, test := range testCases {
 		t.Run(test.name, func(t *testing.T) {
-			if test.expectedError == "" {
-				testJava(t, test.bp)
-			} else {
-				testJavaError(t, test.expectedError, test.bp)
+			errorHandler := android.FixtureExpectsNoErrors
+			if test.expectedError != "" {
+				errorHandler = android.FixtureExpectsAtLeastOneErrorMatchingPattern(test.expectedError)
 			}
+			javaFixtureFactory.
+				Extend(FixtureWithPrebuiltApis(map[string][]string{
+					"29": {"foo"},
+				})).
+				ExtendWithErrorHandler(errorHandler).RunTestWithBp(t, test.bp)
 		})
 	}
 }
@@ -989,12 +988,8 @@ func TestAndroidResources(t *testing.T) {
 	}
 }
 
-func checkSdkVersion(t *testing.T, config android.Config, expectedSdkVersion string) {
-	ctx := testContext(config)
-
-	run(t, ctx, config)
-
-	foo := ctx.ModuleForTests("foo", "android_common")
+func checkSdkVersion(t *testing.T, result *android.TestResult, expectedSdkVersion string) {
+	foo := result.ModuleForTests("foo", "android_common")
 	link := foo.Output("package-res.apk")
 	linkFlags := strings.Split(link.Args["flags"], " ")
 	min := android.IndexList("--min-sdk-version", linkFlags)
@@ -1007,15 +1002,9 @@ func checkSdkVersion(t *testing.T, config android.Config, expectedSdkVersion str
 	gotMinSdkVersion := linkFlags[min+1]
 	gotTargetSdkVersion := linkFlags[target+1]
 
-	if gotMinSdkVersion != expectedSdkVersion {
-		t.Errorf("incorrect --min-sdk-version, expected %q got %q",
-			expectedSdkVersion, gotMinSdkVersion)
-	}
+	android.AssertStringEquals(t, "incorrect --min-sdk-version", expectedSdkVersion, gotMinSdkVersion)
 
-	if gotTargetSdkVersion != expectedSdkVersion {
-		t.Errorf("incorrect --target-sdk-version, expected %q got %q",
-			expectedSdkVersion, gotTargetSdkVersion)
-	}
+	android.AssertStringEquals(t, "incorrect --target-sdk-version", expectedSdkVersion, gotTargetSdkVersion)
 }
 
 func TestAppSdkVersion(t *testing.T) {
@@ -1088,13 +1077,19 @@ func TestAppSdkVersion(t *testing.T) {
 					%s
 				}`, moduleType, test.sdkVersion, platformApiProp)
 
-				config := testAppConfig(nil, bp, nil)
-				config.TestProductVariables.Platform_sdk_version = &test.platformSdkInt
-				config.TestProductVariables.Platform_sdk_codename = &test.platformSdkCodename
-				config.TestProductVariables.Platform_version_active_codenames = test.activeCodenames
-				config.TestProductVariables.Platform_sdk_final = &test.platformSdkFinal
-				checkSdkVersion(t, config, test.expectedMinSdkVersion)
+				result := javaFixtureFactory.Extend(
+					android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+						variables.Platform_sdk_version = &test.platformSdkInt
+						variables.Platform_sdk_codename = &test.platformSdkCodename
+						variables.Platform_version_active_codenames = test.activeCodenames
+						variables.Platform_sdk_final = &test.platformSdkFinal
+					}),
+					FixtureWithPrebuiltApis(map[string][]string{
+						"14": {"foo"},
+					}),
+				).RunTestWithBp(t, bp)
 
+				checkSdkVersion(t, result, test.expectedMinSdkVersion)
 			})
 		}
 	}
@@ -1150,13 +1145,22 @@ func TestVendorAppSdkVersion(t *testing.T) {
 						vendor: true,
 					}`, moduleType, sdkKind, test.sdkVersion)
 
-					config := testAppConfig(nil, bp, nil)
-					config.TestProductVariables.Platform_sdk_version = &test.platformSdkInt
-					config.TestProductVariables.Platform_sdk_codename = &test.platformSdkCodename
-					config.TestProductVariables.Platform_sdk_final = &test.platformSdkFinal
-					config.TestProductVariables.DeviceCurrentApiLevelForVendorModules = &test.deviceCurrentApiLevelForVendorModules
-					config.TestProductVariables.DeviceSystemSdkVersions = []string{"28", "29"}
-					checkSdkVersion(t, config, test.expectedMinSdkVersion)
+					result := javaFixtureFactory.Extend(
+						android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+							variables.Platform_sdk_version = &test.platformSdkInt
+							variables.Platform_sdk_codename = &test.platformSdkCodename
+							variables.Platform_sdk_final = &test.platformSdkFinal
+							variables.DeviceCurrentApiLevelForVendorModules = &test.deviceCurrentApiLevelForVendorModules
+							variables.DeviceSystemSdkVersions = []string{"28", "29"}
+						}),
+						FixtureWithPrebuiltApis(map[string][]string{
+							"28":      {"foo"},
+							"29":      {"foo"},
+							"current": {"foo"},
+						}),
+					).RunTestWithBp(t, bp)
+
+					checkSdkVersion(t, result, test.expectedMinSdkVersion)
 				})
 			}
 		}
@@ -1570,6 +1574,31 @@ func TestCertificates(t *testing.T) {
 				android_app_certificate {
 					name: "new_certificate",
 					certificate: "cert/new_cert",
+				}
+			`,
+			certificateOverride: "",
+			expectedLineage:     "--lineage lineage.bin",
+			expectedCertificate: "cert/new_cert.x509.pem cert/new_cert.pk8",
+		},
+		{
+			name: "lineage from filegroup",
+			bp: `
+				android_app {
+					name: "foo",
+					srcs: ["a.java"],
+					certificate: ":new_certificate",
+					lineage: ":lineage_bin",
+					sdk_version: "current",
+				}
+
+				android_app_certificate {
+					name: "new_certificate",
+					certificate: "cert/new_cert",
+				}
+
+				filegroup {
+					name: "lineage_bin",
+					srcs: ["lineage.bin"],
 				}
 			`,
 			certificateOverride: "",
@@ -2340,15 +2369,16 @@ func TestUsesLibraries(t *testing.T) {
 		}
 	`
 
-	config := testAppConfig(nil, bp, nil)
-	config.TestProductVariables.MissingUsesLibraries = []string{"baz"}
+	result := javaFixtureFactory.Extend(
+		PrepareForTestWithJavaSdkLibraryFiles,
+		FixtureWithLastReleaseApis("runtime-library", "foo", "quuz", "qux", "bar", "fred"),
+		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+			variables.MissingUsesLibraries = []string{"baz"}
+		}),
+	).RunTestWithBp(t, bp)
 
-	ctx := testContext(config)
-
-	run(t, ctx, config)
-
-	app := ctx.ModuleForTests("app", "android_common")
-	prebuilt := ctx.ModuleForTests("prebuilt", "android_common")
+	app := result.ModuleForTests("app", "android_common")
+	prebuilt := result.ModuleForTests("prebuilt", "android_common")
 
 	// Test that implicit dependencies on java_sdk_library instances are passed to the manifest.
 	// This should not include explicit `uses_libs`/`optional_uses_libs` entries.
@@ -2360,10 +2390,7 @@ func TestUsesLibraries(t *testing.T) {
 		`--uses-library com.non.sdk.lib ` + // TODO(b/132357300): "com.non.sdk.lib" should not be passed to manifest_fixer
 		`--uses-library bar ` + // TODO(b/132357300): "bar" should not be passed to manifest_fixer
 		`--uses-library runtime-library`
-	if actualManifestFixerArgs != expectManifestFixerArgs {
-		t.Errorf("unexpected manifest_fixer args:\n\texpect: %q\n\tactual: %q",
-			expectManifestFixerArgs, actualManifestFixerArgs)
-	}
+	android.AssertStringEquals(t, "manifest_fixer args", expectManifestFixerArgs, actualManifestFixerArgs)
 
 	// Test that all libraries are verified (library order matters).
 	verifyCmd := app.Rule("verify_uses_libraries").RuleParams.Command
@@ -2374,20 +2401,16 @@ func TestUsesLibraries(t *testing.T) {
 		`--uses-library runtime-library ` +
 		`--optional-uses-library bar ` +
 		`--optional-uses-library baz `
-	if !strings.Contains(verifyCmd, verifyArgs) {
-		t.Errorf("wanted %q in %q", verifyArgs, verifyCmd)
-	}
+	android.AssertStringDoesContain(t, "verify cmd args", verifyCmd, verifyArgs)
 
 	// Test that all libraries are verified for an APK (library order matters).
 	verifyApkCmd := prebuilt.Rule("verify_uses_libraries").RuleParams.Command
-	verifyApkReqLibs := `uses_library_names="foo com.non.sdk.lib android.test.runner"`
-	verifyApkOptLibs := `optional_uses_library_names="bar baz"`
-	if !strings.Contains(verifyApkCmd, verifyApkReqLibs) {
-		t.Errorf("wanted %q in %q", verifyApkReqLibs, verifyApkCmd)
-	}
-	if !strings.Contains(verifyApkCmd, verifyApkOptLibs) {
-		t.Errorf("wanted %q in %q", verifyApkOptLibs, verifyApkCmd)
-	}
+	verifyApkArgs := `--uses-library foo ` +
+		`--uses-library com.non.sdk.lib ` +
+		`--uses-library android.test.runner ` +
+		`--optional-uses-library bar ` +
+		`--optional-uses-library baz `
+	android.AssertStringDoesContain(t, "verify apk cmd args", verifyApkCmd, verifyApkArgs)
 
 	// Test that all present libraries are preopted, including implicit SDK dependencies, possibly stubs
 	cmd := app.Rule("dexpreopt").RuleParams.Command
@@ -2398,46 +2421,39 @@ func TestUsesLibraries(t *testing.T) {
 		`PCL[/system/framework/non-sdk-lib.jar]#` +
 		`PCL[/system/framework/bar.jar]#` +
 		`PCL[/system/framework/runtime-library.jar]`
-	if !strings.Contains(cmd, w) {
-		t.Errorf("wanted %q in %q", w, cmd)
-	}
+	android.AssertStringDoesContain(t, "dexpreopt app cmd args", cmd, w)
 
 	// Test conditional context for target SDK version 28.
-	if w := `--target-context-for-sdk 28` +
-		` PCL[/system/framework/org.apache.http.legacy.jar] `; !strings.Contains(cmd, w) {
-		t.Errorf("wanted %q in %q", w, cmd)
-	}
+	android.AssertStringDoesContain(t, "dexpreopt app cmd 28", cmd,
+		`--target-context-for-sdk 28`+
+			` PCL[/system/framework/org.apache.http.legacy.jar] `)
 
 	// Test conditional context for target SDK version 29.
-	if w := `--target-context-for-sdk 29` +
-		` PCL[/system/framework/android.hidl.manager-V1.0-java.jar]` +
-		`#PCL[/system/framework/android.hidl.base-V1.0-java.jar] `; !strings.Contains(cmd, w) {
-		t.Errorf("wanted %q in %q", w, cmd)
-	}
+	android.AssertStringDoesContain(t, "dexpreopt app cmd 29", cmd,
+		`--target-context-for-sdk 29`+
+			` PCL[/system/framework/android.hidl.manager-V1.0-java.jar]`+
+			`#PCL[/system/framework/android.hidl.base-V1.0-java.jar] `)
 
 	// Test conditional context for target SDK version 30.
 	// "android.test.mock" is absent because "android.test.runner" is not used.
-	if w := `--target-context-for-sdk 30` +
-		` PCL[/system/framework/android.test.base.jar] `; !strings.Contains(cmd, w) {
-		t.Errorf("wanted %q in %q", w, cmd)
-	}
+	android.AssertStringDoesContain(t, "dexpreopt app cmd 30", cmd,
+		`--target-context-for-sdk 30`+
+			` PCL[/system/framework/android.test.base.jar] `)
 
 	cmd = prebuilt.Rule("dexpreopt").RuleParams.Command
-	if w := `--target-context-for-sdk any` +
-		` PCL[/system/framework/foo.jar]` +
-		`#PCL[/system/framework/non-sdk-lib.jar]` +
-		`#PCL[/system/framework/android.test.runner.jar]` +
-		`#PCL[/system/framework/bar.jar] `; !strings.Contains(cmd, w) {
-		t.Errorf("wanted %q in %q", w, cmd)
-	}
+	android.AssertStringDoesContain(t, "dexpreopt prebuilt cmd", cmd,
+		`--target-context-for-sdk any`+
+			` PCL[/system/framework/foo.jar]`+
+			`#PCL[/system/framework/non-sdk-lib.jar]`+
+			`#PCL[/system/framework/android.test.runner.jar]`+
+			`#PCL[/system/framework/bar.jar] `)
 
 	// Test conditional context for target SDK version 30.
 	// "android.test.mock" is present because "android.test.runner" is used.
-	if w := `--target-context-for-sdk 30` +
-		` PCL[/system/framework/android.test.base.jar]` +
-		`#PCL[/system/framework/android.test.mock.jar] `; !strings.Contains(cmd, w) {
-		t.Errorf("wanted %q in %q", w, cmd)
-	}
+	android.AssertStringDoesContain(t, "dexpreopt prebuilt cmd 30", cmd,
+		`--target-context-for-sdk 30`+
+			` PCL[/system/framework/android.test.base.jar]`+
+			`#PCL[/system/framework/android.test.mock.jar] `)
 }
 
 func TestCodelessApp(t *testing.T) {
@@ -2702,28 +2718,24 @@ func TestUncompressDex(t *testing.T) {
 	test := func(t *testing.T, bp string, want bool, unbundled bool) {
 		t.Helper()
 
-		config := testAppConfig(nil, bp, nil)
-		if unbundled {
-			config.TestProductVariables.Unbundled_build = proptools.BoolPtr(true)
-			config.TestProductVariables.Always_use_prebuilt_sdks = proptools.BoolPtr(true)
-		}
+		result := javaFixtureFactory.Extend(
+			PrepareForTestWithPrebuiltsOfCurrentApi,
+			android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+				if unbundled {
+					variables.Unbundled_build = proptools.BoolPtr(true)
+					variables.Always_use_prebuilt_sdks = proptools.BoolPtr(true)
+				}
+			}),
+		).RunTestWithBp(t, bp)
 
-		ctx := testContext(config)
-
-		run(t, ctx, config)
-
-		foo := ctx.ModuleForTests("foo", "android_common")
+		foo := result.ModuleForTests("foo", "android_common")
 		dex := foo.Rule("r8")
 		uncompressedInDexJar := strings.Contains(dex.Args["zipFlags"], "-L 0")
 		aligned := foo.MaybeRule("zipalign").Rule != nil
 
-		if uncompressedInDexJar != want {
-			t.Errorf("want uncompressed in dex %v, got %v", want, uncompressedInDexJar)
-		}
+		android.AssertBoolEquals(t, "uncompressed in dex", want, uncompressedInDexJar)
 
-		if aligned != want {
-			t.Errorf("want aligned %v, got %v", want, aligned)
-		}
+		android.AssertBoolEquals(t, "aligne", want, aligned)
 	}
 
 	for _, tt := range testCases {
