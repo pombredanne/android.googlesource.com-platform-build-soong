@@ -14,7 +14,9 @@
 
 package android
 
-import "testing"
+import (
+	"testing"
+)
 
 // Make sure that FixturePreparer instances are only called once per fixture and in the order in
 // which they were added.
@@ -37,13 +39,47 @@ func TestFixtureDedup(t *testing.T) {
 
 	preparer2Then1 := GroupFixturePreparers(preparer2, preparer1)
 
-	buildDir := "build"
-	factory := NewFixtureFactory(&buildDir, preparer1, preparer2, preparer1, preparer1Then2)
+	group := GroupFixturePreparers(preparer1, preparer2, preparer1, preparer1Then2)
 
-	extension := factory.Extend(preparer4, preparer2)
+	extension := group.Extend(preparer4, preparer2)
 
 	extension.Fixture(t, preparer1, preparer2, preparer2Then1, preparer3)
 
 	AssertDeepEquals(t, "preparers called in wrong order",
 		[]string{"preparer1", "preparer2", "preparer4", "preparer3"}, list)
+}
+
+func TestFixtureValidateMockFS(t *testing.T) {
+	buildDir := "<unused>"
+	factory := NewFixtureFactory(&buildDir)
+
+	t.Run("absolute path", func(t *testing.T) {
+		AssertPanicMessageContains(t, "source path validation failed", "Path is outside directory: /abs/path/Android.bp", func() {
+			factory.Fixture(t, FixtureAddFile("/abs/path/Android.bp", nil))
+		})
+	})
+	t.Run("not canonical", func(t *testing.T) {
+		AssertPanicMessageContains(t, "source path validation failed", `path "path/with/../in/it/Android.bp" is not a canonical path, use "path/in/it/Android.bp" instead`, func() {
+			factory.Fixture(t, FixtureAddFile("path/with/../in/it/Android.bp", nil))
+		})
+	})
+	t.Run("FixtureAddFile", func(t *testing.T) {
+		AssertPanicMessageContains(t, "source path validation failed", `cannot add output path "out/Android.bp" to the mock file system`, func() {
+			factory.Fixture(t, FixtureAddFile("out/Android.bp", nil))
+		})
+	})
+	t.Run("FixtureMergeMockFs", func(t *testing.T) {
+		AssertPanicMessageContains(t, "source path validation failed", `cannot add output path "out/Android.bp" to the mock file system`, func() {
+			factory.Fixture(t, FixtureMergeMockFs(MockFS{
+				"out/Android.bp": nil,
+			}))
+		})
+	})
+	t.Run("FixtureModifyMockFS", func(t *testing.T) {
+		AssertPanicMessageContains(t, "source path validation failed", `cannot add output path "out/Android.bp" to the mock file system`, func() {
+			factory.Fixture(t, FixtureModifyMockFS(func(fs MockFS) {
+				fs["out/Android.bp"] = nil
+			}))
+		})
+	})
 }
