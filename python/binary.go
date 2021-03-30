@@ -36,8 +36,8 @@ func registerPythonBinaryComponents(ctx android.RegistrationContext) {
 
 type bazelPythonBinaryAttributes struct {
 	Main           string
-	Srcs           bazel.LabelList
-	Data           bazel.LabelList
+	Srcs           bazel.LabelListAttribute
+	Data           bazel.LabelListAttribute
 	Python_version string
 }
 
@@ -61,7 +61,7 @@ func (m *bazelPythonBinary) GenerateAndroidBuildActions(ctx android.ModuleContex
 
 func PythonBinaryBp2Build(ctx android.TopDownMutatorContext) {
 	m, ok := ctx.Module().(*Module)
-	if !ok || !m.ConvertWithBp2build() {
+	if !ok || !m.ConvertWithBp2build(ctx) {
 		return
 	}
 
@@ -97,10 +97,13 @@ func PythonBinaryBp2Build(ctx android.TopDownMutatorContext) {
 		// do nothing, since python_version defaults to PY3.
 	}
 
+	srcs := android.BazelLabelForModuleSrcExcludes(ctx, m.properties.Srcs, m.properties.Exclude_srcs)
+	data := android.BazelLabelForModuleSrc(ctx, m.properties.Data)
+
 	attrs := &bazelPythonBinaryAttributes{
 		Main:           main,
-		Srcs:           android.BazelLabelForModuleSrcExcludes(ctx, m.properties.Srcs, m.properties.Exclude_srcs),
-		Data:           android.BazelLabelForModuleSrc(ctx, m.properties.Data),
+		Srcs:           bazel.MakeLabelListAttribute(srcs),
+		Data:           bazel.MakeLabelListAttribute(data),
 		Python_version: python_version,
 	}
 

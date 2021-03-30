@@ -363,7 +363,7 @@ type BaseProperties struct {
 	// List of APEXes that this module has private access to for testing purpose. The module
 	// can depend on libraries that are not exported by the APEXes and use private symbols
 	// from the exported libraries.
-	Test_for []string
+	Test_for []string `android:"arch_variant"`
 }
 
 type VendorProperties struct {
@@ -1363,6 +1363,19 @@ func (ctx *moduleContextImpl) minSdkVersion() string {
 	if ver == "apex_inherit" || ver == "" {
 		ver = ctx.sdkVersion()
 	}
+	// For crt objects, the meaning of min_sdk_version is very different from other types of
+	// module. For them, min_sdk_version defines the oldest version that the build system will
+	// create versioned variants for. For example, if min_sdk_version is 16, then sdk variant of
+	// the crt object has local variants of 16, 17, ..., up to the latest version. sdk_version
+	// and min_sdk_version properties of the variants are set to the corresponding version
+	// numbers. However, the platform (non-sdk) variant of the crt object is left untouched.
+	// min_sdk_version: 16 doesn't actually mean that the platform variant has to support such
+	// an old version. Since the variant is for the platform, it's preferred to target the
+	// latest version.
+	if ctx.mod.SplitPerApiLevel() && !ctx.isSdkVariant() {
+		ver = strconv.Itoa(android.FutureApiLevelInt)
+	}
+
 	// Also make sure that minSdkVersion is not greater than sdkVersion, if they are both numbers
 	sdkVersionInt, err := strconv.Atoi(ctx.sdkVersion())
 	minSdkVersionInt, err2 := strconv.Atoi(ver)
@@ -1833,12 +1846,6 @@ func (c *Module) deps(ctx DepsContext) Deps {
 	if c.compiler != nil {
 		deps = c.compiler.compilerDeps(ctx, deps)
 	}
-	// Add the PGO dependency (the clang_rt.profile runtime library), which
-	// sometimes depends on symbols from libgcc, before libgcc gets added
-	// in linkerDeps().
-	if c.pgo != nil {
-		deps = c.pgo.deps(ctx, deps)
-	}
 	if c.linker != nil {
 		deps = c.linker.linkerDeps(ctx, deps)
 	}
@@ -1933,9 +1940,14 @@ func GetCrtVariations(ctx android.BottomUpMutatorContext,
 		return nil
 	}
 	if m.UseSdk() {
+		// Choose the CRT that best satisfies the min_sdk_version requirement of this module
+		minSdkVersion := m.MinSdkVersion()
+		if minSdkVersion == "" || minSdkVersion == "apex_inherit" {
+			minSdkVersion = m.SdkVersion()
+		}
 		return []blueprint.Variation{
 			{Mutator: "sdk", Variation: "sdk"},
-			{Mutator: "version", Variation: m.SdkVersion()},
+			{Mutator: "version", Variation: minSdkVersion},
 		}
 	}
 	return []blueprint.Variation{
@@ -2619,14 +2631,31 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 						// However, for host, ramdisk, vendor_ramdisk, recovery or bootstrap modules,
 						// always link to non-stub variant
 						useStubs = dep.(android.ApexModule).NotInPlatform() && !c.bootstrap()
-						// Another exception: if this module is bundled with an APEX, then
-						// it is linked with the non-stub variant of a module in the APEX
-						// as if this is part of the APEX.
-						testFor := ctx.Provider(android.ApexTestForInfoProvider).(android.ApexTestForInfo)
-						for _, apexContents := range testFor.ApexContents {
-							if apexContents.DirectlyInApex(depName) {
+						if useStubs {
+							// Another exception: if this module is a test for an APEX, then
+							// it is linked with the non-stub variant of a module in the APEX
+							// as if this is part of the APEX.
+							testFor := ctx.Provider(android.ApexTestForInfoProvider).(android.ApexTestForInfo)
+							for _, apexContents := range testFor.ApexContents {
+								if apexContents.DirectlyInApex(depName) {
+									useStubs = false
+									break
+								}
+							}
+						}
+						if useStubs {
+							// Yet another exception: If this module and the dependency are
+							// available to the same APEXes then skip stubs between their
+							// platform variants. This complements the test_for case above,
+							// which avoids the stubs on a direct APEX library dependency, by
+							// avoiding stubs for indirect test dependencies as well.
+							//
+							// TODO(b/183882457): This doesn't work if the two libraries have
+							// only partially overlapping apex_available. For that test_for
+							// modules would need to be split into APEX variants and resolved
+							// separately for each APEX they have access to.
+							if android.AvailableToSameApexes(c, dep.(android.ApexModule)) {
 								useStubs = false
-								break
 							}
 						}
 					} else {

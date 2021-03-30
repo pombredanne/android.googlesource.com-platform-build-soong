@@ -485,7 +485,7 @@ func ShTestHostFactory() android.Module {
 }
 
 type bazelShBinaryAttributes struct {
-	Srcs bazel.LabelList
+	Srcs bazel.LabelListAttribute
 	// Bazel also supports the attributes below, but (so far) these are not required for Bionic
 	// deps
 	// data
@@ -521,11 +521,12 @@ func BazelShBinaryFactory() android.Module {
 
 func ShBinaryBp2Build(ctx android.TopDownMutatorContext) {
 	m, ok := ctx.Module().(*ShBinary)
-	if !ok || !m.ConvertWithBp2build() {
+	if !ok || !m.ConvertWithBp2build(ctx) {
 		return
 	}
 
-	srcs := android.BazelLabelForModuleSrc(ctx, []string{*m.properties.Src})
+	srcs := bazel.MakeLabelListAttribute(
+		android.BazelLabelForModuleSrc(ctx, []string{*m.properties.Src}))
 
 	attrs := &bazelShBinaryAttributes{
 		Srcs: srcs,

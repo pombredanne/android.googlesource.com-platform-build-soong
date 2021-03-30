@@ -70,11 +70,12 @@ func TestCcObjectBp2Build(t *testing.T) {
     ],
     local_include_dirs = [
         "include",
+        ".",
     ],
     srcs = [
         "a/b/bar.h",
-        "a/b/foo.h",
         "a/b/c.c",
+        "a/b/foo.h",
     ],
 )`,
 			},
@@ -120,6 +121,7 @@ cc_defaults {
     ],
     local_include_dirs = [
         "include",
+        ".",
     ],
     srcs = [
         "a/b/c.c",
@@ -156,6 +158,9 @@ cc_object {
     copts = [
         "-fno-addrsig",
     ],
+    local_include_dirs = [
+        ".",
+    ],
     srcs = [
         "x/y/z.c",
     ],
@@ -166,6 +171,37 @@ cc_object {
     ],
     deps = [
         ":bar",
+    ],
+    local_include_dirs = [
+        ".",
+    ],
+    srcs = [
+        "a/b/c.c",
+    ],
+)`,
+			},
+		},
+		{
+			description:                        "cc_object with include_build_dir: false",
+			moduleTypeUnderTest:                "cc_object",
+			moduleTypeUnderTestFactory:         cc.ObjectFactory,
+			moduleTypeUnderTestBp2BuildMutator: cc.ObjectBp2Build,
+			filesystem: map[string]string{
+				"a/b/c.c": "",
+				"x/y/z.c": "",
+			},
+			blueprint: `cc_object {
+    name: "foo",
+    srcs: ["a/b/c.c"],
+    include_build_directory: false,
+
+    bazel_module: { bp2build_available: true },
+}
+`,
+			expectedBazelTargets: []string{`cc_object(
+    name = "foo",
+    copts = [
+        "-fno-addrsig",
     ],
     srcs = [
         "a/b/c.c",
@@ -242,9 +278,13 @@ func TestCcObjectConfigurableAttributesBp2Build(t *testing.T) {
 			moduleTypeUnderTestBp2BuildMutator: cc.ObjectBp2Build,
 			blueprint: `cc_object {
     name: "foo",
+    srcs: ["a.cpp"],
     arch: {
         x86: {
-            cflags: ["-fPIC"],
+            cflags: ["-fPIC"], // string list
+        },
+        arm: {
+            srcs: ["arch/arm/file.S"], // label list
         },
     },
     bazel_module: { bp2build_available: true },
@@ -259,8 +299,18 @@ func TestCcObjectConfigurableAttributesBp2Build(t *testing.T) {
         "@bazel_tools//platforms:x86_32": [
             "-fPIC",
         ],
-        "//conditions:default": [
+        "//conditions:default": [],
+    }),
+    local_include_dirs = [
+        ".",
+    ],
+    srcs = [
+        "a.cpp",
+    ] + select({
+        "@bazel_tools//platforms:arm": [
+            "arch/arm/file.S",
         ],
+        "//conditions:default": [],
     }),
 )`,
 			},
@@ -272,17 +322,22 @@ func TestCcObjectConfigurableAttributesBp2Build(t *testing.T) {
 			moduleTypeUnderTestBp2BuildMutator: cc.ObjectBp2Build,
 			blueprint: `cc_object {
     name: "foo",
+    srcs: ["base.cpp"],
     arch: {
         x86: {
+            srcs: ["x86.cpp"],
             cflags: ["-fPIC"],
         },
         x86_64: {
+            srcs: ["x86_64.cpp"],
             cflags: ["-fPIC"],
         },
         arm: {
+            srcs: ["arm.cpp"],
             cflags: ["-Wall"],
         },
         arm64: {
+            srcs: ["arm64.cpp"],
             cflags: ["-Wall"],
         },
     },
@@ -307,8 +362,27 @@ func TestCcObjectConfigurableAttributesBp2Build(t *testing.T) {
         "@bazel_tools//platforms:x86_64": [
             "-fPIC",
         ],
-        "//conditions:default": [
+        "//conditions:default": [],
+    }),
+    local_include_dirs = [
+        ".",
+    ],
+    srcs = [
+        "base.cpp",
+    ] + select({
+        "@bazel_tools//platforms:arm": [
+            "arm.cpp",
         ],
+        "@bazel_tools//platforms:aarch64": [
+            "arm64.cpp",
+        ],
+        "@bazel_tools//platforms:x86_32": [
+            "x86.cpp",
+        ],
+        "@bazel_tools//platforms:x86_64": [
+            "x86_64.cpp",
+        ],
+        "//conditions:default": [],
     }),
 )`,
 			},

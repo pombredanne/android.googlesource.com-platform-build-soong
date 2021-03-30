@@ -140,6 +140,9 @@ type config struct {
 	fs         pathtools.FileSystem
 	mockBpList string
 
+	bp2buildPackageConfig    Bp2BuildConfig
+	bp2buildModuleTypeConfig map[string]bool
+
 	// If testAllowNonExistentPaths is true then PathForSource and PathForModuleSrc won't error
 	// in tests when a path doesn't exist.
 	TestAllowNonExistentPaths bool
@@ -280,6 +283,8 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 	config.TestProductVariables = &config.productVariables
 
 	config.mockFileSystem(bp, fs)
+
+	config.bp2buildModuleTypeConfig = map[string]bool{}
 
 	return Config{config}
 }
@@ -452,6 +457,8 @@ func NewConfig(srcDir, buildDir string, moduleListFile string) (Config, error) {
 			Bool(config.productVariables.ClangCoverage))
 
 	config.BazelContext, err = NewBazelContext(config)
+	config.bp2buildPackageConfig = bp2buildDefaultConfig
+	config.bp2buildModuleTypeConfig = make(map[string]bool)
 
 	return Config{config}, err
 }
@@ -1005,6 +1012,10 @@ func (c *config) DexpreoptGlobalConfig(ctx PathContext) ([]byte, error) {
 	return ioutil.ReadFile(absolutePath(path.String()))
 }
 
+func (c *deviceConfig) WithDexpreopt() bool {
+	return c.config.productVariables.WithDexpreopt
+}
+
 func (c *config) FrameworksBaseDirExists(ctx PathContext) bool {
 	return ExistentPathForSource(ctx, "frameworks", "base", "Android.bp").Valid()
 }
@@ -1389,7 +1400,10 @@ func (c *deviceConfig) PlatformSepolicyVersion() string {
 }
 
 func (c *deviceConfig) BoardSepolicyVers() string {
-	return String(c.config.productVariables.BoardSepolicyVers)
+	if ver := String(c.config.productVariables.BoardSepolicyVers); ver != "" {
+		return ver
+	}
+	return c.PlatformSepolicyVersion()
 }
 
 func (c *deviceConfig) BoardReqdMaskPolicy() []string {

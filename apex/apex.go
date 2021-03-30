@@ -29,7 +29,6 @@ import (
 	"android/soong/android"
 	"android/soong/bpf"
 	"android/soong/cc"
-	"android/soong/dexpreopt"
 	prebuilt_etc "android/soong/etc"
 	"android/soong/filesystem"
 	"android/soong/java"
@@ -94,7 +93,13 @@ type apexBundleProperties struct {
 	Multilib apexMultilibProperties
 
 	// List of boot images that are embedded inside this APEX bundle.
+	//
+	// deprecated: Use Bootclasspath_fragments
+	// TODO(b/177892522): Remove after has been replaced by Bootclasspath_fragments
 	Boot_images []string
+
+	// List of bootclasspath fragments that are embedded inside this APEX bundle.
+	Bootclasspath_fragments []string
 
 	// List of java libraries that are embedded inside this APEX bundle.
 	Java_libs []string
@@ -568,7 +573,7 @@ var (
 	certificateTag  = dependencyTag{name: "certificate"}
 	executableTag   = dependencyTag{name: "executable", payload: true}
 	fsTag           = dependencyTag{name: "filesystem", payload: true}
-	bootImageTag    = dependencyTag{name: "bootImage", payload: true}
+	bootImageTag    = dependencyTag{name: "bootImage", payload: true, sourceOnly: true}
 	compatConfigTag = dependencyTag{name: "compatConfig", payload: true, sourceOnly: true}
 	javaLibTag      = dependencyTag{name: "javaLib", payload: true}
 	jniLibTag       = dependencyTag{name: "jniLib", payload: true}
@@ -749,6 +754,7 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 	// Common-arch dependencies come next
 	commonVariation := ctx.Config().AndroidCommonTarget.Variations()
 	ctx.AddFarVariationDependencies(commonVariation, bootImageTag, a.properties.Boot_images...)
+	ctx.AddFarVariationDependencies(commonVariation, bootImageTag, a.properties.Bootclasspath_fragments...)
 	ctx.AddFarVariationDependencies(commonVariation, javaLibTag, a.properties.Java_libs...)
 	ctx.AddFarVariationDependencies(commonVariation, bpfTag, a.properties.Bpfs...)
 	ctx.AddFarVariationDependencies(commonVariation, fsTag, a.properties.Filesystems...)
@@ -854,12 +860,7 @@ func (a *apexBundle) ApexInfoMutator(mctx android.TopDownMutatorContext) {
 		if required, ok := depTag.(android.AlwaysRequireApexVariantTag); ok && required.AlwaysRequireApexVariant() {
 			return true
 		}
-		if _, ok := depTag.(android.ExcludeFromApexContentsTag); ok {
-			// The tag defines a dependency that never requires the child module to be part of the same
-			// apex as the parent so it does not need an apex variant created.
-			return false
-		}
-		if !parent.(android.DepIsInSameApex).DepIsInSameApex(mctx, child) {
+		if !android.IsDepInSameApex(mctx, parent, child) {
 			return false
 		}
 		if excludeVndkLibs {
@@ -1003,11 +1004,7 @@ func markPlatformAvailability(mctx android.BottomUpMutatorContext) {
 	// If any of the dep is not available to platform, this module is also considered as being
 	// not available to platform even if it has "//apex_available:platform"
 	mctx.VisitDirectDeps(func(child android.Module) {
-		depTag := mctx.OtherModuleDependencyTag(child)
-		if _, ok := depTag.(android.ExcludeFromApexContentsTag); ok {
-			return
-		}
-		if !am.DepIsInSameApex(mctx, child) {
+		if !android.IsDepInSameApex(mctx, am, child) {
 			// if the dependency crosses apex boundary, don't consider it
 			return
 		}
@@ -1207,11 +1204,13 @@ func useVendorAllowList(config android.Config) []string {
 	}).([]string)
 }
 
-// setUseVendorAllowListForTest overrides useVendorAllowList and must be called before the first
-// call to useVendorAllowList()
-func setUseVendorAllowListForTest(config android.Config, allowList []string) {
-	config.Once(useVendorAllowListKey, func() interface{} {
-		return allowList
+// setUseVendorAllowListForTest returns a FixturePreparer that overrides useVendorAllowList and
+// must be called before the first call to useVendorAllowList()
+func setUseVendorAllowListForTest(allowList []string) android.FixturePreparer {
+	return android.FixtureModifyConfig(func(config android.Config) {
+		config.Once(useVendorAllowListKey, func() interface{} {
+			return allowList
+		})
 	})
 }
 
@@ -1580,9 +1579,6 @@ func (a *apexBundle) WalkPayloadDeps(ctx android.ModuleContext, do android.Paylo
 		if dt, ok := depTag.(dependencyTag); ok && !dt.payload {
 			return false
 		}
-		if depTag == dexpreopt.Dex2oatDepTag {
-			return false
-		}
 
 		ai := ctx.OtherModuleProvider(child, android.ApexInfoProvider).(android.ApexInfo)
 		externalDep := !android.InList(ctx.ModuleName(), ai.InApexes)
@@ -1870,7 +1866,10 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 						// like to record requiredNativeLibs even when
 						// DepIsInSameAPex is false. We also shouldn't do
 						// this for host.
-						if !am.DepIsInSameApex(ctx, am) {
+						//
+						// TODO(jiyong): explain why the same module is passed in twice.
+						// Switching the first am to parent breaks lots of tests.
+						if !android.IsDepInSameApex(ctx, am, am) {
 							return false
 						}
 
@@ -2193,6 +2192,8 @@ func (a *apexBundle) checkStaticLinkingToStubLibraries(ctx android.ModuleContext
 
 			// If `to` is not actually in the same APEX as `from` then it does not need
 			// apex_available and neither do any of its dependencies.
+			//
+			// It is ok to call DepIsInSameApex() directly from within WalkPayloadDeps().
 			if am, ok := from.(android.DepIsInSameApex); ok && !am.DepIsInSameApex(ctx, to) {
 				// As soon as the dependency graph crosses the APEX boundary, don't go further.
 				return false
@@ -2276,6 +2277,8 @@ func (a *apexBundle) checkApexAvailability(ctx android.ModuleContext) {
 
 		// If `to` is not actually in the same APEX as `from` then it does not need
 		// apex_available and neither do any of its dependencies.
+		//
+		// It is ok to call DepIsInSameApex() directly from within WalkPayloadDeps().
 		if am, ok := from.(android.DepIsInSameApex); ok && !am.DepIsInSameApex(ctx, to) {
 			// As soon as the dependency graph crosses the APEX boundary, don't go
 			// further.
