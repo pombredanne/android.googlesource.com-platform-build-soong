@@ -1049,6 +1049,16 @@ func apexMutator(mctx android.BottomUpMutatorContext) {
 	if a, ok := mctx.Module().(*apexBundle); ok && !a.vndkApex {
 		apexBundleName := mctx.ModuleName()
 		mctx.CreateVariations(apexBundleName)
+		if strings.HasPrefix(apexBundleName, "com.android.art") {
+			// Create an alias from the platform variant. This is done to make
+			// test_for dependencies work for modules that are split by the APEX
+			// mutator, since test_for dependencies always go to the platform variant.
+			// This doesn't happen for normal APEXes that are disjunct, so only do
+			// this for the overlapping ART APEXes.
+			// TODO(b/183882457): Remove this if the test_for functionality is
+			// refactored to depend on the proper APEX variants instead of platform.
+			mctx.CreateAliasVariation("", apexBundleName)
+		}
 	} else if o, ok := mctx.Module().(*OverrideApex); ok {
 		apexBundleName := o.GetOverriddenModuleName()
 		if apexBundleName == "" {
@@ -1056,6 +1066,10 @@ func apexMutator(mctx android.BottomUpMutatorContext) {
 			return
 		}
 		mctx.CreateVariations(apexBundleName)
+		if strings.HasPrefix(apexBundleName, "com.android.art") {
+			// TODO(b/183882457): See note for CreateAliasVariation above.
+			mctx.CreateAliasVariation("", apexBundleName)
+		}
 	}
 }
 
@@ -1702,6 +1716,9 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 							filesInfo = append(filesInfo, af)
 						}
 					}
+
+					// Track transitive dependencies.
+					return true
 				}
 			case javaLibTag:
 				switch child.(type) {
@@ -1910,6 +1927,21 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 						filesInfo = append(filesInfo, af)
 						return true // track transitive dependencies
 					}
+				} else if java.IsbootImageContentDepTag(depTag) {
+					// Add the contents of the boot image to the apex.
+					switch child.(type) {
+					case *java.Library, *java.SdkLibrary:
+						af := apexFileForJavaModule(ctx, child.(javaModule))
+						if !af.ok() {
+							ctx.PropertyErrorf("boot_images", "boot image content %q is not configured to be compiled into dex", depName)
+							return false
+						}
+						filesInfo = append(filesInfo, af)
+						return true // track transitive dependencies
+					default:
+						ctx.PropertyErrorf("boot_images", "boot image content %q of type %q is not supported", depName, ctx.OtherModuleType(child))
+					}
+
 				} else if _, ok := depTag.(android.CopyDirectlyInAnyApexTag); ok {
 					// nothing
 				} else if am.CanHaveApexVariants() && am.IsInstallableToApex() {
@@ -2907,9 +2939,7 @@ func makeApexAvailableBaseline() map[string][]string {
 		"com.google.android.material_material",
 		"com.google.android.material_material-nodeps",
 
-		"libatomic",
 		"libclang_rt",
-		"libgcc_stripped",
 		"libprofile-clang-extras",
 		"libprofile-clang-extras_ndk",
 		"libprofile-extras",

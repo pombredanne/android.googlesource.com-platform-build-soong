@@ -453,6 +453,23 @@ func (m *ApexModuleBase) checkApexAvailableProperty(mctx BaseModuleContext) {
 	}
 }
 
+// AvailableToSameApexes returns true if the two modules are apex_available to
+// exactly the same set of APEXes (and platform), i.e. if their apex_available
+// properties have the same elements.
+func AvailableToSameApexes(mod1, mod2 ApexModule) bool {
+	mod1ApexAvail := SortedUniqueStrings(mod1.apexModuleBase().ApexProperties.Apex_available)
+	mod2ApexAvail := SortedUniqueStrings(mod2.apexModuleBase().ApexProperties.Apex_available)
+	if len(mod1ApexAvail) != len(mod2ApexAvail) {
+		return false
+	}
+	for i, v := range mod1ApexAvail {
+		if v != mod2ApexAvail[i] {
+			return false
+		}
+	}
+	return true
+}
+
 type byApexName []ApexInfo
 
 func (a byApexName) Len() int           { return len(a) }
@@ -786,60 +803,73 @@ var minSdkVersionAllowlist = func(apiMap map[string]int) map[string]ApiLevel {
 	}
 	return list
 }(map[string]int{
-	"adbd":                           30,
-	"android.net.ipsec.ike":          30,
-	"apache-commons-compress":        29,
-	"bouncycastle_ike_digests":       30,
-	"brotli-java":                    29,
-	"captiveportal-lib":              28,
-	"flatbuffer_headers":             30,
-	"framework-permission":           30,
-	"gemmlowp_headers":               30,
-	"ike-internals":                  30,
-	"kotlinx-coroutines-android":     28,
-	"kotlinx-coroutines-core":        28,
-	"libadb_crypto":                  30,
-	"libadb_pairing_auth":            30,
-	"libadb_pairing_connection":      30,
-	"libadb_pairing_server":          30,
-	"libadb_protos":                  30,
-	"libadb_tls_connection":          30,
-	"libadbconnection_client":        30,
-	"libadbconnection_server":        30,
-	"libadbd_core":                   30,
-	"libadbd_services":               30,
-	"libadbd":                        30,
-	"libapp_processes_protos_lite":   30,
-	"libasyncio":                     30,
-	"libbrotli":                      30,
-	"libbuildversion":                30,
-	"libcrypto_static":               30,
-	"libcrypto_utils":                30,
-	"libdiagnose_usb":                30,
-	"libeigen":                       30,
-	"liblz4":                         30,
-	"libmdnssd":                      30,
-	"libneuralnetworks_common":       30,
-	"libneuralnetworks_headers":      30,
-	"libneuralnetworks":              30,
-	"libprocpartition":               30,
-	"libprotobuf-java-lite":          30,
-	"libprotoutil":                   30,
-	"libqemu_pipe":                   30,
-	"libsync":                        30,
-	"libtextclassifier_hash_headers": 30,
-	"libtextclassifier_hash_static":  30,
-	"libtflite_kernel_utils":         30,
-	"libwatchdog":                    29,
-	"libzstd":                        30,
-	"metrics-constants-protos":       28,
-	"net-utils-framework-common":     29,
-	"permissioncontroller-statsd":    28,
-	"philox_random_headers":          30,
-	"philox_random":                  30,
-	"service-permission":             30,
-	"tensorflow_headers":             30,
-	"xz-java":                        29,
+	"adbd":                                                     30,
+	"android.net.ipsec.ike":                                    30,
+	"androidx.annotation_annotation-nodeps":                    29,
+	"androidx.arch.core_core-common-nodeps":                    29,
+	"androidx.collection_collection-nodeps":                    29,
+	"androidx.collection_collection-ktx-nodeps":                30,
+	"androidx.concurrent_concurrent-futures-nodeps":            30,
+	"androidx.lifecycle_lifecycle-common-java8-nodeps":         30,
+	"androidx.lifecycle_lifecycle-common-nodeps":               29,
+	"androidx.room_room-common-nodeps":                         30,
+	"androidx-constraintlayout_constraintlayout-solver-nodeps": 29,
+	"apache-commons-compress":                                  29,
+	"bouncycastle_ike_digests":                                 30,
+	"brotli-java":                                              29,
+	"captiveportal-lib":                                        28,
+	"error_prone_annotations":                                  30,
+	"flatbuffer_headers":                                       30,
+	"framework-permission":                                     30,
+	"gemmlowp_headers":                                         30,
+	"guava-listenablefuture-prebuilt-jar":                      30,
+	"ike-internals":                                            30,
+	"kotlinx-coroutines-android":                               28,
+	"kotlinx-coroutines-android-nodeps":                        30,
+	"kotlinx-coroutines-core":                                  28,
+	"kotlinx-coroutines-core-nodeps":                           30,
+	"libadb_crypto":                                            30,
+	"libadb_pairing_auth":                                      30,
+	"libadb_pairing_connection":                                30,
+	"libadb_pairing_server":                                    30,
+	"libadb_protos":                                            30,
+	"libadb_tls_connection":                                    30,
+	"libadbconnection_client":                                  30,
+	"libadbconnection_server":                                  30,
+	"libadbd_core":                                             30,
+	"libadbd_services":                                         30,
+	"libadbd":                                                  30,
+	"libapp_processes_protos_lite":                             30,
+	"libasyncio":                                               30,
+	"libbrotli":                                                30,
+	"libbuildversion":                                          30,
+	"libcrypto_static":                                         30,
+	"libcrypto_utils":                                          30,
+	"libdiagnose_usb":                                          30,
+	"libeigen":                                                 30,
+	"liblz4":                                                   30,
+	"libmdnssd":                                                30,
+	"libneuralnetworks_common":                                 30,
+	"libneuralnetworks_headers":                                30,
+	"libneuralnetworks":                                        30,
+	"libprocpartition":                                         30,
+	"libprotobuf-java-lite":                                    30,
+	"libprotoutil":                                             30,
+	"libqemu_pipe":                                             30,
+	"libsync":                                                  30,
+	"libtextclassifier_hash_headers":                           30,
+	"libtextclassifier_hash_static":                            30,
+	"libtflite_kernel_utils":                                   30,
+	"libwatchdog":                                              29,
+	"libzstd":                                                  30,
+	"metrics-constants-protos":                                 28,
+	"net-utils-framework-common":                               29,
+	"permissioncontroller-statsd":                              28,
+	"philox_random_headers":                                    30,
+	"philox_random":                                            30,
+	"service-permission":                                       30,
+	"tensorflow_headers":                                       30,
+	"xz-java":                                                  29,
 })
 
 // Function called while walking an APEX's payload dependencies.

@@ -241,6 +241,22 @@ func TestGenerateBazelTargetModules(t *testing.T) {
     string_prop = "a",
 )`,
 		},
+		{
+			bp: `custom {
+	name: "control_characters",
+    string_list_prop: ["\t", "\n"],
+    string_prop: "a\t\n\r",
+    bazel_module: { bp2build_available: true },
+}`,
+			expectedBazelTarget: `custom(
+    name = "control_characters",
+    string_list_prop = [
+        "\t",
+        "\n",
+    ],
+    string_prop = "a\t\n\r",
+)`,
+		},
 	}
 
 	dir := "."
@@ -502,8 +518,6 @@ genrule {
 			expectedBazelTargets: []string{
 				`filegroup(
     name = "fg_foo",
-    srcs = [
-    ],
 )`,
 			},
 		},
@@ -1101,8 +1115,8 @@ genrule {
         "out",
     ],
     srcs = [
-        "srcs-from-3",
         "in1",
+        "srcs-from-3",
     ],
 )`,
 			description: "genrule applies properties from genrule_defaults transitively",

@@ -370,9 +370,20 @@ func prettyPrint(propertyValue reflect.Value, indent int) (string, error) {
 		// values for unset properties, like system_shared_libs = ["libc", "libm", "libdl"] at
 		// https://cs.android.com/android/platform/superproject/+/master:build/soong/cc/linker.go;l=281-287;drc=f70926eef0b9b57faf04c17a1062ce50d209e480
 		//
-		// In Bazel-parlance, we would use "attr.<type>(default = <default value>)" to set the default
-		// value of unset attributes.
-		return "", nil
+		// In Bazel-parlance, we would use "attr.<type>(default = <default
+		// value>)" to set the default value of unset attributes. In the cases
+		// where the bp2build converter didn't set the default value within the
+		// mutator when creating the BazelTargetModule, this would be a zero
+		// value. For those cases, we return a non-surprising default value so
+		// generated BUILD files are syntactically correct.
+		switch propertyValue.Kind() {
+		case reflect.Slice:
+			return "[]", nil
+		case reflect.Map:
+			return "{}", nil
+		default:
+			return "", nil
+		}
 	}
 
 	var ret string
@@ -404,40 +415,10 @@ func prettyPrint(propertyValue reflect.Value, indent int) (string, error) {
 	case reflect.Struct:
 		// Special cases where the bp2build sends additional information to the codegenerator
 		// by wrapping the attributes in a custom struct type.
-		if labels, ok := propertyValue.Interface().(bazel.LabelList); ok {
-			// TODO(b/165114590): convert glob syntax
-			return prettyPrint(reflect.ValueOf(labels.Includes), indent)
+		if attr, ok := propertyValue.Interface().(bazel.Attribute); ok {
+			return prettyPrintAttribute(attr, indent)
 		} else if label, ok := propertyValue.Interface().(bazel.Label); ok {
 			return fmt.Sprintf("%q", label.Label), nil
-		} else if stringList, ok := propertyValue.Interface().(bazel.StringListAttribute); ok {
-			// A Bazel string_list attribute that may contain a select statement.
-			ret, err := prettyPrint(reflect.ValueOf(stringList.Value), indent)
-			if err != nil {
-				return ret, err
-			}
-
-			if !stringList.HasArchSpecificValues() {
-				// Select statement not needed.
-				return ret, nil
-			}
-
-			ret += " + " + "select({\n"
-			for _, arch := range android.ArchTypeList() {
-				value := stringList.GetValueForArch(arch.Name)
-				if len(value) > 0 {
-					ret += makeIndent(indent + 1)
-					list, _ := prettyPrint(reflect.ValueOf(value), indent+1)
-					ret += fmt.Sprintf("\"%s\": %s,\n", platformArchMap[arch], list)
-				}
-			}
-
-			ret += makeIndent(indent + 1)
-			list, _ := prettyPrint(reflect.ValueOf(stringList.GetValueForArch("default")), indent+1)
-			ret += fmt.Sprintf("\"%s\": %s,\n", "//conditions:default", list)
-
-			ret += makeIndent(indent)
-			ret += "})"
-			return ret, err
 		}
 
 		ret = "{\n"
@@ -533,6 +514,13 @@ func isZero(value reflect.Value) bool {
 
 func escapeString(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
+
+	// b/184026959: Reverse the application of some common control sequences.
+	// These must be generated literally in the BUILD file.
+	s = strings.ReplaceAll(s, "\t", "\\t")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+
 	return strings.ReplaceAll(s, "\"", "\\\"")
 }
 

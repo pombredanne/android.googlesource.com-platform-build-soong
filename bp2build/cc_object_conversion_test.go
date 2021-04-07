@@ -74,8 +74,8 @@ func TestCcObjectBp2Build(t *testing.T) {
     ],
     srcs = [
         "a/b/bar.h",
-        "a/b/foo.h",
         "a/b/c.c",
+        "a/b/foo.h",
     ],
 )`,
 			},
@@ -209,6 +209,34 @@ cc_object {
 )`,
 			},
 		},
+		{
+			description:                        "cc_object with product variable",
+			moduleTypeUnderTest:                "cc_object",
+			moduleTypeUnderTestFactory:         cc.ObjectFactory,
+			moduleTypeUnderTestBp2BuildMutator: cc.ObjectBp2Build,
+			blueprint: `cc_object {
+    name: "foo",
+    include_build_directory: false,
+    product_variables: {
+        platform_sdk_version: {
+            asflags: ["-DPLATFORM_SDK_VERSION=%d"],
+        },
+    },
+
+    bazel_module: { bp2build_available: true },
+}
+`,
+			expectedBazelTargets: []string{`cc_object(
+    name = "foo",
+    asflags = [
+        "-DPLATFORM_SDK_VERSION={Platform_sdk_version}",
+    ],
+    copts = [
+        "-fno-addrsig",
+    ],
+)`,
+			},
+		},
 	}
 
 	dir := "."
@@ -278,9 +306,13 @@ func TestCcObjectConfigurableAttributesBp2Build(t *testing.T) {
 			moduleTypeUnderTestBp2BuildMutator: cc.ObjectBp2Build,
 			blueprint: `cc_object {
     name: "foo",
+    srcs: ["a.cpp"],
     arch: {
         x86: {
-            cflags: ["-fPIC"],
+            cflags: ["-fPIC"], // string list
+        },
+        arm: {
+            srcs: ["arch/arm/file.S"], // label list
         },
     },
     bazel_module: { bp2build_available: true },
@@ -292,15 +324,22 @@ func TestCcObjectConfigurableAttributesBp2Build(t *testing.T) {
     copts = [
         "-fno-addrsig",
     ] + select({
-        "@bazel_tools//platforms:x86_32": [
+        "//build/bazel/platforms/arch:x86": [
             "-fPIC",
         ],
-        "//conditions:default": [
-        ],
+        "//conditions:default": [],
     }),
     local_include_dirs = [
         ".",
     ],
+    srcs = [
+        "a.cpp",
+    ] + select({
+        "//build/bazel/platforms/arch:arm": [
+            "arch/arm/file.S",
+        ],
+        "//conditions:default": [],
+    }),
 )`,
 			},
 		},
@@ -311,17 +350,22 @@ func TestCcObjectConfigurableAttributesBp2Build(t *testing.T) {
 			moduleTypeUnderTestBp2BuildMutator: cc.ObjectBp2Build,
 			blueprint: `cc_object {
     name: "foo",
+    srcs: ["base.cpp"],
     arch: {
         x86: {
+            srcs: ["x86.cpp"],
             cflags: ["-fPIC"],
         },
         x86_64: {
+            srcs: ["x86_64.cpp"],
             cflags: ["-fPIC"],
         },
         arm: {
+            srcs: ["arm.cpp"],
             cflags: ["-Wall"],
         },
         arm64: {
+            srcs: ["arm64.cpp"],
             cflags: ["-Wall"],
         },
     },
@@ -334,23 +378,87 @@ func TestCcObjectConfigurableAttributesBp2Build(t *testing.T) {
     copts = [
         "-fno-addrsig",
     ] + select({
-        "@bazel_tools//platforms:arm": [
+        "//build/bazel/platforms/arch:arm": [
             "-Wall",
         ],
-        "@bazel_tools//platforms:aarch64": [
+        "//build/bazel/platforms/arch:arm64": [
             "-Wall",
         ],
-        "@bazel_tools//platforms:x86_32": [
+        "//build/bazel/platforms/arch:x86": [
             "-fPIC",
         ],
-        "@bazel_tools//platforms:x86_64": [
+        "//build/bazel/platforms/arch:x86_64": [
             "-fPIC",
         ],
-        "//conditions:default": [
-        ],
+        "//conditions:default": [],
     }),
     local_include_dirs = [
         ".",
+    ],
+    srcs = [
+        "base.cpp",
+    ] + select({
+        "//build/bazel/platforms/arch:arm": [
+            "arm.cpp",
+        ],
+        "//build/bazel/platforms/arch:arm64": [
+            "arm64.cpp",
+        ],
+        "//build/bazel/platforms/arch:x86": [
+            "x86.cpp",
+        ],
+        "//build/bazel/platforms/arch:x86_64": [
+            "x86_64.cpp",
+        ],
+        "//conditions:default": [],
+    }),
+)`,
+			},
+		},
+		{
+			description:                        "cc_object setting cflags for multiple OSes",
+			moduleTypeUnderTest:                "cc_object",
+			moduleTypeUnderTestFactory:         cc.ObjectFactory,
+			moduleTypeUnderTestBp2BuildMutator: cc.ObjectBp2Build,
+			blueprint: `cc_object {
+    name: "foo",
+    srcs: ["base.cpp"],
+    target: {
+        android: {
+            cflags: ["-fPIC"],
+        },
+        windows: {
+            cflags: ["-fPIC"],
+        },
+        darwin: {
+            cflags: ["-Wall"],
+        },
+    },
+    bazel_module: { bp2build_available: true },
+}
+`,
+			expectedBazelTargets: []string{
+				`cc_object(
+    name = "foo",
+    copts = [
+        "-fno-addrsig",
+    ] + select({
+        "//build/bazel/platforms/os:android": [
+            "-fPIC",
+        ],
+        "//build/bazel/platforms/os:darwin": [
+            "-Wall",
+        ],
+        "//build/bazel/platforms/os:windows": [
+            "-fPIC",
+        ],
+        "//conditions:default": [],
+    }),
+    local_include_dirs = [
+        ".",
+    ],
+    srcs = [
+        "base.cpp",
     ],
 )`,
 			},
