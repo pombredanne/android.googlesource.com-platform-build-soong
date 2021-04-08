@@ -62,8 +62,9 @@ func prebuiltLibraryHeaderFactory() android.Module {
 }
 
 type bazelCcLibraryHeadersAttributes struct {
+	Copts    bazel.StringListAttribute
 	Hdrs     bazel.LabelListAttribute
-	Includes bazel.LabelListAttribute
+	Includes bazel.StringListAttribute
 	Deps     bazel.LabelListAttribute
 }
 
@@ -94,14 +95,15 @@ func CcLibraryHeadersBp2Build(ctx android.TopDownMutatorContext) {
 		return
 	}
 
-	exportedIncludesLabels, exportedIncludesHeadersLabels := Bp2BuildParseExportedIncludes(ctx, module)
+	exportedIncludes, exportedIncludesHeaders := bp2BuildParseExportedIncludes(ctx, module)
 
-	headerLibsLabels := Bp2BuildParseHeaderLibs(ctx, module)
+	headerLibs := bp2BuildParseHeaderLibs(ctx, module)
 
 	attrs := &bazelCcLibraryHeadersAttributes{
-		Includes: exportedIncludesLabels,
-		Hdrs:     exportedIncludesHeadersLabels,
-		Deps:     headerLibsLabels,
+		Copts:    bp2BuildParseCflags(ctx, module),
+		Includes: exportedIncludes,
+		Hdrs:     exportedIncludesHeaders,
+		Deps:     headerLibs,
 	}
 
 	props := bazel.BazelTargetModuleProperties{

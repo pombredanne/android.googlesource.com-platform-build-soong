@@ -286,6 +286,16 @@ func (p OptionalPath) Path() Path {
 	return p.path
 }
 
+// RelativeToTop returns an OptionalPath with the path that was embedded having been replaced by the
+// result of calling Path.RelativeToTop on it.
+func (p OptionalPath) RelativeToTop() OptionalPath {
+	if !p.valid {
+		return p
+	}
+	p.path = p.path.RelativeToTop()
+	return p
+}
+
 // String returns the string version of the Path, or "" if it isn't valid.
 func (p OptionalPath) String() string {
 	if p.valid {
