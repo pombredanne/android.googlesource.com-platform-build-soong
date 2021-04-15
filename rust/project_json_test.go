@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -27,15 +28,15 @@ import (
 // testProjectJson run the generation of rust-project.json. It returns the raw
 // content of the generated file.
 func testProjectJson(t *testing.T, bp string) []byte {
-	tctx := newTestRustCtx(t, bp)
-	tctx.env = map[string]string{"SOONG_GEN_RUST_PROJECT": "1"}
-	tctx.generateConfig()
-	tctx.parse(t)
+	result := android.GroupFixturePreparers(
+		prepareForRustTest,
+		android.FixtureMergeEnv(map[string]string{"SOONG_GEN_RUST_PROJECT": "1"}),
+	).RunTestWithBp(t, bp)
 
 	// The JSON file is generated via WriteFileToOutputDir. Therefore, it
 	// won't appear in the Output of the TestingSingleton. Manually verify
 	// it exists.
-	content, err := ioutil.ReadFile(filepath.Join(buildDir, rustProjectJsonFileName))
+	content, err := ioutil.ReadFile(filepath.Join(result.Config.BuildDir(), rustProjectJsonFileName))
 	if err != nil {
 		t.Errorf("rust-project.json has not been generated")
 	}
@@ -114,6 +115,41 @@ func TestProjectJsonDep(t *testing.T) {
 	`
 	jsonContent := testProjectJson(t, bp)
 	validateJsonCrates(t, jsonContent)
+}
+
+func TestProjectJsonFeature(t *testing.T) {
+	bp := `
+	rust_library {
+		name: "liba",
+		srcs: ["a/src/lib.rs"],
+		crate_name: "a",
+		features: ["f1", "f2"]
+	}
+	`
+	jsonContent := testProjectJson(t, bp)
+	crates := validateJsonCrates(t, jsonContent)
+	for _, c := range crates {
+		crate := validateCrate(t, c)
+		cfgs, ok := crate["cfg"].([]interface{})
+		if !ok {
+			t.Fatalf("Unexpected type for cfgs: %v", crate)
+		}
+		expectedCfgs := []string{"feature=\"f1\"", "feature=\"f2\""}
+		foundCfgs := []string{}
+		for _, cfg := range cfgs {
+			cfg, ok := cfg.(string)
+			if !ok {
+				t.Fatalf("Unexpected type for cfg: %v", cfg)
+			}
+			foundCfgs = append(foundCfgs, cfg)
+		}
+		sort.Strings(foundCfgs)
+		for i, foundCfg := range foundCfgs {
+			if foundCfg != expectedCfgs[i] {
+				t.Errorf("Incorrect features: got %v; want %v", foundCfg, expectedCfgs[i])
+			}
+		}
+	}
 }
 
 func TestProjectJsonBinary(t *testing.T) {

@@ -30,8 +30,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-var emptyFixtureFactory = android.NewFixtureFactory(nil)
-
 func test(t *testing.T, bp string) *android.TestResult {
 	t.Helper()
 
@@ -124,18 +122,18 @@ func test(t *testing.T, bp string) *android.TestResult {
 		"com/android2/OdmProperties.sysprop":         nil,
 	}
 
-	result := emptyFixtureFactory.RunTest(t,
+	result := android.GroupFixturePreparers(
 		cc.PrepareForTestWithCcDefaultModules,
 		java.PrepareForTestWithJavaDefaultModules,
 		PrepareForTestWithSyspropBuildComponents,
 		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
 			variables.DeviceSystemSdkVersions = []string{"28"}
 			variables.DeviceVndkVersion = proptools.StringPtr("current")
-			variables.Platform_vndk_version = proptools.StringPtr("VER")
+			variables.Platform_vndk_version = proptools.StringPtr("29")
 		}),
 		mockFS.AddToFixture(),
 		android.FixtureWithRootAndroidBp(bp),
-	)
+	).RunTest(t)
 
 	return result
 }
@@ -248,10 +246,10 @@ func TestSyspropLibrary(t *testing.T) {
 
 	// Check for generated cc_library
 	for _, variant := range []string{
-		"android_vendor.VER_arm_armv7-a-neon_shared",
-		"android_vendor.VER_arm_armv7-a-neon_static",
-		"android_vendor.VER_arm64_armv8-a_shared",
-		"android_vendor.VER_arm64_armv8-a_static",
+		"android_vendor.29_arm_armv7-a-neon_shared",
+		"android_vendor.29_arm_armv7-a-neon_static",
+		"android_vendor.29_arm64_armv8-a_shared",
+		"android_vendor.29_arm64_armv8-a_static",
 	} {
 		result.ModuleForTests("libsysprop-platform", variant)
 		result.ModuleForTests("libsysprop-vendor", variant)
@@ -279,15 +277,15 @@ func TestSyspropLibrary(t *testing.T) {
 
 	// Check for exported includes
 	coreVariant := "android_arm64_armv8-a_static"
-	vendorVariant := "android_vendor.VER_arm64_armv8-a_static"
+	vendorVariant := "android_vendor.29_arm64_armv8-a_static"
 
 	platformInternalPath := "libsysprop-platform/android_arm64_armv8-a_static/gen/sysprop/include"
 	platformPublicCorePath := "libsysprop-platform/android_arm64_armv8-a_static/gen/sysprop/public/include"
-	platformPublicVendorPath := "libsysprop-platform/android_vendor.VER_arm64_armv8-a_static/gen/sysprop/public/include"
+	platformPublicVendorPath := "libsysprop-platform/android_vendor.29_arm64_armv8-a_static/gen/sysprop/public/include"
 
 	platformOnProductPath := "libsysprop-platform-on-product/android_arm64_armv8-a_static/gen/sysprop/public/include"
 
-	vendorInternalPath := "libsysprop-vendor/android_vendor.VER_arm64_armv8-a_static/gen/sysprop/include"
+	vendorInternalPath := "libsysprop-vendor/android_vendor.29_arm64_armv8-a_static/gen/sysprop/include"
 	vendorPublicPath := "libsysprop-vendor-on-product/android_arm64_armv8-a_static/gen/sysprop/public/include"
 
 	platformClient := result.ModuleForTests("cc-client-platform", coreVariant)
@@ -373,6 +371,6 @@ func TestMinSdkVersionIsForwarded(t *testing.T) {
 	android.AssertStringEquals(t, "min_sdk_version forwarding to cc module", "29", propFromCc)
 
 	javaModule := result.ModuleForTests("sysprop-platform", "android_common").Module().(*java.Library)
-	propFromJava := javaModule.MinSdkVersion()
+	propFromJava := javaModule.MinSdkVersionString()
 	android.AssertStringEquals(t, "min_sdk_version forwarding to java module", "30", propFromJava)
 }

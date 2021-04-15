@@ -13,6 +13,8 @@ bootstrap_go_package {
         "soong-android-soongconfig",
         "soong-bazel",
         "soong-cquery",
+        "soong-remoteexec",
+        "soong-response",
         "soong-shared",
         "soong-ui-metrics_proto",
     ],
@@ -65,6 +67,7 @@ bootstrap_go_package {
         "rule_builder.go",
         "sandbox.go",
         "sdk.go",
+        "sdk_version.go",
         "singleton.go",
         "singleton_module.go",
         "soong_config_modules.go",
@@ -75,15 +78,13 @@ bootstrap_go_package {
         "variable.go",
         "visibility.go",
         "writedocs.go",
-
-        // Lock down environment access last
-        "env.go",
     ],
     testSrcs: [
         "android_test.go",
         "androidmk_test.go",
         "apex_test.go",
         "arch_test.go",
+        "bazel_test.go",
         "config_test.go",
         "csuite_config_test.go",
         "depset_test.go",

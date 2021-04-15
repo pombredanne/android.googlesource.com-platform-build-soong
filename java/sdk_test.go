@@ -16,7 +16,6 @@ package java
 
 import (
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -98,7 +97,7 @@ func TestClasspath(t *testing.T) {
 			bootclasspath:  []string{"android_stubs_current", "core-lambda-stubs"},
 			system:         "core-current-stubs-system-modules",
 			java9classpath: []string{"android_stubs_current"},
-			aidl:           "-p" + buildDir + "/framework.aidl",
+			aidl:           "-pout/soong/framework.aidl",
 		},
 		{
 
@@ -107,7 +106,7 @@ func TestClasspath(t *testing.T) {
 			bootclasspath:  []string{"android_system_stubs_current", "core-lambda-stubs"},
 			system:         "core-current-stubs-system-modules",
 			java9classpath: []string{"android_system_stubs_current"},
-			aidl:           "-p" + buildDir + "/framework.aidl",
+			aidl:           "-pout/soong/framework.aidl",
 		},
 		{
 
@@ -135,7 +134,7 @@ func TestClasspath(t *testing.T) {
 			bootclasspath:  []string{"android_test_stubs_current", "core-lambda-stubs"},
 			system:         "core-current-stubs-system-modules",
 			java9classpath: []string{"android_test_stubs_current"},
-			aidl:           "-p" + buildDir + "/framework.aidl",
+			aidl:           "-pout/soong/framework.aidl",
 		},
 		{
 
@@ -222,7 +221,7 @@ func TestClasspath(t *testing.T) {
 			bootclasspath:  []string{"android_module_lib_stubs_current", "core-lambda-stubs"},
 			system:         "core-current-stubs-system-modules",
 			java9classpath: []string{"android_module_lib_stubs_current"},
-			aidl:           "-p" + buildDir + "/framework_non_updatable.aidl",
+			aidl:           "-pout/soong/framework_non_updatable.aidl",
 		},
 		{
 			name:           "system_server_current",
@@ -230,7 +229,7 @@ func TestClasspath(t *testing.T) {
 			bootclasspath:  []string{"android_system_server_stubs_current", "core-lambda-stubs"},
 			system:         "core-current-stubs-system-modules",
 			java9classpath: []string{"android_system_server_stubs_current"},
-			aidl:           "-p" + buildDir + "/framework.aidl",
+			aidl:           "-pout/soong/framework.aidl",
 		},
 	}
 
@@ -303,12 +302,12 @@ func TestClasspath(t *testing.T) {
 				} else {
 					dir = defaultJavaDir
 				}
-				system = "--system=" + filepath.Join(buildDir, ".intermediates", dir, testcase.system, "android_common", "system")
+				system = "--system=" + filepath.Join("out", "soong", ".intermediates", dir, testcase.system, "android_common", "system")
 				// The module-relative parts of these paths are hardcoded in system_modules.go:
 				systemDeps = []string{
-					filepath.Join(buildDir, ".intermediates", dir, testcase.system, "android_common", "system", "lib", "modules"),
-					filepath.Join(buildDir, ".intermediates", dir, testcase.system, "android_common", "system", "lib", "jrt-fs.jar"),
-					filepath.Join(buildDir, ".intermediates", dir, testcase.system, "android_common", "system", "release"),
+					filepath.Join("out", "soong", ".intermediates", dir, testcase.system, "android_common", "system", "lib", "modules"),
+					filepath.Join("out", "soong", ".intermediates", dir, testcase.system, "android_common", "system", "lib", "jrt-fs.jar"),
+					filepath.Join("out", "soong", ".intermediates", dir, testcase.system, "android_common", "system", "release"),
 				}
 			}
 
@@ -319,7 +318,7 @@ func TestClasspath(t *testing.T) {
 
 				aidl := foo.MaybeRule("aidl")
 				if aidl.Rule != nil {
-					deps = append(deps, aidl.Output.String())
+					deps = append(deps, android.PathRelativeToTop(aidl.Output))
 				}
 
 				got := javac.Args["bootClasspath"]
@@ -347,12 +346,11 @@ func TestClasspath(t *testing.T) {
 					t.Errorf("classpath expected %q != got %q", expected, got)
 				}
 
-				if !reflect.DeepEqual(javac.Implicits.Strings(), deps) {
-					t.Errorf("implicits expected %q != got %q", deps, javac.Implicits.Strings())
-				}
+				android.AssertPathsRelativeToTopEquals(t, "implicits", deps, javac.Implicits)
 			}
 
-			fixtureFactory := javaFixtureFactory.Extend(
+			fixtureFactory := android.GroupFixturePreparers(
+				prepareForJavaTest,
 				FixtureWithPrebuiltApis(map[string][]string{
 					"29":      {},
 					"30":      {},
@@ -404,14 +402,16 @@ func TestClasspath(t *testing.T) {
 
 			// Test again with PLATFORM_VERSION_CODENAME=REL, javac -source 8 -target 8
 			t.Run("REL + Java language level 8", func(t *testing.T) {
-				result := fixtureFactory.Extend(prepareWithPlatformVersionRel).RunTestWithBp(t, bpJava8)
+				result := android.GroupFixturePreparers(
+					fixtureFactory, prepareWithPlatformVersionRel).RunTestWithBp(t, bpJava8)
 
 				checkClasspath(t, result, true /* isJava8 */)
 			})
 
 			// Test again with PLATFORM_VERSION_CODENAME=REL, javac -source 9 -target 9
 			t.Run("REL + Java language level 9", func(t *testing.T) {
-				result := fixtureFactory.Extend(prepareWithPlatformVersionRel).RunTestWithBp(t, bp)
+				result := android.GroupFixturePreparers(
+					fixtureFactory, prepareWithPlatformVersionRel).RunTestWithBp(t, bp)
 
 				checkClasspath(t, result, false /* isJava8 */)
 			})

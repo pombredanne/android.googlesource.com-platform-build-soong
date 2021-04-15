@@ -32,7 +32,13 @@ type bazelModuleProperties struct {
 
 	// If true, bp2build will generate the converted Bazel target for this module. Note: this may
 	// cause a conflict due to the duplicate targets if label is also set.
-	Bp2build_available bool
+	//
+	// This is a bool pointer to support tristates: true, false, not set.
+	//
+	// To opt-in a module, set bazel_module: { bp2build_available: true }
+	// To opt-out a module, set bazel_module: { bp2build_available: false }
+	// To defer the default setting for the directory, do not set the value.
+	Bp2build_available *bool
 }
 
 // Properties contains common module properties for Bazel migration purposes.
@@ -54,9 +60,9 @@ type Bazelable interface {
 	HasHandcraftedLabel() bool
 	HandcraftedLabel() string
 	GetBazelLabel(ctx BazelConversionPathContext, module blueprint.Module) string
-	ConvertWithBp2build() bool
+	ConvertWithBp2build(ctx BazelConversionPathContext) bool
 	GetBazelBuildFileContents(c Config, path, name string) (string, error)
-	ConvertedToBazel() bool
+	ConvertedToBazel(ctx BazelConversionPathContext) bool
 }
 
 // BazelModule is a lightweight wrapper interface around Module for Bazel-convertible modules.
@@ -91,15 +97,165 @@ func (b *BazelModuleBase) GetBazelLabel(ctx BazelConversionPathContext, module b
 	if b.HasHandcraftedLabel() {
 		return b.HandcraftedLabel()
 	}
-	if b.ConvertWithBp2build() {
+	if b.ConvertWithBp2build(ctx) {
 		return bp2buildModuleLabel(ctx, module)
 	}
 	return "" // no label for unconverted module
 }
 
+// Configuration to decide if modules in a directory should default to true/false for bp2build_available
+type Bp2BuildConfig map[string]BazelConversionConfigEntry
+type BazelConversionConfigEntry int
+
+const (
+	// A sentinel value to be used as a key in Bp2BuildConfig for modules with
+	// no package path. This is also the module dir for top level Android.bp
+	// modules.
+	BP2BUILD_TOPLEVEL = "."
+
+	// iota + 1 ensures that the int value is not 0 when used in the Bp2buildAllowlist map,
+	// which can also mean that the key doesn't exist in a lookup.
+
+	// all modules in this package and subpackages default to bp2build_available: true.
+	// allows modules to opt-out.
+	Bp2BuildDefaultTrueRecursively BazelConversionConfigEntry = iota + 1
+
+	// all modules in this package (not recursively) default to bp2build_available: false.
+	// allows modules to opt-in.
+	Bp2BuildDefaultFalse
+)
+
+var (
+	// Configure modules in these directories to enable bp2build_available: true or false by default.
+	bp2buildDefaultConfig = Bp2BuildConfig{
+		"bionic":                Bp2BuildDefaultTrueRecursively,
+		"external/gwp_asan":     Bp2BuildDefaultTrueRecursively,
+		"system/core/libcutils": Bp2BuildDefaultTrueRecursively,
+		"system/logging/liblog": Bp2BuildDefaultTrueRecursively,
+	}
+
+	// Per-module denylist to always opt modules out.
+	bp2buildModuleDoNotConvertList = []string{
+		"libBionicBenchmarksUtils",      // ruperts@, cc_library_static, 'map' file not found
+		"libbionic_spawn_benchmark",     // ruperts@, cc_library_static, depends on //system/libbase
+		"libc_jemalloc_wrapper",         // ruperts@, cc_library_static, depends on //external/jemalloc_new
+		"libc_bootstrap",                // ruperts@, cc_library_static, 'private/bionic_auxv.h' file not found
+		"libc_init_static",              // ruperts@, cc_library_static, 'private/bionic_elf_tls.h' file not found
+		"libc_init_dynamic",             // ruperts@, cc_library_static, 'private/bionic_defs.h' file not found
+		"libc_tzcode",                   // ruperts@, cc_library_static, error: expected expression
+		"libc_netbsd",                   // ruperts@, cc_library_static, 'engine.c' file not found
+		"libc_openbsd_large_stack",      // ruperts@, cc_library_static, 'android/log.h' file not found
+		"libc_openbsd",                  // ruperts@, cc_library_static, 'android/log.h' file not found
+		"libc_fortify",                  // ruperts@, cc_library_static, 'private/bionic_fortify.h' file not found
+		"libc_bionic",                   // ruperts@, cc_library_static, 'private/bionic_asm.h' file not found
+		"libc_bionic_ndk",               // ruperts@, cc_library_static, depends on //bionic/libc/system_properties
+		"libc_bionic_systrace",          // ruperts@, cc_library_static, 'private/bionic_systrace.h' file not found
+		"libc_pthread",                  // ruperts@, cc_library_static, 'private/bionic_defs.h' file not found
+		"libc_syscalls",                 // ruperts@, cc_library_static, mutator panic cannot get direct dep syscalls-arm64.S of libc_syscalls
+		"libc_ndk",                      // ruperts@, cc_library_static, depends on //bionic/libm:libm
+		"libc_nopthread",                // ruperts@, cc_library_static, depends on //external/arm-optimized-routines
+		"libc_common",                   // ruperts@, cc_library_static, depends on //bionic/libc:libc_nopthread
+		"libc_common_static",            // ruperts@, cc_library_static, depends on //bionic/libc:libc_common
+		"libc_common_shared",            // ruperts@, cc_library_static, depends on //bionic/libc:libc_common
+		"libc_unwind_static",            // ruperts@, cc_library_static, 'private/bionic_elf_tls.h' file not found
+		"libc_nomalloc",                 // ruperts@, cc_library_static, depends on //bionic/libc:libc_common
+		"libasync_safe",                 // ruperts@, cc_library_static, 'private/CachedProperty.h' file not found
+		"libc_malloc_debug_backtrace",   // ruperts@, cc_library_static, depends on //system/libbase
+		"libsystemproperties",           // ruperts@, cc_library_static, depends on //system/core/property_service/libpropertyinfoparser
+		"libdl_static",                  // ruperts@, cc_library_static, 'private/CFIShadow.h' file not found
+		"liblinker_main",                // ruperts@, cc_library_static, depends on //system/libbase
+		"liblinker_malloc",              // ruperts@, cc_library_static, depends on //system/logging/liblog:liblog
+		"liblinker_debuggerd_stub",      // ruperts@, cc_library_static, depends on //system/libbase
+		"libbionic_tests_headers_posix", // ruperts@, cc_library_static, 'complex.h' file not found
+		"libc_dns",                      // ruperts@, cc_library_static, 'android/log.h' file not found
+
+		// List of all full_cc_libraries in //bionic, with their immediate failures
+		"libc",              // jingwen@, cc_library, depends on //external/gwp_asan
+		"libc_malloc_debug", // jingwen@, cc_library, fatal error: 'assert.h' file not found
+		"libc_malloc_hooks", // jingwen@, cc_library, fatal error: 'errno.h' file not found
+		"libdl",             // jingwen@, cc_library, ld.lld: error: no input files
+		"libm",              // jingwen@, cc_library, fatal error: 'freebsd-compat.h' file not found
+		"libseccomp_policy", // jingwen@, cc_library, fatal error: 'seccomp_policy.h' file not found
+		"libstdc++",         // jingwen@, cc_library, depends on //external/gwp_asan
+
+		// For mixed builds specifically
+		"note_memtag_heap_async", // jingwen@, cc_library_static, OK for bp2build but features.h includes not found for mixed builds (b/185079815)
+		"note_memtag_heap_sync",  // jingwen@, cc_library_static, OK for bp2build but features.h includes not found for mixed builds (b/185079815)
+		"libc_gdtoa",             // ruperts@, cc_library_static, OK for bp2build but undefined symbol: __strtorQ for mixed builds
+	}
+
+	// Used for quicker lookups
+	bp2buildModuleDoNotConvert = map[string]bool{}
+)
+
+func init() {
+	for _, moduleName := range bp2buildModuleDoNotConvertList {
+		bp2buildModuleDoNotConvert[moduleName] = true
+	}
+}
+
 // ConvertWithBp2build returns whether the given BazelModuleBase should be converted with bp2build.
-func (b *BazelModuleBase) ConvertWithBp2build() bool {
-	return b.bazelProperties.Bazel_module.Bp2build_available
+func (b *BazelModuleBase) ConvertWithBp2build(ctx BazelConversionPathContext) bool {
+	if bp2buildModuleDoNotConvert[ctx.Module().Name()] {
+		return false
+	}
+
+	// Ensure that the module type of this module has a bp2build converter. This
+	// prevents mixed builds from using auto-converted modules just by matching
+	// the package dir; it also has to have a bp2build mutator as well.
+	if ctx.Config().bp2buildModuleTypeConfig[ctx.ModuleType()] == false {
+		return false
+	}
+
+	packagePath := ctx.ModuleDir()
+	config := ctx.Config().bp2buildPackageConfig
+
+	// This is a tristate value: true, false, or unset.
+	propValue := b.bazelProperties.Bazel_module.Bp2build_available
+	if bp2buildDefaultTrueRecursively(packagePath, config) {
+		// Allow modules to explicitly opt-out.
+		return proptools.BoolDefault(propValue, true)
+	}
+
+	// Allow modules to explicitly opt-in.
+	return proptools.BoolDefault(propValue, false)
+}
+
+// bp2buildDefaultTrueRecursively checks that the package contains a prefix from the
+// set of package prefixes where all modules must be converted. That is, if the
+// package is x/y/z, and the list contains either x, x/y, or x/y/z, this function will
+// return true.
+//
+// However, if the package is x/y, and it matches a Bp2BuildDefaultFalse "x/y" entry
+// exactly, this module will return false early.
+//
+// This function will also return false if the package doesn't match anything in
+// the config.
+func bp2buildDefaultTrueRecursively(packagePath string, config Bp2BuildConfig) bool {
+	ret := false
+
+	// Return exact matches in the config.
+	if config[packagePath] == Bp2BuildDefaultTrueRecursively {
+		return true
+	}
+	if config[packagePath] == Bp2BuildDefaultFalse {
+		return false
+	}
+
+	// If not, check for the config recursively.
+	packagePrefix := ""
+	// e.g. for x/y/z, iterate over x, x/y, then x/y/z, taking the final value from the allowlist.
+	for _, part := range strings.Split(packagePath, "/") {
+		packagePrefix += part
+		if config[packagePrefix] == Bp2BuildDefaultTrueRecursively {
+			// package contains this prefix and this prefix should convert all modules
+			return true
+		}
+		// Continue to the next part of the package dir.
+		packagePrefix += "/"
+	}
+
+	return ret
 }
 
 // GetBazelBuildFileContents returns the file contents of a hand-crafted BUILD file if available or
@@ -126,6 +282,6 @@ func (b *BazelModuleBase) GetBazelBuildFileContents(c Config, path, name string)
 
 // ConvertedToBazel returns whether this module has been converted to Bazel, whether automatically
 // or manually
-func (b *BazelModuleBase) ConvertedToBazel() bool {
-	return b.ConvertWithBp2build() || b.HasHandcraftedLabel()
+func (b *BazelModuleBase) ConvertedToBazel(ctx BazelConversionPathContext) bool {
+	return b.ConvertWithBp2build(ctx) || b.HasHandcraftedLabel()
 }

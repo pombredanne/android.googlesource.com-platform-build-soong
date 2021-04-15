@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/google/blueprint/proptools"
 )
 
 type strsTestCase struct {
@@ -339,6 +341,73 @@ func TestPathForModuleInstall(t *testing.T) {
 		},
 
 		{
+			name: "ramdisk binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inRamdisk: true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/ramdisk/system/my_test",
+			partitionDir: "target/product/test_device/ramdisk/system",
+		},
+		{
+			name: "ramdisk root binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inRamdisk: true,
+				inRoot:    true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/ramdisk/my_test",
+			partitionDir: "target/product/test_device/ramdisk",
+		},
+		{
+			name: "vendor_ramdisk binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inVendorRamdisk: true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/vendor_ramdisk/system/my_test",
+			partitionDir: "target/product/test_device/vendor_ramdisk/system",
+		},
+		{
+			name: "vendor_ramdisk root binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inVendorRamdisk: true,
+				inRoot:          true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/vendor_ramdisk/my_test",
+			partitionDir: "target/product/test_device/vendor_ramdisk",
+		},
+		{
+			name: "debug_ramdisk binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inDebugRamdisk: true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/debug_ramdisk/my_test",
+			partitionDir: "target/product/test_device/debug_ramdisk",
+		},
+		{
 			name: "system native test binary",
 			ctx: &testModuleInstallPathContext{
 				baseModuleContext: baseModuleContext{
@@ -615,6 +684,80 @@ func TestPathForModuleInstall(t *testing.T) {
 			in:           []string{"my_test", "my_test_bin"},
 			out:          "host/linux-x86/testcases/my_test/my_test_bin",
 			partitionDir: "host/linux-x86/testcases",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.ctx.baseModuleContext.config = testConfig
+			output := PathForModuleInstall(tc.ctx, tc.in...)
+			if output.basePath.path != tc.out {
+				t.Errorf("unexpected path:\n got: %q\nwant: %q\n",
+					output.basePath.path,
+					tc.out)
+			}
+			if output.partitionDir != tc.partitionDir {
+				t.Errorf("unexpected partitionDir:\n got: %q\nwant: %q\n",
+					output.partitionDir, tc.partitionDir)
+			}
+		})
+	}
+}
+
+func TestPathForModuleInstallRecoveryAsBoot(t *testing.T) {
+	testConfig := pathTestConfig("")
+	testConfig.TestProductVariables.BoardUsesRecoveryAsBoot = proptools.BoolPtr(true)
+	testConfig.TestProductVariables.BoardMoveRecoveryResourcesToVendorBoot = proptools.BoolPtr(true)
+	deviceTarget := Target{Os: Android, Arch: Arch{ArchType: Arm64}}
+
+	testCases := []struct {
+		name         string
+		ctx          *testModuleInstallPathContext
+		in           []string
+		out          string
+		partitionDir string
+	}{
+		{
+			name: "ramdisk binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inRamdisk: true,
+				inRoot:    true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/recovery/root/first_stage_ramdisk/my_test",
+			partitionDir: "target/product/test_device/recovery/root/first_stage_ramdisk",
+		},
+
+		{
+			name: "vendor_ramdisk binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inVendorRamdisk: true,
+				inRoot:          true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/vendor_ramdisk/first_stage_ramdisk/my_test",
+			partitionDir: "target/product/test_device/vendor_ramdisk/first_stage_ramdisk",
+		},
+		{
+			name: "debug_ramdisk binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inDebugRamdisk: true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/debug_ramdisk/first_stage_ramdisk/my_test",
+			partitionDir: "target/product/test_device/debug_ramdisk/first_stage_ramdisk",
 		},
 	}
 
@@ -1005,14 +1148,14 @@ func testPathForModuleSrc(t *testing.T, tests []pathForModuleSrcTestCase) {
 				"foo/src_special/$": nil,
 			}
 
-			result := emptyTestFixtureFactory.RunTest(t,
+			result := GroupFixturePreparers(
 				FixtureRegisterWithContext(func(ctx RegistrationContext) {
 					ctx.RegisterModuleType("test", pathForModuleSrcTestModuleFactory)
 					ctx.RegisterModuleType("output_file_provider", pathForModuleSrcOutputFileProviderModuleFactory)
 					ctx.RegisterModuleType("filegroup", FileGroupFactory)
 				}),
 				mockFS.AddToFixture(),
-			)
+			).RunTest(t)
 
 			m := result.ModuleForTests("foo", "").Module().(*pathForModuleSrcTestModule)
 
@@ -1203,13 +1346,13 @@ func TestPathsForModuleSrc_AllowMissingDependencies(t *testing.T) {
 		}
 	`
 
-	result := emptyTestFixtureFactory.RunTest(t,
+	result := GroupFixturePreparers(
 		PrepareForTestWithAllowMissingDependencies,
 		FixtureRegisterWithContext(func(ctx RegistrationContext) {
 			ctx.RegisterModuleType("test", pathForModuleSrcTestModuleFactory)
 		}),
 		FixtureWithRootAndroidBp(bp),
-	)
+	).RunTest(t)
 
 	foo := result.ModuleForTests("foo", "").Module().(*pathForModuleSrcTestModule)
 

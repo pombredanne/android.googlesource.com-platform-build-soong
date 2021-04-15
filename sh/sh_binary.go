@@ -210,6 +210,10 @@ func (s *ShBinary) VendorRamdiskVariantNeeded(ctx android.BaseModuleContext) boo
 	return proptools.Bool(s.properties.Vendor_ramdisk_available) || s.ModuleBase.InstallInVendorRamdisk()
 }
 
+func (s *ShBinary) DebugRamdiskVariantNeeded(ctx android.BaseModuleContext) bool {
+	return false
+}
+
 func (s *ShBinary) RecoveryVariantNeeded(ctx android.BaseModuleContext) bool {
 	return proptools.Bool(s.properties.Recovery_available) || s.ModuleBase.InstallInRecovery()
 }
@@ -485,7 +489,7 @@ func ShTestHostFactory() android.Module {
 }
 
 type bazelShBinaryAttributes struct {
-	Srcs bazel.LabelList
+	Srcs bazel.LabelListAttribute
 	// Bazel also supports the attributes below, but (so far) these are not required for Bionic
 	// deps
 	// data
@@ -521,11 +525,12 @@ func BazelShBinaryFactory() android.Module {
 
 func ShBinaryBp2Build(ctx android.TopDownMutatorContext) {
 	m, ok := ctx.Module().(*ShBinary)
-	if !ok || !m.ConvertWithBp2build() {
+	if !ok || !m.ConvertWithBp2build(ctx) {
 		return
 	}
 
-	srcs := android.BazelLabelForModuleSrc(ctx, []string{*m.properties.Src})
+	srcs := bazel.MakeLabelListAttribute(
+		android.BazelLabelForModuleSrc(ctx, []string{*m.properties.Src}))
 
 	attrs := &bazelShBinaryAttributes{
 		Srcs: srcs,

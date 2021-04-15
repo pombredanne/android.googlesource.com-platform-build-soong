@@ -35,6 +35,7 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android/soongconfig"
+	"android/soong/remoteexec"
 )
 
 // Bool re-exports proptools.Bool for the android package.
@@ -138,6 +139,9 @@ type config struct {
 
 	fs         pathtools.FileSystem
 	mockBpList string
+
+	bp2buildPackageConfig    Bp2BuildConfig
+	bp2buildModuleTypeConfig map[string]bool
 
 	// If testAllowNonExistentPaths is true then PathForSource and PathForModuleSrc won't error
 	// in tests when a path doesn't exist.
@@ -280,6 +284,8 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 
 	config.mockFileSystem(bp, fs)
 
+	config.bp2buildModuleTypeConfig = map[string]bool{}
+
 	return Config{config}
 }
 
@@ -339,7 +345,7 @@ func TestArchConfig(buildDir string, env map[string]string, bp string, fs map[st
 // multiple runs in the same program execution is carried over (such as Bazel
 // context or environment deps).
 func ConfigForAdditionalRun(c Config) (Config, error) {
-	newConfig, err := NewConfig(c.srcDir, c.buildDir, c.moduleListFile)
+	newConfig, err := NewConfig(c.srcDir, c.buildDir, c.moduleListFile, c.env)
 	if err != nil {
 		return Config{}, err
 	}
@@ -350,12 +356,12 @@ func ConfigForAdditionalRun(c Config) (Config, error) {
 
 // NewConfig creates a new Config object. The srcDir argument specifies the path
 // to the root source directory. It also loads the config file, if found.
-func NewConfig(srcDir, buildDir string, moduleListFile string) (Config, error) {
+func NewConfig(srcDir, buildDir string, moduleListFile string, availableEnv map[string]string) (Config, error) {
 	// Make a config with default options.
 	config := &config{
 		ProductVariablesFileName: filepath.Join(buildDir, productVariablesFileName),
 
-		env: originalEnv,
+		env: availableEnv,
 
 		srcDir:            srcDir,
 		buildDir:          buildDir,
@@ -451,6 +457,8 @@ func NewConfig(srcDir, buildDir string, moduleListFile string) (Config, error) {
 			Bool(config.productVariables.ClangCoverage))
 
 	config.BazelContext, err = NewBazelContext(config)
+	config.bp2buildPackageConfig = bp2buildDefaultConfig
+	config.bp2buildModuleTypeConfig = make(map[string]bool)
 
 	return Config{config}, err
 }
@@ -1004,6 +1012,10 @@ func (c *config) DexpreoptGlobalConfig(ctx PathContext) ([]byte, error) {
 	return ioutil.ReadFile(absolutePath(path.String()))
 }
 
+func (c *deviceConfig) WithDexpreopt() bool {
+	return c.config.productVariables.WithDexpreopt
+}
+
 func (c *config) FrameworksBaseDirExists(ctx PathContext) bool {
 	return ExistentPathForSource(ctx, "frameworks", "base", "Android.bp").Valid()
 }
@@ -1247,7 +1259,7 @@ func (c *config) CFIEnabledForPath(path string) bool {
 	if len(c.productVariables.CFIIncludePaths) == 0 {
 		return false
 	}
-	return HasAnyPrefix(path, c.productVariables.CFIIncludePaths)
+	return HasAnyPrefix(path, c.productVariables.CFIIncludePaths) && !c.CFIDisabledForPath(path)
 }
 
 func (c *config) MemtagHeapDisabledForPath(path string) bool {
@@ -1261,14 +1273,14 @@ func (c *config) MemtagHeapAsyncEnabledForPath(path string) bool {
 	if len(c.productVariables.MemtagHeapAsyncIncludePaths) == 0 {
 		return false
 	}
-	return HasAnyPrefix(path, c.productVariables.MemtagHeapAsyncIncludePaths)
+	return HasAnyPrefix(path, c.productVariables.MemtagHeapAsyncIncludePaths) && !c.MemtagHeapDisabledForPath(path)
 }
 
 func (c *config) MemtagHeapSyncEnabledForPath(path string) bool {
 	if len(c.productVariables.MemtagHeapSyncIncludePaths) == 0 {
 		return false
 	}
-	return HasAnyPrefix(path, c.productVariables.MemtagHeapSyncIncludePaths)
+	return HasAnyPrefix(path, c.productVariables.MemtagHeapSyncIncludePaths) && !c.MemtagHeapDisabledForPath(path)
 }
 
 func (c *config) VendorConfig(name string) VendorConfig {
@@ -1388,7 +1400,10 @@ func (c *deviceConfig) PlatformSepolicyVersion() string {
 }
 
 func (c *deviceConfig) BoardSepolicyVers() string {
-	return String(c.config.productVariables.BoardSepolicyVers)
+	if ver := String(c.config.productVariables.BoardSepolicyVers); ver != "" {
+		return ver
+	}
+	return c.PlatformSepolicyVersion()
 }
 
 func (c *deviceConfig) BoardReqdMaskPolicy() []string {
@@ -1481,6 +1496,10 @@ func (c *deviceConfig) BuildBrokenEnforceSyspropOwner() bool {
 
 func (c *deviceConfig) BuildBrokenTrebleSyspropNeverallow() bool {
 	return c.config.productVariables.BuildBrokenTrebleSyspropNeverallow
+}
+
+func (c *deviceConfig) BuildDebugfsRestrictionsEnabled() bool {
+	return c.config.productVariables.BuildDebugfsRestrictionsEnabled
 }
 
 func (c *deviceConfig) BuildBrokenVendorPropertyNamespace() bool {
@@ -1773,4 +1792,8 @@ func (c *config) NonUpdatableBootJars() ConfiguredJarList {
 
 func (c *config) UpdatableBootJars() ConfiguredJarList {
 	return c.productVariables.UpdatableBootJars
+}
+
+func (c *config) RBEWrapper() string {
+	return c.GetenvWithDefault("RBE_WRAPPER", remoteexec.DefaultWrapperPath)
 }

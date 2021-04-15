@@ -19,16 +19,18 @@ func CreateBazelFiles(
 	ruleShims map[string]RuleShim,
 	buildToTargets map[string]BazelTargets,
 	mode CodegenMode) []BazelFile {
-	files := make([]BazelFile, 0, len(ruleShims)+len(buildToTargets)+numAdditionalFiles)
 
-	// Write top level files: WORKSPACE and BUILD. These files are empty.
-	files = append(files, newFile("", "WORKSPACE", ""))
-	// Used to denote that the top level directory is a package.
-	files = append(files, newFile("", GeneratedBuildFileName, ""))
-
-	files = append(files, newFile(bazelRulesSubDir, GeneratedBuildFileName, ""))
+	var files []BazelFile
 
 	if mode == QueryView {
+		// Write top level WORKSPACE.
+		files = append(files, newFile("", "WORKSPACE", ""))
+
+		// Used to denote that the top level directory is a package.
+		files = append(files, newFile("", GeneratedBuildFileName, ""))
+
+		files = append(files, newFile(bazelRulesSubDir, GeneratedBuildFileName, ""))
+
 		// These files are only used for queryview.
 		files = append(files, newFile(bazelRulesSubDir, "providers.bzl", providersBzl))
 

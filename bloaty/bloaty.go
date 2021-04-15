@@ -22,8 +22,8 @@ import (
 	"github.com/google/blueprint"
 )
 
-const bloatyDescriptorExt = "bloaty.csv"
-const protoFilename = "binary_sizes.pb"
+const bloatyDescriptorExt = ".bloaty.csv"
+const protoFilename = "binary_sizes.pb.gz"
 
 var (
 	fileSizeMeasurerKey blueprint.ProviderKey
@@ -75,7 +75,7 @@ func (singleton *sizesSingleton) GenerateBuildActions(ctx android.SingletonConte
 			return
 		}
 		filePath := ctx.ModuleProvider(m, fileSizeMeasurerKey).(android.ModuleOutPath)
-		sizeFile := filePath.ReplaceExtension(ctx, bloatyDescriptorExt)
+		sizeFile := filePath.InSameDir(ctx, filePath.Base()+bloatyDescriptorExt)
 		ctx.Build(pctx, android.BuildParams{
 			Rule:        bloaty,
 			Description: "bloaty " + filePath.Rel(),

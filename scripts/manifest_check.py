@@ -19,6 +19,7 @@
 from __future__ import print_function
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -61,6 +62,10 @@ def parse_args():
                       dest='extract_target_sdk_version',
                       action='store_true',
                       help='print the targetSdkVersion from the manifest')
+  parser.add_argument('--dexpreopt-config',
+                      dest='dexpreopt_configs',
+                      action='append',
+                      help='a paths to a dexpreopt.config of some library')
   parser.add_argument('--aapt',
                       dest='aapt',
                       help='path to aapt executable')
@@ -69,7 +74,7 @@ def parse_args():
   return parser.parse_args()
 
 
-def enforce_uses_libraries(manifest, required, optional, relax, is_apk = False):
+def enforce_uses_libraries(manifest, required, optional, relax, is_apk, path):
   """Verify that the <uses-library> tags in the manifest match those provided
   by the build system.
 
@@ -81,32 +86,36 @@ def enforce_uses_libraries(manifest, required, optional, relax, is_apk = False):
     is_apk:   if the manifest comes from an APK or an XML file
   """
   if is_apk:
-    manifest_required, manifest_optional = extract_uses_libs_apk(manifest)
+    manifest_required, manifest_optional, tags = extract_uses_libs_apk(manifest)
   else:
-    manifest_required, manifest_optional = extract_uses_libs_xml(manifest)
+    manifest_required, manifest_optional, tags = extract_uses_libs_xml(manifest)
 
-  if required is None:
-    required = []
+  if manifest_required == required and manifest_optional == optional:
+    return None
 
-  if optional is None:
-    optional = []
+  errmsg = ''.join([
+    'mismatch in the <uses-library> tags between the build system and the '
+      'manifest:\n',
+    '\t- required libraries in build system: [%s]\n' % ', '.join(required),
+    '\t                 vs. in the manifest: [%s]\n' % ', '.join(manifest_required),
+    '\t- optional libraries in build system: [%s]\n' % ', '.join(optional),
+    '\t                 vs. in the manifest: [%s]\n' % ', '.join(manifest_optional),
+    '\t- tags in the manifest (%s):\n' % path,
+    '\t\t%s\n' % '\t\t'.join(tags),
+      'note: the following options are available:\n',
+    '\t- to temporarily disable the check on command line, rebuild with ',
+      'RELAX_USES_LIBRARY_CHECK=true (this will set compiler filter "verify" ',
+      'and disable AOT-compilation in dexpreopt)\n',
+    '\t- to temporarily disable the check for the whole product, set ',
+      'PRODUCT_BROKEN_VERIFY_USES_LIBRARIES := true in the product makefiles\n',
+    '\t- to fix the check, make build system properties coherent with the '
+      'manifest\n',
+    '\t- see build/make/Changes.md for details\n'])
 
-  err = []
-  if manifest_required != required:
-    err.append('Expected required <uses-library> tags "%s", got "%s"' %
-               (', '.join(required), ', '.join(manifest_required)))
+  if not relax:
+    raise ManifestMismatchError(errmsg)
 
-  if manifest_optional != optional:
-    err.append('Expected optional <uses-library> tags "%s", got "%s"' %
-               (', '.join(optional), ', '.join(manifest_optional)))
-
-  if err:
-    errmsg = '\n'.join(err)
-    if not relax:
-      raise ManifestMismatchError(errmsg)
-    return errmsg
-
-  return None
+  return errmsg
 
 
 def extract_uses_libs_apk(badging):
@@ -116,14 +125,19 @@ def extract_uses_libs_apk(badging):
 
   required = []
   optional = []
+  lines = []
   for match in re.finditer(pattern, badging):
+    lines.append(match.group(0))
     libname = match.group(2)
     if match.group(1) == None:
       required.append(libname)
     else:
       optional.append(libname)
 
-  return first_unique_elements(required), first_unique_elements(optional)
+  required = first_unique_elements(required)
+  optional = first_unique_elements(optional)
+  tags = first_unique_elements(lines)
+  return required, optional, tags
 
 
 def extract_uses_libs_xml(xml):
@@ -144,7 +158,15 @@ def extract_uses_libs_xml(xml):
   required = [uses_library_name(x) for x in libs if uses_library_required(x)]
   optional = [uses_library_name(x) for x in libs if not uses_library_required(x)]
 
-  return first_unique_elements(required), first_unique_elements(optional)
+  # render <uses-library> tags as XML for a pretty error message
+  tags = []
+  for lib in libs:
+    tags.append(lib.toprettyxml())
+
+  required = first_unique_elements(required)
+  optional = first_unique_elements(optional)
+  tags = first_unique_elements(tags)
+  return required, optional, tags
 
 
 def first_unique_elements(l):
@@ -222,6 +244,35 @@ def extract_target_sdk_version_xml(xml):
   return target_attr.value
 
 
+def load_dexpreopt_configs(configs):
+  """Load dexpreopt.config files and map module names to library names."""
+  module_to_libname = {}
+
+  if configs is None:
+    configs = []
+
+  for config in configs:
+    with open(config, 'r') as f:
+      contents = json.load(f)
+    module_to_libname[contents['Name']] = contents['ProvidesUsesLibrary']
+
+  return module_to_libname
+
+
+def translate_libnames(modules, module_to_libname):
+  """Translate module names into library names using the mapping."""
+  if modules is None:
+    modules = []
+
+  libnames = []
+  for name in modules:
+    if name in module_to_libname:
+      name = module_to_libname[name]
+    libnames.append(name)
+
+  return libnames
+
+
 def main():
   """Program entry point."""
   try:
@@ -237,12 +288,20 @@ def main():
       manifest = minidom.parse(args.input)
 
     if args.enforce_uses_libraries:
+      # Load dexpreopt.config files and build a mapping from module names to
+      # library names. This is necessary because build system addresses
+      # libraries by their module name (`uses_libs`, `optional_uses_libs`,
+      # `LOCAL_USES_LIBRARIES`, `LOCAL_OPTIONAL_LIBRARY_NAMES` all contain
+      # module names), while the manifest addresses libraries by their name.
+      mod_to_lib = load_dexpreopt_configs(args.dexpreopt_configs)
+      required = translate_libnames(args.uses_libraries, mod_to_lib)
+      optional = translate_libnames(args.optional_uses_libraries, mod_to_lib)
+
       # Check if the <uses-library> lists in the build system agree with those
       # in the manifest. Raise an exception on mismatch, unless the script was
       # passed a special parameter to suppress exceptions.
-      errmsg = enforce_uses_libraries(manifest, args.uses_libraries,
-        args.optional_uses_libraries, args.enforce_uses_libraries_relax,
-        is_apk)
+      errmsg = enforce_uses_libraries(manifest, required, optional,
+        args.enforce_uses_libraries_relax, is_apk, args.input)
 
       # Create a status file that is empty on success, or contains an error
       # message on failure. When exceptions are suppressed, dexpreopt command
@@ -253,7 +312,12 @@ def main():
             f.write("%s\n" % errmsg)
 
     if args.extract_target_sdk_version:
-      print(extract_target_sdk_version(manifest, is_apk))
+      try:
+        print(extract_target_sdk_version(manifest, is_apk))
+      except:
+        # Failed; don't crash, return "any" SDK version. This will result in
+        # dexpreopt not adding any compatibility libraries.
+        print(10000)
 
     if args.output:
       # XML output is supposed to be written only when this script is invoked

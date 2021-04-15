@@ -35,6 +35,7 @@ func testDexpreoptBoot(t *testing.T, ruleFile string, expectedInputs, expectedOu
 			name: "bar",
 			srcs: ["b.java"],
 			installable: true,
+			system_ext_specific: true,
 		}
 
 		dex_import {
@@ -43,22 +44,22 @@ func testDexpreoptBoot(t *testing.T, ruleFile string, expectedInputs, expectedOu
 		}
 	`
 
-	result := javaFixtureFactory.
-		Extend(
-			PrepareForTestWithJavaSdkLibraryFiles,
-			FixtureWithLastReleaseApis("foo"),
-			dexpreopt.FixtureSetBootJars("platform:foo", "platform:bar", "platform:baz"),
-		).RunTestWithBp(t, bp)
+	result := android.GroupFixturePreparers(
+		prepareForJavaTest,
+		PrepareForTestWithJavaSdkLibraryFiles,
+		FixtureWithLastReleaseApis("foo"),
+		dexpreopt.FixtureSetBootJars("platform:foo", "system_ext:bar", "platform:baz"),
+	).RunTestWithBp(t, bp)
 
 	dexpreoptBootJars := result.SingletonForTests("dex_bootjars")
 	rule := dexpreoptBootJars.Output(ruleFile)
 
 	for i := range expectedInputs {
-		expectedInputs[i] = filepath.Join(buildDir, "test_device", expectedInputs[i])
+		expectedInputs[i] = filepath.Join("out/soong/test_device", expectedInputs[i])
 	}
 
 	for i := range expectedOutputs {
-		expectedOutputs[i] = filepath.Join(buildDir, "test_device", expectedOutputs[i])
+		expectedOutputs[i] = filepath.Join("out/soong/test_device", expectedOutputs[i])
 	}
 
 	inputs := rule.Implicits.Strings()
@@ -69,9 +70,9 @@ func testDexpreoptBoot(t *testing.T, ruleFile string, expectedInputs, expectedOu
 	sort.Strings(outputs)
 	sort.Strings(expectedOutputs)
 
-	android.AssertDeepEquals(t, "inputs", expectedInputs, inputs)
+	android.AssertStringPathsRelativeToTopEquals(t, "inputs", result.Config, expectedInputs, inputs)
 
-	android.AssertDeepEquals(t, "outputs", expectedOutputs, outputs)
+	android.AssertStringPathsRelativeToTopEquals(t, "outputs", result.Config, expectedOutputs, outputs)
 }
 
 func TestDexpreoptBootJars(t *testing.T) {
@@ -107,7 +108,7 @@ func TestDexpreoptBootJars(t *testing.T) {
 func TestDexpreoptBootZip(t *testing.T) {
 	ruleFile := "boot.zip"
 
-	ctx := android.PathContextForTesting(testConfig(nil, "", nil))
+	ctx := android.PathContextForTesting(android.TestArchConfig("", nil, "", nil))
 	expectedInputs := []string{}
 	for _, target := range ctx.Config().Targets[android.Android] {
 		for _, ext := range []string{".art", ".oat", ".vdex"} {

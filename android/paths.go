@@ -107,6 +107,7 @@ type ModuleInstallPathContext interface {
 	InstallInSanitizerDir() bool
 	InstallInRamdisk() bool
 	InstallInVendorRamdisk() bool
+	InstallInDebugRamdisk() bool
 	InstallInRecovery() bool
 	InstallInRoot() bool
 	InstallBypassMake() bool
@@ -174,14 +175,41 @@ type Path interface {
 	// example, Rel on a PathsForModuleSrc would return the path relative to the module source
 	// directory, and OutputPath.Join("foo").Rel() would return "foo".
 	Rel() string
+
+	// RelativeToTop returns a new path relative to the top, it is provided solely for use in tests.
+	//
+	// It is guaranteed to always return the same type as it is called on, e.g. if called on an
+	// InstallPath then the returned value can be converted to an InstallPath.
+	//
+	// A standard build has the following structure:
+	//   ../top/
+	//          out/ - make install files go here.
+	//          out/soong - this is the buildDir passed to NewTestConfig()
+	//          ... - the source files
+	//
+	// This function converts a path so that it appears relative to the ../top/ directory, i.e.
+	// * Make install paths, which have the pattern "buildDir/../<path>" are converted into the top
+	//   relative path "out/<path>"
+	// * Soong install paths and other writable paths, which have the pattern "buildDir/<path>" are
+	//   converted into the top relative path "out/soong/<path>".
+	// * Source paths are already relative to the top.
+	// * Phony paths are not relative to anything.
+	// * toolDepPath have an absolute but known value in so don't need making relative to anything in
+	//   order to test.
+	RelativeToTop() Path
 }
+
+const (
+	OutDir      = "out"
+	OutSoongDir = OutDir + "/soong"
+)
 
 // WritablePath is a type of path that can be used as an output for build rules.
 type WritablePath interface {
 	Path
 
 	// return the path to the build directory.
-	buildDir() string
+	getBuildDir() string
 
 	// the writablePath method doesn't directly do anything,
 	// but it allows a struct to distinguish between whether or not it implements the WritablePath interface
@@ -259,6 +287,16 @@ func (p OptionalPath) Path() Path {
 	return p.path
 }
 
+// RelativeToTop returns an OptionalPath with the path that was embedded having been replaced by the
+// result of calling Path.RelativeToTop on it.
+func (p OptionalPath) RelativeToTop() OptionalPath {
+	if !p.valid {
+		return p
+	}
+	p.path = p.path.RelativeToTop()
+	return p
+}
+
 // String returns the string version of the Path, or "" if it isn't valid.
 func (p OptionalPath) String() string {
 	if p.valid {
@@ -270,6 +308,20 @@ func (p OptionalPath) String() string {
 
 // Paths is a slice of Path objects, with helpers to operate on the collection.
 type Paths []Path
+
+// RelativeToTop creates a new Paths containing the result of calling Path.RelativeToTop on each
+// item in this slice.
+func (p Paths) RelativeToTop() Paths {
+	ensureTestOnly()
+	if p == nil {
+		return p
+	}
+	ret := make(Paths, len(p))
+	for i, path := range p {
+		ret[i] = path.RelativeToTop()
+	}
+	return ret
+}
 
 func (paths Paths) containsPath(path Path) bool {
 	for _, p := range paths {
@@ -340,6 +392,7 @@ type BazelConversionPathContext interface {
 
 	GetDirectDep(name string) (blueprint.Module, blueprint.DependencyTag)
 	Module() Module
+	ModuleType() string
 	OtherModuleName(m blueprint.Module) string
 	OtherModuleDir(m blueprint.Module) string
 }
@@ -364,11 +417,101 @@ func BazelLabelForModuleDeps(ctx BazelConversionPathContext, modules []string) b
 	return labels
 }
 
+// Returns true if a prefix + components[:i] + /Android.bp exists
+// TODO(b/185358476) Could check for BUILD file instead of checking for Android.bp file, or ensure BUILD is always generated?
+func directoryHasBlueprint(fs pathtools.FileSystem, prefix string, components []string, componentIndex int) bool {
+	blueprintPath := prefix
+	if blueprintPath != "" {
+		blueprintPath = blueprintPath + "/"
+	}
+	blueprintPath = blueprintPath + strings.Join(components[:componentIndex+1], "/")
+	blueprintPath = blueprintPath + "/Android.bp"
+	if exists, _, _ := fs.Exists(blueprintPath); exists {
+		return true
+	} else {
+		return false
+	}
+}
+
+// Transform a path (if necessary) to acknowledge package boundaries
+//
+// e.g. something like
+//   async_safe/include/async_safe/CHECK.h
+// might become
+//   //bionic/libc/async_safe:include/async_safe/CHECK.h
+// if the "async_safe" directory is actually a package and not just a directory.
+//
+// In particular, paths that extend into packages are transformed into absolute labels beginning with //.
+func transformSubpackagePath(ctx BazelConversionPathContext, path bazel.Label) bazel.Label {
+	var newPath bazel.Label
+
+	// Don't transform Bp_text
+	newPath.Bp_text = path.Bp_text
+
+	if strings.HasPrefix(path.Label, "//") {
+		// Assume absolute labels are already correct (e.g. //path/to/some/package:foo.h)
+		newPath.Label = path.Label
+		return newPath
+	}
+
+	newLabel := ""
+	pathComponents := strings.Split(path.Label, "/")
+	foundBlueprint := false
+	// Check the deepest subdirectory first and work upwards
+	for i := len(pathComponents) - 1; i >= 0; i-- {
+		pathComponent := pathComponents[i]
+		var sep string
+		if !foundBlueprint && directoryHasBlueprint(ctx.Config().fs, ctx.ModuleDir(), pathComponents, i) {
+			sep = ":"
+			foundBlueprint = true
+		} else {
+			sep = "/"
+		}
+		if newLabel == "" {
+			newLabel = pathComponent
+		} else {
+			newLabel = pathComponent + sep + newLabel
+		}
+	}
+	if foundBlueprint {
+		// Ensure paths end up looking like //bionic/... instead of //./bionic/...
+		moduleDir := ctx.ModuleDir()
+		if strings.HasPrefix(moduleDir, ".") {
+			moduleDir = moduleDir[1:]
+		}
+		// Make the path into an absolute label (e.g. //bionic/libc/foo:bar.h instead of just foo:bar.h)
+		if moduleDir == "" {
+			newLabel = "//" + newLabel
+		} else {
+			newLabel = "//" + moduleDir + "/" + newLabel
+		}
+	}
+	newPath.Label = newLabel
+
+	return newPath
+}
+
+// Transform paths to acknowledge package boundaries
+// See transformSubpackagePath() for more information
+func transformSubpackagePaths(ctx BazelConversionPathContext, paths bazel.LabelList) bazel.LabelList {
+	var newPaths bazel.LabelList
+	for _, include := range paths.Includes {
+		newPaths.Includes = append(newPaths.Includes, transformSubpackagePath(ctx, include))
+	}
+	for _, exclude := range paths.Excludes {
+		newPaths.Excludes = append(newPaths.Excludes, transformSubpackagePath(ctx, exclude))
+	}
+	return newPaths
+}
+
 // BazelLabelForModuleSrc returns bazel.LabelList with paths rooted from the module's local source
 // directory. It expands globs, and resolves references to modules using the ":name" syntax to
 // bazel-compatible labels.  Properties passed as the paths or excludes argument must have been
 // annotated with struct tag `android:"path"` so that dependencies on other modules will have
 // already been handled by the path_properties mutator.
+//
+// With expanded globs, we can catch package boundaries problem instead of
+// silently failing to potentially missing files from Bazel's globs.
 func BazelLabelForModuleSrc(ctx BazelConversionPathContext, paths []string) bazel.LabelList {
 	return BazelLabelForModuleSrcExcludes(ctx, paths, []string(nil))
 }
@@ -379,6 +522,9 @@ func BazelLabelForModuleSrc(ctx BazelConversionPathContext, paths []string) baze
 // passed as the paths or excludes argument must have been annotated with struct tag
 // `android:"path"` so that dependencies on other modules will have already been handled by the
 // path_properties mutator.
+//
+// With expanded globs, we can catch package boundaries problem instead of
+// silently failing to potentially missing files from Bazel's globs.
 func BazelLabelForModuleSrcExcludes(ctx BazelConversionPathContext, paths, excludes []string) bazel.LabelList {
 	excludeLabels := expandSrcsForBazel(ctx, excludes, []string(nil))
 	excluded := make([]string, 0, len(excludeLabels.Includes))
@@ -387,6 +533,7 @@ func BazelLabelForModuleSrcExcludes(ctx BazelConversionPathContext, paths, exclu
 	}
 	labels := expandSrcsForBazel(ctx, paths, excluded)
 	labels.Excludes = excludeLabels.Includes
+	labels = transformSubpackagePaths(ctx, labels)
 	return labels
 }
 
@@ -435,6 +582,9 @@ func expandSrcsForBazel(ctx BazelConversionPathContext, paths, expandedExcludes 
 // already be resolved by either deps mutator or path deps mutator.
 func getOtherModuleLabel(ctx BazelConversionPathContext, dep, tag string) bazel.Label {
 	m, _ := ctx.GetDirectDep(dep)
+	if m == nil {
+		panic(fmt.Errorf("cannot get direct dep %s of %s", dep, ctx.Module().Name()))
+	}
 	otherLabel := bazelModuleLabel(ctx, m, tag)
 	label := bazelModuleLabel(ctx, ctx.Module(), "")
 	if samePackage(label, otherLabel) {
@@ -450,7 +600,7 @@ func bazelModuleLabel(ctx BazelConversionPathContext, module blueprint.Module, t
 	// TODO(b/165114590): Convert tag (":name{.tag}") to corresponding Bazel implicit output targets.
 	b, ok := module.(Bazelable)
 	// TODO(b/181155349): perhaps return an error here if the module can't be/isn't being converted
-	if !ok || !b.ConvertedToBazel() {
+	if !ok || !b.ConvertedToBazel(ctx) {
 		return bp2buildModuleLabel(ctx, module)
 	}
 	return b.GetBazelLabel(ctx, module)
@@ -509,6 +659,9 @@ func (p OutputPaths) Strings() []string {
 func getPathsFromModuleDep(ctx ModuleWithDepsPathContext, path, moduleName, tag string) (Paths, error) {
 	module := ctx.GetDirectDepWithTag(moduleName, sourceOrOutputDepTag(tag))
 	if module == nil {
+		return nil, missingDependencyError{[]string{moduleName}}
+	}
+	if aModule, ok := module.(Module); ok && !aModule.Enabled() {
 		return nil, missingDependencyError{[]string{moduleName}}
 	}
 	if outProducer, ok := module.(OutputFileProducer); ok {
@@ -906,6 +1059,20 @@ func (p DirectorySortedPaths) PathsInDirectory(dir string) Paths {
 // WritablePaths is a slice of WritablePath, used for multiple outputs.
 type WritablePaths []WritablePath
 
+// RelativeToTop creates a new WritablePaths containing the result of calling Path.RelativeToTop on
+// each item in this slice.
+func (p WritablePaths) RelativeToTop() WritablePaths {
+	ensureTestOnly()
+	if p == nil {
+		return p
+	}
+	ret := make(WritablePaths, len(p))
+	for i, path := range p {
+		ret[i] = path.RelativeToTop().(WritablePath)
+	}
+	return ret
+}
+
 // Strings returns the string forms of the writable paths.
 func (p WritablePaths) Strings() []string {
 	if p == nil {
@@ -931,9 +1098,8 @@ func (p WritablePaths) Paths() Paths {
 }
 
 type basePath struct {
-	path   string
-	config Config
-	rel    string
+	path string
+	rel  string
 }
 
 func (p basePath) Ext() string {
@@ -964,6 +1130,14 @@ func (p basePath) withRel(rel string) basePath {
 // SourcePath is a Path representing a file path rooted from SrcDir
 type SourcePath struct {
 	basePath
+
+	// The sources root, i.e. Config.SrcDir()
+	srcDir string
+}
+
+func (p SourcePath) RelativeToTop() Path {
+	ensureTestOnly()
+	return p
 }
 
 var _ Path = SourcePath{}
@@ -977,7 +1151,7 @@ func (p SourcePath) withRel(rel string) SourcePath {
 // code that is embedding ninja variables in paths
 func safePathForSource(ctx PathContext, pathComponents ...string) (SourcePath, error) {
 	p, err := validateSafePath(pathComponents...)
-	ret := SourcePath{basePath{p, ctx.Config(), ""}}
+	ret := SourcePath{basePath{p, ""}, ctx.Config().srcDir}
 	if err != nil {
 		return ret, err
 	}
@@ -993,7 +1167,7 @@ func safePathForSource(ctx PathContext, pathComponents ...string) (SourcePath, e
 // pathForSource creates a SourcePath from pathComponents, but does not check that it exists.
 func pathForSource(ctx PathContext, pathComponents ...string) (SourcePath, error) {
 	p, err := validatePath(pathComponents...)
-	ret := SourcePath{basePath{p, ctx.Config(), ""}}
+	ret := SourcePath{basePath{p, ""}, ctx.Config().srcDir}
 	if err != nil {
 		return ret, err
 	}
@@ -1016,11 +1190,12 @@ func existsWithDependencies(ctx PathContext, path SourcePath) (exists bool, err 
 		// a single file.
 		files, err = gctx.GlobWithDeps(path.String(), nil)
 	} else {
-		var deps []string
+		var result pathtools.GlobResult
 		// We cannot add build statements in this context, so we fall back to
 		// AddNinjaFileDeps
-		files, deps, err = ctx.Config().fs.Glob(path.String(), nil, pathtools.FollowSymlinks)
-		ctx.AddNinjaFileDeps(deps...)
+		result, err = ctx.Config().fs.Glob(path.String(), nil, pathtools.FollowSymlinks)
+		ctx.AddNinjaFileDeps(result.Deps...)
+		files = result.Matches
 	}
 
 	if err != nil {
@@ -1087,7 +1262,7 @@ func ExistentPathForSource(ctx PathContext, pathComponents ...string) OptionalPa
 }
 
 func (p SourcePath) String() string {
-	return filepath.Join(p.config.srcDir, p.path)
+	return filepath.Join(p.srcDir, p.path)
 }
 
 // Join creates a new SourcePath with paths... joined with the current path. The
@@ -1119,7 +1294,7 @@ func (p SourcePath) OverlayPath(ctx ModuleMissingDepsPathContext, path Path) Opt
 		ReportPathErrorf(ctx, "Cannot find relative path for %s(%s)", reflect.TypeOf(path).Name(), path)
 		return OptionalPath{}
 	}
-	dir := filepath.Join(p.config.srcDir, p.path, relDir)
+	dir := filepath.Join(p.srcDir, p.path, relDir)
 	// Use Glob so that we are run again if the directory is added.
 	if pathtools.IsGlob(dir) {
 		ReportPathErrorf(ctx, "Path may not contain a glob: %s", dir)
@@ -1132,13 +1307,17 @@ func (p SourcePath) OverlayPath(ctx ModuleMissingDepsPathContext, path Path) Opt
 	if len(paths) == 0 {
 		return OptionalPath{}
 	}
-	relPath := Rel(ctx, p.config.srcDir, paths[0])
+	relPath := Rel(ctx, p.srcDir, paths[0])
 	return OptionalPathForPath(PathForSource(ctx, relPath))
 }
 
 // OutputPath is a Path representing an intermediates file path rooted from the build directory
 type OutputPath struct {
 	basePath
+
+	// The soong build directory, i.e. Config.BuildDir()
+	buildDir string
+
 	fullPath string
 }
 
@@ -1153,8 +1332,18 @@ func (p OutputPath) WithoutRel() OutputPath {
 	return p
 }
 
-func (p OutputPath) buildDir() string {
-	return p.config.buildDir
+func (p OutputPath) getBuildDir() string {
+	return p.buildDir
+}
+
+func (p OutputPath) RelativeToTop() Path {
+	return p.outputPathRelativeToTop()
+}
+
+func (p OutputPath) outputPathRelativeToTop() OutputPath {
+	p.fullPath = StringPathRelativeToTop(p.buildDir, p.fullPath)
+	p.buildDir = OutSoongDir
+	return p
 }
 
 func (p OutputPath) objPathWithExt(ctx ModuleOutPathContext, subdir, ext string) ModuleObjPath {
@@ -1170,6 +1359,11 @@ type toolDepPath struct {
 	basePath
 }
 
+func (t toolDepPath) RelativeToTop() Path {
+	ensureTestOnly()
+	return t
+}
+
 var _ Path = toolDepPath{}
 
 // pathForBuildToolDep returns a toolDepPath representing the given path string.
@@ -1178,7 +1372,7 @@ var _ Path = toolDepPath{}
 // Only use this function to construct paths for dependencies of the build
 // tool invocation.
 func pathForBuildToolDep(ctx PathContext, path string) toolDepPath {
-	return toolDepPath{basePath{path, ctx.Config(), ""}}
+	return toolDepPath{basePath{path, ""}}
 }
 
 // PathForOutput joins the provided paths and returns an OutputPath that is
@@ -1191,7 +1385,7 @@ func PathForOutput(ctx PathContext, pathComponents ...string) OutputPath {
 	}
 	fullPath := filepath.Join(ctx.Config().buildDir, path)
 	path = fullPath[len(fullPath)-len(path):]
-	return OutputPath{basePath{path, ctx.Config(), ""}, fullPath}
+	return OutputPath{basePath{path, ""}, ctx.Config().buildDir, fullPath}
 }
 
 // PathsForOutput returns Paths rooted from buildDir
@@ -1347,7 +1541,13 @@ type ModuleOutPath struct {
 	OutputPath
 }
 
+func (p ModuleOutPath) RelativeToTop() Path {
+	p.OutputPath = p.outputPathRelativeToTop()
+	return p
+}
+
 var _ Path = ModuleOutPath{}
+var _ WritablePath = ModuleOutPath{}
 
 func (p ModuleOutPath) objPathWithExt(ctx ModuleOutPathContext, subdir, ext string) ModuleObjPath {
 	return PathForModuleObj(ctx, subdir, pathtools.ReplaceExtension(p.path, ext))
@@ -1425,7 +1625,8 @@ func PathForBazelOut(ctx PathContext, paths ...string) BazelOutPath {
 		reportPathError(ctx, err)
 	}
 
-	outputPath := OutputPath{basePath{"", ctx.Config(), ""},
+	outputPath := OutputPath{basePath{"", ""},
+		ctx.Config().buildDir,
 		ctx.Config().BazelContext.OutputBase()}
 
 	return BazelOutPath{
@@ -1451,7 +1652,13 @@ type ModuleGenPath struct {
 	ModuleOutPath
 }
 
+func (p ModuleGenPath) RelativeToTop() Path {
+	p.OutputPath = p.outputPathRelativeToTop()
+	return p
+}
+
 var _ Path = ModuleGenPath{}
+var _ WritablePath = ModuleGenPath{}
 var _ genPathProvider = ModuleGenPath{}
 var _ objPathProvider = ModuleGenPath{}
 
@@ -1484,7 +1691,13 @@ type ModuleObjPath struct {
 	ModuleOutPath
 }
 
+func (p ModuleObjPath) RelativeToTop() Path {
+	p.OutputPath = p.outputPathRelativeToTop()
+	return p
+}
+
 var _ Path = ModuleObjPath{}
+var _ WritablePath = ModuleObjPath{}
 
 // PathForModuleObj returns a Path representing the paths... under the module's
 // 'obj' directory.
@@ -1502,7 +1715,13 @@ type ModuleResPath struct {
 	ModuleOutPath
 }
 
+func (p ModuleResPath) RelativeToTop() Path {
+	p.OutputPath = p.outputPathRelativeToTop()
+	return p
+}
+
 var _ Path = ModuleResPath{}
+var _ WritablePath = ModuleResPath{}
 
 // PathForModuleRes returns a Path representing the paths... under the module's
 // 'res' directory.
@@ -1519,6 +1738,9 @@ func PathForModuleRes(ctx ModuleOutPathContext, pathComponents ...string) Module
 type InstallPath struct {
 	basePath
 
+	// The soong build directory, i.e. Config.BuildDir()
+	buildDir string
+
 	// partitionDir is the part of the InstallPath that is automatically determined according to the context.
 	// For example, it is host/<os>-<arch> for host modules, and target/product/<device>/<partition> for device modules.
 	partitionDir string
@@ -1527,8 +1749,22 @@ type InstallPath struct {
 	makePath bool
 }
 
-func (p InstallPath) buildDir() string {
-	return p.config.buildDir
+// Will panic if called from outside a test environment.
+func ensureTestOnly() {
+	if PrefixInList(os.Args, "-test.") {
+		return
+	}
+	panic(fmt.Errorf("Not in test. Command line:\n  %s", strings.Join(os.Args, "\n  ")))
+}
+
+func (p InstallPath) RelativeToTop() Path {
+	ensureTestOnly()
+	p.buildDir = OutSoongDir
+	return p
+}
+
+func (p InstallPath) getBuildDir() string {
+	return p.buildDir
 }
 
 func (p InstallPath) ReplaceExtension(ctx PathContext, ext string) OutputPath {
@@ -1543,9 +1779,9 @@ func (p InstallPath) writablePath() {}
 func (p InstallPath) String() string {
 	if p.makePath {
 		// Make path starts with out/ instead of out/soong.
-		return filepath.Join(p.config.buildDir, "../", p.path)
+		return filepath.Join(p.buildDir, "../", p.path)
 	} else {
-		return filepath.Join(p.config.buildDir, p.path)
+		return filepath.Join(p.buildDir, p.path)
 	}
 }
 
@@ -1554,9 +1790,9 @@ func (p InstallPath) String() string {
 // The ./soong is dropped if the install path is for Make.
 func (p InstallPath) PartitionDir() string {
 	if p.makePath {
-		return filepath.Join(p.config.buildDir, "../", p.partitionDir)
+		return filepath.Join(p.buildDir, "../", p.partitionDir)
 	} else {
-		return filepath.Join(p.config.buildDir, p.partitionDir)
+		return filepath.Join(p.buildDir, p.partitionDir)
 	}
 }
 
@@ -1639,7 +1875,8 @@ func pathForInstall(ctx PathContext, os OsType, arch ArchType, partition string,
 	}
 
 	base := InstallPath{
-		basePath:     basePath{partionPath, ctx.Config(), ""},
+		basePath:     basePath{partionPath, ""},
+		buildDir:     ctx.Config().buildDir,
 		partitionDir: partionPath,
 		makePath:     false,
 	}
@@ -1649,7 +1886,8 @@ func pathForInstall(ctx PathContext, os OsType, arch ArchType, partition string,
 
 func pathForNdkOrSdkInstall(ctx PathContext, prefix string, paths []string) InstallPath {
 	base := InstallPath{
-		basePath:     basePath{prefix, ctx.Config(), ""},
+		basePath:     basePath{prefix, ""},
+		buildDir:     ctx.Config().buildDir,
 		partitionDir: prefix,
 		makePath:     false,
 	}
@@ -1699,6 +1937,16 @@ func modulePartition(ctx ModuleInstallPathContext, os OsType) string {
 			}
 			if !ctx.InstallInRoot() {
 				partition += "/system"
+			}
+		} else if ctx.InstallInDebugRamdisk() {
+			// The module is only available after switching root into
+			// /first_stage_ramdisk. To expose the module before switching root
+			// on a device without a dedicated recovery partition, install the
+			// recovery variant.
+			if ctx.DeviceConfig().BoardUsesRecoveryAsBoot() {
+				partition = "debug_ramdisk/first_stage_ramdisk"
+			} else {
+				partition = "debug_ramdisk"
 			}
 		} else if ctx.InstallInRecovery() {
 			if ctx.InstallInRoot() {
@@ -1784,7 +2032,7 @@ func PathForPhony(ctx PathContext, phony string) WritablePath {
 	if strings.ContainsAny(phony, "$/") {
 		ReportPathErrorf(ctx, "Phony target contains invalid character ($ or /): %s", phony)
 	}
-	return PhonyPath{basePath{phony, ctx.Config(), ""}}
+	return PhonyPath{basePath{phony, ""}}
 }
 
 type PhonyPath struct {
@@ -1793,8 +2041,16 @@ type PhonyPath struct {
 
 func (p PhonyPath) writablePath() {}
 
-func (p PhonyPath) buildDir() string {
-	return p.config.buildDir
+func (p PhonyPath) getBuildDir() string {
+	// A phone path cannot contain any / so cannot be relative to the build directory.
+	return ""
+}
+
+func (p PhonyPath) RelativeToTop() Path {
+	ensureTestOnly()
+	// A phony path cannot contain any / so does not have a build directory so switching to a new
+	// build directory has no effect so just return this path.
+	return p
 }
 
 func (p PhonyPath) ReplaceExtension(ctx PathContext, ext string) OutputPath {
@@ -1808,9 +2064,16 @@ type testPath struct {
 	basePath
 }
 
+func (p testPath) RelativeToTop() Path {
+	ensureTestOnly()
+	return p
+}
+
 func (p testPath) String() string {
 	return p.path
 }
+
+var _ Path = testPath{}
 
 // PathForTesting returns a Path constructed from joining the elements of paths with '/'.  It should only be used from
 // within tests.
@@ -1855,6 +2118,7 @@ type testModuleInstallPathContext struct {
 	inSanitizerDir  bool
 	inRamdisk       bool
 	inVendorRamdisk bool
+	inDebugRamdisk  bool
 	inRecovery      bool
 	inRoot          bool
 	forceOS         *OsType
@@ -1885,6 +2149,10 @@ func (m testModuleInstallPathContext) InstallInRamdisk() bool {
 
 func (m testModuleInstallPathContext) InstallInVendorRamdisk() bool {
 	return m.inVendorRamdisk
+}
+
+func (m testModuleInstallPathContext) InstallInDebugRamdisk() bool {
+	return m.inDebugRamdisk
 }
 
 func (m testModuleInstallPathContext) InstallInRecovery() bool {

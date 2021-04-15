@@ -55,7 +55,9 @@ python_test_host {
     libs: [
         "manifest_utils",
     ],
-    test_suites: ["general-tests"],
+    test_options: {
+        unit_test: true,
+    },
 }
 
 python_library_host {
@@ -110,7 +112,9 @@ python_test_host {
     libs: [
         "manifest_utils",
     ],
-    test_suites: ["general-tests"],
+    test_options: {
+        unit_test: true,
+    },
 }
 
 python_binary_host {
@@ -248,5 +252,24 @@ python_binary_host {
     },
     libs: [
         "linker_config_proto",
+    ],
+}
+
+python_binary_host {
+    name: "conv_classpaths_proto",
+    srcs: [
+        "conv_classpaths_proto.py",
+    ],
+    version: {
+        py2: {
+            enabled: false,
+        },
+        py3: {
+            enabled: true,
+            embedded_launcher: true,
+        },
+    },
+    libs: [
+        "classpaths_proto_python",
     ],
 }

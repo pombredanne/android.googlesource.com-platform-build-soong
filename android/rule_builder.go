@@ -27,6 +27,8 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/cmd/sbox/sbox_proto"
+	"android/soong/remoteexec"
+	"android/soong/response"
 	"android/soong/shared"
 )
 
@@ -48,8 +50,10 @@ type RuleBuilder struct {
 	sbox             bool
 	highmem          bool
 	remoteable       RemoteRuleSupports
+	rbeParams        *remoteexec.REParams
 	outDir           WritablePath
 	sboxTools        bool
+	sboxInputs       bool
 	sboxManifestPath WritablePath
 	missingDeps      []string
 }
@@ -119,6 +123,18 @@ func (r *RuleBuilder) Remoteable(supports RemoteRuleSupports) *RuleBuilder {
 	return r
 }
 
+// Rewrapper marks the rule as running inside rewrapper using the given params in order to support
+// running on RBE.  During RuleBuilder.Build the params will be combined with the inputs, outputs
+// and tools known to RuleBuilder to prepend an appropriate rewrapper command line to the rule's
+// command line.
+func (r *RuleBuilder) Rewrapper(params *remoteexec.REParams) *RuleBuilder {
+	if !r.sboxInputs {
+		panic(fmt.Errorf("RuleBuilder.Rewrapper must be called after RuleBuilder.SandboxInputs"))
+	}
+	r.rbeParams = params
+	return r
+}
+
 // Sbox marks the rule as needing to be wrapped by sbox. The outputDir should point to the output
 // directory that sbox will wipe. It should not be written to by any other rule. manifestPath should
 // point to a location where sbox's manifest will be written and must be outside outputDir. sbox
@@ -152,6 +168,25 @@ func (r *RuleBuilder) SandboxTools() *RuleBuilder {
 		panic("SandboxTools() may not be called after Command()")
 	}
 	r.sboxTools = true
+	return r
+}
+
+// SandboxInputs enables input sandboxing for the rule by copying any referenced inputs into the
+// sandbox.  It also implies SandboxTools().
+//
+// Sandboxing inputs requires RuleBuilder to be aware of all references to input paths.  Paths
+// that are passed to RuleBuilder outside of the methods that expect inputs, for example
+// FlagWithArg, must use RuleBuilderCommand.PathForInput to translate the path to one that matches
+// the sandbox layout.
+func (r *RuleBuilder) SandboxInputs() *RuleBuilder {
+	if !r.sbox {
+		panic("SandboxInputs() must be called after Sbox()")
+	}
+	if len(r.commands) > 0 {
+		panic("SandboxInputs() may not be called after Command()")
+	}
+	r.sboxTools = true
+	r.sboxInputs = true
 	return r
 }
 
@@ -374,30 +409,21 @@ func (r *RuleBuilder) Tools() Paths {
 func (r *RuleBuilder) RspFileInputs() Paths {
 	var rspFileInputs Paths
 	for _, c := range r.commands {
-		if c.rspFileInputs != nil {
-			if rspFileInputs != nil {
-				panic("Multiple commands in a rule may not have rsp file inputs")
-			}
-			rspFileInputs = c.rspFileInputs
+		for _, rspFile := range c.rspFiles {
+			rspFileInputs = append(rspFileInputs, rspFile.paths...)
 		}
 	}
 
 	return rspFileInputs
 }
 
-// RspFile returns the path to the rspfile that was passed to the RuleBuilderCommand.FlagWithRspFileInputList method.
-func (r *RuleBuilder) RspFile() WritablePath {
-	var rspFile WritablePath
+func (r *RuleBuilder) rspFiles() []rspFileAndPaths {
+	var rspFiles []rspFileAndPaths
 	for _, c := range r.commands {
-		if c.rspFile != nil {
-			if rspFile != nil {
-				panic("Multiple commands in a rule may not have rsp file inputs")
-			}
-			rspFile = c.rspFile
-		}
+		rspFiles = append(rspFiles, c.rspFiles...)
 	}
 
-	return rspFile
+	return rspFiles
 }
 
 // Commands returns a slice containing the built command line for each call to RuleBuilder.Command.
@@ -466,8 +492,7 @@ func (r *RuleBuilder) Build(name string, desc string) {
 	commands := r.Commands()
 	outputs := r.Outputs()
 	inputs := r.Inputs()
-	rspFileInputs := r.RspFileInputs()
-	rspFilePath := r.RspFile()
+	rspFiles := r.rspFiles()
 
 	if len(commands) == 0 {
 		return
@@ -509,6 +534,38 @@ func (r *RuleBuilder) Build(name string, desc string) {
 					tools = append(tools, tool.srcPath)
 				}
 			}
+		}
+
+		// If sandboxing inputs is enabled, add copy rules to the manifest to copy each input
+		// into the sbox directory.
+		if r.sboxInputs {
+			for _, input := range inputs {
+				command.CopyBefore = append(command.CopyBefore, &sbox_proto.Copy{
+					From: proto.String(input.String()),
+					To:   proto.String(r.sboxPathForInputRel(input)),
+				})
+			}
+
+			// If using rsp files copy them and their contents into the sbox directory with
+			// the appropriate path mappings.
+			for _, rspFile := range rspFiles {
+				command.RspFiles = append(command.RspFiles, &sbox_proto.RspFile{
+					File: proto.String(rspFile.file.String()),
+					// These have to match the logic in sboxPathForInputRel
+					PathMappings: []*sbox_proto.PathMapping{
+						{
+							From: proto.String(r.outDir.String()),
+							To:   proto.String(sboxOutSubDir),
+						},
+						{
+							From: proto.String(PathForOutput(r.ctx).String()),
+							To:   proto.String(sboxOutSubDir),
+						},
+					},
+				})
+			}
+
+			command.Chdir = proto.Bool(true)
 		}
 
 		// Add copy rules to the manifest to copy each output file from the sbox directory.
@@ -564,6 +621,35 @@ func (r *RuleBuilder) Build(name string, desc string) {
 		commandString = sboxCmd.buf.String()
 		tools = append(tools, sboxCmd.tools...)
 		inputs = append(inputs, sboxCmd.inputs...)
+
+		if r.rbeParams != nil {
+			// RBE needs a list of input files to copy to the remote builder.  For inputs already
+			// listed in an rsp file, pass the rsp file directly to rewrapper.  For the rest,
+			// create a new rsp file to pass to rewrapper.
+			var remoteRspFiles Paths
+			var remoteInputs Paths
+
+			remoteInputs = append(remoteInputs, inputs...)
+			remoteInputs = append(remoteInputs, tools...)
+
+			for _, rspFile := range rspFiles {
+				remoteInputs = append(remoteInputs, rspFile.file)
+				remoteRspFiles = append(remoteRspFiles, rspFile.file)
+			}
+
+			if len(remoteInputs) > 0 {
+				inputsListFile := r.sboxManifestPath.ReplaceExtension(r.ctx, "rbe_inputs.list")
+				writeRspFileRule(r.ctx, inputsListFile, remoteInputs)
+				remoteRspFiles = append(remoteRspFiles, inputsListFile)
+				// Add the new rsp file as an extra input to the rule.
+				inputs = append(inputs, inputsListFile)
+			}
+
+			r.rbeParams.OutputFiles = outputs.Strings()
+			r.rbeParams.RSPFiles = remoteRspFiles.Strings()
+			rewrapperCommand := r.rbeParams.NoVarTemplate(r.ctx.Config().RBEWrapper())
+			commandString = rewrapperCommand + " bash -c '" + strings.ReplaceAll(commandString, `'`, `'\''`) + "'"
+		}
 	} else {
 		// If not using sbox the rule will run the command directly, put the hash of the
 		// list of input files in a comment at the end of the command line to ensure ninja
@@ -578,9 +664,24 @@ func (r *RuleBuilder) Build(name string, desc string) {
 	implicitOutputs := outputs[1:]
 
 	var rspFile, rspFileContent string
-	if rspFilePath != nil {
-		rspFile = rspFilePath.String()
+	var rspFileInputs Paths
+	if len(rspFiles) > 0 {
+		// The first rsp files uses Ninja's rsp file support for the rule
+		rspFile = rspFiles[0].file.String()
+		// Use "$in" for rspFileContent to avoid duplicating the list of files in the dependency
+		// list and in the contents of the rsp file.  Inputs to the rule that are not in the
+		// rsp file will be listed in Implicits instead of Inputs so they don't show up in "$in".
 		rspFileContent = "$in"
+		rspFileInputs = append(rspFileInputs, rspFiles[0].paths...)
+
+		for _, rspFile := range rspFiles[1:] {
+			// Any additional rsp files need an extra rule to write the file.
+			writeRspFileRule(r.ctx, rspFile.file, rspFile.paths)
+			// The main rule needs to depend on the inputs listed in the extra rsp file.
+			inputs = append(inputs, rspFile.paths...)
+			// The main rule needs to depend on the extra rsp file.
+			inputs = append(inputs, rspFile.file)
+		}
 	}
 
 	var pool blueprint.Pool
@@ -631,32 +732,52 @@ type RuleBuilderCommand struct {
 	depFiles       WritablePaths
 	tools          Paths
 	packagedTools  []PackagingSpec
-	rspFileInputs  Paths
-	rspFile        WritablePath
+	rspFiles       []rspFileAndPaths
+}
+
+type rspFileAndPaths struct {
+	file  WritablePath
+	paths Paths
 }
 
 func (c *RuleBuilderCommand) addInput(path Path) string {
-	if c.rule.sbox {
-		if rel, isRel, _ := maybeRelErr(c.rule.outDir.String(), path.String()); isRel {
-			return filepath.Join(sboxOutDir, rel)
-		}
-	}
 	c.inputs = append(c.inputs, path)
-	return path.String()
+	return c.PathForInput(path)
 }
 
-func (c *RuleBuilderCommand) addImplicit(path Path) string {
-	if c.rule.sbox {
-		if rel, isRel, _ := maybeRelErr(c.rule.outDir.String(), path.String()); isRel {
-			return filepath.Join(sboxOutDir, rel)
-		}
-	}
+func (c *RuleBuilderCommand) addImplicit(path Path) {
 	c.implicits = append(c.implicits, path)
-	return path.String()
 }
 
 func (c *RuleBuilderCommand) addOrderOnly(path Path) {
 	c.orderOnlys = append(c.orderOnlys, path)
+}
+
+// PathForInput takes an input path and returns the appropriate path to use on the command line.  If
+// sbox was enabled via a call to RuleBuilder.Sbox() and the path was an output path it returns a
+// path with the placeholder prefix used for outputs in sbox.  If sbox is not enabled it returns the
+// original path.
+func (c *RuleBuilderCommand) PathForInput(path Path) string {
+	if c.rule.sbox {
+		rel, inSandbox := c.rule._sboxPathForInputRel(path)
+		if inSandbox {
+			rel = filepath.Join(sboxSandboxBaseDir, rel)
+		}
+		return rel
+	}
+	return path.String()
+}
+
+// PathsForInputs takes a list of input paths and returns the appropriate paths to use on the
+// command line.  If sbox was enabled via a call to RuleBuilder.Sbox() a path was an output path, it
+// returns the path with the placeholder prefix used for outputs in sbox.  If sbox is not enabled it
+// returns the original paths.
+func (c *RuleBuilderCommand) PathsForInputs(paths Paths) []string {
+	ret := make([]string, len(paths))
+	for i, path := range paths {
+		ret[i] = c.PathForInput(path)
+	}
+	return ret
 }
 
 // PathForOutput takes an output path and returns the appropriate path to use on the command
@@ -672,13 +793,6 @@ func (c *RuleBuilderCommand) PathForOutput(path WritablePath) string {
 	return path.String()
 }
 
-// SboxPathForTool takes a path to a tool, which may be an output file or a source file, and returns
-// the corresponding path for the tool in the sbox sandbox.  It assumes that sandboxing and tool
-// sandboxing are enabled.
-func SboxPathForTool(ctx BuilderContext, path Path) string {
-	return filepath.Join(sboxSandboxBaseDir, sboxPathForToolRel(ctx, path))
-}
-
 func sboxPathForToolRel(ctx BuilderContext, path Path) string {
 	// Errors will be handled in RuleBuilder.Build where we have a context to report them
 	relOut, isRelOut, _ := maybeRelErr(PathForOutput(ctx, "host", ctx.Config().PrebuiltOS()).String(), path.String())
@@ -690,15 +804,50 @@ func sboxPathForToolRel(ctx BuilderContext, path Path) string {
 	return filepath.Join(sboxToolsSubDir, "src", path.String())
 }
 
-// SboxPathForPackagedTool takes a PackageSpec for a tool and returns the corresponding path for the
-// tool after copying it into the sandbox.  This can be used  on the RuleBuilder command line to
-// reference the tool.
-func SboxPathForPackagedTool(spec PackagingSpec) string {
-	return filepath.Join(sboxSandboxBaseDir, sboxPathForPackagedToolRel(spec))
+func (r *RuleBuilder) _sboxPathForInputRel(path Path) (rel string, inSandbox bool) {
+	// Errors will be handled in RuleBuilder.Build where we have a context to report them
+	rel, isRelSboxOut, _ := maybeRelErr(r.outDir.String(), path.String())
+	if isRelSboxOut {
+		return filepath.Join(sboxOutSubDir, rel), true
+	}
+	if r.sboxInputs {
+		// When sandboxing inputs all inputs have to be copied into the sandbox.  Input files that
+		// are outputs of other rules could be an arbitrary absolute path if OUT_DIR is set, so they
+		// will be copied to relative paths under __SBOX_OUT_DIR__/out.
+		rel, isRelOut, _ := maybeRelErr(PathForOutput(r.ctx).String(), path.String())
+		if isRelOut {
+			return filepath.Join(sboxOutSubDir, rel), true
+		}
+	}
+	return path.String(), false
+}
+
+func (r *RuleBuilder) sboxPathForInputRel(path Path) string {
+	rel, _ := r._sboxPathForInputRel(path)
+	return rel
+}
+
+func (r *RuleBuilder) sboxPathsForInputsRel(paths Paths) []string {
+	ret := make([]string, len(paths))
+	for i, path := range paths {
+		ret[i] = r.sboxPathForInputRel(path)
+	}
+	return ret
 }
 
 func sboxPathForPackagedToolRel(spec PackagingSpec) string {
 	return filepath.Join(sboxToolsSubDir, "out", spec.relPathInPackage)
+}
+
+// PathForPackagedTool takes a PackageSpec for a tool and returns the corresponding path for the
+// tool after copying it into the sandbox.  This can be used  on the RuleBuilder command line to
+// reference the tool.
+func (c *RuleBuilderCommand) PathForPackagedTool(spec PackagingSpec) string {
+	if !c.rule.sboxTools {
+		panic("PathForPackagedTool() requires SandboxTools()")
+	}
+
+	return filepath.Join(sboxSandboxBaseDir, sboxPathForPackagedToolRel(spec))
 }
 
 // PathForTool takes a path to a tool, which may be an output file or a source file, and returns
@@ -709,6 +858,20 @@ func (c *RuleBuilderCommand) PathForTool(path Path) string {
 		return filepath.Join(sboxSandboxBaseDir, sboxPathForToolRel(c.rule.ctx, path))
 	}
 	return path.String()
+}
+
+// PathsForTools takes a list of paths to tools, which may be output files or source files, and
+// returns the corresponding paths for the tools in the sbox sandbox if sbox is enabled, or the
+// original paths if it is not.  This can be used  on the RuleBuilder command line to reference the tool.
+func (c *RuleBuilderCommand) PathsForTools(paths Paths) []string {
+	if c.rule.sbox && c.rule.sboxTools {
+		var ret []string
+		for _, path := range paths {
+			ret = append(ret, filepath.Join(sboxSandboxBaseDir, sboxPathForToolRel(c.rule.ctx, path)))
+		}
+		return ret
+	}
+	return paths.Strings()
 }
 
 // PackagedTool adds the specified tool path to the command line.  It can only be used with tool
@@ -1029,22 +1192,19 @@ func (c *RuleBuilderCommand) FlagWithDepFile(flag string, path WritablePath) *Ru
 	return c.Text(flag + c.PathForOutput(path))
 }
 
-// FlagWithRspFileInputList adds the specified flag and path to an rspfile to the command line, with no separator
-// between them.  The paths will be written to the rspfile.  If sbox is enabled, the rspfile must
-// be outside the sbox directory.
+// FlagWithRspFileInputList adds the specified flag and path to an rspfile to the command line, with
+// no separator between them.  The paths will be written to the rspfile.  If sbox is enabled, the
+// rspfile must be outside the sbox directory.  The first use of FlagWithRspFileInputList in any
+// RuleBuilderCommand of a RuleBuilder will use Ninja's rsp file support for the rule, additional
+// uses will result in an auxiliary rules to write the rspFile contents.
 func (c *RuleBuilderCommand) FlagWithRspFileInputList(flag string, rspFile WritablePath, paths Paths) *RuleBuilderCommand {
-	if c.rspFileInputs != nil {
-		panic("FlagWithRspFileInputList cannot be called if rsp file inputs have already been provided")
-	}
-
 	// Use an empty slice if paths is nil, the non-nil slice is used as an indicator that the rsp file must be
 	// generated.
 	if paths == nil {
 		paths = Paths{}
 	}
 
-	c.rspFileInputs = paths
-	c.rspFile = rspFile
+	c.rspFiles = append(c.rspFiles, rspFileAndPaths{rspFile, paths})
 
 	if c.rule.sbox {
 		if _, isRel, _ := maybeRelErr(c.rule.outDir.String(), rspFile.String()); isRel {
@@ -1053,7 +1213,7 @@ func (c *RuleBuilderCommand) FlagWithRspFileInputList(flag string, rspFile Writa
 		}
 	}
 
-	c.FlagWithArg(flag, rspFile.String())
+	c.FlagWithArg(flag, c.PathForInput(rspFile))
 	return c
 }
 
@@ -1122,3 +1282,13 @@ func (builderContextForTests) Rule(PackageContext, string, blueprint.RuleParams,
 	return nil
 }
 func (builderContextForTests) Build(PackageContext, BuildParams) {}
+
+func writeRspFileRule(ctx BuilderContext, rspFile WritablePath, paths Paths) {
+	buf := &strings.Builder{}
+	err := response.WriteRspFile(buf, paths.Strings())
+	if err != nil {
+		// There should never be I/O errors writing to a bytes.Buffer.
+		panic(err)
+	}
+	WriteFileRule(ctx, rspFile, buf.String())
+}

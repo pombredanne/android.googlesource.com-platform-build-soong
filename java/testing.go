@@ -39,17 +39,49 @@ const defaultJavaDir = "default/java"
 // module types as possible. The exceptions are those module types that require mutators and/or
 // singletons in order to function in which case they should be kept together in a separate
 // preparer.
-var PrepareForTestWithJavaBuildComponents = android.FixtureRegisterWithContext(RegisterRequiredBuildComponentsForTest)
+var PrepareForTestWithJavaBuildComponents = android.GroupFixturePreparers(
+	// Make sure that mutators and module types, e.g. prebuilt mutators available.
+	android.PrepareForTestWithAndroidBuildComponents,
+	// Make java build components available to the test.
+	android.FixtureRegisterWithContext(registerRequiredBuildComponentsForTest),
+	android.FixtureRegisterWithContext(registerJavaPluginBuildComponents),
+	// Additional files needed in tests that disallow non-existent source files.
+	// This includes files that are needed by all, or at least most, instances of a java module type.
+	android.MockFS{
+		// Needed for linter used by java_library.
+		"build/soong/java/lint_defaults.txt": nil,
+		// Needed for apps that do not provide their own.
+		"build/make/target/product/security": nil,
+	}.AddToFixture(),
+)
 
 // Test fixture preparer that will define default java modules, e.g. standard prebuilt modules.
 var PrepareForTestWithJavaDefaultModules = android.GroupFixturePreparers(
-	// Make sure that mutators and module types, e.g. prebuilt mutators available.
-	android.PrepareForTestWithAndroidBuildComponents,
 	// Make sure that all the module types used in the defaults are registered.
 	PrepareForTestWithJavaBuildComponents,
+	// Additional files needed when test disallows non-existent source.
+	android.MockFS{
+		// Needed for framework-res
+		defaultJavaDir + "/AndroidManifest.xml": nil,
+		// Needed for framework
+		defaultJavaDir + "/framework/aidl": nil,
+		// Needed for various deps defined in GatherRequiredDepsForTest()
+		defaultJavaDir + "/a.java": nil,
+	}.AddToFixture(),
 	// The java default module definitions.
-	android.FixtureAddTextFile(defaultJavaDir+"/Android.bp", GatherRequiredDepsForTest()),
+	android.FixtureAddTextFile(defaultJavaDir+"/Android.bp", gatherRequiredDepsForTest()),
+	// Add dexpreopt compat libs (android.test.base, etc.) and a fake dex2oatd module.
+	dexpreopt.PrepareForTestWithDexpreoptCompatLibs,
+	dexpreopt.PrepareForTestWithFakeDex2oatd,
 )
+
+// Provides everything needed by dexpreopt.
+var PrepareForTestWithDexpreopt = android.GroupFixturePreparers(
+	PrepareForTestWithJavaDefaultModules,
+	dexpreopt.PrepareForTestByEnablingDexpreopt,
+)
+
+var PrepareForTestWithOverlayBuildComponents = android.FixtureRegisterWithContext(registerOverlayBuildComponents)
 
 // Prepare a fixture to use all java module types, mutators and singletons fully.
 //
@@ -128,28 +160,6 @@ func FixtureWithPrebuiltApis(release2Modules map[string][]string) android.Fixtur
 	)
 }
 
-func TestConfig(buildDir string, env map[string]string, bp string, fs map[string][]byte) android.Config {
-	bp += GatherRequiredDepsForTest()
-
-	mockFS := android.MockFS{}
-
-	cc.GatherRequiredFilesForTest(mockFS)
-
-	for k, v := range fs {
-		mockFS[k] = v
-	}
-
-	if env == nil {
-		env = make(map[string]string)
-	}
-	if env["ANDROID_JAVA8_HOME"] == "" {
-		env["ANDROID_JAVA8_HOME"] = "jdk8"
-	}
-	config := android.TestArchConfig(buildDir, env, bp, mockFS)
-
-	return config
-}
-
 func prebuiltApisFilesForLibs(apiLevels []string, sdkLibs []string) map[string][]byte {
 	fs := make(map[string][]byte)
 	for _, level := range apiLevels {
@@ -168,11 +178,50 @@ func prebuiltApisFilesForLibs(apiLevels []string, sdkLibs []string) map[string][
 	return fs
 }
 
-// Register build components provided by this package that are needed by tests.
+// FixtureConfigureBootJars configures the boot jars in both the dexpreopt.GlobalConfig and
+// Config.productVariables structs. As a side effect that enables dexpreopt.
+func FixtureConfigureBootJars(bootJars ...string) android.FixturePreparer {
+	artBootJars := []string{}
+	for _, j := range bootJars {
+		artApex := false
+		for _, artApexName := range artApexNames {
+			if strings.HasPrefix(j, artApexName+":") {
+				artApex = true
+				break
+			}
+		}
+		if artApex {
+			artBootJars = append(artBootJars, j)
+		}
+	}
+	return android.GroupFixturePreparers(
+		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+			variables.BootJars = android.CreateTestConfiguredJarList(bootJars)
+		}),
+		dexpreopt.FixtureSetBootJars(bootJars...),
+		dexpreopt.FixtureSetArtBootJars(artBootJars...),
+	)
+}
+
+// FixtureConfigureUpdatableBootJars configures the updatable boot jars in both the
+// dexpreopt.GlobalConfig and Config.productVariables structs. As a side effect that enables
+// dexpreopt.
+func FixtureConfigureUpdatableBootJars(bootJars ...string) android.FixturePreparer {
+	return android.GroupFixturePreparers(
+		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+			variables.UpdatableBootJars = android.CreateTestConfiguredJarList(bootJars)
+		}),
+		dexpreopt.FixtureSetUpdatableBootJars(bootJars...),
+	)
+}
+
+// registerRequiredBuildComponentsForTest registers the build components used by
+// PrepareForTestWithJavaDefaultModules.
 //
-// In particular this must register all the components that are used in the `Android.bp` snippet
-// returned by GatherRequiredDepsForTest()
-func RegisterRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
+// As functionality is moved out of here into separate FixturePreparer instances they should also
+// be moved into GatherRequiredDepsForTest for use by tests that have not yet switched to use test
+// fixtures.
+func registerRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
 	RegisterAARBuildComponents(ctx)
 	RegisterAppBuildComponents(ctx)
 	RegisterAppImportBuildComponents(ctx)
@@ -181,21 +230,22 @@ func RegisterRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
 	RegisterDexpreoptBootJarsComponents(ctx)
 	RegisterDocsBuildComponents(ctx)
 	RegisterGenRuleBuildComponents(ctx)
-	RegisterJavaBuildComponents(ctx)
+	registerJavaBuildComponents(ctx)
+	registerPlatformBootclasspathBuildComponents(ctx)
 	RegisterPrebuiltApisBuildComponents(ctx)
 	RegisterRuntimeResourceOverlayBuildComponents(ctx)
 	RegisterSdkLibraryBuildComponents(ctx)
 	RegisterStubsBuildComponents(ctx)
 	RegisterSystemModulesBuildComponents(ctx)
-
-	// Make sure that any tool related module types needed by dexpreopt have been registered.
-	dexpreopt.RegisterToolModulesForTest(ctx)
 }
 
-// Gather the module definitions needed by tests that depend upon code from this package.
+// gatherRequiredDepsForTest gathers the module definitions used by
+// PrepareForTestWithJavaDefaultModules.
 //
-// Returns an `Android.bp` snippet that defines the modules that are needed by this package.
-func GatherRequiredDepsForTest() string {
+// As functionality is moved out of here into separate FixturePreparer instances they should also
+// be moved into GatherRequiredDepsForTest for use by tests that have not yet switched to use test
+// fixtures.
+func gatherRequiredDepsForTest() string {
 	var bp string
 
 	extraModules := []string{
@@ -223,24 +273,6 @@ func GatherRequiredDepsForTest() string {
 				sdk_version: "none",
 				system_modules: "stable-core-platform-api-stubs-system-modules",
 				compile_dex: true,
-			}
-		`, extra)
-	}
-
-	// For class loader context and <uses-library> tests.
-	dexpreoptModules := []string{"android.test.runner"}
-	dexpreoptModules = append(dexpreoptModules, dexpreopt.CompatUsesLibs...)
-	dexpreoptModules = append(dexpreoptModules, dexpreopt.OptionalCompatUsesLibs...)
-
-	for _, extra := range dexpreoptModules {
-		bp += fmt.Sprintf(`
-			java_library {
-				name: "%s",
-				srcs: ["a.java"],
-				sdk_version: "none",
-				system_modules: "stable-core-platform-api-stubs-system-modules",
-				compile_dex: true,
-				installable: true,
 			}
 		`, extra)
 	}
@@ -281,9 +313,6 @@ func GatherRequiredDepsForTest() string {
 		`, extra)
 	}
 
-	// Make sure that any tools needed for dexpreopting are defined.
-	bp += dexpreopt.BpToolModulesForTest()
-
 	// Make sure that the dex_bootjars singleton module is instantiated for the tests.
 	bp += `
 		dex_bootjars {
@@ -308,6 +337,46 @@ func CheckModuleDependencies(t *testing.T, ctx *android.TestContext, name, varia
 	}
 }
 
+// CheckPlatformBootclasspathModules returns the apex:module pair for the modules depended upon by
+// the platform-bootclasspath module.
+func CheckPlatformBootclasspathModules(t *testing.T, result *android.TestResult, name string, expected []string) {
+	t.Helper()
+	platformBootclasspath := result.Module(name, "android_common").(*platformBootclasspathModule)
+	pairs := ApexNamePairsFromModules(result.TestContext, platformBootclasspath.configuredModules)
+	android.AssertDeepEquals(t, fmt.Sprintf("%s modules", "platform-bootclasspath"), expected, pairs)
+}
+
+// ApexNamePairsFromModules returns the apex:module pair for the supplied modules.
+func ApexNamePairsFromModules(ctx *android.TestContext, modules []android.Module) []string {
+	pairs := []string{}
+	for _, module := range modules {
+		pairs = append(pairs, apexNamePairFromModule(ctx, module))
+	}
+	return pairs
+}
+
+func apexNamePairFromModule(ctx *android.TestContext, module android.Module) string {
+	name := module.Name()
+	var apex string
+	apexInfo := ctx.ModuleProvider(module, android.ApexInfoProvider).(android.ApexInfo)
+	if apexInfo.IsForPlatform() {
+		apex = "platform"
+	} else {
+		apex = apexInfo.InApexes[0]
+	}
+
+	return fmt.Sprintf("%s:%s", apex, name)
+}
+
+// CheckPlatformBootclasspathFragments returns the apex:module pair for the fragments depended upon
+// by the platform-bootclasspath module.
+func CheckPlatformBootclasspathFragments(t *testing.T, result *android.TestResult, name string, expected []string) {
+	t.Helper()
+	platformBootclasspath := result.Module(name, "android_common").(*platformBootclasspathModule)
+	pairs := ApexNamePairsFromModules(result.TestContext, platformBootclasspath.fragments)
+	android.AssertDeepEquals(t, fmt.Sprintf("%s fragments", "platform-bootclasspath"), expected, pairs)
+}
+
 func CheckHiddenAPIRuleInputs(t *testing.T, expected string, hiddenAPIRule android.TestingBuildParams) {
 	t.Helper()
 	actual := strings.TrimSpace(strings.Join(android.NormalizePathsForTesting(hiddenAPIRule.Implicits), "\n"))
@@ -315,4 +384,13 @@ func CheckHiddenAPIRuleInputs(t *testing.T, expected string, hiddenAPIRule andro
 	if actual != expected {
 		t.Errorf("Expected hiddenapi rule inputs:\n%s\nactual inputs:\n%s", expected, actual)
 	}
+}
+
+// Check that the merged file create by platform_compat_config_singleton has the correct inputs.
+func CheckMergedCompatConfigInputs(t *testing.T, result *android.TestResult, message string, expectedPaths ...string) {
+	sourceGlobalCompatConfig := result.SingletonForTests("platform_compat_config_singleton")
+	allOutputs := sourceGlobalCompatConfig.AllOutputs()
+	android.AssertIntEquals(t, message+": output len", 1, len(allOutputs))
+	output := sourceGlobalCompatConfig.Output(allOutputs[0])
+	android.AssertPathsRelativeToTopEquals(t, message+": inputs", expectedPaths, output.Implicits)
 }

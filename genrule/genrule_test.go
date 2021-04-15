@@ -28,8 +28,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-var genruleFixtureFactory = android.NewFixtureFactory(
-	nil,
+var prepareForGenRuleTest = android.GroupFixturePreparers(
 	android.PrepareForTestWithArchMutator,
 	android.PrepareForTestWithDefaults,
 
@@ -37,6 +36,7 @@ var genruleFixtureFactory = android.NewFixtureFactory(
 	PrepareForTestWithGenRuleBuildComponents,
 	android.FixtureRegisterWithContext(func(ctx android.RegistrationContext) {
 		ctx.RegisterModuleType("tool", toolFactory)
+		ctx.RegisterModuleType("output", outputProducerFactory)
 	}),
 	android.FixtureMergeMockFs(android.MockFS{
 		"tool":       nil,
@@ -447,7 +447,8 @@ func TestGenruleCmd(t *testing.T) {
 				expectedErrors = append(expectedErrors, regexp.QuoteMeta(test.err))
 			}
 
-			result := genruleFixtureFactory.Extend(
+			result := android.GroupFixturePreparers(
+				prepareForGenRuleTest,
 				android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
 					variables.Allow_missing_dependencies = proptools.BoolPtr(test.allowMissingDependencies)
 				}),
@@ -523,7 +524,7 @@ func TestGenruleHashInputs(t *testing.T) {
 		},
 	}
 
-	result := genruleFixtureFactory.RunTestWithBp(t, testGenruleBp()+bp)
+	result := prepareForGenRuleTest.RunTestWithBp(t, testGenruleBp()+bp)
 
 	for _, test := range testcases {
 		t.Run(test.name, func(t *testing.T) {
@@ -605,7 +606,7 @@ func TestGenSrcs(t *testing.T) {
 				expectedErrors = append(expectedErrors, regexp.QuoteMeta(test.err))
 			}
 
-			result := genruleFixtureFactory.
+			result := prepareForGenRuleTest.
 				ExtendWithErrorHandler(android.FixtureExpectsAllErrorsToMatchAPattern(expectedErrors)).
 				RunTestWithBp(t, testGenruleBp()+bp)
 
@@ -642,7 +643,7 @@ func TestGenruleDefaults(t *testing.T) {
 				}
 			`
 
-	result := genruleFixtureFactory.RunTestWithBp(t, testGenruleBp()+bp)
+	result := prepareForGenRuleTest.RunTestWithBp(t, testGenruleBp()+bp)
 
 	gen := result.Module("gen", "").(*Module)
 
@@ -651,6 +652,36 @@ func TestGenruleDefaults(t *testing.T) {
 
 	expectedSrcs := []string{"in1"}
 	android.AssertDeepEquals(t, "srcs", expectedSrcs, gen.properties.Srcs)
+}
+
+func TestGenruleAllowMissingDependencies(t *testing.T) {
+	bp := `
+		output {
+			name: "disabled",
+			enabled: false,
+		}
+
+		genrule {
+			name: "gen",
+			srcs: [
+				":disabled",
+			],
+			out: ["out"],
+			cmd: "cat $(in) > $(out)",
+		}
+       `
+	result := android.GroupFixturePreparers(
+		prepareForGenRuleTest,
+		android.FixtureModifyConfigAndContext(
+			func(config android.Config, ctx *android.TestContext) {
+				config.TestProductVariables.Allow_missing_dependencies = proptools.BoolPtr(true)
+				ctx.SetAllowMissingDependencies(true)
+			})).RunTestWithBp(t, bp)
+
+	gen := result.ModuleForTests("gen", "").Output("out")
+	if gen.Rule != android.ErrorRule {
+		t.Errorf("Expected missing dependency error rule for gen, got %q", gen.Rule.String())
+	}
 }
 
 func TestGenruleWithBazel(t *testing.T) {
@@ -662,11 +693,13 @@ func TestGenruleWithBazel(t *testing.T) {
 		}
 	`
 
-	result := genruleFixtureFactory.Extend(android.FixtureModifyConfig(func(config android.Config) {
-		config.BazelContext = android.MockBazelContext{
-			AllFiles: map[string][]string{
-				"//foo/bar:bar": []string{"bazelone.txt", "bazeltwo.txt"}}}
-	})).RunTestWithBp(t, testGenruleBp()+bp)
+	result := android.GroupFixturePreparers(
+		prepareForGenRuleTest, android.FixtureModifyConfig(func(config android.Config) {
+			config.BazelContext = android.MockBazelContext{
+				OutputBaseDir: "outputbase",
+				LabelToOutputFiles: map[string][]string{
+					"//foo/bar:bar": []string{"bazelone.txt", "bazeltwo.txt"}}}
+		})).RunTestWithBp(t, testGenruleBp()+bp)
 
 	gen := result.Module("foo", "").(*Module)
 
@@ -696,3 +729,24 @@ func (t *testTool) HostToolPath() android.OptionalPath {
 }
 
 var _ android.HostToolProvider = (*testTool)(nil)
+
+type testOutputProducer struct {
+	android.ModuleBase
+	outputFile android.Path
+}
+
+func outputProducerFactory() android.Module {
+	module := &testOutputProducer{}
+	android.InitAndroidArchModule(module, android.HostSupported, android.MultilibFirst)
+	return module
+}
+
+func (t *testOutputProducer) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+	t.outputFile = ctx.InstallFile(android.PathForModuleInstall(ctx, "bin"), ctx.ModuleName(), android.PathForOutput(ctx, ctx.ModuleName()))
+}
+
+func (t *testOutputProducer) OutputFiles(tag string) (android.Paths, error) {
+	return android.Paths{t.outputFile}, nil
+}
+
+var _ android.OutputFileProducer = (*testOutputProducer)(nil)

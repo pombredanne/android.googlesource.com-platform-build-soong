@@ -62,9 +62,10 @@ func prebuiltLibraryHeaderFactory() android.Module {
 }
 
 type bazelCcLibraryHeadersAttributes struct {
-	Hdrs     bazel.LabelList
-	Includes bazel.LabelList
-	Deps     bazel.LabelList
+	Copts    bazel.StringListAttribute
+	Hdrs     bazel.LabelListAttribute
+	Includes bazel.StringListAttribute
+	Deps     bazel.LabelListAttribute
 }
 
 type bazelCcLibraryHeaders struct {
@@ -86,7 +87,7 @@ func CcLibraryHeadersBp2Build(ctx android.TopDownMutatorContext) {
 		return
 	}
 
-	if !module.ConvertWithBp2build() {
+	if !module.ConvertWithBp2build(ctx) {
 		return
 	}
 
@@ -94,35 +95,15 @@ func CcLibraryHeadersBp2Build(ctx android.TopDownMutatorContext) {
 		return
 	}
 
-	lib, _ := module.linker.(*libraryDecorator)
-
-	// list of directories that will be added to the include path (using -I) for this
-	// module and any module that links against this module.
-	includeDirs := lib.flagExporter.Properties.Export_system_include_dirs
-	includeDirs = append(includeDirs, lib.flagExporter.Properties.Export_include_dirs...)
-	includeDirLabels := android.BazelLabelForModuleSrc(ctx, includeDirs)
-
-	var includeDirGlobs []string
-	for _, includeDir := range includeDirs {
-		includeDirGlobs = append(includeDirGlobs, includeDir+"/**/*.h")
-	}
-
-	headerLabels := android.BazelLabelForModuleSrc(ctx, includeDirGlobs)
-
-	// list of modules that should only provide headers for this module.
-	var headerLibs []string
-	for _, linkerProps := range lib.linkerProps() {
-		if baseLinkerProps, ok := linkerProps.(*BaseLinkerProperties); ok {
-			headerLibs = baseLinkerProps.Export_header_lib_headers
-			break
-		}
-	}
-	headerLibLabels := android.BazelLabelForModuleDeps(ctx, headerLibs)
+	exportedIncludes, exportedIncludesHeaders := bp2BuildParseExportedIncludes(ctx, module)
+	compilerAttrs := bp2BuildParseCompilerProps(ctx, module)
+	linkerAttrs := bp2BuildParseLinkerProps(ctx, module)
 
 	attrs := &bazelCcLibraryHeadersAttributes{
-		Includes: includeDirLabels,
-		Hdrs:     headerLabels,
-		Deps:     headerLibLabels,
+		Copts:    compilerAttrs.copts,
+		Includes: exportedIncludes,
+		Hdrs:     exportedIncludesHeaders,
+		Deps:     linkerAttrs.deps,
 	}
 
 	props := bazel.BazelTargetModuleProperties{
