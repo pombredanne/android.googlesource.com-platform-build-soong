@@ -33,6 +33,8 @@ type GlobalConfig struct {
 
 	OnlyPreoptBootImageAndSystemServer bool // only preopt jars in the boot image or system server
 
+	PreoptWithUpdatableBcp bool // If updatable boot jars are included in dexpreopt or not.
+
 	UseArtImage bool // use the art image (use other boot class path dex files without image)
 
 	HasSystemOther        bool     // store odex files that match PatternsOnSystemOther on the system_other partition
@@ -113,7 +115,7 @@ type ModuleConfig struct {
 	DexLocation     string // dex location on device
 	BuildPath       android.OutputPath
 	DexPath         android.Path
-	ManifestPath    android.Path
+	ManifestPath    android.OptionalPath
 	UncompressedDex bool
 	HasApkLibraries bool
 	PreoptFlags     []string
@@ -289,7 +291,7 @@ func ParseModuleConfig(ctx android.PathContext, data []byte) (*ModuleConfig, err
 	// Construct paths that require a PathContext.
 	config.ModuleConfig.BuildPath = constructPath(ctx, config.BuildPath).(android.OutputPath)
 	config.ModuleConfig.DexPath = constructPath(ctx, config.DexPath)
-	config.ModuleConfig.ManifestPath = constructPath(ctx, config.ManifestPath)
+	config.ModuleConfig.ManifestPath = android.OptionalPathForPath(constructPath(ctx, config.ManifestPath))
 	config.ModuleConfig.ProfileClassListing = android.OptionalPathForPath(constructPath(ctx, config.ProfileClassListing))
 	config.ModuleConfig.EnforceUsesLibrariesStatusFile = constructPath(ctx, config.EnforceUsesLibrariesStatusFile)
 	config.ModuleConfig.ClassLoaderContexts = fromJsonClassLoaderContext(ctx, config.ClassLoaderContexts)
@@ -352,9 +354,23 @@ func dex2oatModuleName(config android.Config) string {
 	}
 }
 
-var Dex2oatDepTag = struct {
+type dex2oatDependencyTag struct {
 	blueprint.BaseDependencyTag
-}{}
+}
+
+func (d dex2oatDependencyTag) ExcludeFromVisibilityEnforcement() {
+}
+
+func (d dex2oatDependencyTag) ExcludeFromApexContents() {
+}
+
+// Dex2oatDepTag represents the dependency onto the dex2oatd module. It is added to any module that
+// needs dexpreopting and so it makes no sense for it to be checked for visibility or included in
+// the apex.
+var Dex2oatDepTag = dex2oatDependencyTag{}
+
+var _ android.ExcludeFromVisibilityEnforcementTag = Dex2oatDepTag
+var _ android.ExcludeFromApexContentsTag = Dex2oatDepTag
 
 // RegisterToolDeps adds the necessary dependencies to binary modules for tools
 // that are required later when Get(Cached)GlobalSoongConfig is called. It

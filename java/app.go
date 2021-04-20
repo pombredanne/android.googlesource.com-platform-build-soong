@@ -122,8 +122,8 @@ type overridableAppProperties struct {
 	// or an android_app_certificate module name in the form ":module".
 	Certificate *string
 
-	// Name of the signing certificate lineage file.
-	Lineage *string
+	// Name of the signing certificate lineage file or filegroup module.
+	Lineage *string `android:"path"`
 
 	// the package name of this app. The package name in the manifest file is used if one was not given.
 	Package_name *string
@@ -213,16 +213,16 @@ func (c Certificate) AndroidMkString() string {
 func (a *AndroidApp) DepsMutator(ctx android.BottomUpMutatorContext) {
 	a.Module.deps(ctx)
 
-	if String(a.appProperties.Stl) == "c++_shared" && !a.sdkVersion().specified() {
+	if String(a.appProperties.Stl) == "c++_shared" && !a.SdkVersion(ctx).Specified() {
 		ctx.PropertyErrorf("stl", "sdk_version must be set in order to use c++_shared")
 	}
 
-	sdkDep := decodeSdkDep(ctx, sdkContext(a))
+	sdkDep := decodeSdkDep(ctx, android.SdkContext(a))
 	if sdkDep.hasFrameworkLibs() {
 		a.aapt.deps(ctx, sdkDep)
 	}
 
-	usesSDK := a.sdkVersion().specified() && a.sdkVersion().kind != sdkCorePlatform
+	usesSDK := a.SdkVersion(ctx).Specified() && a.SdkVersion(ctx).Kind != android.SdkCorePlatform
 
 	if usesSDK && Bool(a.appProperties.Jni_uses_sdk_apis) {
 		ctx.PropertyErrorf("jni_uses_sdk_apis",
@@ -279,16 +279,16 @@ func (a *AndroidApp) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 func (a *AndroidApp) checkAppSdkVersions(ctx android.ModuleContext) {
 	if a.Updatable() {
-		if !a.sdkVersion().stable() {
-			ctx.PropertyErrorf("sdk_version", "Updatable apps must use stable SDKs, found %v", a.sdkVersion())
+		if !a.SdkVersion(ctx).Stable() {
+			ctx.PropertyErrorf("sdk_version", "Updatable apps must use stable SDKs, found %v", a.SdkVersion(ctx))
 		}
 		if String(a.deviceProperties.Min_sdk_version) == "" {
 			ctx.PropertyErrorf("updatable", "updatable apps must set min_sdk_version.")
 		}
 
-		if minSdkVersion, err := a.minSdkVersion().effectiveVersion(ctx); err == nil {
+		if minSdkVersion, err := a.MinSdkVersion(ctx).EffectiveVersion(ctx); err == nil {
 			a.checkJniLibsSdkVersion(ctx, minSdkVersion)
-			android.CheckMinSdkVersion(a, ctx, minSdkVersion.ApiLevel(ctx))
+			android.CheckMinSdkVersion(a, ctx, minSdkVersion)
 		} else {
 			ctx.PropertyErrorf("min_sdk_version", "%s", err.Error())
 		}
@@ -302,9 +302,9 @@ func (a *AndroidApp) checkAppSdkVersions(ctx android.ModuleContext) {
 // This check is enforced for "updatable" APKs (including APK-in-APEX).
 // b/155209650: until min_sdk_version is properly supported, use sdk_version instead.
 // because, sdk_version is overridden by min_sdk_version (if set as smaller)
-// and linkType is checked with dependencies so we can be sure that the whole dependency tree
+// and sdkLinkType is checked with dependencies so we can be sure that the whole dependency tree
 // will meet the requirements.
-func (a *AndroidApp) checkJniLibsSdkVersion(ctx android.ModuleContext, minSdkVersion sdkVersion) {
+func (a *AndroidApp) checkJniLibsSdkVersion(ctx android.ModuleContext, minSdkVersion android.ApiLevel) {
 	// It's enough to check direct JNI deps' sdk_version because all transitive deps from JNI deps are checked in cc.checkLinkType()
 	ctx.VisitDirectDeps(func(m android.Module) {
 		if !IsJniDepTag(ctx.OtherModuleDependencyTag(m)) {
@@ -312,10 +312,10 @@ func (a *AndroidApp) checkJniLibsSdkVersion(ctx android.ModuleContext, minSdkVer
 		}
 		dep, _ := m.(*cc.Module)
 		// The domain of cc.sdk_version is "current" and <number>
-		// We can rely on sdkSpec to convert it to <number> so that "current" is handled
-		// properly regardless of sdk finalization.
-		jniSdkVersion, err := sdkSpecFrom(dep.SdkVersion()).effectiveVersion(ctx)
-		if err != nil || minSdkVersion < jniSdkVersion {
+		// We can rely on android.SdkSpec to convert it to <number> so that "current" is
+		// handled properly regardless of sdk finalization.
+		jniSdkVersion, err := android.SdkSpecFrom(ctx, dep.SdkVersion()).EffectiveVersion(ctx)
+		if err != nil || minSdkVersion.LessThan(jniSdkVersion) {
 			ctx.OtherModuleErrorf(dep, "sdk_version(%v) is higher than min_sdk_version(%v) of the containing android_app(%v)",
 				dep.SdkVersion(), minSdkVersion, ctx.ModuleName())
 			return
@@ -327,13 +327,13 @@ func (a *AndroidApp) checkJniLibsSdkVersion(ctx android.ModuleContext, minSdkVer
 // Returns true if the native libraries should be stored in the APK uncompressed and the
 // extractNativeLibs application flag should be set to false in the manifest.
 func (a *AndroidApp) useEmbeddedNativeLibs(ctx android.ModuleContext) bool {
-	minSdkVersion, err := a.minSdkVersion().effectiveVersion(ctx)
+	minSdkVersion, err := a.MinSdkVersion(ctx).EffectiveVersion(ctx)
 	if err != nil {
-		ctx.PropertyErrorf("min_sdk_version", "invalid value %q: %s", a.minSdkVersion(), err)
+		ctx.PropertyErrorf("min_sdk_version", "invalid value %q: %s", a.MinSdkVersion(ctx), err)
 	}
 
 	apexInfo := ctx.Provider(android.ApexInfoProvider).(android.ApexInfo)
-	return (minSdkVersion >= 23 && Bool(a.appProperties.Use_embedded_native_libs)) ||
+	return (minSdkVersion.FinalOrFutureInt() >= 23 && Bool(a.appProperties.Use_embedded_native_libs)) ||
 		!apexInfo.IsForPlatform()
 }
 
@@ -380,7 +380,11 @@ func (a *AndroidApp) renameResourcesPackage() bool {
 }
 
 func (a *AndroidApp) aaptBuildActions(ctx android.ModuleContext) {
-	a.aapt.usesNonSdkApis = Bool(a.Module.deviceProperties.Platform_apis)
+	usePlatformAPI := proptools.Bool(a.Module.deviceProperties.Platform_apis)
+	if ctx.Module().(android.SdkContext).SdkVersion(ctx).Kind == android.SdkModule {
+		usePlatformAPI = true
+	}
+	a.aapt.usesNonSdkApis = usePlatformAPI
 
 	// Ask manifest_fixer to add or update the application element indicating this app has no code.
 	a.aapt.hasNoCode = !a.hasCode(ctx)
@@ -419,7 +423,7 @@ func (a *AndroidApp) aaptBuildActions(ctx android.ModuleContext) {
 
 	a.aapt.splitNames = a.appProperties.Package_splits
 	a.aapt.LoggingParent = String(a.overridableAppProperties.Logging_parent)
-	a.aapt.buildActions(ctx, sdkContext(a), a.classLoaderContexts, aaptLinkFlags...)
+	a.aapt.buildActions(ctx, android.SdkContext(a), a.classLoaderContexts, aaptLinkFlags...)
 
 	// apps manifests are handled by aapt, don't let Module see them
 	a.properties.Manifest = nil
@@ -720,8 +724,8 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 }
 
 type appDepsInterface interface {
-	sdkVersion() sdkSpec
-	minSdkVersion() sdkSpec
+	SdkVersion(ctx android.EarlyModuleContext) android.SdkSpec
+	MinSdkVersion(ctx android.EarlyModuleContext) android.SdkSpec
 	RequiresStableAPIs(ctx android.BaseModuleContext) bool
 }
 
@@ -734,8 +738,8 @@ func collectAppDeps(ctx android.ModuleContext, app appDepsInterface,
 	seenModulePaths := make(map[string]bool)
 
 	if checkNativeSdkVersion {
-		checkNativeSdkVersion = app.sdkVersion().specified() &&
-			app.sdkVersion().kind != sdkCorePlatform && !app.RequiresStableAPIs(ctx)
+		checkNativeSdkVersion = app.SdkVersion(ctx).Specified() &&
+			app.SdkVersion(ctx).Kind != android.SdkCorePlatform && !app.RequiresStableAPIs(ctx)
 	}
 
 	ctx.WalkDeps(func(module android.Module, parent android.Module) bool {
@@ -812,13 +816,28 @@ func (a *AndroidApp) buildAppDependencyInfo(ctx android.ModuleContext) {
 	depsInfo := android.DepNameToDepInfoMap{}
 	a.WalkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) bool {
 		depName := to.Name()
+
+		// Skip dependencies that are only available to APEXes; they are developed with updatability
+		// in mind and don't need manual approval.
+		if to.(android.ApexModule).NotAvailableForPlatform() {
+			return true
+		}
+
 		if info, exist := depsInfo[depName]; exist {
 			info.From = append(info.From, from.Name())
 			info.IsExternal = info.IsExternal && externalDep
 			depsInfo[depName] = info
 		} else {
 			toMinSdkVersion := "(no version)"
-			if m, ok := to.(interface{ MinSdkVersion() string }); ok {
+			if m, ok := to.(interface {
+				MinSdkVersion(ctx android.EarlyModuleContext) android.SdkSpec
+			}); ok {
+				if v := m.MinSdkVersion(ctx); !v.ApiLevel.IsNone() {
+					toMinSdkVersion = v.ApiLevel.String()
+				}
+			} else if m, ok := to.(interface{ MinSdkVersion() string }); ok {
+				// TODO(b/175678607) eliminate the use of MinSdkVersion returning
+				// string
 				if v := m.MinSdkVersion(); v != "" {
 					toMinSdkVersion = v
 				}
@@ -833,7 +852,7 @@ func (a *AndroidApp) buildAppDependencyInfo(ctx android.ModuleContext) {
 		return true
 	})
 
-	a.ApexBundleDepsInfo.BuildDepsInfoLists(ctx, a.MinSdkVersion(), depsInfo)
+	a.ApexBundleDepsInfo.BuildDepsInfoLists(ctx, a.MinSdkVersion(ctx).String(), depsInfo)
 }
 
 func (a *AndroidApp) Updatable() bool {
@@ -1274,18 +1293,34 @@ func (u *usesLibrary) freezeEnforceUsesLibraries() {
 	u.usesLibraryProperties.Enforce_uses_libs = &enforce
 }
 
-// verifyUsesLibrariesManifest checks the <uses-library> tags in an AndroidManifest.xml against the ones specified
-// in the uses_libs and optional_uses_libs properties.  It returns the path to a copy of the manifest.
-func (u *usesLibrary) verifyUsesLibrariesManifest(ctx android.ModuleContext, manifest android.Path) android.Path {
-	outputFile := android.PathForModuleOut(ctx, "manifest_check", "AndroidManifest.xml")
+// verifyUsesLibraries checks the <uses-library> tags in the manifest against the ones specified
+// in the `uses_libs`/`optional_uses_libs` properties. The input can be either an XML manifest, or
+// an APK with the manifest embedded in it (manifest_check will know which one it is by the file
+// extension: APKs are supposed to end with '.apk').
+func (u *usesLibrary) verifyUsesLibraries(ctx android.ModuleContext, inputFile android.Path,
+	outputFile android.WritablePath) android.Path {
+
 	statusFile := dexpreopt.UsesLibrariesStatusFile(ctx)
+
+	// Disable verify_uses_libraries check if dexpreopt is globally disabled. Without dexpreopt the
+	// check is not necessary, and although it is good to have, it is difficult to maintain on
+	// non-linux build platforms where dexpreopt is generally disabled (the check may fail due to
+	// various unrelated reasons, such as a failure to get manifest from an APK).
+	global := dexpreopt.GetGlobalConfig(ctx)
+	if global.DisablePreopt || global.OnlyPreoptBootImageAndSystemServer {
+		return inputFile
+	}
 
 	rule := android.NewRuleBuilder(pctx, ctx)
 	cmd := rule.Command().BuiltTool("manifest_check").
 		Flag("--enforce-uses-libraries").
-		Input(manifest).
+		Input(inputFile).
 		FlagWithOutput("--enforce-uses-libraries-status ", statusFile).
-		FlagWithOutput("-o ", outputFile)
+		FlagWithInput("--aapt ", ctx.Config().HostToolPath(ctx, "aapt"))
+
+	if outputFile != nil {
+		cmd.FlagWithOutput("-o ", outputFile)
+	}
 
 	if dexpreopt.GetGlobalConfig(ctx).RelaxUsesLibraryCheck {
 		cmd.Flag("--enforce-uses-libraries-relax")
@@ -1300,27 +1335,20 @@ func (u *usesLibrary) verifyUsesLibrariesManifest(ctx android.ModuleContext, man
 	}
 
 	rule.Build("verify_uses_libraries", "verify <uses-library>")
-
 	return outputFile
 }
 
-// verifyUsesLibrariesAPK checks the <uses-library> tags in the manifest of an APK against the ones specified
-// in the uses_libs and optional_uses_libs properties.  It returns the path to a copy of the APK.
+// verifyUsesLibrariesManifest checks the <uses-library> tags in an AndroidManifest.xml against
+// the build system and returns the path to a copy of the manifest.
+func (u *usesLibrary) verifyUsesLibrariesManifest(ctx android.ModuleContext, manifest android.Path) android.Path {
+	outputFile := android.PathForModuleOut(ctx, "manifest_check", "AndroidManifest.xml")
+	return u.verifyUsesLibraries(ctx, manifest, outputFile)
+}
+
+// verifyUsesLibrariesAPK checks the <uses-library> tags in the manifest of an APK against the build
+// system and returns the path to a copy of the APK.
 func (u *usesLibrary) verifyUsesLibrariesAPK(ctx android.ModuleContext, apk android.Path) android.Path {
+	u.verifyUsesLibraries(ctx, apk, nil) // for APKs manifest_check does not write output file
 	outputFile := android.PathForModuleOut(ctx, "verify_uses_libraries", apk.Base())
-	statusFile := dexpreopt.UsesLibrariesStatusFile(ctx)
-
-	rule := android.NewRuleBuilder(pctx, ctx)
-	aapt := ctx.Config().HostToolPath(ctx, "aapt")
-	rule.Command().
-		Textf("aapt_binary=%s", aapt.String()).Implicit(aapt).
-		Textf(`uses_library_names="%s"`, strings.Join(u.usesLibraryProperties.Uses_libs, " ")).
-		Textf(`optional_uses_library_names="%s"`, strings.Join(u.usesLibraryProperties.Optional_uses_libs, " ")).
-		Textf(`relax_check="%t"`, dexpreopt.GetGlobalConfig(ctx).RelaxUsesLibraryCheck).
-		Tool(android.PathForSource(ctx, "build/make/core/verify_uses_libraries.sh")).Input(apk).Output(statusFile)
-	rule.Command().Text("cp -f").Input(apk).Output(outputFile)
-
-	rule.Build("verify_uses_libraries", "verify <uses-library>")
-
 	return outputFile
 }

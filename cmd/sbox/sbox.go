@@ -32,6 +32,7 @@ import (
 
 	"android/soong/cmd/sbox/sbox_proto"
 	"android/soong/makedeps"
+	"android/soong/response"
 
 	"github.com/golang/protobuf/proto"
 )
@@ -218,24 +219,33 @@ func runCommand(command *sbox_proto.Command, tempDir string) (depFile string, er
 		return "", fmt.Errorf("command is required")
 	}
 
+	pathToTempDirInSbox := tempDir
+	if command.GetChdir() {
+		pathToTempDirInSbox = "."
+	}
+
 	err = os.MkdirAll(tempDir, 0777)
 	if err != nil {
 		return "", fmt.Errorf("failed to create %q: %w", tempDir, err)
 	}
 
 	// Copy in any files specified by the manifest.
-	err = copyFiles(command.CopyBefore, "", tempDir)
+	err = copyFiles(command.CopyBefore, "", tempDir, false)
+	if err != nil {
+		return "", err
+	}
+	err = copyRspFiles(command.RspFiles, tempDir, pathToTempDirInSbox)
 	if err != nil {
 		return "", err
 	}
 
 	if strings.Contains(rawCommand, depFilePlaceholder) {
-		depFile = filepath.Join(tempDir, "deps.d")
+		depFile = filepath.Join(pathToTempDirInSbox, "deps.d")
 		rawCommand = strings.Replace(rawCommand, depFilePlaceholder, depFile, -1)
 	}
 
 	if strings.Contains(rawCommand, sandboxDirPlaceholder) {
-		rawCommand = strings.Replace(rawCommand, sandboxDirPlaceholder, tempDir, -1)
+		rawCommand = strings.Replace(rawCommand, sandboxDirPlaceholder, pathToTempDirInSbox, -1)
 	}
 
 	// Emulate ninja's behavior of creating the directories for any output files before
@@ -245,21 +255,49 @@ func runCommand(command *sbox_proto.Command, tempDir string) (depFile string, er
 		return "", err
 	}
 
-	commandDescription := rawCommand
-
 	cmd := exec.Command("bash", "-c", rawCommand)
+	buf := &bytes.Buffer{}
 	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = buf
+	cmd.Stderr = buf
 
 	if command.GetChdir() {
 		cmd.Dir = tempDir
+		path := os.Getenv("PATH")
+		absPath, err := makeAbsPathEnv(path)
+		if err != nil {
+			return "", err
+		}
+		err = os.Setenv("PATH", absPath)
+		if err != nil {
+			return "", fmt.Errorf("Failed to update PATH: %w", err)
+		}
 	}
 	err = cmd.Run()
 
+	if err != nil {
+		// The command failed, do a best effort copy of output files out of the sandbox.  This is
+		// especially useful for linters with baselines that print an error message on failure
+		// with a command to copy the output lint errors to the new baseline.  Use a copy instead of
+		// a move to leave the sandbox intact for manual inspection
+		copyFiles(command.CopyAfter, tempDir, "", true)
+	}
+
+	// If the command  was executed but failed with an error, print a debugging message before
+	// the command's output so it doesn't scroll the real error message off the screen.
 	if exit, ok := err.(*exec.ExitError); ok && !exit.Success() {
-		return "", fmt.Errorf("sbox command failed with err:\n%s\n%w\n", commandDescription, err)
-	} else if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"The failing command was run inside an sbox sandbox in temporary directory\n"+
+				"%s\n"+
+				"The failing command line was:\n"+
+				"%s\n",
+			tempDir, rawCommand)
+	}
+
+	// Write the command's combined stdout/stderr.
+	os.Stdout.Write(buf.Bytes())
+
+	if err != nil {
 		return "", err
 	}
 
@@ -271,7 +309,7 @@ func runCommand(command *sbox_proto.Command, tempDir string) (depFile string, er
 
 		// build error message
 		errorMessage := "mismatch between declared and actual outputs\n"
-		errorMessage += "in sbox command(" + commandDescription + ")\n\n"
+		errorMessage += "in sbox command(" + rawCommand + ")\n\n"
 		errorMessage += "in sandbox " + tempDir + ",\n"
 		errorMessage += fmt.Sprintf("failed to create %v files:\n", len(missingOutputErrors))
 		for _, missingOutputError := range missingOutputErrors {
@@ -332,12 +370,13 @@ func validateOutputFiles(copies []*sbox_proto.Copy, sandboxDir string) []error {
 	return missingOutputErrors
 }
 
-// copyFiles copies files in or out of the sandbox.
-func copyFiles(copies []*sbox_proto.Copy, fromDir, toDir string) error {
+// copyFiles copies files in or out of the sandbox.  If allowFromNotExists is true then errors
+// caused by a from path not existing are ignored.
+func copyFiles(copies []*sbox_proto.Copy, fromDir, toDir string, allowFromNotExists bool) error {
 	for _, copyPair := range copies {
 		fromPath := joinPath(fromDir, copyPair.GetFrom())
 		toPath := joinPath(toDir, copyPair.GetTo())
-		err := copyOneFile(fromPath, toPath, copyPair.GetExecutable())
+		err := copyOneFile(fromPath, toPath, copyPair.GetExecutable(), allowFromNotExists)
 		if err != nil {
 			return fmt.Errorf("error copying %q to %q: %w", fromPath, toPath, err)
 		}
@@ -345,8 +384,9 @@ func copyFiles(copies []*sbox_proto.Copy, fromDir, toDir string) error {
 	return nil
 }
 
-// copyOneFile copies a file.
-func copyOneFile(from string, to string, executable bool) error {
+// copyOneFile copies a file and its permissions.  If forceExecutable is true it adds u+x to the
+// permissions.  If allowFromNotExists is true it returns nil if the from path doesn't exist.
+func copyOneFile(from string, to string, forceExecutable, allowFromNotExists bool) error {
 	err := os.MkdirAll(filepath.Dir(to), 0777)
 	if err != nil {
 		return err
@@ -354,11 +394,14 @@ func copyOneFile(from string, to string, executable bool) error {
 
 	stat, err := os.Stat(from)
 	if err != nil {
+		if os.IsNotExist(err) && allowFromNotExists {
+			return nil
+		}
 		return err
 	}
 
 	perm := stat.Mode()
-	if executable {
+	if forceExecutable {
 		perm = perm | 0100 // u+x
 	}
 
@@ -367,6 +410,14 @@ func copyOneFile(from string, to string, executable bool) error {
 		return err
 	}
 	defer in.Close()
+
+	// Remove the target before copying.  In most cases the file won't exist, but if there are
+	// duplicate copy rules for a file and the source file was read-only the second copy could
+	// fail.
+	err = os.Remove(to)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
 
 	out, err := os.Create(to)
 	if err != nil {
@@ -393,6 +444,83 @@ func copyOneFile(from string, to string, executable bool) error {
 	}
 
 	return nil
+}
+
+// copyRspFiles copies rsp files into the sandbox with path mappings, and also copies the files
+// listed into the sandbox.
+func copyRspFiles(rspFiles []*sbox_proto.RspFile, toDir, toDirInSandbox string) error {
+	for _, rspFile := range rspFiles {
+		err := copyOneRspFile(rspFile, toDir, toDirInSandbox)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// copyOneRspFiles copies an rsp file into the sandbox with path mappings, and also copies the files
+// listed into the sandbox.
+func copyOneRspFile(rspFile *sbox_proto.RspFile, toDir, toDirInSandbox string) error {
+	in, err := os.Open(rspFile.GetFile())
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	files, err := response.ReadRspFile(in)
+	if err != nil {
+		return err
+	}
+
+	for i, from := range files {
+		// Convert the real path of the input file into the path inside the sandbox using the
+		// path mappings.
+		to := applyPathMappings(rspFile.PathMappings, from)
+
+		// Copy the file into the sandbox.
+		err := copyOneFile(from, joinPath(toDir, to), false, false)
+		if err != nil {
+			return err
+		}
+
+		// Rewrite the name in the list of files to be relative to the sandbox directory.
+		files[i] = joinPath(toDirInSandbox, to)
+	}
+
+	// Convert the real path of the rsp file into the path inside the sandbox using the path
+	// mappings.
+	outRspFile := joinPath(toDir, applyPathMappings(rspFile.PathMappings, rspFile.GetFile()))
+
+	err = os.MkdirAll(filepath.Dir(outRspFile), 0777)
+	if err != nil {
+		return err
+	}
+
+	out, err := os.Create(outRspFile)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	// Write the rsp file with converted paths into the sandbox.
+	err = response.WriteRspFile(out, files)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// applyPathMappings takes a list of path mappings and a path, and returns the path with the first
+// matching path mapping applied.  If the path does not match any of the path mappings then it is
+// returned unmodified.
+func applyPathMappings(pathMappings []*sbox_proto.PathMapping, path string) string {
+	for _, mapping := range pathMappings {
+		if strings.HasPrefix(path, mapping.GetFrom()+"/") {
+			return joinPath(mapping.GetTo()+"/", strings.TrimPrefix(path, mapping.GetFrom()+"/"))
+		}
+	}
+	return path
 }
 
 // moveFiles moves files specified by a set of copy rules.  It uses os.Rename, so it is restricted
@@ -465,4 +593,18 @@ func joinPath(dir, file string) string {
 		return file
 	}
 	return filepath.Join(dir, file)
+}
+
+func makeAbsPathEnv(pathEnv string) (string, error) {
+	pathEnvElements := filepath.SplitList(pathEnv)
+	for i, p := range pathEnvElements {
+		if !filepath.IsAbs(p) {
+			absPath, err := filepath.Abs(p)
+			if err != nil {
+				return "", fmt.Errorf("failed to make PATH entry %q absolute: %w", p, err)
+			}
+			pathEnvElements[i] = absPath
+		}
+	}
+	return strings.Join(pathEnvElements, string(filepath.ListSeparator)), nil
 }

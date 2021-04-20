@@ -83,7 +83,7 @@ func boolPtr(v bool) *bool {
 
 const (
 	Asan SanitizerType = iota + 1
-	hwasan
+	Hwasan
 	tsan
 	intOverflow
 	cfi
@@ -97,7 +97,7 @@ func (t SanitizerType) variationName() string {
 	switch t {
 	case Asan:
 		return "asan"
-	case hwasan:
+	case Hwasan:
 		return "hwasan"
 	case tsan:
 		return "tsan"
@@ -121,7 +121,7 @@ func (t SanitizerType) name() string {
 	switch t {
 	case Asan:
 		return "address"
-	case hwasan:
+	case Hwasan:
 		return "hwaddress"
 	case memtag_heap:
 		return "memtag_heap"
@@ -144,7 +144,7 @@ func (*Module) SanitizerSupported(t SanitizerType) bool {
 	switch t {
 	case Asan:
 		return true
-	case hwasan:
+	case Hwasan:
 		return true
 	case tsan:
 		return true
@@ -163,7 +163,7 @@ func (*Module) SanitizerSupported(t SanitizerType) bool {
 
 // incompatibleWithCfi returns true if a sanitizer is incompatible with CFI.
 func (t SanitizerType) incompatibleWithCfi() bool {
-	return t == Asan || t == Fuzzer || t == hwasan
+	return t == Asan || t == Fuzzer || t == Hwasan
 }
 
 type SanitizeUserProps struct {
@@ -400,12 +400,6 @@ func (sanitize *sanitize) begin(ctx BaseModuleContext) {
 
 	// Is CFI actually enabled?
 	if !ctx.Config().EnableCFI() {
-		s.Cfi = boolPtr(false)
-		s.Diag.Cfi = boolPtr(false)
-	}
-
-	// Also disable CFI for arm32 until b/35157333 is fixed.
-	if ctx.Arch().ArchType == android.Arm {
 		s.Cfi = boolPtr(false)
 		s.Diag.Cfi = boolPtr(false)
 	}
@@ -751,7 +745,7 @@ func (sanitize *sanitize) getSanitizerBoolPtr(t SanitizerType) *bool {
 	switch t {
 	case Asan:
 		return sanitize.Properties.Sanitize.Address
-	case hwasan:
+	case Hwasan:
 		return sanitize.Properties.Sanitize.Hwaddress
 	case tsan:
 		return sanitize.Properties.Sanitize.Thread
@@ -773,7 +767,7 @@ func (sanitize *sanitize) getSanitizerBoolPtr(t SanitizerType) *bool {
 // isUnsanitizedVariant returns true if no sanitizers are enabled.
 func (sanitize *sanitize) isUnsanitizedVariant() bool {
 	return !sanitize.isSanitizerEnabled(Asan) &&
-		!sanitize.isSanitizerEnabled(hwasan) &&
+		!sanitize.isSanitizerEnabled(Hwasan) &&
 		!sanitize.isSanitizerEnabled(tsan) &&
 		!sanitize.isSanitizerEnabled(cfi) &&
 		!sanitize.isSanitizerEnabled(scs) &&
@@ -784,7 +778,7 @@ func (sanitize *sanitize) isUnsanitizedVariant() bool {
 // isVariantOnProductionDevice returns true if variant is for production devices (no non-production sanitizers enabled).
 func (sanitize *sanitize) isVariantOnProductionDevice() bool {
 	return !sanitize.isSanitizerEnabled(Asan) &&
-		!sanitize.isSanitizerEnabled(hwasan) &&
+		!sanitize.isSanitizerEnabled(Hwasan) &&
 		!sanitize.isSanitizerEnabled(tsan) &&
 		!sanitize.isSanitizerEnabled(Fuzzer)
 }
@@ -793,7 +787,7 @@ func (sanitize *sanitize) SetSanitizer(t SanitizerType, b bool) {
 	switch t {
 	case Asan:
 		sanitize.Properties.Sanitize.Address = boolPtr(b)
-	case hwasan:
+	case Hwasan:
 		sanitize.Properties.Sanitize.Hwaddress = boolPtr(b)
 	case tsan:
 		sanitize.Properties.Sanitize.Thread = boolPtr(b)
@@ -908,7 +902,7 @@ func sanitizerDepsMutator(t SanitizerType) func(android.TopDownMutatorContext) {
 					if d, ok := child.(PlatformSanitizeable); ok && d.SanitizePropDefined() &&
 						!d.SanitizeNever() &&
 						!d.IsSanitizerExplicitlyDisabled(t) {
-						if t == cfi || t == hwasan || t == scs {
+						if t == cfi || t == Hwasan || t == scs {
 							if d.StaticallyLinked() && d.SanitizerSupported(t) {
 								// Rust does not support some of these sanitizers, so we need to check if it's
 								// supported before setting this true.
@@ -1086,6 +1080,12 @@ func sanitizerRuntimeMutator(mctx android.BottomUpMutatorContext) {
 			if Bool(c.sanitize.Properties.Sanitize.Diag.Memtag_heap) {
 				noteDep = "note_memtag_heap_sync"
 			}
+			// If we're using snapshots, redirect to snapshot whenever possible
+			// TODO(b/178470649): clean manual snapshot redirections
+			snapshot := mctx.Provider(SnapshotInfoProvider).(SnapshotInfo)
+			if lib, ok := snapshot.StaticLibs[noteDep]; ok {
+				noteDep = lib
+			}
 			depTag := libraryDependencyTag{Kind: staticLibraryDependency, wholeStatic: true}
 			variations := append(mctx.Target().Variations(),
 				blueprint.Variation{Mutator: "link", Variation: "static"})
@@ -1135,6 +1135,9 @@ func sanitizerRuntimeMutator(mctx android.BottomUpMutatorContext) {
 			Bool(c.sanitize.Properties.Sanitize.Undefined) ||
 			Bool(c.sanitize.Properties.Sanitize.All_undefined) {
 			runtimeLibrary = config.UndefinedBehaviorSanitizerRuntimeLibrary(toolchain)
+			if c.staticBinary() {
+				runtimeLibrary += ".static"
+			}
 		}
 
 		if runtimeLibrary != "" && (toolchain.Bionic() || c.sanitize.Properties.UbsanRuntimeDep) {
@@ -1283,7 +1286,7 @@ func sanitizerMutator(t SanitizerType) func(android.BottomUpMutatorContext) {
 					// For cfi/scs/hwasan, we can export both sanitized and un-sanitized variants
 					// to Make, because the sanitized version has a different suffix in name.
 					// For other types of sanitizers, suppress the variation that is disabled.
-					if t != cfi && t != scs && t != hwasan {
+					if t != cfi && t != scs && t != Hwasan {
 						if isSanitizerEnabled {
 							modules[0].(PlatformSanitizeable).SetPreventInstall()
 							modules[0].(PlatformSanitizeable).SetHideFromMake()
@@ -1297,7 +1300,7 @@ func sanitizerMutator(t SanitizerType) func(android.BottomUpMutatorContext) {
 					if c.StaticallyLinked() && c.ExportedToMake() {
 						if t == cfi {
 							cfiStaticLibs(mctx.Config()).add(c, c.Module().Name())
-						} else if t == hwasan {
+						} else if t == Hwasan {
 							hwasanStaticLibs(mctx.Config()).add(c, c.Module().Name())
 						}
 					}
@@ -1414,7 +1417,7 @@ var hwasanStaticLibsKey = android.NewOnceKey("hwasanStaticLibs")
 
 func hwasanStaticLibs(config android.Config) *sanitizerStaticLibsMap {
 	return config.Once(hwasanStaticLibsKey, func() interface{} {
-		return newSanitizerStaticLibsMap(hwasan)
+		return newSanitizerStaticLibsMap(Hwasan)
 	}).(*sanitizerStaticLibsMap)
 }
 

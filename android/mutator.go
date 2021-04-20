@@ -33,22 +33,8 @@ import (
 //   run FinalDeps mutators (CreateVariations disallowed in this phase)
 //   continue on to GenerateAndroidBuildActions
 
-func registerMutatorsToContext(ctx *blueprint.Context, mutators []*mutator) {
-	for _, t := range mutators {
-		var handle blueprint.MutatorHandle
-		if t.bottomUpMutator != nil {
-			handle = ctx.RegisterBottomUpMutator(t.name, t.bottomUpMutator)
-		} else if t.topDownMutator != nil {
-			handle = ctx.RegisterTopDownMutator(t.name, t.topDownMutator)
-		}
-		if t.parallel {
-			handle.Parallel()
-		}
-	}
-}
-
 // RegisterMutatorsForBazelConversion is a alternate registration pipeline for bp2build. Exported for testing.
-func RegisterMutatorsForBazelConversion(ctx *blueprint.Context, preArchMutators, depsMutators, bp2buildMutators []RegisterMutatorFunc) {
+func RegisterMutatorsForBazelConversion(ctx *Context, preArchMutators, depsMutators, bp2buildMutators []RegisterMutatorFunc) {
 	mctx := &registerMutatorsContext{
 		bazelConversionMode: true,
 	}
@@ -80,10 +66,17 @@ func RegisterMutatorsForBazelConversion(ctx *blueprint.Context, preArchMutators,
 		f(mctx)
 	}
 
-	registerMutatorsToContext(ctx, mctx.mutators)
+	mctx.mutators.registerAll(ctx)
 }
 
-func registerMutators(ctx *blueprint.Context, preArch, preDeps, postDeps, finalDeps []RegisterMutatorFunc) {
+// collateGloballyRegisteredMutators constructs the list of mutators that have been registered
+// with the InitRegistrationContext and will be used at runtime.
+func collateGloballyRegisteredMutators() sortableComponents {
+	return collateRegisteredMutators(preArch, preDeps, postDeps, finalDeps)
+}
+
+// collateRegisteredMutators constructs a single list of mutators from the separate lists.
+func collateRegisteredMutators(preArch, preDeps, postDeps, finalDeps []RegisterMutatorFunc) sortableComponents {
 	mctx := &registerMutatorsContext{}
 
 	register := func(funcs []RegisterMutatorFunc) {
@@ -103,11 +96,11 @@ func registerMutators(ctx *blueprint.Context, preArch, preDeps, postDeps, finalD
 	mctx.finalPhase = true
 	register(finalDeps)
 
-	registerMutatorsToContext(ctx, mctx.mutators)
+	return mctx.mutators
 }
 
 type registerMutatorsContext struct {
-	mutators            []*mutator
+	mutators            sortableComponents
 	finalPhase          bool
 	bazelConversionMode bool
 }
@@ -209,7 +202,7 @@ var postDeps = []RegisterMutatorFunc{
 	RegisterPrebuiltsPostDepsMutators,
 	RegisterVisibilityRuleEnforcer,
 	RegisterLicensesDependencyChecker,
-	RegisterNeverallowMutator,
+	registerNeverallowMutator,
 	RegisterOverridePostDepsMutators,
 }
 
@@ -233,7 +226,7 @@ func FinalDepsMutators(f RegisterMutatorFunc) {
 
 var bp2buildPreArchMutators = []RegisterMutatorFunc{}
 var bp2buildDepsMutators = []RegisterMutatorFunc{}
-var bp2buildMutators = []RegisterMutatorFunc{}
+var bp2buildMutators = map[string]RegisterMutatorFunc{}
 
 // RegisterBp2BuildMutator registers specially crafted mutators for
 // converting Blueprint/Android modules into special modules that can
@@ -244,7 +237,7 @@ func RegisterBp2BuildMutator(moduleType string, m func(TopDownMutatorContext)) {
 	f := func(ctx RegisterMutatorsContext) {
 		ctx.TopDown(moduleType, m)
 	}
-	bp2buildMutators = append(bp2buildMutators, f)
+	bp2buildMutators[moduleType] = f
 }
 
 // PreArchBp2BuildMutators adds mutators to be register for converting Android Blueprint modules
@@ -473,6 +466,23 @@ func (x *registerMutatorsContext) TopDown(name string, m TopDownMutator) Mutator
 	return mutator
 }
 
+func (mutator *mutator) componentName() string {
+	return mutator.name
+}
+
+func (mutator *mutator) register(ctx *Context) {
+	blueprintCtx := ctx.Context
+	var handle blueprint.MutatorHandle
+	if mutator.bottomUpMutator != nil {
+		handle = blueprintCtx.RegisterBottomUpMutator(mutator.name, mutator.bottomUpMutator)
+	} else if mutator.topDownMutator != nil {
+		handle = blueprintCtx.RegisterTopDownMutator(mutator.name, mutator.topDownMutator)
+	}
+	if mutator.parallel {
+		handle.Parallel()
+	}
+}
+
 type MutatorHandle interface {
 	Parallel() MutatorHandle
 }
@@ -529,7 +539,7 @@ func (t *topDownMutatorContext) CreateBazelTargetModule(
 		Name: &name,
 	}
 
-	b := t.CreateModule(factory, &nameProp, attrs).(BazelTargetModule)
+	b := t.createModuleWithoutInheritance(factory, &nameProp, attrs).(BazelTargetModule)
 	b.SetBazelTargetModuleProperties(bazelProps)
 	return b
 }
@@ -595,6 +605,11 @@ func (t *topDownMutatorContext) CreateModule(factory ModuleFactory, props ...int
 		}
 	}
 
+	return module
+}
+
+func (t *topDownMutatorContext) createModuleWithoutInheritance(factory ModuleFactory, props ...interface{}) Module {
+	module := t.bp.CreateModule(ModuleFactoryAdaptor(factory), props...).(Module)
 	return module
 }
 

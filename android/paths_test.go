@@ -341,6 +341,73 @@ func TestPathForModuleInstall(t *testing.T) {
 		},
 
 		{
+			name: "ramdisk binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inRamdisk: true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/ramdisk/system/my_test",
+			partitionDir: "target/product/test_device/ramdisk/system",
+		},
+		{
+			name: "ramdisk root binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inRamdisk: true,
+				inRoot:    true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/ramdisk/my_test",
+			partitionDir: "target/product/test_device/ramdisk",
+		},
+		{
+			name: "vendor_ramdisk binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inVendorRamdisk: true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/vendor_ramdisk/system/my_test",
+			partitionDir: "target/product/test_device/vendor_ramdisk/system",
+		},
+		{
+			name: "vendor_ramdisk root binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inVendorRamdisk: true,
+				inRoot:          true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/vendor_ramdisk/my_test",
+			partitionDir: "target/product/test_device/vendor_ramdisk",
+		},
+		{
+			name: "debug_ramdisk binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inDebugRamdisk: true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/debug_ramdisk/my_test",
+			partitionDir: "target/product/test_device/debug_ramdisk",
+		},
+		{
 			name: "system native test binary",
 			ctx: &testModuleInstallPathContext{
 				baseModuleContext: baseModuleContext{
@@ -617,6 +684,80 @@ func TestPathForModuleInstall(t *testing.T) {
 			in:           []string{"my_test", "my_test_bin"},
 			out:          "host/linux-x86/testcases/my_test/my_test_bin",
 			partitionDir: "host/linux-x86/testcases",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.ctx.baseModuleContext.config = testConfig
+			output := PathForModuleInstall(tc.ctx, tc.in...)
+			if output.basePath.path != tc.out {
+				t.Errorf("unexpected path:\n got: %q\nwant: %q\n",
+					output.basePath.path,
+					tc.out)
+			}
+			if output.partitionDir != tc.partitionDir {
+				t.Errorf("unexpected partitionDir:\n got: %q\nwant: %q\n",
+					output.partitionDir, tc.partitionDir)
+			}
+		})
+	}
+}
+
+func TestPathForModuleInstallRecoveryAsBoot(t *testing.T) {
+	testConfig := pathTestConfig("")
+	testConfig.TestProductVariables.BoardUsesRecoveryAsBoot = proptools.BoolPtr(true)
+	testConfig.TestProductVariables.BoardMoveRecoveryResourcesToVendorBoot = proptools.BoolPtr(true)
+	deviceTarget := Target{Os: Android, Arch: Arch{ArchType: Arm64}}
+
+	testCases := []struct {
+		name         string
+		ctx          *testModuleInstallPathContext
+		in           []string
+		out          string
+		partitionDir string
+	}{
+		{
+			name: "ramdisk binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inRamdisk: true,
+				inRoot:    true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/recovery/root/first_stage_ramdisk/my_test",
+			partitionDir: "target/product/test_device/recovery/root/first_stage_ramdisk",
+		},
+
+		{
+			name: "vendor_ramdisk binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inVendorRamdisk: true,
+				inRoot:          true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/vendor_ramdisk/first_stage_ramdisk/my_test",
+			partitionDir: "target/product/test_device/vendor_ramdisk/first_stage_ramdisk",
+		},
+		{
+			name: "debug_ramdisk binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inDebugRamdisk: true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/debug_ramdisk/first_stage_ramdisk/my_test",
+			partitionDir: "target/product/test_device/debug_ramdisk/first_stage_ramdisk",
 		},
 	}
 
@@ -977,7 +1118,7 @@ type pathForModuleSrcTestCase struct {
 	rel  string
 }
 
-func testPathForModuleSrc(t *testing.T, buildDir string, tests []pathForModuleSrcTestCase) {
+func testPathForModuleSrc(t *testing.T, tests []pathForModuleSrcTestCase) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fgBp := `
@@ -995,7 +1136,7 @@ func testPathForModuleSrc(t *testing.T, buildDir string, tests []pathForModuleSr
 				}
 			`
 
-			mockFS := map[string][]byte{
+			mockFS := MockFS{
 				"fg/Android.bp":     []byte(fgBp),
 				"foo/Android.bp":    []byte(test.bp),
 				"ofp/Android.bp":    []byte(ofpBp),
@@ -1007,37 +1148,21 @@ func testPathForModuleSrc(t *testing.T, buildDir string, tests []pathForModuleSr
 				"foo/src_special/$": nil,
 			}
 
-			config := TestConfig(buildDir, nil, "", mockFS)
+			result := GroupFixturePreparers(
+				FixtureRegisterWithContext(func(ctx RegistrationContext) {
+					ctx.RegisterModuleType("test", pathForModuleSrcTestModuleFactory)
+					ctx.RegisterModuleType("output_file_provider", pathForModuleSrcOutputFileProviderModuleFactory)
+					ctx.RegisterModuleType("filegroup", FileGroupFactory)
+				}),
+				mockFS.AddToFixture(),
+			).RunTest(t)
 
-			ctx := NewTestContext(config)
+			m := result.ModuleForTests("foo", "").Module().(*pathForModuleSrcTestModule)
 
-			ctx.RegisterModuleType("test", pathForModuleSrcTestModuleFactory)
-			ctx.RegisterModuleType("output_file_provider", pathForModuleSrcOutputFileProviderModuleFactory)
-			ctx.RegisterModuleType("filegroup", FileGroupFactory)
-
-			ctx.Register()
-			_, errs := ctx.ParseFileList(".", []string{"fg/Android.bp", "foo/Android.bp", "ofp/Android.bp"})
-			FailIfErrored(t, errs)
-			_, errs = ctx.PrepareBuildActions(config)
-			FailIfErrored(t, errs)
-
-			m := ctx.ModuleForTests("foo", "").Module().(*pathForModuleSrcTestModule)
-
-			if g, w := m.srcs, test.srcs; !reflect.DeepEqual(g, w) {
-				t.Errorf("want srcs %q, got %q", w, g)
-			}
-
-			if g, w := m.rels, test.rels; !reflect.DeepEqual(g, w) {
-				t.Errorf("want rels %q, got %q", w, g)
-			}
-
-			if g, w := m.src, test.src; g != w {
-				t.Errorf("want src %q, got %q", w, g)
-			}
-
-			if g, w := m.rel, test.rel; g != w {
-				t.Errorf("want rel %q, got %q", w, g)
-			}
+			AssertStringPathsRelativeToTopEquals(t, "srcs", result.Config, test.srcs, m.srcs)
+			AssertStringPathsRelativeToTopEquals(t, "rels", result.Config, test.rels, m.rels)
+			AssertStringPathRelativeToTopEquals(t, "src", result.Config, test.src, m.src)
+			AssertStringPathRelativeToTopEquals(t, "rel", result.Config, test.rel, m.rel)
 		})
 	}
 }
@@ -1094,7 +1219,7 @@ func TestPathsForModuleSrc(t *testing.T) {
 				name: "foo",
 				srcs: [":b"],
 			}`,
-			srcs: []string{buildDir + "/.intermediates/ofp/b/gen/b"},
+			srcs: []string{"out/soong/.intermediates/ofp/b/gen/b"},
 			rels: []string{"gen/b"},
 		},
 		{
@@ -1104,7 +1229,7 @@ func TestPathsForModuleSrc(t *testing.T) {
 				name: "foo",
 				srcs: [":b{.tagged}"],
 			}`,
-			srcs: []string{buildDir + "/.intermediates/ofp/b/gen/c"},
+			srcs: []string{"out/soong/.intermediates/ofp/b/gen/c"},
 			rels: []string{"gen/c"},
 		},
 		{
@@ -1119,7 +1244,7 @@ func TestPathsForModuleSrc(t *testing.T) {
 				name: "c",
 				outs: ["gen/c"],
 			}`,
-			srcs: []string{buildDir + "/.intermediates/ofp/b/gen/b"},
+			srcs: []string{"out/soong/.intermediates/ofp/b/gen/b"},
 			rels: []string{"gen/b"},
 		},
 		{
@@ -1134,7 +1259,7 @@ func TestPathsForModuleSrc(t *testing.T) {
 		},
 	}
 
-	testPathForModuleSrc(t, buildDir, tests)
+	testPathForModuleSrc(t, tests)
 }
 
 func TestPathForModuleSrc(t *testing.T) {
@@ -1176,7 +1301,7 @@ func TestPathForModuleSrc(t *testing.T) {
 				name: "foo",
 				src: ":b",
 			}`,
-			src: buildDir + "/.intermediates/ofp/b/gen/b",
+			src: "out/soong/.intermediates/ofp/b/gen/b",
 			rel: "gen/b",
 		},
 		{
@@ -1186,7 +1311,7 @@ func TestPathForModuleSrc(t *testing.T) {
 				name: "foo",
 				src: ":b{.tagged}",
 			}`,
-			src: buildDir + "/.intermediates/ofp/b/gen/c",
+			src: "out/soong/.intermediates/ofp/b/gen/c",
 			rel: "gen/c",
 		},
 		{
@@ -1201,7 +1326,7 @@ func TestPathForModuleSrc(t *testing.T) {
 		},
 	}
 
-	testPathForModuleSrc(t, buildDir, tests)
+	testPathForModuleSrc(t, tests)
 }
 
 func TestPathsForModuleSrc_AllowMissingDependencies(t *testing.T) {
@@ -1221,44 +1346,70 @@ func TestPathsForModuleSrc_AllowMissingDependencies(t *testing.T) {
 		}
 	`
 
-	config := TestConfig(buildDir, nil, bp, nil)
-	config.TestProductVariables.Allow_missing_dependencies = proptools.BoolPtr(true)
+	result := GroupFixturePreparers(
+		PrepareForTestWithAllowMissingDependencies,
+		FixtureRegisterWithContext(func(ctx RegistrationContext) {
+			ctx.RegisterModuleType("test", pathForModuleSrcTestModuleFactory)
+		}),
+		FixtureWithRootAndroidBp(bp),
+	).RunTest(t)
 
-	ctx := NewTestContext(config)
-	ctx.SetAllowMissingDependencies(true)
+	foo := result.ModuleForTests("foo", "").Module().(*pathForModuleSrcTestModule)
 
-	ctx.RegisterModuleType("test", pathForModuleSrcTestModuleFactory)
+	AssertArrayString(t, "foo missing deps", []string{"a", "b", "c"}, foo.missingDeps)
+	AssertArrayString(t, "foo srcs", []string{}, foo.srcs)
+	AssertStringEquals(t, "foo src", "", foo.src)
 
-	ctx.Register()
+	bar := result.ModuleForTests("bar", "").Module().(*pathForModuleSrcTestModule)
 
-	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
-	FailIfErrored(t, errs)
-	_, errs = ctx.PrepareBuildActions(config)
-	FailIfErrored(t, errs)
+	AssertArrayString(t, "bar missing deps", []string{"d", "e"}, bar.missingDeps)
+	AssertArrayString(t, "bar srcs", []string{}, bar.srcs)
+}
 
-	foo := ctx.ModuleForTests("foo", "").Module().(*pathForModuleSrcTestModule)
+func TestPathRelativeToTop(t *testing.T) {
+	testConfig := pathTestConfig("/tmp/build/top")
+	deviceTarget := Target{Os: Android, Arch: Arch{ArchType: Arm64}}
 
-	if g, w := foo.missingDeps, []string{"a", "b", "c"}; !reflect.DeepEqual(g, w) {
-		t.Errorf("want foo missing deps %q, got %q", w, g)
+	ctx := &testModuleInstallPathContext{
+		baseModuleContext: baseModuleContext{
+			os:     deviceTarget.Os,
+			target: deviceTarget,
+		},
 	}
+	ctx.baseModuleContext.config = testConfig
 
-	if g, w := foo.srcs, []string{}; !reflect.DeepEqual(g, w) {
-		t.Errorf("want foo srcs %q, got %q", w, g)
-	}
+	t.Run("install for soong", func(t *testing.T) {
+		p := PathForModuleInstall(ctx, "install/path")
+		AssertPathRelativeToTopEquals(t, "install path for soong", "out/soong/target/product/test_device/system/install/path", p)
+	})
+	t.Run("install for make", func(t *testing.T) {
+		p := PathForModuleInstall(ctx, "install/path").ToMakePath()
+		AssertPathRelativeToTopEquals(t, "install path for make", "out/target/product/test_device/system/install/path", p)
+	})
+	t.Run("output", func(t *testing.T) {
+		p := PathForOutput(ctx, "output/path")
+		AssertPathRelativeToTopEquals(t, "output path", "out/soong/output/path", p)
+	})
+	t.Run("source", func(t *testing.T) {
+		p := PathForSource(ctx, "source/path")
+		AssertPathRelativeToTopEquals(t, "source path", "source/path", p)
+	})
+	t.Run("mixture", func(t *testing.T) {
+		paths := Paths{
+			PathForModuleInstall(ctx, "install/path"),
+			PathForModuleInstall(ctx, "install/path").ToMakePath(),
+			PathForOutput(ctx, "output/path"),
+			PathForSource(ctx, "source/path"),
+		}
 
-	if g, w := foo.src, ""; g != w {
-		t.Errorf("want foo src %q, got %q", w, g)
-	}
-
-	bar := ctx.ModuleForTests("bar", "").Module().(*pathForModuleSrcTestModule)
-
-	if g, w := bar.missingDeps, []string{"d", "e"}; !reflect.DeepEqual(g, w) {
-		t.Errorf("want bar missing deps %q, got %q", w, g)
-	}
-
-	if g, w := bar.srcs, []string{}; !reflect.DeepEqual(g, w) {
-		t.Errorf("want bar srcs %q, got %q", w, g)
-	}
+		expected := []string{
+			"out/soong/target/product/test_device/system/install/path",
+			"out/target/product/test_device/system/install/path",
+			"out/soong/output/path",
+			"source/path",
+		}
+		AssertPathsRelativeToTopEquals(t, "mixture", expected, paths)
+	})
 }
 
 func ExampleOutputPath_ReplaceExtension() {

@@ -116,6 +116,7 @@ func runBazel(ctx Context, config Config) {
 			"RBE_exec_strategy",
 			"RBE_invocation_id",
 			"RBE_log_dir",
+			"RBE_num_retries_if_mismatched",
 			"RBE_platform",
 			"RBE_remote_accept_cache",
 			"RBE_remote_update_cache",
@@ -147,6 +148,9 @@ func runBazel(ctx Context, config Config) {
 		cmd.Environment.Set("PATH", pathEnvValue)
 		cmd.Args = append(cmd.Args, "--action_env=PATH="+pathEnvValue)
 	}
+
+	// Allow Bazel actions to see the SHELL variable (passed to Bazel above)
+	cmd.Args = append(cmd.Args, "--action_env=SHELL")
 
 	// Append custom build flags to the Bazel command. Changes to these flags
 	// may invalidate Bazel's analysis cache.

@@ -5,6 +5,13 @@ import (
 	"android/soong/bazel"
 )
 
+var (
+	// A default configuration for tests to not have to specify bp2build_available on top level targets.
+	bp2buildConfig = android.Bp2BuildConfig{
+		android.BP2BUILD_TOPLEVEL: android.Bp2BuildDefaultTrueRecursively,
+	}
+)
+
 type nestedProps struct {
 	Nested_prop string
 }
@@ -126,7 +133,7 @@ func (m *customBazelModule) GenerateAndroidBuildActions(ctx android.ModuleContex
 
 func customBp2BuildMutator(ctx android.TopDownMutatorContext) {
 	if m, ok := ctx.Module().(*customModule); ok {
-		if !m.ConvertWithBp2build() {
+		if !m.ConvertWithBp2build(ctx) {
 			return
 		}
 
@@ -147,7 +154,7 @@ func customBp2BuildMutator(ctx android.TopDownMutatorContext) {
 // module to target.
 func customBp2BuildMutatorFromStarlark(ctx android.TopDownMutatorContext) {
 	if m, ok := ctx.Module().(*customModule); ok {
-		if !m.ConvertWithBp2build() {
+		if !m.ConvertWithBp2build(ctx) {
 			return
 		}
 
@@ -175,7 +182,7 @@ func customBp2BuildMutatorFromStarlark(ctx android.TopDownMutatorContext) {
 }
 
 // Helper method for tests to easily access the targets in a dir.
-func generateBazelTargetsForDir(codegenCtx CodegenContext, dir string) BazelTargets {
+func generateBazelTargetsForDir(codegenCtx *CodegenContext, dir string) BazelTargets {
 	buildFileToTargets, _ := GenerateBazelTargets(codegenCtx)
 	return buildFileToTargets[dir]
 }

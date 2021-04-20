@@ -27,7 +27,6 @@ MODULES_SDK_AND_EXPORTS=(
   platform-mainline-test-exports
   runtime-module-host-exports
   runtime-module-sdk
-  stats-log-api-gen-exports
   statsd-module-sdk
   statsd-module-sdk-for-art
   tzdata-module-test-exports
@@ -36,8 +35,9 @@ MODULES_SDK_AND_EXPORTS=(
 # List of libraries installed on the platform that are needed for ART chroot
 # testing.
 PLATFORM_LIBRARIES=(
-  liblog
+  heapprofd_client_api
   libartpalette-system
+  liblog
 )
 
 # We want to create apex modules for all supported architectures.

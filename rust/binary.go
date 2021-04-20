@@ -87,7 +87,7 @@ func (binary *binaryDecorator) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	deps = binary.baseCompiler.compilerDeps(ctx, deps)
 
 	if ctx.toolchain().Bionic() {
-		deps = bionicDeps(deps, Bool(binary.Properties.Static_executable))
+		deps = bionicDeps(ctx, deps, Bool(binary.Properties.Static_executable))
 		if Bool(binary.Properties.Static_executable) {
 			deps.CrtBegin = "crtbegin_static"
 		} else {
@@ -122,7 +122,7 @@ func (binary *binaryDecorator) compile(ctx ModuleContext, flags Flags, deps Path
 	flags.LinkFlags = append(flags.LinkFlags, deps.depLinkFlags...)
 	flags.LinkFlags = append(flags.LinkFlags, deps.linkObjects...)
 
-	TransformSrcToBinary(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
+	TransformSrcToBinary(ctx, srcPath, deps, flags, outputFile)
 
 	if binary.stripper.NeedsStrip(ctx) {
 		strippedOutputFile := android.PathForModuleOut(ctx, "stripped", fileName)

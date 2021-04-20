@@ -21,21 +21,78 @@ import (
 	"github.com/google/blueprint"
 )
 
+// A sortable component is one whose registration order affects the order in which it is executed
+// and so affects the behavior of the build system. As a result it is important for the order in
+// which they are registered during tests to match the order used at runtime and so the test
+// infrastructure will sort them to match.
+//
+// The sortable components are mutators, singletons and pre-singletons. Module types are not
+// sortable because their order of registration does not affect the runtime behavior.
+type sortableComponent interface {
+	// componentName returns the name of the component.
+	//
+	// Uniquely identifies the components within the set of components used at runtimr and during
+	// tests.
+	componentName() string
+
+	// register registers this component in the supplied context.
+	register(ctx *Context)
+}
+
+type sortableComponents []sortableComponent
+
+// registerAll registers all components in this slice with the supplied context.
+func (r sortableComponents) registerAll(ctx *Context) {
+	for _, c := range r {
+		c.register(ctx)
+	}
+}
+
 type moduleType struct {
 	name    string
 	factory ModuleFactory
+}
+
+func (t moduleType) register(ctx *Context) {
+	ctx.RegisterModuleType(t.name, ModuleFactoryAdaptor(t.factory))
 }
 
 var moduleTypes []moduleType
 var moduleTypesForDocs = map[string]reflect.Value{}
 
 type singleton struct {
+	// True if this should be registered as a pre-singleton, false otherwise.
+	pre bool
+
 	name    string
 	factory SingletonFactory
 }
 
-var singletons []singleton
-var preSingletons []singleton
+func newSingleton(name string, factory SingletonFactory) singleton {
+	return singleton{false, name, factory}
+}
+
+func newPreSingleton(name string, factory SingletonFactory) singleton {
+	return singleton{true, name, factory}
+}
+
+func (s singleton) componentName() string {
+	return s.name
+}
+
+func (s singleton) register(ctx *Context) {
+	adaptor := SingletonFactoryAdaptor(ctx, s.factory)
+	if s.pre {
+		ctx.RegisterPreSingletonType(s.name, adaptor)
+	} else {
+		ctx.RegisterSingletonType(s.name, adaptor)
+	}
+}
+
+var _ sortableComponent = singleton{}
+
+var singletons sortableComponents
+var preSingletons sortableComponents
 
 type mutator struct {
 	name            string
@@ -43,6 +100,8 @@ type mutator struct {
 	topDownMutator  blueprint.TopDownMutator
 	parallel        bool
 }
+
+var _ sortableComponent = &mutator{}
 
 type ModuleFactory func() Module
 
@@ -84,11 +143,11 @@ func RegisterModuleTypeForDocs(name string, factory reflect.Value) {
 }
 
 func RegisterSingletonType(name string, factory SingletonFactory) {
-	singletons = append(singletons, singleton{name, factory})
+	singletons = append(singletons, newSingleton(name, factory))
 }
 
 func RegisterPreSingletonType(name string, factory SingletonFactory) {
-	preSingletons = append(preSingletons, singleton{name, factory})
+	preSingletons = append(preSingletons, newPreSingleton(name, factory))
 }
 
 type Context struct {
@@ -107,46 +166,65 @@ func NewContext(config Config) *Context {
 // files to semantically equivalent BUILD files.
 func (ctx *Context) RegisterForBazelConversion() {
 	for _, t := range moduleTypes {
-		ctx.RegisterModuleType(t.name, ModuleFactoryAdaptor(t.factory))
+		t.register(ctx)
 	}
 
 	// Required for SingletonModule types, even though we are not using them.
 	for _, t := range singletons {
-		ctx.RegisterSingletonType(t.name, SingletonFactoryAdaptor(ctx, t.factory))
+		t.register(ctx)
 	}
 
-	RegisterMutatorsForBazelConversion(ctx.Context, bp2buildPreArchMutators, bp2buildDepsMutators, bp2buildMutators)
+	bp2buildMutatorList := []RegisterMutatorFunc{}
+	for t, f := range bp2buildMutators {
+		ctx.config.bp2buildModuleTypeConfig[t] = true
+		bp2buildMutatorList = append(bp2buildMutatorList, f)
+	}
+
+	RegisterMutatorsForBazelConversion(ctx, bp2buildPreArchMutators, bp2buildDepsMutators, bp2buildMutatorList)
 }
 
 // Register the pipeline of singletons, module types, and mutators for
 // generating build.ninja and other files for Kati, from Android.bp files.
 func (ctx *Context) Register() {
-	for _, t := range preSingletons {
-		ctx.RegisterPreSingletonType(t.name, SingletonFactoryAdaptor(ctx, t.factory))
-	}
+	preSingletons.registerAll(ctx)
 
 	for _, t := range moduleTypes {
-		ctx.RegisterModuleType(t.name, ModuleFactoryAdaptor(t.factory))
+		t.register(ctx)
 	}
 
-	for _, t := range singletons {
-		ctx.RegisterSingletonType(t.name, SingletonFactoryAdaptor(ctx, t.factory))
+	if ctx.config.BazelContext.BazelEnabled() {
+		// Hydrate the configuration of bp2build-enabled module types. This is
+		// required as a signal to identify which modules should be deferred to
+		// Bazel in mixed builds, if it is enabled.
+		for t, _ := range bp2buildMutators {
+			ctx.config.bp2buildModuleTypeConfig[t] = true
+		}
 	}
 
-	registerMutators(ctx.Context, preArch, preDeps, postDeps, finalDeps)
+	mutators := collateGloballyRegisteredMutators()
+	mutators.registerAll(ctx)
 
-	ctx.RegisterSingletonType("bazeldeps", SingletonFactoryAdaptor(ctx, BazelSingleton))
+	singletons := collateGloballyRegisteredSingletons()
+	singletons.registerAll(ctx)
+}
 
-	// Register phony just before makevars so it can write out its phony rules as Make rules
-	ctx.RegisterSingletonType("phony", SingletonFactoryAdaptor(ctx, phonySingletonFactory))
+func collateGloballyRegisteredSingletons() sortableComponents {
+	allSingletons := append(sortableComponents(nil), singletons...)
+	allSingletons = append(allSingletons,
+		singleton{false, "bazeldeps", BazelSingleton},
 
-	// Register makevars after other singletons so they can export values through makevars
-	ctx.RegisterSingletonType("makevars", SingletonFactoryAdaptor(ctx, makeVarsSingletonFunc))
+		// Register phony just before makevars so it can write out its phony rules as Make rules
+		singleton{false, "phony", phonySingletonFactory},
 
-	// Register env and ninjadeps last so that they can track all used environment variables and
-	// Ninja file dependencies stored in the config.
-	ctx.RegisterSingletonType("env", SingletonFactoryAdaptor(ctx, EnvSingleton))
-	ctx.RegisterSingletonType("ninjadeps", SingletonFactoryAdaptor(ctx, ninjaDepsSingletonFactory))
+		// Register makevars after other singletons so they can export values through makevars
+		singleton{false, "makevars", makeVarsSingletonFunc},
+
+		// Register env and ninjadeps last so that they can track all used environment variables and
+		// Ninja file dependencies stored in the config.
+		singleton{false, "ninjadeps", ninjaDepsSingletonFactory},
+	)
+
+	return allSingletons
 }
 
 func ModuleTypeFactories() map[string]ModuleFactory {
@@ -199,8 +277,9 @@ type RegistrationContext interface {
 //   ctx := android.NewTestContext(config)
 //   RegisterBuildComponents(ctx)
 var InitRegistrationContext RegistrationContext = &initRegistrationContext{
-	moduleTypes:    make(map[string]ModuleFactory),
-	singletonTypes: make(map[string]SingletonFactory),
+	moduleTypes:       make(map[string]ModuleFactory),
+	singletonTypes:    make(map[string]SingletonFactory),
+	preSingletonTypes: make(map[string]SingletonFactory),
 }
 
 // Make sure the TestContext implements RegistrationContext.

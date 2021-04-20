@@ -60,6 +60,7 @@ const (
 	InstallInData                   = iota
 
 	incorrectSourcesError = "srcs can only contain one path for a rust file and source providers prefixed by \":\""
+	genSubDir             = "out/"
 )
 
 type BaseCompilerProperties struct {
@@ -75,7 +76,7 @@ type BaseCompilerProperties struct {
 	// errors). The default value is "default".
 	Lints *string
 
-	// flags to pass to rustc
+	// flags to pass to rustc. To enable configuration options or features, use the "cfgs" or "features" properties.
 	Flags []string `android:"path,arch_variant"`
 
 	// flags to pass to the linker
@@ -96,12 +97,24 @@ type BaseCompilerProperties struct {
 	// list of C shared library dependencies
 	Shared_libs []string `android:"arch_variant"`
 
-	// list of C static library dependencies. Note, static libraries prefixed by "lib" will be passed to rustc
-	// along with "-lstatic=<name>". This will bundle the static library into rlib/static libraries so dependents do
-	// not need to also declare the static library as a dependency. Static libraries which are not prefixed by "lib"
-	// cannot be passed to rustc with this flag and will not be bundled into rlib/static libraries, and thus must
-	// be redeclared in dependents.
+	// list of C static library dependencies. These dependencies do not normally propagate to dependents
+	// and may need to be redeclared. See whole_static_libs for bundling static dependencies into a library.
 	Static_libs []string `android:"arch_variant"`
+
+	// Similar to static_libs, but will bundle the static library dependency into a library. This is helpful
+	// to avoid having to redeclare the dependency for dependents of this library, but in some cases may also
+	// result in bloat if multiple dependencies all include the same static library whole.
+	//
+	// The common use case for this is when the static library is unlikely to be a dependency of other modules to avoid
+	// having to redeclare the static library dependency for every dependent module.
+	// If you are not sure what to, for rust_library modules most static dependencies should go in static_libraries,
+	// and for rust_ffi modules most static dependencies should go into whole_static_libraries.
+	//
+	// For rust_ffi static variants, these libraries will be included in the resulting static library archive.
+	//
+	// For rust_library rlib variants, these libraries will be bundled into the resulting rlib library. This will
+	// include all of the static libraries symbols in any dylibs or binaries which use this rlib as well.
+	Whole_static_libs []string `android:"arch_variant"`
 
 	// crate name, required for modules which produce Rust libraries: rust_library, rust_ffi and SourceProvider
 	// modules which create library variants (rust_bindgen). This must be the expected extern crate name used in
@@ -111,6 +124,9 @@ type BaseCompilerProperties struct {
 
 	// list of features to enable for this crate
 	Features []string `android:"arch_variant"`
+
+	// list of configuration options to enable for this crate. To enable features, use the "features" property.
+	Cfgs []string `android:"arch_variant"`
 
 	// specific rust edition that should be used if the default version is not desired
 	Edition *string `android:"arch_variant"`
@@ -154,6 +170,10 @@ type baseCompiler struct {
 	distFile android.OptionalPath
 	// Stripped output file. If Valid(), this file will be installed instead of outputFile.
 	strippedOutputFile android.OptionalPath
+
+	// If a crate has a source-generated dependency, a copy of the source file
+	// will be available in cargoOutDir (equivalent to Cargo OUT_DIR).
+	cargoOutDir android.ModuleOutPath
 }
 
 func (compiler *baseCompiler) Disabled() bool {
@@ -193,9 +213,17 @@ func (compiler *baseCompiler) compilerProps() []interface{} {
 	return []interface{}{&compiler.Properties}
 }
 
-func (compiler *baseCompiler) featuresToFlags(features []string) []string {
+func (compiler *baseCompiler) cfgsToFlags() []string {
 	flags := []string{}
-	for _, feature := range features {
+	for _, cfg := range compiler.Properties.Cfgs {
+		flags = append(flags, "--cfg '"+cfg+"'")
+	}
+	return flags
+}
+
+func (compiler *baseCompiler) featuresToFlags() []string {
+	flags := []string{}
+	for _, feature := range compiler.Properties.Features {
 		flags = append(flags, "--cfg 'feature=\""+feature+"\"'")
 	}
 	return flags
@@ -209,8 +237,12 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags) Flag
 	}
 	flags.RustFlags = append(flags.RustFlags, lintFlags)
 	flags.RustFlags = append(flags.RustFlags, compiler.Properties.Flags...)
-	flags.RustFlags = append(flags.RustFlags, compiler.featuresToFlags(compiler.Properties.Features)...)
+	flags.RustFlags = append(flags.RustFlags, compiler.cfgsToFlags()...)
+	flags.RustFlags = append(flags.RustFlags, compiler.featuresToFlags()...)
+	flags.RustdocFlags = append(flags.RustdocFlags, compiler.cfgsToFlags()...)
+	flags.RustdocFlags = append(flags.RustdocFlags, compiler.featuresToFlags()...)
 	flags.RustFlags = append(flags.RustFlags, "--edition="+compiler.edition())
+	flags.RustdocFlags = append(flags.RustdocFlags, "--edition="+compiler.edition())
 	flags.LinkFlags = append(flags.LinkFlags, compiler.Properties.Ld_flags...)
 	flags.GlobalRustFlags = append(flags.GlobalRustFlags, config.GlobalRustFlags...)
 	flags.GlobalRustFlags = append(flags.GlobalRustFlags, ctx.toolchain().ToolchainRustFlags())
@@ -243,8 +275,26 @@ func (compiler *baseCompiler) compile(ctx ModuleContext, flags Flags, deps PathD
 	panic(fmt.Errorf("baseCrater doesn't know how to crate things!"))
 }
 
+func (compiler *baseCompiler) rustdoc(ctx ModuleContext, flags Flags,
+	deps PathDeps) android.OptionalPath {
+
+	return android.OptionalPath{}
+}
+
+func (compiler *baseCompiler) initialize(ctx ModuleContext) {
+	compiler.cargoOutDir = android.PathForModuleOut(ctx, genSubDir)
+}
+
+func (compiler *baseCompiler) CargoOutDir() android.OptionalPath {
+	return android.OptionalPathForPath(compiler.cargoOutDir)
+}
+
 func (compiler *baseCompiler) isDependencyRoot() bool {
 	return false
+}
+
+func (compiler *baseCompiler) strippedOutputFilePath() android.OptionalPath {
+	return compiler.strippedOutputFile
 }
 
 func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
@@ -253,6 +303,7 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	deps.Rustlibs = append(deps.Rustlibs, compiler.Properties.Rustlibs...)
 	deps.ProcMacros = append(deps.ProcMacros, compiler.Properties.Proc_macros...)
 	deps.StaticLibs = append(deps.StaticLibs, compiler.Properties.Static_libs...)
+	deps.WholeStaticLibs = append(deps.WholeStaticLibs, compiler.Properties.Whole_static_libs...)
 	deps.SharedLibs = append(deps.SharedLibs, compiler.Properties.Shared_libs...)
 
 	if !Bool(compiler.Properties.No_stdlibs) {
@@ -261,14 +312,13 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 			if ctx.Target().Os == android.BuildOs {
 				stdlib = stdlib + "_" + ctx.toolchain().RustTriple()
 			}
-
 			deps.Stdlibs = append(deps.Stdlibs, stdlib)
 		}
 	}
 	return deps
 }
 
-func bionicDeps(deps Deps, static bool) Deps {
+func bionicDeps(ctx DepsContext, deps Deps, static bool) Deps {
 	bionicLibs := []string{}
 	bionicLibs = append(bionicLibs, "liblog")
 	bionicLibs = append(bionicLibs, "libc")
@@ -281,9 +331,9 @@ func bionicDeps(deps Deps, static bool) Deps {
 		deps.SharedLibs = append(deps.SharedLibs, bionicLibs...)
 	}
 
-	//TODO(b/141331117) libstd requires libgcc on Android
-	deps.StaticLibs = append(deps.StaticLibs, "libgcc")
-
+	if libRuntimeBuiltins := config.BuiltinsRuntimeLibrary(ctx.toolchain()); libRuntimeBuiltins != "" {
+		deps.StaticLibs = append(deps.StaticLibs, libRuntimeBuiltins)
+	}
 	return deps
 }
 
@@ -302,6 +352,10 @@ func (compiler *baseCompiler) installDir(ctx ModuleContext) android.InstallPath 
 	if !ctx.Host() && ctx.Config().HasMultilibConflict(ctx.Arch().ArchType) {
 		dir = filepath.Join(dir, ctx.Arch().ArchType.String())
 	}
+
+	if compiler.location == InstallInData && ctx.RustModule().UseVndk() {
+		dir = filepath.Join(dir, "vendor")
+	}
 	return android.PathForModuleInstall(ctx, dir, compiler.subDir,
 		compiler.relativeInstallPath(), compiler.relative)
 }
@@ -311,10 +365,7 @@ func (compiler *baseCompiler) nativeCoverage() bool {
 }
 
 func (compiler *baseCompiler) install(ctx ModuleContext) {
-	path := ctx.RustModule().outputFile
-	if compiler.strippedOutputFile.Valid() {
-		path = compiler.strippedOutputFile
-	}
+	path := ctx.RustModule().OutputFile()
 	compiler.path = ctx.InstallFile(compiler.installDir(ctx), path.Path().Base(), path.Path())
 }
 

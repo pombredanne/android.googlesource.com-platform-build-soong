@@ -16,7 +16,33 @@ package rust
 
 import (
 	"android/soong/android"
+	"android/soong/bloaty"
 	"android/soong/cc"
+)
+
+// Preparer that will define all cc module types and a limited set of mutators and singletons that
+// make those module types usable.
+var PrepareForTestWithRustBuildComponents = android.GroupFixturePreparers(
+	android.FixtureRegisterWithContext(registerRequiredBuildComponentsForTest),
+)
+
+// The directory in which rust test default modules will be defined.
+//
+// Placing them here ensures that their location does not conflict with default test modules
+// defined by other packages.
+const rustDefaultsDir = "defaults/rust/"
+
+// Preparer that will define default rust modules, e.g. standard prebuilt modules.
+var PrepareForTestWithRustDefaultModules = android.GroupFixturePreparers(
+	cc.PrepareForTestWithCcDefaultModules,
+	bloaty.PrepareForTestWithBloatyDefaultModules,
+	PrepareForTestWithRustBuildComponents,
+	android.FixtureAddTextFile(rustDefaultsDir+"Android.bp", GatherRequiredDepsForTest()),
+)
+
+// Preparer that will allow use of all rust modules fully.
+var PrepareForIntegrationTestWithRust = android.GroupFixturePreparers(
+	PrepareForTestWithRustDefaultModules,
 )
 
 func GatherRequiredDepsForTest() string {
@@ -103,6 +129,7 @@ func GatherRequiredDepsForTest() string {
 			system_shared_libs: [],
 			apex_available: ["//apex_available:platform", "//apex_available:anyapex"],
 			min_sdk_version: "29",
+			vendor_available: true,
 		}
 		cc_library {
 			name: "libprotobuf-cpp-full",
@@ -126,7 +153,7 @@ func GatherRequiredDepsForTest() string {
 			host_supported: true,
 			vendor_available: true,
 			vendor_ramdisk_available: true,
-                        native_coverage: false,
+			native_coverage: false,
 			sysroot: true,
 			apex_available: ["//apex_available:platform", "//apex_available:anyapex"],
 			min_sdk_version: "29",
@@ -139,7 +166,7 @@ func GatherRequiredDepsForTest() string {
 			host_supported: true,
 			vendor_available: true,
 			vendor_ramdisk_available: true,
-                        native_coverage: false,
+			native_coverage: false,
 			sysroot: true,
 			apex_available: ["//apex_available:platform", "//apex_available:anyapex"],
 			min_sdk_version: "29",
@@ -168,11 +195,19 @@ func GatherRequiredDepsForTest() string {
 			srcs:["foo.rs"],
 			host_supported: true,
 		}
+		rust_library {
+			name: "libcriterion",
+			crate_name: "criterion",
+			srcs:["foo.rs"],
+			host_supported: true,
+		}
 `
 	return bp
 }
 
-func RegisterRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
+func registerRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
+	ctx.RegisterModuleType("rust_benchmark", RustBenchmarkFactory)
+	ctx.RegisterModuleType("rust_benchmark_host", RustBenchmarkHostFactory)
 	ctx.RegisterModuleType("rust_binary", RustBinaryFactory)
 	ctx.RegisterModuleType("rust_binary_host", RustBinaryHostFactory)
 	ctx.RegisterModuleType("rust_bindgen", RustBindgenFactory)
@@ -205,14 +240,4 @@ func RegisterRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
 		ctx.BottomUp("rust_begin", BeginMutator).Parallel()
 	})
 	ctx.RegisterSingletonType("rust_project_generator", rustProjectGeneratorSingleton)
-}
-
-func CreateTestContext(config android.Config) *android.TestContext {
-	ctx := android.NewTestArchContext(config)
-	android.RegisterPrebuiltMutators(ctx)
-	ctx.PreArchMutators(android.RegisterDefaultsPreArchMutators)
-	cc.RegisterRequiredBuildComponentsForTest(ctx)
-	RegisterRequiredBuildComponentsForTest(ctx)
-
-	return ctx
 }

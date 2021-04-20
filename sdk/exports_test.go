@@ -42,8 +42,19 @@ func TestModuleExportsSnapshot(t *testing.T) {
 			"package/Android.bp": []byte(packageBp),
 		})
 
-	result.CheckSnapshot("myexports", "package",
-		checkAndroidBpContents(`
+	CheckSnapshot(t, result, "myexports", "package",
+		checkUnversionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+java_import {
+    name: "myjavalib",
+    prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
+    jars: ["java/myjavalib.jar"],
+}
+`),
+		checkVersionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_import {
@@ -54,18 +65,11 @@ java_import {
     jars: ["java/myjavalib.jar"],
 }
 
-java_import {
-    name: "myjavalib",
-    prefer: false,
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
-}
-
 module_exports_snapshot {
     name: "myexports@current",
     visibility: ["//visibility:public"],
     java_libs: ["myexports_myjavalib@current"],
 }
-`))
+`),
+	)
 }

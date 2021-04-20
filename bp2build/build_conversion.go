@@ -99,9 +99,10 @@ type bpToBuildContext interface {
 }
 
 type CodegenContext struct {
-	config  android.Config
-	context android.Context
-	mode    CodegenMode
+	config         android.Config
+	context        android.Context
+	mode           CodegenMode
+	additionalDeps []string
 }
 
 func (c *CodegenContext) Mode() CodegenMode {
@@ -137,14 +138,26 @@ func (mode CodegenMode) String() string {
 	}
 }
 
-func (ctx CodegenContext) AddNinjaFileDeps(...string) {}
-func (ctx CodegenContext) Config() android.Config     { return ctx.config }
-func (ctx CodegenContext) Context() android.Context   { return ctx.context }
+// AddNinjaFileDeps adds dependencies on the specified files to be added to the ninja manifest. The
+// primary builder will be rerun whenever the specified files are modified. Allows us to fulfill the
+// PathContext interface in order to add dependencies on hand-crafted BUILD files. Note: must also
+// call AdditionalNinjaDeps and add them manually to the ninja file.
+func (ctx *CodegenContext) AddNinjaFileDeps(deps ...string) {
+	ctx.additionalDeps = append(ctx.additionalDeps, deps...)
+}
+
+// AdditionalNinjaDeps returns additional ninja deps added by CodegenContext
+func (ctx *CodegenContext) AdditionalNinjaDeps() []string {
+	return ctx.additionalDeps
+}
+
+func (ctx *CodegenContext) Config() android.Config   { return ctx.config }
+func (ctx *CodegenContext) Context() android.Context { return ctx.context }
 
 // NewCodegenContext creates a wrapper context that conforms to PathContext for
 // writing BUILD files in the output directory.
-func NewCodegenContext(config android.Config, context android.Context, mode CodegenMode) CodegenContext {
-	return CodegenContext{
+func NewCodegenContext(config android.Config, context android.Context, mode CodegenMode) *CodegenContext {
+	return &CodegenContext{
 		context: context,
 		config:  config,
 		mode:    mode,
@@ -163,12 +176,14 @@ func propsToAttributes(props map[string]string) string {
 	return attributes
 }
 
-func GenerateBazelTargets(ctx CodegenContext) (map[string]BazelTargets, CodegenMetrics) {
+func GenerateBazelTargets(ctx *CodegenContext) (map[string]BazelTargets, CodegenMetrics) {
 	buildFileToTargets := make(map[string]BazelTargets)
+	buildFileToAppend := make(map[string]bool)
 
 	// Simple metrics tracking for bp2build
-	totalModuleCount := 0
-	ruleClassCount := make(map[string]int)
+	metrics := CodegenMetrics{
+		RuleClassCount: make(map[string]int),
+	}
 
 	bpCtx := ctx.Context()
 	bpCtx.VisitAllModules(func(m blueprint.Module) {
@@ -177,13 +192,29 @@ func GenerateBazelTargets(ctx CodegenContext) (map[string]BazelTargets, CodegenM
 
 		switch ctx.Mode() {
 		case Bp2Build:
-			if b, ok := m.(android.BazelTargetModule); !ok {
-				// Only include regular Soong modules (non-BazelTargetModules) into the total count.
-				totalModuleCount += 1
-				return
+			if b, ok := m.(android.Bazelable); ok && b.HasHandcraftedLabel() {
+				metrics.handCraftedTargetCount += 1
+				metrics.TotalModuleCount += 1
+				pathToBuildFile := getBazelPackagePath(b)
+				// We are using the entire contents of handcrafted build file, so if multiple targets within
+				// a package have handcrafted targets, we only want to include the contents one time.
+				if _, exists := buildFileToAppend[pathToBuildFile]; exists {
+					return
+				}
+				var err error
+				t, err = getHandcraftedBuildContent(ctx, b, pathToBuildFile)
+				if err != nil {
+					panic(fmt.Errorf("Error converting %s: %s", bpCtx.ModuleName(m), err))
+				}
+				// TODO(b/181575318): currently we append the whole BUILD file, let's change that to do
+				// something more targeted based on the rule type and target
+				buildFileToAppend[pathToBuildFile] = true
+			} else if btm, ok := m.(android.BazelTargetModule); ok {
+				t = generateBazelTarget(bpCtx, m, btm)
+				metrics.RuleClassCount[t.ruleClass] += 1
 			} else {
-				t = generateBazelTarget(bpCtx, m, b)
-				ruleClassCount[t.ruleClass] += 1
+				metrics.TotalModuleCount += 1
+				return
 			}
 		case QueryView:
 			// Blocklist certain module types from being generated.
@@ -200,17 +231,34 @@ func GenerateBazelTargets(ctx CodegenContext) (map[string]BazelTargets, CodegenM
 		buildFileToTargets[dir] = append(buildFileToTargets[dir], t)
 	})
 
-	metrics := CodegenMetrics{
-		TotalModuleCount: totalModuleCount,
-		RuleClassCount:   ruleClassCount,
-	}
-
 	return buildFileToTargets, metrics
 }
 
-func generateBazelTarget(ctx bpToBuildContext, m blueprint.Module, b android.BazelTargetModule) BazelTarget {
-	ruleClass := b.RuleClass()
-	bzlLoadLocation := b.BzlLoadLocation()
+func getBazelPackagePath(b android.Bazelable) string {
+	label := b.HandcraftedLabel()
+	pathToBuildFile := strings.TrimPrefix(label, "//")
+	pathToBuildFile = strings.Split(pathToBuildFile, ":")[0]
+	return pathToBuildFile
+}
+
+func getHandcraftedBuildContent(ctx *CodegenContext, b android.Bazelable, pathToBuildFile string) (BazelTarget, error) {
+	p := android.ExistentPathForSource(ctx, pathToBuildFile, HandcraftedBuildFileName)
+	if !p.Valid() {
+		return BazelTarget{}, fmt.Errorf("Could not find file %q for handcrafted target.", pathToBuildFile)
+	}
+	c, err := b.GetBazelBuildFileContents(ctx.Config(), pathToBuildFile, HandcraftedBuildFileName)
+	if err != nil {
+		return BazelTarget{}, err
+	}
+	// TODO(b/181575318): once this is more targeted, we need to include name, rule class, etc
+	return BazelTarget{
+		content: c,
+	}, nil
+}
+
+func generateBazelTarget(ctx bpToBuildContext, m blueprint.Module, btm android.BazelTargetModule) BazelTarget {
+	ruleClass := btm.RuleClass()
+	bzlLoadLocation := btm.BzlLoadLocation()
 
 	// extract the bazel attributes from the module.
 	props := getBuildProperties(ctx, m)
@@ -322,8 +370,12 @@ func prettyPrint(propertyValue reflect.Value, indent int) (string, error) {
 		// values for unset properties, like system_shared_libs = ["libc", "libm", "libdl"] at
 		// https://cs.android.com/android/platform/superproject/+/master:build/soong/cc/linker.go;l=281-287;drc=f70926eef0b9b57faf04c17a1062ce50d209e480
 		//
-		// In Bazel-parlance, we would use "attr.<type>(default = <default value>)" to set the default
-		// value of unset attributes.
+		// In Bazel-parlance, we would use "attr.<type>(default = <default
+		// value>)" to set the default value of unset attributes. In the cases
+		// where the bp2build converter didn't set the default value within the
+		// mutator when creating the BazelTargetModule, this would be a zero
+		// value. For those cases, we return an empty string so we don't
+		// unnecessarily generate empty values.
 		return "", nil
 	}
 
@@ -338,58 +390,45 @@ func prettyPrint(propertyValue reflect.Value, indent int) (string, error) {
 	case reflect.Ptr:
 		return prettyPrint(propertyValue.Elem(), indent)
 	case reflect.Slice:
-		ret = "[\n"
-		for i := 0; i < propertyValue.Len(); i++ {
-			indexedValue, err := prettyPrint(propertyValue.Index(i), indent+1)
+		if propertyValue.Len() == 0 {
+			return "", nil
+		}
+
+		if propertyValue.Len() == 1 {
+			// Single-line list for list with only 1 element
+			ret += "["
+			indexedValue, err := prettyPrint(propertyValue.Index(0), indent)
 			if err != nil {
 				return "", err
 			}
+			ret += indexedValue
+			ret += "]"
+		} else {
+			// otherwise, use a multiline list.
+			ret += "[\n"
+			for i := 0; i < propertyValue.Len(); i++ {
+				indexedValue, err := prettyPrint(propertyValue.Index(i), indent+1)
+				if err != nil {
+					return "", err
+				}
 
-			if indexedValue != "" {
-				ret += makeIndent(indent + 1)
-				ret += indexedValue
-				ret += ",\n"
+				if indexedValue != "" {
+					ret += makeIndent(indent + 1)
+					ret += indexedValue
+					ret += ",\n"
+				}
 			}
+			ret += makeIndent(indent)
+			ret += "]"
 		}
-		ret += makeIndent(indent)
-		ret += "]"
+
 	case reflect.Struct:
 		// Special cases where the bp2build sends additional information to the codegenerator
 		// by wrapping the attributes in a custom struct type.
-		if labels, ok := propertyValue.Interface().(bazel.LabelList); ok {
-			// TODO(b/165114590): convert glob syntax
-			return prettyPrint(reflect.ValueOf(labels.Includes), indent)
+		if attr, ok := propertyValue.Interface().(bazel.Attribute); ok {
+			return prettyPrintAttribute(attr, indent)
 		} else if label, ok := propertyValue.Interface().(bazel.Label); ok {
 			return fmt.Sprintf("%q", label.Label), nil
-		} else if stringList, ok := propertyValue.Interface().(bazel.StringListAttribute); ok {
-			// A Bazel string_list attribute that may contain a select statement.
-			ret, err := prettyPrint(reflect.ValueOf(stringList.Value), indent)
-			if err != nil {
-				return ret, err
-			}
-
-			if !stringList.HasArchSpecificValues() {
-				// Select statement not needed.
-				return ret, nil
-			}
-
-			ret += " + " + "select({\n"
-			for _, arch := range android.ArchTypeList() {
-				value := stringList.GetValueForArch(arch.Name)
-				if len(value) > 0 {
-					ret += makeIndent(indent + 1)
-					list, _ := prettyPrint(reflect.ValueOf(value), indent+1)
-					ret += fmt.Sprintf("\"%s\": %s,\n", platformArchMap[arch], list)
-				}
-			}
-
-			ret += makeIndent(indent + 1)
-			list, _ := prettyPrint(reflect.ValueOf(stringList.GetValueForArch("default")), indent+1)
-			ret += fmt.Sprintf("\"%s\": %s,\n", "//conditions:default", list)
-
-			ret += makeIndent(indent)
-			ret += "})"
-			return ret, err
 		}
 
 		ret = "{\n"
@@ -485,6 +524,13 @@ func isZero(value reflect.Value) bool {
 
 func escapeString(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
+
+	// b/184026959: Reverse the application of some common control sequences.
+	// These must be generated literally in the BUILD file.
+	s = strings.ReplaceAll(s, "\t", "\\t")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+
 	return strings.ReplaceAll(s, "\"", "\\\"")
 }
 

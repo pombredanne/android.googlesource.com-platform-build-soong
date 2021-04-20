@@ -59,7 +59,7 @@ var (
 
 	// Rules to invoke ld to link binaries. Uses a .rsp file to list dependencies, as there may
 	// be many.
-	ld, ldRE = remoteexec.StaticRules(pctx, "ld",
+	ld, ldRE = pctx.RemoteStaticRules("ld",
 		blueprint.RuleParams{
 			Command: "$reTemplate$ldCmd ${crtBegin} @${out}.rsp " +
 				"${libFlags} ${crtEnd} -o ${out} ${ldFlags} ${extraLibFlags}",
@@ -73,14 +73,14 @@ var (
 			Labels:          map[string]string{"type": "link", "tool": "clang"},
 			ExecStrategy:    "${config.RECXXLinksExecStrategy}",
 			Inputs:          []string{"${out}.rsp", "$implicitInputs"},
-			RSPFile:         "${out}.rsp",
+			RSPFiles:        []string{"${out}.rsp"},
 			OutputFiles:     []string{"${out}", "$implicitOutputs"},
 			ToolchainInputs: []string{"$ldCmd"},
 			Platform:        map[string]string{remoteexec.PoolKey: "${config.RECXXLinksPool}"},
 		}, []string{"ldCmd", "crtBegin", "libFlags", "crtEnd", "ldFlags", "extraLibFlags"}, []string{"implicitInputs", "implicitOutputs"})
 
 	// Rules for .o files to combine to other .o files, using ld partial linking.
-	partialLd, partialLdRE = remoteexec.StaticRules(pctx, "partialLd",
+	partialLd, partialLdRE = pctx.RemoteStaticRules("partialLd",
 		blueprint.RuleParams{
 			// Without -no-pie, clang 7.0 adds -pie to link Android files,
 			// but -r and -pie cannot be used together.
@@ -132,7 +132,7 @@ var (
 		blueprint.RuleParams{
 			Depfile:     "${out}.d",
 			Deps:        blueprint.DepsGCC,
-			Command:     "CROSS_COMPILE=$crossCompile XZ=$xzCmd CLANG_BIN=${config.ClangBin} $stripPath ${args} -i ${in} -o ${out} -d ${out}.d",
+			Command:     "XZ=$xzCmd CLANG_BIN=${config.ClangBin} $stripPath ${args} -i ${in} -o ${out} -d ${out}.d",
 			CommandDeps: []string{"$stripPath", "$xzCmd"},
 			Pool:        darwinStripPool,
 		},
@@ -182,14 +182,14 @@ var (
 		blueprint.RuleParams{
 			Depfile:     "${out}.d",
 			Deps:        blueprint.DepsGCC,
-			Command:     "CROSS_COMPILE=$crossCompile $tocPath $format -i ${in} -o ${out} -d ${out}.d",
+			Command:     "CLANG_BIN=$clangBin $tocPath $format -i ${in} -o ${out} -d ${out}.d",
 			CommandDeps: []string{"$tocPath"},
 			Restat:      true,
 		},
-		"crossCompile", "format")
+		"clangBin", "format")
 
 	// Rule for invoking clang-tidy (a clang-based linter).
-	clangTidy, clangTidyRE = remoteexec.StaticRules(pctx, "clangTidy",
+	clangTidy, clangTidyRE = pctx.RemoteStaticRules("clangTidy",
 		blueprint.RuleParams{
 			Command:     "rm -f $out && $reTemplate${config.ClangBin}/clang-tidy $tidyFlags $in -- $cFlags && touch $out",
 			CommandDeps: []string{"${config.ClangBin}/clang-tidy"},
@@ -228,7 +228,7 @@ var (
 	_ = pctx.SourcePathVariable("sAbiDumper", "prebuilts/clang-tools/${config.HostPrebuiltTag}/bin/header-abi-dumper")
 
 	// -w has been added since header-abi-dumper does not need to produce any sort of diagnostic information.
-	sAbiDump, sAbiDumpRE = remoteexec.StaticRules(pctx, "sAbiDump",
+	sAbiDump, sAbiDumpRE = pctx.RemoteStaticRules("sAbiDump",
 		blueprint.RuleParams{
 			Command:     "rm -f $out && $reTemplate$sAbiDumper -o ${out} $in $exportDirs -- $cFlags -w -isystem prebuilts/clang-tools/${config.HostPrebuiltTag}/clang-headers",
 			CommandDeps: []string{"$sAbiDumper"},
@@ -246,7 +246,7 @@ var (
 
 	// Rule to combine .dump sAbi dump files from multiple source files into a single .ldump
 	// sAbi dump file.
-	sAbiLink, sAbiLinkRE = remoteexec.StaticRules(pctx, "sAbiLink",
+	sAbiLink, sAbiLinkRE = pctx.RemoteStaticRules("sAbiLink",
 		blueprint.RuleParams{
 			Command:        "$reTemplate$sAbiLinker -o ${out} $symbolFilter -arch $arch  $exportedHeaderFlags @${out}.rsp ",
 			CommandDeps:    []string{"$sAbiLinker"},
@@ -256,7 +256,7 @@ var (
 			Labels:          map[string]string{"type": "tool", "name": "abi-linker"},
 			ExecStrategy:    "${config.REAbiLinkerExecStrategy}",
 			Inputs:          []string{"$sAbiLinkerLibs", "${out}.rsp", "$implicitInputs"},
-			RSPFile:         "${out}.rsp",
+			RSPFiles:        []string{"${out}.rsp"},
 			OutputFiles:     []string{"$out"},
 			ToolchainInputs: []string{"$sAbiLinker"},
 			Platform:        map[string]string{remoteexec.PoolKey: "${config.RECXXPool}"},
@@ -331,7 +331,6 @@ func init() {
 	pctx.StaticVariable("relPwd", PwdPrefix())
 
 	pctx.HostBinToolVariable("SoongZipCmd", "soong_zip")
-	pctx.Import("android/soong/remoteexec")
 }
 
 // builderFlags contains various types of command line flags (and settings) for use in building
@@ -919,16 +918,12 @@ func transformSharedObjectToToc(ctx android.ModuleContext, inputFile android.Pat
 	outputFile android.WritablePath, flags builderFlags) {
 
 	var format string
-	var crossCompile string
 	if ctx.Darwin() {
 		format = "--macho"
-		crossCompile = "${config.MacToolPath}"
 	} else if ctx.Windows() {
 		format = "--pe"
-		crossCompile = gccCmd(flags.toolchain, "")
 	} else {
 		format = "--elf"
-		crossCompile = gccCmd(flags.toolchain, "")
 	}
 
 	ctx.Build(pctx, android.BuildParams{
@@ -937,8 +932,8 @@ func transformSharedObjectToToc(ctx android.ModuleContext, inputFile android.Pat
 		Output:      outputFile,
 		Input:       inputFile,
 		Args: map[string]string{
-			"crossCompile": crossCompile,
-			"format":       format,
+			"clangBin": "${config.ClangBin}",
+			"format":   format,
 		},
 	})
 }
@@ -973,7 +968,7 @@ func transformObjsToObj(ctx android.ModuleContext, objFiles android.Paths,
 func transformBinaryPrefixSymbols(ctx android.ModuleContext, prefix string, inputFile android.Path,
 	flags builderFlags, outputFile android.WritablePath) {
 
-	objcopyCmd := gccCmd(flags.toolchain, "objcopy")
+	objcopyCmd := "${config.ClangBin}/llvm-objcopy"
 
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        prefixSymbols,

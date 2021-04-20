@@ -15,7 +15,6 @@
 package cc
 
 import (
-	"path/filepath"
 	"testing"
 
 	"android/soong/android"
@@ -23,27 +22,19 @@ import (
 	"github.com/google/blueprint"
 )
 
-func testPrebuilt(t *testing.T, bp string, fs map[string][]byte, handlers ...configCustomizer) *android.TestContext {
-	config := TestConfig(buildDir, android.Android, nil, bp, fs)
-	ctx := CreateTestContext(config)
+var prepareForPrebuiltTest = android.GroupFixturePreparers(
+	prepareForCcTest,
+	android.PrepareForTestWithAndroidMk,
+)
 
-	// Enable androidmk support.
-	// * Register the singleton
-	// * Configure that we are inside make
-	// * Add CommonOS to ensure that androidmk processing works.
-	android.RegisterAndroidMkBuildComponents(ctx)
-	android.SetKatiEnabledForTests(config)
+func testPrebuilt(t *testing.T, bp string, fs android.MockFS, handlers ...android.FixturePreparer) *android.TestContext {
+	result := android.GroupFixturePreparers(
+		prepareForPrebuiltTest,
+		fs.AddToFixture(),
+		android.GroupFixturePreparers(handlers...),
+	).RunTestWithBp(t, bp)
 
-	for _, handler := range handlers {
-		handler(config)
-	}
-
-	ctx.Register()
-	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
-	android.FailIfErrored(t, errs)
-	_, errs = ctx.PrepareBuildActions(config)
-	android.FailIfErrored(t, errs)
-	return ctx
+	return result.TestContext
 }
 
 type configCustomizer func(config android.Config)
@@ -313,8 +304,7 @@ func TestPrebuiltSymlinkedHostBinary(t *testing.T) {
 	})
 
 	fooRule := ctx.ModuleForTests("foo", "linux_glibc_x86_64").Rule("Symlink")
-	assertString(t, fooRule.Output.String(),
-		filepath.Join(buildDir, ".intermediates/foo/linux_glibc_x86_64/foo"))
+	assertString(t, fooRule.Output.String(), "out/soong/.intermediates/foo/linux_glibc_x86_64/foo")
 	assertString(t, fooRule.Args["fromPath"], "$$PWD/linux_glibc_x86_64/bin/foo")
 
 	var libfooDep android.Path
@@ -324,8 +314,7 @@ func TestPrebuiltSymlinkedHostBinary(t *testing.T) {
 			break
 		}
 	}
-	assertString(t, libfooDep.String(),
-		filepath.Join(buildDir, ".intermediates/libfoo/linux_glibc_x86_64_shared/libfoo.so"))
+	assertString(t, libfooDep.String(), "out/soong/.intermediates/libfoo/linux_glibc_x86_64_shared/libfoo.so")
 }
 
 func TestPrebuiltLibrarySanitized(t *testing.T) {
@@ -370,9 +359,11 @@ func TestPrebuiltLibrarySanitized(t *testing.T) {
 	assertString(t, static2.OutputFile().Path().Base(), "libf.a")
 
 	// With SANITIZE_TARGET=hwaddress
-	ctx = testPrebuilt(t, bp, fs, func(config android.Config) {
-		config.TestProductVariables.SanitizeDevice = []string{"hwaddress"}
-	})
+	ctx = testPrebuilt(t, bp, fs,
+		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+			variables.SanitizeDevice = []string{"hwaddress"}
+		}),
+	)
 
 	shared_rule = ctx.ModuleForTests("libtest", "android_arm64_armv8-a_shared_hwasan").Rule("android/soong/cc.strip")
 	assertString(t, shared_rule.Input.String(), "hwasan/libf.so")

@@ -178,7 +178,7 @@ func createSystemModules(mctx android.LoadHookContext, apiver string) {
 	props.Name = proptools.StringPtr(prebuiltApiModuleName(mctx, "system_modules", "public", apiver))
 	props.Libs = append(props.Libs, prebuiltApiModuleName(mctx, "core-for-system-modules", "public", apiver))
 
-	mctx.CreateModule(SystemModulesFactory, &props)
+	mctx.CreateModule(systemModulesImportFactory, &props)
 }
 
 func prebuiltSdkSystemModules(mctx android.LoadHookContext, p *prebuiltApis) {
@@ -248,29 +248,23 @@ func prebuiltApiFiles(mctx android.LoadHookContext, p *prebuiltApis) {
 	}
 
 	// Create incompatibilities tracking files for all modules, if we have a "next" api.
+	incompatibilities := make(map[string]bool)
 	if nextApiDir := String(p.properties.Next_api_dir); nextApiDir != "" {
 		files := getPrebuiltFilesInSubdir(mctx, nextApiDir, "api/*incompatibilities.txt")
-		incompatibilities := make(map[string]bool)
 		for _, f := range files {
 			localPath := strings.TrimPrefix(f, mydir)
-			module, _, scope := parseApiFilePath(mctx, localPath)
-
-			// Figure out which module is referenced by this file. Special case for "android".
-			referencedModule := strings.TrimSuffix(module, "incompatibilities")
-			referencedModule = strings.TrimSuffix(referencedModule, "-")
-			if referencedModule == "" {
-				referencedModule = "android"
-			}
+			filename, _, scope := parseApiFilePath(mctx, localPath)
+			referencedModule := strings.TrimSuffix(filename, "-incompatibilities")
 
 			createApiModule(mctx, apiModuleName(referencedModule+"-incompatibilities", scope, "latest"), localPath)
 
 			incompatibilities[referencedModule+"."+scope] = true
 		}
-		// Create empty incompatibilities files for remaining modules
-		for _, k := range android.SortedStringKeys(m) {
-			if _, ok := incompatibilities[k]; !ok {
-				createEmptyFile(mctx, apiModuleName(m[k].module+"-incompatibilities", m[k].scope, "latest"))
-			}
+	}
+	// Create empty incompatibilities files for remaining modules
+	for _, k := range android.SortedStringKeys(m) {
+		if _, ok := incompatibilities[k]; !ok {
+			createEmptyFile(mctx, apiModuleName(m[k].module+"-incompatibilities", m[k].scope, "latest"))
 		}
 	}
 }

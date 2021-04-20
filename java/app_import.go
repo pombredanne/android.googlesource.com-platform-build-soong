@@ -67,12 +67,15 @@ type AndroidAppImportProperties struct {
 	// module name in the form ":module". Should be empty if presigned or default_dev_cert is set.
 	Certificate *string
 
+	// Names of extra android_app_certificate modules to sign the apk with in the form ":module".
+	Additional_certificates []string
+
 	// Set this flag to true if the prebuilt apk is already signed. The certificate property must not
 	// be set for presigned modules.
 	Presigned *bool
 
-	// Name of the signing certificate lineage file.
-	Lineage *string
+	// Name of the signing certificate lineage file or filegroup module.
+	Lineage *string `android:"path"`
 
 	// Sign with the default system dev certificate. Must be used judiciously. Most imported apps
 	// need to either specify a specific certificate or be presigned.
@@ -154,6 +157,16 @@ func (a *AndroidAppImport) DepsMutator(ctx android.BottomUpMutatorContext) {
 	cert := android.SrcIsModule(String(a.properties.Certificate))
 	if cert != "" {
 		ctx.AddDependency(ctx.Module(), certificateTag, cert)
+	}
+
+	for _, cert := range a.properties.Additional_certificates {
+		cert = android.SrcIsModule(cert)
+		if cert != "" {
+			ctx.AddDependency(ctx.Module(), certificateTag, cert)
+		} else {
+			ctx.PropertyErrorf("additional_certificates",
+				`must be names of android_app_certificate modules in the form ":module"`)
+		}
 	}
 
 	a.usesLibrary.deps(ctx, !a.isPrebuiltFrameworkRes())
@@ -303,9 +316,6 @@ func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext
 		// If the certificate property is empty at this point, default_dev_cert must be set to true.
 		// Which makes processMainCert's behavior for the empty cert string WAI.
 		certificates = processMainCert(a.ModuleBase, String(a.properties.Certificate), certificates, ctx)
-		if len(certificates) != 1 {
-			ctx.ModuleErrorf("Unexpected number of certificates were extracted: %q", certificates)
-		}
 		a.certificate = certificates[0]
 		signed := android.PathForModuleOut(ctx, "signed", apkFilename)
 		var lineageFile android.Path
@@ -384,12 +394,12 @@ func (a *AndroidAppImport) DepIsInSameApex(_ android.BaseModuleContext, _ androi
 	return false
 }
 
-func (a *AndroidAppImport) sdkVersion() sdkSpec {
-	return sdkSpecFrom("")
+func (a *AndroidAppImport) SdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
+	return android.SdkSpecPrivate
 }
 
-func (a *AndroidAppImport) minSdkVersion() sdkSpec {
-	return sdkSpecFrom("")
+func (a *AndroidAppImport) MinSdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
+	return android.SdkSpecPrivate
 }
 
 var _ android.ApexModule = (*AndroidAppImport)(nil)

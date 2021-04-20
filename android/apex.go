@@ -43,10 +43,8 @@ type ApexInfo struct {
 	// mergeApexVariations.
 	ApexVariationName string
 
-	// Serialized ApiLevel that this module has to support at minimum. Should be accessed via
-	// MinSdkVersion() method. Cannot be stored in its struct form because this is cloned into
-	// properties structs, and ApiLevel has private members.
-	MinSdkVersionStr string
+	// ApiLevel that this module has to support at minimum.
+	MinSdkVersion ApiLevel
 
 	// True if this module comes from an updatable apexBundle.
 	Updatable bool
@@ -82,17 +80,11 @@ var ApexInfoProvider = blueprint.NewMutatorProvider(ApexInfo{}, "apex")
 // have to be built twice, but only once. In that case, the two apex variations apex.a and apex.b
 // are configured to have the same alias variation named apex29.
 func (i ApexInfo) mergedName(ctx PathContext) string {
-	name := "apex" + strconv.Itoa(i.MinSdkVersion(ctx).FinalOrFutureInt())
+	name := "apex" + strconv.Itoa(i.MinSdkVersion.FinalOrFutureInt())
 	for _, sdk := range i.RequiredSdks {
 		name += "_" + sdk.Name + "_" + sdk.Version
 	}
 	return name
-}
-
-// MinSdkVersion gives the api level that this module has to support at minimum. This is from the
-// min_sdk_version property of the containing apexBundle.
-func (i ApexInfo) MinSdkVersion(ctx PathContext) ApiLevel {
-	return ApiLevelOrPanic(ctx, i.MinSdkVersionStr)
 }
 
 // IsForPlatform tells whether this module is for the platform or not. If false is returned, it
@@ -140,7 +132,22 @@ type DepIsInSameApex interface {
 	// DepIsInSameApex tests if the other module 'dep' is considered as part of the same APEX as
 	// this module. For example, a static lib dependency usually returns true here, while a
 	// shared lib dependency to a stub library returns false.
+	//
+	// This method must not be called directly without first ignoring dependencies whose tags
+	// implement ExcludeFromApexContentsTag. Calls from within the func passed to WalkPayloadDeps()
+	// are fine as WalkPayloadDeps() will ignore those dependencies automatically. Otherwise, use
+	// IsDepInSameApex instead.
 	DepIsInSameApex(ctx BaseModuleContext, dep Module) bool
+}
+
+func IsDepInSameApex(ctx BaseModuleContext, module, dep Module) bool {
+	depTag := ctx.OtherModuleDependencyTag(dep)
+	if _, ok := depTag.(ExcludeFromApexContentsTag); ok {
+		// The tag defines a dependency that never requires the child module to be part of the same
+		// apex as the parent.
+		return false
+	}
+	return module.(DepIsInSameApex).DepIsInSameApex(ctx, dep)
 }
 
 // ApexModule is the interface that a module type is expected to implement if the module has to be
@@ -257,11 +264,29 @@ type ApexProperties struct {
 }
 
 // Marker interface that identifies dependencies that are excluded from APEX contents.
+//
+// Unless the tag also implements the AlwaysRequireApexVariantTag this will prevent an apex variant
+// from being created for the module.
+//
+// At the moment the sdk.sdkRequirementsMutator relies on the fact that the existing tags which
+// implement this interface do not define dependencies onto members of an sdk_snapshot. If that
+// changes then sdk.sdkRequirementsMutator will need fixing.
 type ExcludeFromApexContentsTag interface {
 	blueprint.DependencyTag
 
 	// Method that differentiates this interface from others.
 	ExcludeFromApexContents()
+}
+
+// Marker interface that identifies dependencies that always requires an APEX variant to be created.
+//
+// It is possible for a dependency to require an apex variant but exclude the module from the APEX
+// contents. See sdk.sdkMemberDependencyTag.
+type AlwaysRequireApexVariantTag interface {
+	blueprint.DependencyTag
+
+	// Return true if this tag requires that the target dependency has an apex variant.
+	AlwaysRequireApexVariant() bool
 }
 
 // Marker interface that identifies dependencies that should inherit the DirectlyInAnyApex state
@@ -418,6 +443,23 @@ func (m *ApexModuleBase) checkApexAvailableProperty(mctx BaseModuleContext) {
 			mctx.PropertyErrorf("apex_available", "%q is not a valid module name", n)
 		}
 	}
+}
+
+// AvailableToSameApexes returns true if the two modules are apex_available to
+// exactly the same set of APEXes (and platform), i.e. if their apex_available
+// properties have the same elements.
+func AvailableToSameApexes(mod1, mod2 ApexModule) bool {
+	mod1ApexAvail := SortedUniqueStrings(mod1.apexModuleBase().ApexProperties.Apex_available)
+	mod2ApexAvail := SortedUniqueStrings(mod2.apexModuleBase().ApexProperties.Apex_available)
+	if len(mod1ApexAvail) != len(mod2ApexAvail) {
+		return false
+	}
+	for i, v := range mod1ApexAvail {
+		if v != mod2ApexAvail[i] {
+			return false
+		}
+	}
+	return true
 }
 
 type byApexName []ApexInfo
@@ -719,6 +761,8 @@ func (d *ApexBundleDepsInfo) FullListPath() Path {
 // Generate two module out files:
 // 1. FullList with transitive deps and their parents in the dep graph
 // 2. FlatList with a flat list of transitive deps
+// In both cases transitive deps of external deps are not included. Neither are deps that are only
+// available to APEXes; they are developed with updatability in mind and don't need manual approval.
 func (d *ApexBundleDepsInfo) BuildDepsInfoLists(ctx ModuleContext, minSdkVersion string, depInfos DepNameToDepInfoMap) {
 	var fullContent strings.Builder
 	var flatContent strings.Builder
@@ -751,60 +795,73 @@ var minSdkVersionAllowlist = func(apiMap map[string]int) map[string]ApiLevel {
 	}
 	return list
 }(map[string]int{
-	"adbd":                           30,
-	"android.net.ipsec.ike":          30,
-	"apache-commons-compress":        29,
-	"bouncycastle_ike_digests":       30,
-	"brotli-java":                    29,
-	"captiveportal-lib":              28,
-	"flatbuffer_headers":             30,
-	"framework-permission":           30,
-	"gemmlowp_headers":               30,
-	"ike-internals":                  30,
-	"kotlinx-coroutines-android":     28,
-	"kotlinx-coroutines-core":        28,
-	"libadb_crypto":                  30,
-	"libadb_pairing_auth":            30,
-	"libadb_pairing_connection":      30,
-	"libadb_pairing_server":          30,
-	"libadb_protos":                  30,
-	"libadb_tls_connection":          30,
-	"libadbconnection_client":        30,
-	"libadbconnection_server":        30,
-	"libadbd_core":                   30,
-	"libadbd_services":               30,
-	"libadbd":                        30,
-	"libapp_processes_protos_lite":   30,
-	"libasyncio":                     30,
-	"libbrotli":                      30,
-	"libbuildversion":                30,
-	"libcrypto_static":               30,
-	"libcrypto_utils":                30,
-	"libdiagnose_usb":                30,
-	"libeigen":                       30,
-	"liblz4":                         30,
-	"libmdnssd":                      30,
-	"libneuralnetworks_common":       30,
-	"libneuralnetworks_headers":      30,
-	"libneuralnetworks":              30,
-	"libprocpartition":               30,
-	"libprotobuf-java-lite":          30,
-	"libprotoutil":                   30,
-	"libqemu_pipe":                   30,
-	"libsync":                        30,
-	"libtextclassifier_hash_headers": 30,
-	"libtextclassifier_hash_static":  30,
-	"libtflite_kernel_utils":         30,
-	"libwatchdog":                    29,
-	"libzstd":                        30,
-	"metrics-constants-protos":       28,
-	"net-utils-framework-common":     29,
-	"permissioncontroller-statsd":    28,
-	"philox_random_headers":          30,
-	"philox_random":                  30,
-	"service-permission":             30,
-	"tensorflow_headers":             30,
-	"xz-java":                        29,
+	"adbd":                                                     30,
+	"android.net.ipsec.ike":                                    30,
+	"androidx.annotation_annotation-nodeps":                    29,
+	"androidx.arch.core_core-common-nodeps":                    29,
+	"androidx.collection_collection-nodeps":                    29,
+	"androidx.collection_collection-ktx-nodeps":                30,
+	"androidx.concurrent_concurrent-futures-nodeps":            30,
+	"androidx.lifecycle_lifecycle-common-java8-nodeps":         30,
+	"androidx.lifecycle_lifecycle-common-nodeps":               29,
+	"androidx.room_room-common-nodeps":                         30,
+	"androidx-constraintlayout_constraintlayout-solver-nodeps": 29,
+	"apache-commons-compress":                                  29,
+	"bouncycastle_ike_digests":                                 30,
+	"brotli-java":                                              29,
+	"captiveportal-lib":                                        28,
+	"error_prone_annotations":                                  30,
+	"flatbuffer_headers":                                       30,
+	"framework-permission":                                     30,
+	"gemmlowp_headers":                                         30,
+	"guava-listenablefuture-prebuilt-jar":                      30,
+	"ike-internals":                                            30,
+	"kotlinx-coroutines-android":                               28,
+	"kotlinx-coroutines-android-nodeps":                        30,
+	"kotlinx-coroutines-core":                                  28,
+	"kotlinx-coroutines-core-nodeps":                           30,
+	"libadb_crypto":                                            30,
+	"libadb_pairing_auth":                                      30,
+	"libadb_pairing_connection":                                30,
+	"libadb_pairing_server":                                    30,
+	"libadb_protos":                                            30,
+	"libadb_tls_connection":                                    30,
+	"libadbconnection_client":                                  30,
+	"libadbconnection_server":                                  30,
+	"libadbd_core":                                             30,
+	"libadbd_services":                                         30,
+	"libadbd":                                                  30,
+	"libapp_processes_protos_lite":                             30,
+	"libasyncio":                                               30,
+	"libbrotli":                                                30,
+	"libbuildversion":                                          30,
+	"libcrypto_static":                                         30,
+	"libcrypto_utils":                                          30,
+	"libdiagnose_usb":                                          30,
+	"libeigen":                                                 30,
+	"liblz4":                                                   30,
+	"libmdnssd":                                                30,
+	"libneuralnetworks_common":                                 30,
+	"libneuralnetworks_headers":                                30,
+	"libneuralnetworks":                                        30,
+	"libprocpartition":                                         30,
+	"libprotobuf-java-lite":                                    30,
+	"libprotoutil":                                             30,
+	"libqemu_pipe":                                             30,
+	"libsync":                                                  30,
+	"libtextclassifier_hash_headers":                           30,
+	"libtextclassifier_hash_static":                            30,
+	"libtflite_kernel_utils":                                   30,
+	"libwatchdog":                                              29,
+	"libzstd":                                                  30,
+	"metrics-constants-protos":                                 28,
+	"net-utils-framework-common":                               29,
+	"permissioncontroller-statsd":                              28,
+	"philox_random_headers":                                    30,
+	"philox_random":                                            30,
+	"service-permission":                                       30,
+	"tensorflow_headers":                                       30,
+	"xz-java":                                                  29,
 })
 
 // Function called while walking an APEX's payload dependencies.
@@ -854,7 +911,7 @@ func CheckMinSdkVersion(m UpdatableModule, ctx ModuleContext, minSdkVersion ApiL
 					"Consider adding 'min_sdk_version: %q' to %q",
 					minSdkVersion, ctx.ModuleName(), err.Error(),
 					ctx.GetPathString(false),
-					minSdkVersion, ctx.ModuleName())
+					minSdkVersion, toName)
 				return false
 			}
 		}
