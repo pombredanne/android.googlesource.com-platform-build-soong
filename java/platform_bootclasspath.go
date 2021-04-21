@@ -15,6 +15,8 @@
 package java
 
 import (
+	"fmt"
+
 	"android/soong/android"
 	"android/soong/dexpreopt"
 	"github.com/google/blueprint"
@@ -57,6 +59,7 @@ var _ android.ExcludeFromVisibilityEnforcementTag = platformBootclasspathDepende
 
 type platformBootclasspathModule struct {
 	android.ModuleBase
+	ClasspathFragmentBase
 
 	properties platformBootclasspathProperties
 
@@ -69,6 +72,15 @@ type platformBootclasspathModule struct {
 	//
 	// Currently only for testing.
 	fragments []android.Module
+
+	// Path to the monolithic hiddenapi-flags.csv file.
+	hiddenAPIFlagsCSV android.OutputPath
+
+	// Path to the monolithic hiddenapi-index.csv file.
+	hiddenAPIIndexCSV android.OutputPath
+
+	// Path to the monolithic hiddenapi-unsupported.csv file.
+	hiddenAPIMetadataCSV android.OutputPath
 }
 
 // ApexVariantReference specifies a particular apex variant of a module.
@@ -84,17 +96,47 @@ type ApexVariantReference struct {
 }
 
 type platformBootclasspathProperties struct {
-
 	// The names of the bootclasspath_fragment modules that form part of this
 	// platform_bootclasspath.
 	Fragments []ApexVariantReference
+
+	Hidden_api HiddenAPIFlagFileProperties
 }
 
 func platformBootclasspathFactory() android.Module {
 	m := &platformBootclasspathModule{}
 	m.AddProperties(&m.properties)
+	// TODO(satayev): split systemserver and apex jars into separate configs.
+	initClasspathFragment(m)
 	android.InitAndroidArchModule(m, android.DeviceSupported, android.MultilibCommon)
 	return m
+}
+
+var _ android.OutputFileProducer = (*platformBootclasspathModule)(nil)
+
+func (b *platformBootclasspathModule) AndroidMkEntries() (entries []android.AndroidMkEntries) {
+	entries = append(entries, android.AndroidMkEntries{
+		Class: "FAKE",
+		// Need at least one output file in order for this to take effect.
+		OutputFile: android.OptionalPathForPath(b.hiddenAPIFlagsCSV),
+		Include:    "$(BUILD_PHONY_PACKAGE)",
+	})
+	entries = append(entries, b.classpathFragmentBase().getAndroidMkEntries()...)
+	return
+}
+
+// Make the hidden API files available from the platform-bootclasspath module.
+func (b *platformBootclasspathModule) OutputFiles(tag string) (android.Paths, error) {
+	switch tag {
+	case "hiddenapi-flags.csv":
+		return android.Paths{b.hiddenAPIFlagsCSV}, nil
+	case "hiddenapi-index.csv":
+		return android.Paths{b.hiddenAPIIndexCSV}, nil
+	case "hiddenapi-metadata.csv":
+		return android.Paths{b.hiddenAPIMetadataCSV}, nil
+	}
+
+	return nil, fmt.Errorf("unknown tag %s", tag)
 }
 
 func (b *platformBootclasspathModule) DepsMutator(ctx android.BottomUpMutatorContext) {
@@ -168,7 +210,30 @@ func addDependencyOntoApexModulePair(ctx android.BottomUpMutatorContext, apex st
 	// error, unless missing dependencies are allowed. The simplest way to handle that is to add a
 	// dependency that will not be satisfied and the default behavior will handle it.
 	if !addedDep {
-		ctx.AddFarVariationDependencies(variations, tag, name)
+		// Add dependency on the unprefixed (i.e. source or renamed prebuilt) module which we know does
+		// not exist. The resulting error message will contain useful information about the available
+		// variants.
+		reportMissingVariationDependency(ctx, variations, name)
+
+		// Add dependency on the missing prefixed prebuilt variant too if a module with that name exists
+		// so that information about its available variants will be reported too.
+		if ctx.OtherModuleExists(prebuiltName) {
+			reportMissingVariationDependency(ctx, variations, prebuiltName)
+		}
+	}
+}
+
+// reportMissingVariationDependency intentionally adds a dependency on a missing variation in order
+// to generate an appropriate error message with information about the available variations.
+func reportMissingVariationDependency(ctx android.BottomUpMutatorContext, variations []blueprint.Variation, name string) {
+	modules := ctx.AddFarVariationDependencies(variations, nil, name)
+	if len(modules) != 1 {
+		panic(fmt.Errorf("Internal Error: expected one module, found %d", len(modules)))
+		return
+	}
+	if modules[0] != nil {
+		panic(fmt.Errorf("Internal Error: expected module to be missing but was found: %q", modules[0]))
+		return
 	}
 }
 
@@ -182,6 +247,8 @@ func addDependenciesOntoBootImageModules(ctx android.BottomUpMutatorContext, mod
 }
 
 func (b *platformBootclasspathModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+	b.classpathFragmentBase().generateAndroidBuildActions(ctx)
+
 	ctx.VisitDirectDepsIf(isActiveModule, func(module android.Module) {
 		tag := ctx.OtherModuleDependencyTag(module)
 		if tag == platformBootclasspathModuleDepTag {
@@ -190,6 +257,8 @@ func (b *platformBootclasspathModule) GenerateAndroidBuildActions(ctx android.Mo
 			b.fragments = append(b.fragments, module)
 		}
 	})
+
+	b.generateHiddenAPIBuildActions(ctx, b.configuredModules, b.fragments)
 
 	// Nothing to do if skipping the dexpreopt of boot image jars.
 	if SkipDexpreoptBootJars(ctx) {
@@ -214,4 +283,111 @@ func (b *platformBootclasspathModule) GenerateAndroidBuildActions(ctx android.Mo
 
 func (b *platformBootclasspathModule) getImageConfig(ctx android.EarlyModuleContext) *bootImageConfig {
 	return defaultBootImageConfig(ctx)
+}
+
+// generateHiddenAPIBuildActions generates all the hidden API related build rules.
+func (b *platformBootclasspathModule) generateHiddenAPIBuildActions(ctx android.ModuleContext, modules []android.Module, fragments []android.Module) {
+
+	// Save the paths to the monolithic files for retrieval via OutputFiles().
+	b.hiddenAPIFlagsCSV = hiddenAPISingletonPaths(ctx).flags
+	b.hiddenAPIIndexCSV = hiddenAPISingletonPaths(ctx).index
+	b.hiddenAPIMetadataCSV = hiddenAPISingletonPaths(ctx).metadata
+
+	// Don't run any hiddenapi rules if UNSAFE_DISABLE_HIDDENAPI_FLAGS=true. This is a performance
+	// optimization that can be used to reduce the incremental build time but as its name suggests it
+	// can be unsafe to use, e.g. when the changes affect anything that goes on the bootclasspath.
+	if ctx.Config().IsEnvTrue("UNSAFE_DISABLE_HIDDENAPI_FLAGS") {
+		paths := android.OutputPaths{b.hiddenAPIFlagsCSV, b.hiddenAPIIndexCSV, b.hiddenAPIMetadataCSV}
+		for _, path := range paths {
+			ctx.Build(pctx, android.BuildParams{
+				Rule:   android.Touch,
+				Output: path,
+			})
+		}
+		return
+	}
+
+	hiddenAPISupportingModules := []hiddenAPISupportingModule{}
+	for _, module := range modules {
+		if h, ok := module.(hiddenAPISupportingModule); ok {
+			if h.bootDexJar() == nil {
+				ctx.ModuleErrorf("module %s does not provide a bootDexJar file", module)
+			}
+			if h.flagsCSV() == nil {
+				ctx.ModuleErrorf("module %s does not provide a flagsCSV file", module)
+			}
+			if h.indexCSV() == nil {
+				ctx.ModuleErrorf("module %s does not provide an indexCSV file", module)
+			}
+			if h.metadataCSV() == nil {
+				ctx.ModuleErrorf("module %s does not provide a metadataCSV file", module)
+			}
+
+			if ctx.Failed() {
+				continue
+			}
+
+			hiddenAPISupportingModules = append(hiddenAPISupportingModules, h)
+		} else {
+			ctx.ModuleErrorf("module %s of type %s does not support hidden API processing", module, ctx.OtherModuleType(module))
+		}
+	}
+
+	moduleSpecificFlagsPaths := android.Paths{}
+	for _, module := range hiddenAPISupportingModules {
+		moduleSpecificFlagsPaths = append(moduleSpecificFlagsPaths, module.flagsCSV())
+	}
+
+	flagFileInfo := b.properties.Hidden_api.hiddenAPIFlagFileInfo(ctx)
+	for _, fragment := range fragments {
+		if ctx.OtherModuleHasProvider(fragment, hiddenAPIFlagFileInfoProvider) {
+			info := ctx.OtherModuleProvider(fragment, hiddenAPIFlagFileInfoProvider).(hiddenAPIFlagFileInfo)
+			flagFileInfo.append(info)
+		}
+	}
+
+	// Store the information for testing.
+	ctx.SetProvider(hiddenAPIFlagFileInfoProvider, flagFileInfo)
+
+	outputPath := hiddenAPISingletonPaths(ctx).flags
+	baseFlagsPath := hiddenAPISingletonPaths(ctx).stubFlags
+	ruleToGenerateHiddenApiFlags(ctx, outputPath, baseFlagsPath, moduleSpecificFlagsPaths, flagFileInfo)
+
+	b.generateHiddenAPIIndexRules(ctx, hiddenAPISupportingModules)
+	b.generatedHiddenAPIMetadataRules(ctx, hiddenAPISupportingModules)
+}
+
+func (b *platformBootclasspathModule) generateHiddenAPIIndexRules(ctx android.ModuleContext, modules []hiddenAPISupportingModule) {
+	indexes := android.Paths{}
+	for _, module := range modules {
+		indexes = append(indexes, module.indexCSV())
+	}
+
+	rule := android.NewRuleBuilder(pctx, ctx)
+	rule.Command().
+		BuiltTool("merge_csv").
+		Flag("--key_field signature").
+		FlagWithArg("--header=", "signature,file,startline,startcol,endline,endcol,properties").
+		FlagWithOutput("--output=", hiddenAPISingletonPaths(ctx).index).
+		Inputs(indexes)
+	rule.Build("platform-bootclasspath-monolithic-hiddenapi-index", "monolithic hidden API index")
+}
+
+func (b *platformBootclasspathModule) generatedHiddenAPIMetadataRules(ctx android.ModuleContext, modules []hiddenAPISupportingModule) {
+	metadataCSVFiles := android.Paths{}
+	for _, module := range modules {
+		metadataCSVFiles = append(metadataCSVFiles, module.metadataCSV())
+	}
+
+	rule := android.NewRuleBuilder(pctx, ctx)
+
+	outputPath := hiddenAPISingletonPaths(ctx).metadata
+
+	rule.Command().
+		BuiltTool("merge_csv").
+		Flag("--key_field signature").
+		FlagWithOutput("--output=", outputPath).
+		Inputs(metadataCSVFiles)
+
+	rule.Build("platform-bootclasspath-monolithic-hiddenapi-metadata", "monolithic hidden API metadata")
 }

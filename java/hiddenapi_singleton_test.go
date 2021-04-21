@@ -23,12 +23,6 @@ import (
 	"github.com/google/blueprint/proptools"
 )
 
-func fixtureSetBootJarsProductVariable(bootJars ...string) android.FixturePreparer {
-	return android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-		variables.BootJars = android.CreateTestConfiguredJarList(bootJars)
-	})
-}
-
 func fixtureSetPrebuiltHiddenApiDirProductVariable(prebuiltHiddenApiDir *string) android.FixturePreparer {
 	return android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
 		variables.PrebuiltHiddenApiDir = prebuiltHiddenApiDir
@@ -41,7 +35,7 @@ var hiddenApiFixtureFactory = android.GroupFixturePreparers(
 func TestHiddenAPISingleton(t *testing.T) {
 	result := android.GroupFixturePreparers(
 		hiddenApiFixtureFactory,
-		fixtureSetBootJarsProductVariable("platform:foo"),
+		FixtureConfigureBootJars("platform:foo"),
 	).RunTestWithBp(t, `
 		java_library {
 			name: "foo",
@@ -56,61 +50,6 @@ func TestHiddenAPISingleton(t *testing.T) {
 	android.AssertStringDoesContain(t, "hiddenapi command", hiddenapiRule.RuleParams.Command, want)
 }
 
-func TestHiddenAPIIndexSingleton(t *testing.T) {
-	result := android.GroupFixturePreparers(
-		hiddenApiFixtureFactory,
-		PrepareForTestWithJavaSdkLibraryFiles,
-		FixtureWithLastReleaseApis("bar"),
-		fixtureSetBootJarsProductVariable("platform:foo", "platform:bar"),
-	).RunTestWithBp(t, `
-		java_library {
-			name: "foo",
-			srcs: ["a.java"],
-			compile_dex: true,
-
-			hiddenapi_additional_annotations: [
-				"foo-hiddenapi-annotations",
-			],
-		}
-
-		java_library {
-			name: "foo-hiddenapi-annotations",
-			srcs: ["a.java"],
-			compile_dex: true,
-		}
-
-		java_import {
-			name: "foo",
-			jars: ["a.jar"],
-			compile_dex: true,
-			prefer: false,
-		}
-
-		java_sdk_library {
-			name: "bar",
-			srcs: ["a.java"],
-			compile_dex: true,
-		}
-	`)
-
-	hiddenAPIIndex := result.SingletonForTests("hiddenapi_index")
-	indexRule := hiddenAPIIndex.Rule("singleton-merged-hiddenapi-index")
-	CheckHiddenAPIRuleInputs(t, `
-.intermediates/bar/android_common/hiddenapi/index.csv
-.intermediates/foo/android_common/hiddenapi/index.csv
-`,
-		indexRule)
-
-	// Make sure that the foo-hiddenapi-annotations.jar is included in the inputs to the rules that
-	// creates the index.csv file.
-	foo := result.ModuleForTests("foo", "android_common")
-	indexParams := foo.Output("hiddenapi/index.csv")
-	CheckHiddenAPIRuleInputs(t, `
-.intermediates/foo-hiddenapi-annotations/android_common/javac/foo-hiddenapi-annotations.jar
-.intermediates/foo/android_common/javac/foo.jar
-`, indexParams)
-}
-
 func TestHiddenAPISingletonWithSourceAndPrebuiltPreferredButNoDex(t *testing.T) {
 	expectedErrorMessage :=
 		"hiddenapi has determined that the source module \"foo\" should be ignored as it has been" +
@@ -119,7 +58,7 @@ func TestHiddenAPISingletonWithSourceAndPrebuiltPreferredButNoDex(t *testing.T) 
 
 	android.GroupFixturePreparers(
 		hiddenApiFixtureFactory,
-		fixtureSetBootJarsProductVariable("platform:foo"),
+		FixtureConfigureBootJars("platform:foo"),
 	).ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(expectedErrorMessage)).
 		RunTestWithBp(t, `
 		java_library {
@@ -139,7 +78,7 @@ func TestHiddenAPISingletonWithSourceAndPrebuiltPreferredButNoDex(t *testing.T) 
 func TestHiddenAPISingletonWithPrebuilt(t *testing.T) {
 	result := android.GroupFixturePreparers(
 		hiddenApiFixtureFactory,
-		fixtureSetBootJarsProductVariable("platform:foo"),
+		FixtureConfigureBootJars("platform:foo"),
 	).RunTestWithBp(t, `
 		java_import {
 			name: "foo",
@@ -157,7 +96,7 @@ func TestHiddenAPISingletonWithPrebuilt(t *testing.T) {
 func TestHiddenAPISingletonWithPrebuiltUseSource(t *testing.T) {
 	result := android.GroupFixturePreparers(
 		hiddenApiFixtureFactory,
-		fixtureSetBootJarsProductVariable("platform:foo"),
+		FixtureConfigureBootJars("platform:foo"),
 	).RunTestWithBp(t, `
 		java_library {
 			name: "foo",
@@ -185,7 +124,7 @@ func TestHiddenAPISingletonWithPrebuiltUseSource(t *testing.T) {
 func TestHiddenAPISingletonWithPrebuiltOverrideSource(t *testing.T) {
 	result := android.GroupFixturePreparers(
 		hiddenApiFixtureFactory,
-		fixtureSetBootJarsProductVariable("platform:foo"),
+		FixtureConfigureBootJars("platform:foo"),
 	).RunTestWithBp(t, `
 		java_library {
 			name: "foo",
@@ -295,7 +234,7 @@ func TestHiddenAPISingletonWithPrebuiltCsvFile(t *testing.T) {
 
 	result := android.GroupFixturePreparers(
 		hiddenApiFixtureFactory,
-		fixtureSetBootJarsProductVariable("platform:foo"),
+		FixtureConfigureBootJars("platform:foo"),
 		fixtureSetPrebuiltHiddenApiDirProductVariable(&prebuiltHiddenApiDir),
 	).RunTestWithBp(t, `
 		java_import {

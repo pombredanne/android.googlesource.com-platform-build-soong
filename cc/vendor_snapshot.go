@@ -173,7 +173,7 @@ func isSnapshotAware(cfg android.DeviceConfig, m *Module, inProprietaryPath bool
 		return false
 	}
 	// the module must be installed in target image
-	if !apexInfo.IsForPlatform() || m.isSnapshotPrebuilt() || !image.inImage(m)() {
+	if !apexInfo.IsForPlatform() || m.IsSnapshotPrebuilt() || !image.inImage(m)() {
 		return false
 	}
 	// skip kernel_headers which always depend on vendor
@@ -196,7 +196,7 @@ func isSnapshotAware(cfg android.DeviceConfig, m *Module, inProprietaryPath bool
 		if m.sanitize != nil {
 			// scs and hwasan export both sanitized and unsanitized variants for static and header
 			// Always use unsanitized variants of them.
-			for _, t := range []SanitizerType{scs, hwasan} {
+			for _, t := range []SanitizerType{scs, Hwasan} {
 				if !l.shared() && m.sanitize.isSanitizerEnabled(t) {
 					return false
 				}

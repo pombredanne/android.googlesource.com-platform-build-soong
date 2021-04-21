@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -459,6 +460,38 @@ func TestBinary(t *testing.T) {
 	// Test that the install binary wrapper depends on the installed JNI libraries
 	if g, w := barWrapperDeps, libjniSO; !android.InList(w, g) {
 		t.Errorf("expected binary wrapper implicits to contain %q, got %q", w, g)
+	}
+}
+
+func TestTest(t *testing.T) {
+	ctx, _ := testJava(t, `
+		java_test_host {
+			name: "foo",
+			srcs: ["a.java"],
+			jni_libs: ["libjni"],
+		}
+
+		cc_library_shared {
+			name: "libjni",
+			host_supported: true,
+			device_supported: false,
+			stl: "none",
+		}
+	`)
+
+	buildOS := android.BuildOs.String()
+
+	foo := ctx.ModuleForTests("foo", buildOS+"_common").Module().(*TestHost)
+
+	expected := "lib64/libjni.so"
+	if runtime.GOOS == "darwin" {
+		expected = "lib64/libjni.dylib"
+	}
+
+	fooTestData := foo.data
+	if len(fooTestData) != 1 || fooTestData[0].Rel() != expected {
+		t.Errorf(`expected foo test data relative path [%q], got %q`,
+			expected, fooTestData.Strings())
 	}
 }
 
@@ -1260,6 +1293,14 @@ func TestJavaLintUsesCorrectBpConfig(t *testing.T) {
 	sboxProto := android.RuleBuilderSboxProtoForTests(t, foo.Output("lint.sbox.textproto"))
 	if !strings.Contains(*sboxProto.Commands[0].Command, "--baseline mybaseline.xml") {
 		t.Error("did not use the correct file for baseline")
+	}
+
+	if !strings.Contains(*sboxProto.Commands[0].Command, "--error_check NewApi") {
+		t.Error("should check NewApi errors")
+	}
+
+	if !strings.Contains(*sboxProto.Commands[0].Command, "--error_check SomeCheck") {
+		t.Error("should combine NewApi errors with SomeCheck errors")
 	}
 }
 

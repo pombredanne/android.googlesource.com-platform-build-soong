@@ -194,6 +194,8 @@ cc_library_static {
         ":whole_static_lib_2",
     ],
     hdrs = [
+        "implicit_include_1.h",
+        "implicit_include_2.h",
         "export_include_dir_1/export_include_dir_1_a.h",
         "export_include_dir_1/export_include_dir_1_b.h",
         "export_include_dir_2/export_include_dir_2_a.h",
@@ -212,8 +214,6 @@ cc_library_static {
     srcs = [
         "foo_static1.cc",
         "foo_static2.cc",
-        "implicit_include_1.h",
-        "implicit_include_2.h",
         "include_dir_1/include_dir_1_a.h",
         "include_dir_1/include_dir_1_b.h",
         "include_dir_2/include_dir_2_a.h",
@@ -222,50 +222,107 @@ cc_library_static {
         "local_include_dir_1/local_include_dir_1_b.h",
         "local_include_dir_2/local_include_dir_2_a.h",
         "local_include_dir_2/local_include_dir_2_b.h",
+        "implicit_include_1.h",
+        "implicit_include_2.h",
     ],
 )`, `cc_library_static(
     name = "static_lib_1",
-    includes = [
-        ".",
-    ],
-    linkstatic = True,
-    srcs = [
+    hdrs = [
         "implicit_include_1.h",
         "implicit_include_2.h",
+    ],
+    includes = ["."],
+    linkstatic = True,
+    srcs = [
         "static_lib_1.cc",
+        "implicit_include_1.h",
+        "implicit_include_2.h",
     ],
 )`, `cc_library_static(
     name = "static_lib_2",
-    includes = [
-        ".",
-    ],
-    linkstatic = True,
-    srcs = [
+    hdrs = [
         "implicit_include_1.h",
         "implicit_include_2.h",
+    ],
+    includes = ["."],
+    linkstatic = True,
+    srcs = [
         "static_lib_2.cc",
+        "implicit_include_1.h",
+        "implicit_include_2.h",
     ],
 )`, `cc_library_static(
     name = "whole_static_lib_1",
-    includes = [
-        ".",
-    ],
-    linkstatic = True,
-    srcs = [
+    hdrs = [
         "implicit_include_1.h",
         "implicit_include_2.h",
+    ],
+    includes = ["."],
+    linkstatic = True,
+    srcs = [
         "whole_static_lib_1.cc",
+        "implicit_include_1.h",
+        "implicit_include_2.h",
     ],
 )`, `cc_library_static(
     name = "whole_static_lib_2",
+    hdrs = [
+        "implicit_include_1.h",
+        "implicit_include_2.h",
+    ],
+    includes = ["."],
+    linkstatic = True,
+    srcs = [
+        "whole_static_lib_2.cc",
+        "implicit_include_1.h",
+        "implicit_include_2.h",
+    ],
+)`},
+		},
+		{
+			description:                        "cc_library_static subpackage test",
+			moduleTypeUnderTest:                "cc_library_static",
+			moduleTypeUnderTestFactory:         cc.LibraryStaticFactory,
+			moduleTypeUnderTestBp2BuildMutator: cc.CcLibraryStaticBp2Build,
+			filesystem: map[string]string{
+				// subpackage with subdirectory
+				"subpackage/Android.bp":                         "",
+				"subpackage/subpackage_header.h":                "",
+				"subpackage/subdirectory/subdirectory_header.h": "",
+				// subsubpackage with subdirectory
+				"subpackage/subsubpackage/Android.bp":                         "",
+				"subpackage/subsubpackage/subsubpackage_header.h":             "",
+				"subpackage/subsubpackage/subdirectory/subdirectory_header.h": "",
+				// subsubsubpackage with subdirectory
+				"subpackage/subsubpackage/subsubsubpackage/Android.bp":                         "",
+				"subpackage/subsubpackage/subsubsubpackage/subsubsubpackage_header.h":          "",
+				"subpackage/subsubpackage/subsubsubpackage/subdirectory/subdirectory_header.h": "",
+			},
+			bp: soongCcLibraryStaticPreamble + `
+cc_library_static {
+    name: "foo_static",
+    srcs: [
+    ],
+    include_dirs: [
+	"subpackage",
+    ],
+
+    bazel_module: { bp2build_available: true },
+}`,
+			expectedBazelTargets: []string{`cc_library_static(
+    name = "foo_static",
     includes = [
+        "subpackage",
         ".",
     ],
     linkstatic = True,
     srcs = [
-        "implicit_include_1.h",
-        "implicit_include_2.h",
-        "whole_static_lib_2.cc",
+        "//subpackage:subpackage_header.h",
+        "//subpackage:subdirectory/subdirectory_header.h",
+        "//subpackage/subsubpackage:subsubpackage_header.h",
+        "//subpackage/subsubpackage:subdirectory/subdirectory_header.h",
+        "//subpackage/subsubpackage/subsubsubpackage:subsubsubpackage_header.h",
+        "//subpackage/subsubpackage/subsubsubpackage:subdirectory/subdirectory_header.h",
     ],
 )`},
 		},

@@ -60,6 +60,7 @@ type LibraryProperties struct {
 
 	Static_ndk_lib *bool
 
+	// Generate stubs to make this library accessible to APEXes.
 	Stubs struct {
 		// Relative path to the symbol map. The symbol map provides the list of
 		// symbols that are exported for stubs variant of this library.
@@ -206,6 +207,7 @@ func init() {
 	RegisterLibraryBuildComponents(android.InitRegistrationContext)
 
 	android.RegisterBp2BuildMutator("cc_library_static", CcLibraryStaticBp2Build)
+	android.RegisterBp2BuildMutator("cc_library", CcLibraryBp2Build)
 }
 
 func RegisterLibraryBuildComponents(ctx android.RegistrationContext) {
@@ -214,6 +216,67 @@ func RegisterLibraryBuildComponents(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("cc_library", LibraryFactory)
 	ctx.RegisterModuleType("cc_library_host_static", LibraryHostStaticFactory)
 	ctx.RegisterModuleType("cc_library_host_shared", LibraryHostSharedFactory)
+}
+
+// For bp2build conversion.
+type bazelCcLibraryAttributes struct {
+	Srcs            bazel.LabelListAttribute
+	Hdrs            bazel.LabelListAttribute
+	Copts           bazel.StringListAttribute
+	Linkopts        bazel.StringListAttribute
+	Deps            bazel.LabelListAttribute
+	User_link_flags bazel.StringListAttribute
+	Includes        bazel.StringListAttribute
+}
+
+type bazelCcLibrary struct {
+	android.BazelTargetModuleBase
+	bazelCcLibraryAttributes
+}
+
+func (m *bazelCcLibrary) Name() string {
+	return m.BaseModuleName()
+}
+
+func (m *bazelCcLibrary) GenerateAndroidBuildActions(ctx android.ModuleContext) {}
+
+func BazelCcLibraryFactory() android.Module {
+	module := &bazelCcLibrary{}
+	module.AddProperties(&module.bazelCcLibraryAttributes)
+	android.InitBazelTargetModule(module)
+	return module
+}
+
+func CcLibraryBp2Build(ctx android.TopDownMutatorContext) {
+	m, ok := ctx.Module().(*Module)
+	if !ok || !m.ConvertWithBp2build(ctx) {
+		return
+	}
+
+	if ctx.ModuleType() != "cc_library" {
+		return
+	}
+
+	compilerAttrs := bp2BuildParseCompilerProps(ctx, m)
+	linkerAttrs := bp2BuildParseLinkerProps(ctx, m)
+	exportedIncludes, exportedIncludesHeaders := bp2BuildParseExportedIncludes(ctx, m)
+	compilerAttrs.hdrs.Append(exportedIncludesHeaders)
+
+	attrs := &bazelCcLibraryAttributes{
+		Srcs:     compilerAttrs.srcs,
+		Hdrs:     compilerAttrs.hdrs,
+		Copts:    compilerAttrs.copts,
+		Linkopts: linkerAttrs.linkopts,
+		Deps:     linkerAttrs.deps,
+		Includes: exportedIncludes,
+	}
+
+	props := bazel.BazelTargetModuleProperties{
+		Rule_class:        "cc_library",
+		Bzl_load_location: "//build/bazel/rules:full_cc_library.bzl",
+	}
+
+	ctx.CreateBazelTargetModule(BazelCcLibraryFactory, m.Name(), props, attrs)
 }
 
 // cc_library creates both static and/or shared libraries for a device and/or
@@ -421,10 +484,16 @@ type staticLibraryBazelHandler struct {
 
 func (handler *staticLibraryBazelHandler) generateBazelBuildActions(ctx android.ModuleContext, label string) bool {
 	bazelCtx := ctx.Config().BazelContext
-	outputPaths, objPaths, ok := bazelCtx.GetOutputFilesAndCcObjectFiles(label, ctx.Arch().ArchType)
+	ccInfo, ok, err := bazelCtx.GetCcInfo(label, ctx.Arch().ArchType)
+	if err != nil {
+		ctx.ModuleErrorf("Error getting Bazel CcInfo: %s", err)
+		return false
+	}
 	if !ok {
 		return ok
 	}
+	outputPaths := ccInfo.OutputFiles
+	objPaths := ccInfo.CcObjectFiles
 	if len(outputPaths) > 1 {
 		// TODO(cparsons): This is actually expected behavior for static libraries with no srcs.
 		// We should support this.
@@ -1188,6 +1257,7 @@ func (library *libraryDecorator) linkShared(ctx ModuleContext,
 		UnstrippedSharedLibrary: library.unstrippedOutputFile,
 		CoverageSharedLibrary:   library.coverageOutputFile,
 		StaticAnalogue:          staticAnalogue,
+		Target:                  ctx.Target(),
 	})
 
 	stubs := ctx.GetDirectDepsWithTag(stubImplDepTag)
@@ -2058,9 +2128,10 @@ func maybeInjectBoringSSLHash(ctx android.ModuleContext, outputFile android.Modu
 }
 
 type bazelCcLibraryStaticAttributes struct {
-	Copts      []string
+	Copts      bazel.StringListAttribute
 	Srcs       bazel.LabelListAttribute
 	Deps       bazel.LabelListAttribute
+	Linkopts   bazel.StringListAttribute
 	Linkstatic bool
 	Includes   bazel.StringListAttribute
 	Hdrs       bazel.LabelListAttribute
@@ -2091,14 +2162,13 @@ func CcLibraryStaticBp2Build(ctx android.TopDownMutatorContext) {
 		return
 	}
 
-	var copts []string
-	var srcs []string
+	compilerAttrs := bp2BuildParseCompilerProps(ctx, module)
+
 	var includeDirs []string
 	var localIncludeDirs []string
 	for _, props := range module.compiler.compilerProps() {
 		if baseCompilerProps, ok := props.(*BaseCompilerProperties); ok {
-			copts = baseCompilerProps.Cflags
-			srcs = baseCompilerProps.Srcs
+			// TODO: these should be arch and os specific.
 			includeDirs = bp2BuildMakePathsRelativeToModule(ctx, baseCompilerProps.Include_dirs)
 			localIncludeDirs = bp2BuildMakePathsRelativeToModule(ctx, baseCompilerProps.Local_include_dirs)
 			break
@@ -2111,19 +2181,18 @@ func CcLibraryStaticBp2Build(ctx android.TopDownMutatorContext) {
 		localIncludeDirs = append(localIncludeDirs, ".")
 	}
 
-	srcsLabels := android.BazelLabelForModuleSrc(ctx, srcs)
-
 	// For Bazel, be more explicit about headers - list all header files in include dirs as srcs
 	for _, includeDir := range includeDirs {
-		srcsLabels.Append(bp2BuildListHeadersInDir(ctx, includeDir))
+		compilerAttrs.srcs.Value.Append(bp2BuildListHeadersInDir(ctx, includeDir))
 	}
 	for _, localIncludeDir := range localIncludeDirs {
-		srcsLabels.Append(bp2BuildListHeadersInDir(ctx, localIncludeDir))
+		compilerAttrs.srcs.Value.Append(bp2BuildListHeadersInDir(ctx, localIncludeDir))
 	}
 
 	var staticLibs []string
 	var wholeStaticLibs []string
 	for _, props := range module.linker.linkerProps() {
+		// TODO: move this into bp2buildParseLinkerProps
 		if baseLinkerProperties, ok := props.(*BaseLinkerProperties); ok {
 			staticLibs = baseLinkerProperties.Static_libs
 			wholeStaticLibs = baseLinkerProperties.Whole_static_libs
@@ -2145,16 +2214,18 @@ func CcLibraryStaticBp2Build(ctx android.TopDownMutatorContext) {
 	allIncludes.Value = append(allIncludes.Value, includeDirs...)
 	allIncludes.Value = append(allIncludes.Value, localIncludeDirs...)
 
-	headerLibsLabels := bp2BuildParseHeaderLibs(ctx, module)
-	depsLabels.Append(headerLibsLabels.Value)
+	compilerAttrs.hdrs.Append(exportedIncludesHeaders)
+
+	linkerAttrs := bp2BuildParseLinkerProps(ctx, module)
+	depsLabels.Append(linkerAttrs.deps.Value)
 
 	attrs := &bazelCcLibraryStaticAttributes{
-		Copts:      copts,
-		Srcs:       bazel.MakeLabelListAttribute(srcsLabels),
+		Copts:      compilerAttrs.copts,
+		Srcs:       compilerAttrs.srcs,
 		Deps:       bazel.MakeLabelListAttribute(depsLabels),
 		Linkstatic: true,
 		Includes:   allIncludes,
-		Hdrs:       exportedIncludesHeaders,
+		Hdrs:       compilerAttrs.hdrs,
 	}
 
 	props := bazel.BazelTargetModuleProperties{

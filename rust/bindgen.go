@@ -29,7 +29,7 @@ var (
 	defaultBindgenFlags = []string{""}
 
 	// bindgen should specify its own Clang revision so updating Clang isn't potentially blocked on bindgen failures.
-	bindgenClangVersion = "clang-r412851"
+	bindgenClangVersion = "clang-r416183b"
 
 	_ = pctx.VariableFunc("bindgenClangVersion", func(ctx android.PackageVarContext) string {
 		if override := ctx.Config().Getenv("LLVM_BINDGEN_PREBUILTS_VERSION"); override != "" {
@@ -79,7 +79,7 @@ type BindgenProperties struct {
 	// binary must expect arguments in a similar fashion to bindgen, e.g.
 	//
 	// "my_bindgen [flags] wrapper_header.h -o [output_path] -- [clang flags]"
-	Custom_bindgen string `android:"path"`
+	Custom_bindgen string
 }
 
 type bindgenDecorator struct {

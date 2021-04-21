@@ -57,24 +57,25 @@ type LintProperties struct {
 }
 
 type linter struct {
-	name                string
-	manifest            android.Path
-	mergedManifest      android.Path
-	srcs                android.Paths
-	srcJars             android.Paths
-	resources           android.Paths
-	classpath           android.Paths
-	classes             android.Path
-	extraLintCheckJars  android.Paths
-	test                bool
-	library             bool
-	minSdkVersion       string
-	targetSdkVersion    string
-	compileSdkVersion   string
-	javaLanguageLevel   string
-	kotlinLanguageLevel string
-	outputs             lintOutputs
-	properties          LintProperties
+	name                    string
+	manifest                android.Path
+	mergedManifest          android.Path
+	srcs                    android.Paths
+	srcJars                 android.Paths
+	resources               android.Paths
+	classpath               android.Paths
+	classes                 android.Path
+	extraLintCheckJars      android.Paths
+	test                    bool
+	library                 bool
+	minSdkVersion           string
+	targetSdkVersion        string
+	compileSdkVersion       string
+	javaLanguageLevel       string
+	kotlinLanguageLevel     string
+	outputs                 lintOutputs
+	properties              LintProperties
+	extraMainlineLintErrors []string
 
 	reports android.Paths
 
@@ -199,7 +200,7 @@ func (l *linter) writeLintProjectXML(ctx android.ModuleContext, rule *android.Ru
 	srcJarList := zipSyncCmd(ctx, rule, srcJarDir, l.srcJars)
 
 	cmd := rule.Command().
-		BuiltTool("lint-project-xml").
+		BuiltTool("lint_project_xml").
 		FlagWithOutput("--project_out ", projectXMLPath).
 		FlagWithOutput("--config_out ", configXMLPath).
 		FlagWithArg("--name ", ctx.ModuleName())
@@ -246,6 +247,7 @@ func (l *linter) writeLintProjectXML(ctx android.ModuleContext, rule *android.Ru
 	cmd.FlagWithInput("@",
 		android.PathForSource(ctx, "build/soong/java/lint_defaults.txt"))
 
+	cmd.FlagForEachArg("--error_check ", l.extraMainlineLintErrors)
 	cmd.FlagForEachArg("--disable_check ", l.properties.Lint.Disabled_checks)
 	cmd.FlagForEachArg("--warning_check ", l.properties.Lint.Warning_checks)
 	cmd.FlagForEachArg("--error_check ", l.properties.Lint.Error_checks)
@@ -277,9 +279,26 @@ func (l *linter) generateManifest(ctx android.ModuleContext, rule *android.RuleB
 	return manifestPath
 }
 
+func (l *linter) getBaselineFilepath(ctx android.ModuleContext) android.OptionalPath {
+	var lintBaseline android.OptionalPath
+	if lintFilename := proptools.StringDefault(l.properties.Lint.Baseline_filename, "lint-baseline.xml"); lintFilename != "" {
+		if String(l.properties.Lint.Baseline_filename) != "" {
+			// if manually specified, we require the file to exist
+			lintBaseline = android.OptionalPathForPath(android.PathForModuleSrc(ctx, lintFilename))
+		} else {
+			lintBaseline = android.ExistentPathForSource(ctx, ctx.ModuleDir(), lintFilename)
+		}
+	}
+	return lintBaseline
+}
+
 func (l *linter) lint(ctx android.ModuleContext) {
 	if !l.enabled() {
 		return
+	}
+
+	if l.minSdkVersion != l.compileSdkVersion {
+		l.extraMainlineLintErrors = append(l.extraMainlineLintErrors, "NewApi")
 	}
 
 	extraLintCheckModules := ctx.GetDirectDepsWithTag(extraLintCheckTag)
@@ -375,17 +394,9 @@ func (l *linter) lint(ctx android.ModuleContext) {
 		cmd.FlagWithArg("--check ", checkOnly)
 	}
 
-	if lintFilename := proptools.StringDefault(l.properties.Lint.Baseline_filename, "lint-baseline.xml"); lintFilename != "" {
-		var lintBaseline android.OptionalPath
-		if String(l.properties.Lint.Baseline_filename) != "" {
-			// if manually specified, we require the file to exist
-			lintBaseline = android.OptionalPathForPath(android.PathForModuleSrc(ctx, lintFilename))
-		} else {
-			lintBaseline = android.ExistentPathForSource(ctx, ctx.ModuleDir(), lintFilename)
-		}
-		if lintBaseline.Valid() {
-			cmd.FlagWithInput("--baseline ", lintBaseline.Path())
-		}
+	lintBaseline := l.getBaselineFilepath(ctx)
+	if lintBaseline.Valid() {
+		cmd.FlagWithInput("--baseline ", lintBaseline.Path())
 	}
 
 	cmd.Text("|| (").Text("if [ -e").Input(text).Text("]; then cat").Input(text).Text("; fi; exit 7)")
