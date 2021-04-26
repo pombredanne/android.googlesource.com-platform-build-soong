@@ -110,16 +110,6 @@ type apexBundleProperties struct {
 	// List of filesystem images that are embedded inside this APEX bundle.
 	Filesystems []string
 
-	// Name of the apex_key module that provides the private key to sign this APEX bundle.
-	Key *string
-
-	// Specifies the certificate and the private key to sign the zip container of this APEX. If
-	// this is "foo", foo.x509.pem and foo.pk8 under PRODUCT_DEFAULT_DEV_CERTIFICATE are used
-	// as the certificate and the private key, respectively. If this is ":module", then the
-	// certificate and the private key are provided from the android_app_certificate module
-	// named "module".
-	Certificate *string
-
 	// The minimum SDK version that this APEX must support at minimum. This is usually set to
 	// the SDK version that the APEX was first introduced.
 	Min_sdk_version *string
@@ -299,6 +289,16 @@ type overridableProperties struct {
 
 	// A txt file containing list of files that are allowed to be included in this APEX.
 	Allowed_files *string `android:"path"`
+
+	// Name of the apex_key module that provides the private key to sign this APEX bundle.
+	Key *string
+
+	// Specifies the certificate and the private key to sign the zip container of this APEX. If
+	// this is "foo", foo.x509.pem and foo.pk8 under PRODUCT_DEFAULT_DEV_CERTIFICATE are used
+	// as the certificate and the private key, respectively. If this is ":module", then the
+	// certificate and the private key are provided from the android_app_certificate module
+	// named "module".
+	Certificate *string
 }
 
 type apexBundle struct {
@@ -760,20 +760,6 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 		}
 	}
 
-	// Dependencies for signing
-	if String(a.properties.Key) == "" {
-		ctx.PropertyErrorf("key", "missing")
-		return
-	}
-	ctx.AddDependency(ctx.Module(), keyTag, String(a.properties.Key))
-
-	cert := android.SrcIsModule(a.getCertString(ctx))
-	if cert != "" {
-		ctx.AddDependency(ctx.Module(), certificateTag, cert)
-		// empty cert is not an error. Cert and private keys will be directly found under
-		// PRODUCT_DEFAULT_DEV_CERTIFICATE
-	}
-
 	// Marks that this APEX (in fact all the modules in it) has to be built with the given SDKs.
 	// This field currently isn't used.
 	// TODO(jiyong): consider dropping this feature
@@ -797,6 +783,20 @@ func (a *apexBundle) OverridablePropertiesDepsMutator(ctx android.BottomUpMutato
 	commonVariation := ctx.Config().AndroidCommonTarget.Variations()
 	ctx.AddFarVariationDependencies(commonVariation, androidAppTag, a.overridableProperties.Apps...)
 	ctx.AddFarVariationDependencies(commonVariation, rroTag, a.overridableProperties.Rros...)
+
+	// Dependencies for signing
+	if String(a.overridableProperties.Key) == "" {
+		ctx.PropertyErrorf("key", "missing")
+		return
+	}
+	ctx.AddDependency(ctx.Module(), keyTag, String(a.overridableProperties.Key))
+
+	cert := android.SrcIsModule(a.getCertString(ctx))
+	if cert != "" {
+		ctx.AddDependency(ctx.Module(), certificateTag, cert)
+		// empty cert is not an error. Cert and private keys will be directly found under
+		// PRODUCT_DEFAULT_DEV_CERTIFICATE
+	}
 }
 
 type ApexBundleInfo struct {
@@ -1292,7 +1292,7 @@ func (a *apexBundle) getCertString(ctx android.BaseModuleContext) string {
 	if overridden {
 		return ":" + certificate
 	}
-	return String(a.properties.Certificate)
+	return String(a.overridableProperties.Certificate)
 }
 
 // See the installable property
@@ -1498,10 +1498,15 @@ var _ javaModule = (*java.SdkLibrary)(nil)
 var _ javaModule = (*java.DexImport)(nil)
 var _ javaModule = (*java.SdkLibraryImport)(nil)
 
+// apexFileForJavaModule creates an apexFile for a java module's dex implementation jar.
 func apexFileForJavaModule(ctx android.BaseModuleContext, module javaModule) apexFile {
+	return apexFileForJavaModuleWithFile(ctx, module, module.DexJarBuildPath())
+}
+
+// apexFileForJavaModuleWithFile creates an apexFile for a java module with the supplied file.
+func apexFileForJavaModuleWithFile(ctx android.BaseModuleContext, module javaModule, dexImplementationJar android.Path) apexFile {
 	dirInApex := "javalib"
-	fileToCopy := module.DexJarBuildPath()
-	af := newApexFile(ctx, fileToCopy, module.BaseModuleName(), dirInApex, javaSharedLib, module)
+	af := newApexFile(ctx, dexImplementationJar, module.BaseModuleName(), dirInApex, javaSharedLib, module)
 	af.jacocoReportClassesFile = module.JacocoReportClassesFile()
 	af.lintDepSets = module.LintDepSets()
 	af.customStem = module.Stem() + ".jar"
@@ -1695,22 +1700,13 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 				}
 			case bcpfTag:
 				{
-					if _, ok := child.(*java.BootImageModule); !ok {
-						ctx.PropertyErrorf("bootclasspath_fragments", "%q is not a boot_image module", depName)
+					if _, ok := child.(*java.BootclasspathFragmentModule); !ok {
+						ctx.PropertyErrorf("bootclasspath_fragments", "%q is not a bootclasspath_fragment module", depName)
 						return false
 					}
-					bootImageInfo := ctx.OtherModuleProvider(child, java.BootImageInfoProvider).(java.BootImageInfo)
-					for arch, files := range bootImageInfo.AndroidBootImageFilesByArchType() {
-						dirInApex := filepath.Join("javalib", arch.String())
-						for _, f := range files {
-							androidMkModuleName := "javalib_" + arch.String() + "_" + filepath.Base(f.String())
-							// TODO(b/177892522) - consider passing in the bootclasspath fragment module here instead of nil
-							af := newApexFile(ctx, f, androidMkModuleName, dirInApex, etc, nil)
-							filesInfo = append(filesInfo, af)
-						}
-					}
 
-					// Track transitive dependencies.
+					filesToAdd := apexBootclasspathFragmentFiles(ctx, child)
+					filesInfo = append(filesInfo, filesToAdd...)
 					return true
 				}
 			case javaLibTag:
@@ -1924,11 +1920,12 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 					// Rlib is statically linked, but it might have shared lib
 					// dependencies. Track them.
 					return true
-				} else if java.IsbootImageContentDepTag(depTag) {
+				} else if java.IsBootclasspathFragmentContentDepTag(depTag) {
 					// Add the contents of the bootclasspath fragment to the apex.
 					switch child.(type) {
 					case *java.Library, *java.SdkLibrary:
-						af := apexFileForJavaModule(ctx, child.(javaModule))
+						javaModule := child.(javaModule)
+						af := apexFileForBootclasspathFragmentContentModule(ctx, parent, javaModule)
 						if !af.ok() {
 							ctx.PropertyErrorf("bootclasspath_fragments", "bootclasspath_fragment content %q is not configured to be compiled into dex", depName)
 							return false
@@ -1949,7 +1946,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		return false
 	})
 	if a.privateKeyFile == nil {
-		ctx.PropertyErrorf("key", "private_key for %q could not be found", String(a.properties.Key))
+		ctx.PropertyErrorf("key", "private_key for %q could not be found", String(a.overridableProperties.Key))
 		return
 	}
 
@@ -2081,6 +2078,41 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		})
 		a.filesInfo = append(a.filesInfo, newApexFile(ctx, copiedPubkey, "apex_pubkey", ".", etc, nil))
 	}
+}
+
+// apexBootclasspathFragmentFiles returns the list of apexFile structures defining the files that
+// the bootclasspath_fragment contributes to the apex.
+func apexBootclasspathFragmentFiles(ctx android.ModuleContext, module blueprint.Module) []apexFile {
+	bootclasspathFragmentInfo := ctx.OtherModuleProvider(module, java.BootclasspathFragmentApexContentInfoProvider).(java.BootclasspathFragmentApexContentInfo)
+	var filesToAdd []apexFile
+
+	// Add the boot image files, e.g. .art, .oat and .vdex files.
+	for arch, files := range bootclasspathFragmentInfo.AndroidBootImageFilesByArchType() {
+		dirInApex := filepath.Join("javalib", arch.String())
+		for _, f := range files {
+			androidMkModuleName := "javalib_" + arch.String() + "_" + filepath.Base(f.String())
+			// TODO(b/177892522) - consider passing in the bootclasspath fragment module here instead of nil
+			af := newApexFile(ctx, f, androidMkModuleName, dirInApex, etc, nil)
+			filesToAdd = append(filesToAdd, af)
+		}
+	}
+
+	return filesToAdd
+}
+
+// apexFileForBootclasspathFragmentContentModule creates an apexFile for a bootclasspath_fragment
+// content module, i.e. a library that is part of the bootclasspath.
+func apexFileForBootclasspathFragmentContentModule(ctx android.ModuleContext, fragmentModule blueprint.Module, javaModule javaModule) apexFile {
+	bootclasspathFragmentInfo := ctx.OtherModuleProvider(fragmentModule, java.BootclasspathFragmentApexContentInfoProvider).(java.BootclasspathFragmentApexContentInfo)
+
+	// Get the dexBootJar from the bootclasspath_fragment as that is responsible for performing the
+	// hidden API encpding.
+	dexBootJar := bootclasspathFragmentInfo.DexBootJarPathForContentModule(javaModule)
+
+	// Create an apexFile as for a normal java module but with the dex boot jar provided by the
+	// bootclasspath_fragment.
+	af := apexFileForJavaModuleWithFile(ctx, javaModule, dexBootJar)
+	return af
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
