@@ -71,8 +71,6 @@ func (c *notOnHostContext) Host() bool {
 }
 
 func makeVarsProvider(ctx android.MakeVarsContext) {
-	vendorPublicLibraries := vendorPublicLibraries(ctx.Config())
-
 	ctx.Strict("LLVM_RELEASE_VERSION", "${config.ClangShortVersion}")
 	ctx.Strict("LLVM_PREBUILTS_VERSION", "${config.ClangVersion}")
 	ctx.Strict("LLVM_PREBUILTS_BASE", "${config.ClangBase}")
@@ -106,7 +104,7 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 	ctx.VisitAllModules(func(module android.Module) {
 		if ccModule, ok := module.(*Module); ok {
 			baseName := ccModule.BaseModuleName()
-			if inList(baseName, *vendorPublicLibraries) && module.ExportedToMake() {
+			if ccModule.IsVendorPublicLibrary() && module.ExportedToMake() {
 				if !inList(baseName, exportedVendorPublicLibraries) {
 					exportedVendorPublicLibraries = append(exportedVendorPublicLibraries, baseName)
 				}
@@ -153,6 +151,7 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 
 	ctx.Strict("SOONG_STRIP_PATH", "${stripPath}")
 	ctx.Strict("XZ", "${xzCmd}")
+	ctx.Strict("CREATE_MINIDEBUGINFO", "${createMiniDebugInfo}")
 
 	includeFlags, err := ctx.Eval("${config.CommonGlobalIncludes}")
 	if err != nil {

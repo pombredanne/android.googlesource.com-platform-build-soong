@@ -54,6 +54,7 @@ func RegisterPrebuiltEtcBuildComponents(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("prebuilt_font", PrebuiltFontFactory)
 	ctx.RegisterModuleType("prebuilt_firmware", PrebuiltFirmwareFactory)
 	ctx.RegisterModuleType("prebuilt_dsp", PrebuiltDSPFactory)
+	ctx.RegisterModuleType("prebuilt_rfsa", PrebuiltRFSAFactory)
 }
 
 var PrepareForTestWithPrebuiltEtc = android.FixtureRegisterWithContext(RegisterPrebuiltEtcBuildComponents)
@@ -83,6 +84,9 @@ type prebuiltEtcProperties struct {
 	// /first_stage_ramdisk. To expose the module before switching root, install
 	// the recovery variant instead.
 	Vendor_ramdisk_available *bool
+
+	// Make this module available when building for debug ramdisk.
+	Debug_ramdisk_available *bool
 
 	// Make this module available when building for recovery.
 	Recovery_available *bool
@@ -159,6 +163,18 @@ func (p *PrebuiltEtc) InstallInVendorRamdisk() bool {
 	return p.inVendorRamdisk()
 }
 
+func (p *PrebuiltEtc) inDebugRamdisk() bool {
+	return p.ModuleBase.InDebugRamdisk() || p.ModuleBase.InstallInDebugRamdisk()
+}
+
+func (p *PrebuiltEtc) onlyInDebugRamdisk() bool {
+	return p.ModuleBase.InstallInDebugRamdisk()
+}
+
+func (p *PrebuiltEtc) InstallInDebugRamdisk() bool {
+	return p.inDebugRamdisk()
+}
+
 func (p *PrebuiltEtc) inRecovery() bool {
 	return p.ModuleBase.InRecovery() || p.ModuleBase.InstallInRecovery()
 }
@@ -177,7 +193,7 @@ func (p *PrebuiltEtc) ImageMutatorBegin(ctx android.BaseModuleContext) {}
 
 func (p *PrebuiltEtc) CoreVariantNeeded(ctx android.BaseModuleContext) bool {
 	return !p.ModuleBase.InstallInRecovery() && !p.ModuleBase.InstallInRamdisk() &&
-		!p.ModuleBase.InstallInVendorRamdisk()
+		!p.ModuleBase.InstallInVendorRamdisk() && !p.ModuleBase.InstallInDebugRamdisk()
 }
 
 func (p *PrebuiltEtc) RamdiskVariantNeeded(ctx android.BaseModuleContext) bool {
@@ -186,6 +202,10 @@ func (p *PrebuiltEtc) RamdiskVariantNeeded(ctx android.BaseModuleContext) bool {
 
 func (p *PrebuiltEtc) VendorRamdiskVariantNeeded(ctx android.BaseModuleContext) bool {
 	return proptools.Bool(p.properties.Vendor_ramdisk_available) || p.ModuleBase.InstallInVendorRamdisk()
+}
+
+func (p *PrebuiltEtc) DebugRamdiskVariantNeeded(ctx android.BaseModuleContext) bool {
+	return proptools.Bool(p.properties.Debug_ramdisk_available) || p.ModuleBase.InstallInDebugRamdisk()
 }
 
 func (p *PrebuiltEtc) RecoveryVariantNeeded(ctx android.BaseModuleContext) bool {
@@ -313,6 +333,9 @@ func (p *PrebuiltEtc) AndroidMkEntries() []android.AndroidMkEntries {
 	if p.inVendorRamdisk() && !p.onlyInVendorRamdisk() {
 		nameSuffix = ".vendor_ramdisk"
 	}
+	if p.inDebugRamdisk() && !p.onlyInDebugRamdisk() {
+		nameSuffix = ".debug_ramdisk"
+	}
 	if p.inRecovery() && !p.onlyInRecovery() {
 		nameSuffix = ".recovery"
 	}
@@ -427,6 +450,19 @@ func PrebuiltDSPFactory() android.Module {
 	module := &PrebuiltEtc{}
 	module.socInstallDirBase = "dsp"
 	InitPrebuiltEtcModule(module, "etc/dsp")
+	// This module is device-only
+	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibFirst)
+	return module
+}
+
+// prebuilt_rfsa installs a firmware file that will be available through Qualcomm's RFSA
+// to the <partition>/lib/rfsa directory.
+func PrebuiltRFSAFactory() android.Module {
+	module := &PrebuiltEtc{}
+	// Ideally these would go in /vendor/dsp, but the /vendor/lib/rfsa paths are hardcoded in too
+	// many places outside of the application processor.  They could be moved to /vendor/dsp once
+	// that is cleaned up.
+	InitPrebuiltEtcModule(module, "lib/rfsa")
 	// This module is device-only
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibFirst)
 	return module
