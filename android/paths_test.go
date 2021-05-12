@@ -746,19 +746,6 @@ func TestPathForModuleInstallRecoveryAsBoot(t *testing.T) {
 			out:          "target/product/test_device/vendor_ramdisk/first_stage_ramdisk/my_test",
 			partitionDir: "target/product/test_device/vendor_ramdisk/first_stage_ramdisk",
 		},
-		{
-			name: "debug_ramdisk binary",
-			ctx: &testModuleInstallPathContext{
-				baseModuleContext: baseModuleContext{
-					os:     deviceTarget.Os,
-					target: deviceTarget,
-				},
-				inDebugRamdisk: true,
-			},
-			in:           []string{"my_test"},
-			out:          "target/product/test_device/debug_ramdisk/first_stage_ramdisk/my_test",
-			partitionDir: "target/product/test_device/debug_ramdisk/first_stage_ramdisk",
-		},
 	}
 
 	for _, tc := range testCases {

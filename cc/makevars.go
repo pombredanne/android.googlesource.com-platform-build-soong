@@ -71,8 +71,6 @@ func (c *notOnHostContext) Host() bool {
 }
 
 func makeVarsProvider(ctx android.MakeVarsContext) {
-	vendorPublicLibraries := vendorPublicLibraries(ctx.Config())
-
 	ctx.Strict("LLVM_RELEASE_VERSION", "${config.ClangShortVersion}")
 	ctx.Strict("LLVM_PREBUILTS_VERSION", "${config.ClangVersion}")
 	ctx.Strict("LLVM_PREBUILTS_BASE", "${config.ClangBase}")
@@ -106,7 +104,7 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 	ctx.VisitAllModules(func(module android.Module) {
 		if ccModule, ok := module.(*Module); ok {
 			baseName := ccModule.BaseModuleName()
-			if inList(baseName, *vendorPublicLibraries) && module.ExportedToMake() {
+			if ccModule.IsVendorPublicLibrary() && module.ExportedToMake() {
 				if !inList(baseName, exportedVendorPublicLibraries) {
 					exportedVendorPublicLibraries = append(exportedVendorPublicLibraries, baseName)
 				}
@@ -153,6 +151,7 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 
 	ctx.Strict("SOONG_STRIP_PATH", "${stripPath}")
 	ctx.Strict("XZ", "${xzCmd}")
+	ctx.Strict("CREATE_MINIDEBUGINFO", "${createMiniDebugInfo}")
 
 	includeFlags, err := ctx.Eval("${config.CommonGlobalIncludes}")
 	if err != nil {
@@ -280,17 +279,20 @@ func makeVarsToolchain(ctx android.MakeVarsContext, secondPrefix string,
 		ctx.Strict(makePrefix+"STRIP", "${config.MacStripPath}")
 	} else {
 		ctx.Strict(makePrefix+"AR", "${config.ClangBin}/llvm-ar")
-		ctx.Strict(makePrefix+"READELF", gccCmd(toolchain, "readelf"))
-		ctx.Strict(makePrefix+"NM", gccCmd(toolchain, "nm"))
-		ctx.Strict(makePrefix+"STRIP", gccCmd(toolchain, "strip"))
+		ctx.Strict(makePrefix+"READELF", "${config.ClangBin}/llvm-readelf")
+		ctx.Strict(makePrefix+"NM", "${config.ClangBin}/llvm-nm")
+		ctx.Strict(makePrefix+"STRIP", "${config.ClangBin}/llvm-strip")
 	}
 
 	if target.Os.Class == android.Device {
-		ctx.Strict(makePrefix+"OBJCOPY", gccCmd(toolchain, "objcopy"))
-		ctx.Strict(makePrefix+"LD", gccCmd(toolchain, "ld"))
-		ctx.Strict(makePrefix+"GCC_VERSION", toolchain.GccVersion())
+		ctx.Strict(makePrefix+"OBJCOPY", "${config.ClangBin}/llvm-objcopy")
+		ctx.Strict(makePrefix+"LD", "${config.ClangBin}/lld")
 		ctx.Strict(makePrefix+"NDK_TRIPLE", config.NDKTriple(toolchain))
+		// TODO: work out whether to make this "${config.ClangBin}/llvm-", which
+		// should mostly work, or remove it.
 		ctx.Strict(makePrefix+"TOOLS_PREFIX", gccCmd(toolchain, ""))
+		// TODO: GCC version is obsolete now that GCC has been removed.
+		ctx.Strict(makePrefix+"GCC_VERSION", toolchain.GccVersion())
 	}
 
 	if target.Os.Class == android.Host {

@@ -54,6 +54,9 @@ func RegisterPrebuiltEtcBuildComponents(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("prebuilt_font", PrebuiltFontFactory)
 	ctx.RegisterModuleType("prebuilt_firmware", PrebuiltFirmwareFactory)
 	ctx.RegisterModuleType("prebuilt_dsp", PrebuiltDSPFactory)
+	ctx.RegisterModuleType("prebuilt_rfsa", PrebuiltRFSAFactory)
+
+	ctx.RegisterModuleType("prebuilt_defaults", defaultsFactory)
 }
 
 var PrepareForTestWithPrebuiltEtc = android.FixtureRegisterWithContext(RegisterPrebuiltEtcBuildComponents)
@@ -85,10 +88,6 @@ type prebuiltEtcProperties struct {
 	Vendor_ramdisk_available *bool
 
 	// Make this module available when building for debug ramdisk.
-	// On device without a dedicated recovery partition, the module is only
-	// available after switching root into
-	// /first_stage_ramdisk. To expose the module before switching root, install
-	// the recovery variant instead.
 	Debug_ramdisk_available *bool
 
 	// Make this module available when building for recovery.
@@ -127,6 +126,7 @@ type PrebuiltEtcModule interface {
 
 type PrebuiltEtc struct {
 	android.ModuleBase
+	android.DefaultableModuleBase
 
 	properties       prebuiltEtcProperties
 	subdirProperties prebuiltSubdirProperties
@@ -140,6 +140,11 @@ type PrebuiltEtc struct {
 	socInstallDirBase      string
 	installDirPath         android.InstallPath
 	additionalDependencies *android.Paths
+}
+
+type Defaults struct {
+	android.ModuleBase
+	android.DefaultsModuleBase
 }
 
 func (p *PrebuiltEtc) inRamdisk() bool {
@@ -381,6 +386,25 @@ func PrebuiltEtcFactory() android.Module {
 	InitPrebuiltEtcModule(module, "etc")
 	// This module is device-only
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibFirst)
+	android.InitDefaultableModule(module)
+	return module
+}
+
+func defaultsFactory() android.Module {
+	return DefaultsFactory()
+}
+
+func DefaultsFactory(props ...interface{}) android.Module {
+	module := &Defaults{}
+
+	module.AddProperties(props...)
+	module.AddProperties(
+		&prebuiltEtcProperties{},
+		&prebuiltSubdirProperties{},
+	)
+
+	android.InitDefaultsModule(module)
+
 	return module
 }
 
@@ -453,6 +477,19 @@ func PrebuiltDSPFactory() android.Module {
 	module := &PrebuiltEtc{}
 	module.socInstallDirBase = "dsp"
 	InitPrebuiltEtcModule(module, "etc/dsp")
+	// This module is device-only
+	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibFirst)
+	return module
+}
+
+// prebuilt_rfsa installs a firmware file that will be available through Qualcomm's RFSA
+// to the <partition>/lib/rfsa directory.
+func PrebuiltRFSAFactory() android.Module {
+	module := &PrebuiltEtc{}
+	// Ideally these would go in /vendor/dsp, but the /vendor/lib/rfsa paths are hardcoded in too
+	// many places outside of the application processor.  They could be moved to /vendor/dsp once
+	// that is cleaned up.
+	InitPrebuiltEtcModule(module, "lib/rfsa")
 	// This module is device-only
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibFirst)
 	return module

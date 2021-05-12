@@ -118,10 +118,6 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 	seenDataOutPaths := make(map[string]bool)
 
 	for _, fi := range a.filesInfo {
-		if ccMod, ok := fi.module.(*cc.Module); ok && ccMod.Properties.HideFromMake {
-			continue
-		}
-
 		linkToSystemLib := a.linkToSystemLib && fi.transitiveDep && fi.availableToPlatform()
 
 		moduleName := a.fullModuleName(apexBundleName, &fi)
@@ -284,7 +280,7 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 					// To install companion files (init_rc, vintf_fragments)
 					// Copy some common properties of apexBundle to apex_manifest
 					commonProperties := []string{
-						"LOCAL_FULL_INIT_RC", "LOCAL_VINTF_FRAGMENTS",
+						"LOCAL_FULL_INIT_RC", "LOCAL_FULL_VINTF_FRAGMENTS",
 					}
 					for _, name := range commonProperties {
 						if value, ok := apexAndroidMkData.Entries.EntryMap[name]; ok {
@@ -394,7 +390,7 @@ func (a *apexBundle) androidMkForType() android.AndroidMkData {
 				// Because apex writes .mk with Custom(), we need to write manually some common properties
 				// which are available via data.Entries
 				commonProperties := []string{
-					"LOCAL_FULL_INIT_RC", "LOCAL_VINTF_FRAGMENTS",
+					"LOCAL_FULL_INIT_RC", "LOCAL_FULL_VINTF_FRAGMENTS",
 					"LOCAL_PROPRIETARY_MODULE", "LOCAL_VENDOR_MODULE", "LOCAL_ODM_MODULE", "LOCAL_PRODUCT_MODULE", "LOCAL_SYSTEM_EXT_MODULE",
 					"LOCAL_MODULE_OWNER",
 				}

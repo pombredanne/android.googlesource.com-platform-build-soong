@@ -447,6 +447,10 @@ type VendorProperties struct {
 
 	// IsVNDKProduct is set if a VNDK module sets the product_available property.
 	IsVNDKProduct bool `blueprint:"mutated"`
+
+	// IsVendorPublicLibrary is set for the core and product variants of a library that has
+	// vendor_public_library stubs.
+	IsVendorPublicLibrary bool `blueprint:"mutated"`
 }
 
 // ModuleContextIntf is an interface (on a module context helper) consisting of functions related
@@ -475,6 +479,7 @@ type ModuleContextIntf interface {
 	isVndk() bool
 	isVndkSp() bool
 	IsVndkExt() bool
+	IsVendorPublicLibrary() bool
 	inProduct() bool
 	inVendor() bool
 	inRamdisk() bool
@@ -1121,23 +1126,19 @@ func (c *Module) IsLlndkPublic() bool {
 	return c.VendorProperties.IsLLNDK && !c.VendorProperties.IsVNDKPrivate
 }
 
-func (c *Module) IsLlndkHeaders() bool {
-	if _, ok := c.linker.(*llndkHeadersDecorator); ok {
-		return true
-	}
-	return false
-}
-
-func (c *Module) IsLlndkLibrary() bool {
-	if _, ok := c.linker.(*llndkStubDecorator); ok {
-		return true
-	}
-	return false
-}
-
-func (m *Module) HasLlndkStubs() bool {
+func (m *Module) NeedsLlndkVariants() bool {
 	lib := moduleLibraryInterface(m)
-	return lib != nil && lib.hasLLNDKStubs()
+	return lib != nil && (lib.hasLLNDKStubs() || lib.hasLLNDKHeaders())
+}
+
+func (m *Module) NeedsVendorPublicLibraryVariants() bool {
+	lib := moduleLibraryInterface(m)
+	return lib != nil && (lib.hasVendorPublicLibrary())
+}
+
+// IsVendorPublicLibrary returns true for vendor public libraries.
+func (c *Module) IsVendorPublicLibrary() bool {
+	return c.VendorProperties.IsVendorPublicLibrary
 }
 
 // isImplementationForLLNDKPublic returns true for any variant of a cc_library that has LLNDK stubs
@@ -1145,12 +1146,7 @@ func (m *Module) HasLlndkStubs() bool {
 func (c *Module) isImplementationForLLNDKPublic() bool {
 	library, _ := c.library.(*libraryDecorator)
 	return library != nil && library.hasLLNDKStubs() &&
-		(!Bool(library.Properties.Llndk.Private) ||
-			// TODO(b/170784825): until the LLNDK properties are moved into the cc_library,
-			// the non-Vendor variants of the cc_library don't know if the corresponding
-			// llndk_library set private: true.  Since libft2 is the only private LLNDK
-			// library, hardcode it during the transition.
-			c.BaseModuleName() != "libft2")
+		!Bool(library.Properties.Llndk.Private)
 }
 
 // Returns true for LLNDK-private, VNDK-SP-private, and VNDK-core-private.
@@ -1456,6 +1452,10 @@ func (ctx *moduleContextImpl) IsVndkExt() bool {
 	return ctx.mod.IsVndkExt()
 }
 
+func (ctx *moduleContextImpl) IsVendorPublicLibrary() bool {
+	return ctx.mod.IsVendorPublicLibrary()
+}
+
 func (ctx *moduleContextImpl) mustUseVendorVariant() bool {
 	return ctx.mod.MustUseVendorVariant()
 }
@@ -1613,12 +1613,13 @@ func (c *Module) setSubnameProperty(actx android.ModuleContext) {
 	}
 
 	llndk := c.IsLlndk()
-	_, llndkHeader := c.linker.(*llndkHeadersDecorator)
-	if llndk || llndkHeader || (c.UseVndk() && c.HasNonSystemVariants()) {
+	if llndk || (c.UseVndk() && c.HasNonSystemVariants()) {
 		// .vendor.{version} suffix is added for vendor variant or .product.{version} suffix is
 		// added for product variant only when we have vendor and product variants with core
 		// variant. The suffix is not added for vendor-only or product-only module.
 		c.Properties.SubName += c.getNameSuffixWithVndkVersion(actx)
+	} else if c.IsVendorPublicLibrary() {
+		c.Properties.SubName += vendorPublicLibrarySuffix
 	} else if _, ok := c.linker.(*vndkPrebuiltLibraryDecorator); ok {
 		// .vendor suffix is added for backward compatibility with VNDK snapshot whose names with
 		// such suffixes are already hard-coded in prebuilts/vndk/.../Android.bp.
@@ -2063,8 +2064,6 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 		// The caller can then know to add the variantLibs dependencies differently from the
 		// nonvariantLibs
 
-		vendorPublicLibraries := vendorPublicLibraries(actx.Config())
-
 		rewriteLibs := func(list []string) (nonvariantLibs []string, variantLibs []string) {
 			variantLibs = []string{}
 			nonvariantLibs = []string{}
@@ -2077,16 +2076,6 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 					variantLibs = append(variantLibs, name+ndkLibrarySuffix)
 				} else if ctx.useVndk() {
 					nonvariantLibs = append(nonvariantLibs, rewriteSnapshotLib(entry, getSnapshot().SharedLibs))
-				} else if (ctx.Platform() || ctx.ProductSpecific()) && inList(name, *vendorPublicLibraries) {
-					vendorPublicLib := name + vendorPublicLibrarySuffix
-					if actx.OtherModuleExists(vendorPublicLib) {
-						nonvariantLibs = append(nonvariantLibs, vendorPublicLib)
-					} else {
-						// This can happen if vendor_public_library module is defined in a
-						// namespace that isn't visible to the current module. In that case,
-						// link to the original library.
-						nonvariantLibs = append(nonvariantLibs, name)
-					}
 				} else {
 					// put name#version back
 					nonvariantLibs = append(nonvariantLibs, entry)
@@ -2941,13 +2930,9 @@ func baseLibName(depName string) string {
 }
 
 func MakeLibName(ctx android.ModuleContext, c LinkableInterface, ccDep LinkableInterface, depName string) string {
-
-	vendorPublicLibraries := vendorPublicLibraries(ctx.Config())
-
 	libName := baseLibName(depName)
 	ccDepModule, _ := ccDep.(*Module)
 	isLLndk := ccDepModule != nil && ccDepModule.IsLlndk()
-	isVendorPublicLib := inList(libName, *vendorPublicLibraries)
 	nonSystemVariantsExist := ccDep.HasNonSystemVariants() || isLLndk
 
 	if ccDepModule != nil {
@@ -2969,8 +2954,6 @@ func MakeLibName(ctx android.ModuleContext, c LinkableInterface, ccDep LinkableI
 		// The vendor and product modules in Make will have been renamed to not conflict with the
 		// core module, so update the dependency name here accordingly.
 		return libName + ccDep.SubName()
-	} else if (ctx.Platform() || ctx.ProductSpecific()) && isVendorPublicLib {
-		return libName + vendorPublicLibrarySuffix
 	} else if ccDep.InRamdisk() && !ccDep.OnlyInRamdisk() {
 		return libName + ramdiskSuffix
 	} else if ccDep.InVendorRamdisk() && !ccDep.OnlyInVendorRamdisk() {

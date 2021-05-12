@@ -31,8 +31,7 @@ type ImageInterface interface {
 	VendorRamdiskVariantNeeded(ctx BaseModuleContext) bool
 
 	// DebugRamdiskVariantNeeded should return true if the module needs a debug ramdisk variant (installed on the
-	// debug ramdisk partition: $(PRODUCT_OUT)/debug_ramdisk/first_stage_ramdisk if BOARD_USES_RECOVERY_AS_ROOT is
-	// true, $(PRODUCT_OUT)/debug_ramdisk otherise).
+	// debug ramdisk partition: $(PRODUCT_OUT)/debug_ramdisk).
 	DebugRamdiskVariantNeeded(ctx BaseModuleContext) bool
 
 	// RecoveryVariantNeeded should return true if the module needs a recovery variant (installed on the

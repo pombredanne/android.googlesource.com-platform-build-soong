@@ -339,12 +339,7 @@ func init() {
 	})
 
 	// Register sdk member types.
-	android.RegisterSdkMemberType(&sdkLibrarySdkMemberType{
-		android.SdkMemberTypeBase{
-			PropertyName: "java_sdk_libs",
-			SupportsSdk:  true,
-		},
-	})
+	android.RegisterSdkMemberType(javaSdkLibrarySdkMemberType)
 }
 
 func RegisterSdkLibraryBuildComponents(ctx android.RegistrationContext) {
@@ -398,6 +393,9 @@ type sdkLibraryProperties struct {
 
 	// List of Java libraries that will be in the classpath when building stubs
 	Stub_only_libs []string `android:"arch_variant"`
+
+	// List of Java libraries that will included in stub libraries
+	Stub_only_static_libs []string `android:"arch_variant"`
 
 	// list of package names that will be documented and publicized as API.
 	// This allows the API to be restricted to a subset of the source files provided.
@@ -1275,6 +1273,7 @@ func (module *SdkLibrary) createStubsLibrary(mctx android.DefaultableHookContext
 		System_modules *string
 		Patch_module   *string
 		Libs           []string
+		Static_libs    []string
 		Compile_dex    *bool
 		Java_version   *string
 		Openjdk9       struct {
@@ -1299,6 +1298,7 @@ func (module *SdkLibrary) createStubsLibrary(mctx android.DefaultableHookContext
 	props.Patch_module = module.properties.Patch_module
 	props.Installable = proptools.BoolPtr(false)
 	props.Libs = module.sdkLibraryProperties.Stub_only_libs
+	props.Static_libs = module.sdkLibraryProperties.Stub_only_static_libs
 	// The stub-annotations library contains special versions of the annotations
 	// with CLASS retention policy, so that they're kept.
 	if proptools.Bool(module.sdkLibraryProperties.Annotations_enabled) {
@@ -1756,6 +1756,7 @@ func SdkLibraryFactory() android.Module {
 
 	module.InitSdkLibraryProperties()
 	android.InitApexModule(module)
+	android.InitSdkAwareModule(module)
 	InitJavaModule(module, android.HostAndDeviceSupported)
 
 	// Initialize the map from scope to scope specific properties.
@@ -2194,6 +2195,20 @@ func (module *SdkLibraryImport) LintDepSets() LintDepSets {
 	}
 }
 
+func (module *SdkLibraryImport) getStrictUpdatabilityLinting() bool {
+	if module.implLibraryModule == nil {
+		return false
+	} else {
+		return module.implLibraryModule.getStrictUpdatabilityLinting()
+	}
+}
+
+func (module *SdkLibraryImport) setStrictUpdatabilityLinting(strictLinting bool) {
+	if module.implLibraryModule != nil {
+		module.implLibraryModule.setStrictUpdatabilityLinting(strictLinting)
+	}
+}
+
 // to satisfy apex.javaDependency interface
 func (module *SdkLibraryImport) Stem() string {
 	return module.BaseModuleName()
@@ -2372,14 +2387,18 @@ func (s *sdkLibrarySdkMemberType) CreateVariantPropertiesStruct() android.SdkMem
 	return &sdkLibrarySdkMemberProperties{}
 }
 
+var javaSdkLibrarySdkMemberType = &sdkLibrarySdkMemberType{
+	android.SdkMemberTypeBase{
+		PropertyName: "java_sdk_libs",
+		SupportsSdk:  true,
+	},
+}
+
 type sdkLibrarySdkMemberProperties struct {
 	android.SdkMemberPropertiesBase
 
 	// Scope to per scope properties.
 	Scopes map[*apiScope]scopeProperties
-
-	// Additional libraries that the exported stubs libraries depend upon.
-	Libs []string
 
 	// The Java stubs source files.
 	Stub_srcs []string
@@ -2432,7 +2451,6 @@ func (s *sdkLibrarySdkMemberProperties) PopulateFromVariant(ctx android.SdkMembe
 		}
 	}
 
-	s.Libs = sdk.properties.Libs
 	s.Naming_scheme = sdk.commonSdkLibraryProperties.Naming_scheme
 	s.Shared_library = proptools.BoolPtr(sdk.sharedLibrary())
 	s.Compile_dex = sdk.dexProperties.Compile_dex
@@ -2496,9 +2514,5 @@ func (s *sdkLibrarySdkMemberProperties) AddToPropertySet(ctx android.SdkMemberCo
 			dests = append(dests, dest)
 		}
 		propertySet.AddProperty("doctag_files", dests)
-	}
-
-	if len(s.Libs) > 0 {
-		propertySet.AddPropertyWithTag("libs", s.Libs, ctx.SnapshotBuilder().SdkMemberReferencePropertyTag(false))
 	}
 }

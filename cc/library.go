@@ -117,12 +117,12 @@ type LibraryProperties struct {
 	// Inject boringssl hash into the shared library.  This is only intended for use by external/boringssl.
 	Inject_bssl_hash *bool `android:"arch_variant"`
 
-	// If this is an LLNDK library, the name of the equivalent llndk_library module.
-	Llndk_stubs *string
-
 	// If this is an LLNDK library, properties to describe the LLNDK stubs.  Will be copied from
 	// the module pointed to by llndk_stubs if it is set.
 	Llndk llndkLibraryProperties
+
+	// If this is a vendor public library, properties to describe the vendor public library stubs.
+	Vendor_public_library vendorPublicLibraryProperties
 }
 
 // StaticProperties is a properties stanza to affect only attributes of the "static" variants of a
@@ -220,13 +220,29 @@ func RegisterLibraryBuildComponents(ctx android.RegistrationContext) {
 
 // For bp2build conversion.
 type bazelCcLibraryAttributes struct {
-	Srcs            bazel.LabelListAttribute
-	Hdrs            bazel.LabelListAttribute
-	Copts           bazel.StringListAttribute
-	Linkopts        bazel.StringListAttribute
-	Deps            bazel.LabelListAttribute
-	User_link_flags bazel.StringListAttribute
-	Includes        bazel.StringListAttribute
+	// Attributes pertaining to both static and shared variants.
+	Srcs               bazel.LabelListAttribute
+	Hdrs               bazel.LabelListAttribute
+	Deps               bazel.LabelListAttribute
+	Dynamic_deps       bazel.LabelListAttribute
+	Whole_archive_deps bazel.LabelListAttribute
+	Copts              bazel.StringListAttribute
+	Includes           bazel.StringListAttribute
+	Linkopts           bazel.StringListAttribute
+	// Attributes pertaining to shared variant.
+	Shared_copts                  bazel.StringListAttribute
+	Shared_srcs                   bazel.LabelListAttribute
+	Static_deps_for_shared        bazel.LabelListAttribute
+	Dynamic_deps_for_shared       bazel.LabelListAttribute
+	Whole_archive_deps_for_shared bazel.LabelListAttribute
+	User_link_flags               bazel.StringListAttribute
+	Version_script                bazel.LabelAttribute
+	// Attributes pertaining to static variant.
+	Static_copts                  bazel.StringListAttribute
+	Static_srcs                   bazel.LabelListAttribute
+	Static_deps_for_static        bazel.LabelListAttribute
+	Dynamic_deps_for_static       bazel.LabelListAttribute
+	Whole_archive_deps_for_static bazel.LabelListAttribute
 }
 
 type bazelCcLibrary struct {
@@ -257,18 +273,42 @@ func CcLibraryBp2Build(ctx android.TopDownMutatorContext) {
 		return
 	}
 
+	// For some cc_library modules, their static variants are ready to be
+	// converted, but not their shared variants. For these modules, delegate to
+	// the cc_library_static bp2build converter temporarily instead.
+	if android.GenerateCcLibraryStaticOnly(ctx) {
+		ccLibraryStaticBp2BuildInternal(ctx, m)
+		return
+	}
+
+	sharedAttrs := bp2BuildParseSharedProps(ctx, m)
+	staticAttrs := bp2BuildParseStaticProps(ctx, m)
 	compilerAttrs := bp2BuildParseCompilerProps(ctx, m)
 	linkerAttrs := bp2BuildParseLinkerProps(ctx, m)
-	exportedIncludes, exportedIncludesHeaders := bp2BuildParseExportedIncludes(ctx, m)
-	compilerAttrs.hdrs.Append(exportedIncludesHeaders)
+	exportedIncludes := bp2BuildParseExportedIncludes(ctx, m)
+
+	var srcs bazel.LabelListAttribute
+	srcs.Append(compilerAttrs.srcs)
 
 	attrs := &bazelCcLibraryAttributes{
-		Srcs:     compilerAttrs.srcs,
-		Hdrs:     compilerAttrs.hdrs,
-		Copts:    compilerAttrs.copts,
-		Linkopts: linkerAttrs.linkopts,
-		Deps:     linkerAttrs.deps,
-		Includes: exportedIncludes,
+		Srcs:                          srcs,
+		Deps:                          linkerAttrs.deps,
+		Dynamic_deps:                  linkerAttrs.dynamicDeps,
+		Whole_archive_deps:            linkerAttrs.wholeArchiveDeps,
+		Copts:                         compilerAttrs.copts,
+		Includes:                      exportedIncludes,
+		Linkopts:                      linkerAttrs.linkopts,
+		Shared_copts:                  sharedAttrs.copts,
+		Shared_srcs:                   sharedAttrs.srcs,
+		Static_deps_for_shared:        sharedAttrs.staticDeps,
+		Whole_archive_deps_for_shared: sharedAttrs.wholeArchiveDeps,
+		Dynamic_deps_for_shared:       sharedAttrs.dynamicDeps,
+		Version_script:                linkerAttrs.versionScript,
+		Static_copts:                  staticAttrs.copts,
+		Static_srcs:                   staticAttrs.srcs,
+		Static_deps_for_static:        staticAttrs.staticDeps,
+		Whole_archive_deps_for_static: staticAttrs.wholeArchiveDeps,
+		Dynamic_deps_for_static:       staticAttrs.dynamicDeps,
 	}
 
 	props := bazel.BazelTargetModuleProperties{
@@ -404,11 +444,18 @@ func (f *flagExporter) addExportedGeneratedHeaders(headers ...android.Path) {
 
 func (f *flagExporter) setProvider(ctx android.ModuleContext) {
 	ctx.SetProvider(FlagExporterInfoProvider, FlagExporterInfo{
-		IncludeDirs:       f.dirs,
-		SystemIncludeDirs: f.systemDirs,
-		Flags:             f.flags,
-		Deps:              f.deps,
-		GeneratedHeaders:  f.headers,
+		// Comes from Export_include_dirs property, and those of exported transitive deps
+		IncludeDirs: android.FirstUniquePaths(f.dirs),
+		// Comes from Export_system_include_dirs property, and those of exported transitive deps
+		SystemIncludeDirs: android.FirstUniquePaths(f.systemDirs),
+		// Used in very few places as a one-off way of adding extra defines.
+		Flags: f.flags,
+		// Used sparingly, for extra files that need to be explicitly exported to dependers,
+		// or for phony files to minimize ninja.
+		Deps: f.deps,
+		// For exported generated headers, such as exported aidl headers, proto headers, or
+		// sysprop headers.
+		GeneratedHeaders: f.headers,
 	})
 }
 
@@ -427,7 +474,8 @@ type libraryDecorator struct {
 	tocFile android.OptionalPath
 
 	flagExporter
-	stripper Stripper
+	flagExporterInfo *FlagExporterInfo
+	stripper         Stripper
 
 	// For whole_static_libs
 	objects Objects
@@ -525,6 +573,8 @@ func (handler *staticLibraryBazelHandler) generateBazelBuildActions(ctx android.
 			Direct(outputFilePath).
 			Build(),
 	})
+
+	ctx.SetProvider(FlagExporterInfoProvider, flagExporterInfoFromCcInfo(ctx, ccInfo))
 	if i, ok := handler.module.linker.(snapshotLibraryInterface); ok {
 		// Dependencies on this library will expect collectedSnapshotHeaders to
 		// be set, otherwise validation will fail. For now, set this to an empty
@@ -773,6 +823,13 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 		}
 		return objs
 	}
+	if ctx.IsVendorPublicLibrary() {
+		objs, versionScript := compileStubLibrary(ctx, flags, String(library.Properties.Vendor_public_library.Symbol_file), "current", "")
+		if !Bool(library.Properties.Vendor_public_library.Unversioned) {
+			library.versionScriptPath = android.OptionalPathForPath(versionScript)
+		}
+		return objs
+	}
 	if library.buildStubs() {
 		symbolFile := String(library.Properties.Stubs.Symbol_file)
 		if symbolFile != "" && !strings.HasSuffix(symbolFile, ".map.txt") {
@@ -869,6 +926,8 @@ type versionedInterface interface {
 
 	implementationModuleName(name string) string
 	hasLLNDKStubs() bool
+	hasLLNDKHeaders() bool
+	hasVendorPublicLibrary() bool
 }
 
 var _ libraryInterface = (*libraryDecorator)(nil)
@@ -960,9 +1019,14 @@ func (library *libraryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	if ctx.IsLlndk() {
 		// LLNDK libraries ignore most of the properties on the cc_library and use the
 		// LLNDK-specific properties instead.
-		deps.HeaderLibs = append(deps.HeaderLibs, library.Properties.Llndk.Export_llndk_headers...)
-		deps.ReexportHeaderLibHeaders = append(deps.ReexportHeaderLibHeaders,
-			library.Properties.Llndk.Export_llndk_headers...)
+		deps.HeaderLibs = append([]string(nil), library.Properties.Llndk.Export_llndk_headers...)
+		deps.ReexportHeaderLibHeaders = append([]string(nil), library.Properties.Llndk.Export_llndk_headers...)
+		return deps
+	}
+	if ctx.IsVendorPublicLibrary() {
+		headers := library.Properties.Vendor_public_library.Export_public_headers
+		deps.HeaderLibs = append([]string(nil), headers...)
+		deps.ReexportHeaderLibHeaders = append([]string(nil), headers...)
 		return deps
 	}
 
@@ -1407,11 +1471,25 @@ func (library *libraryDecorator) link(ctx ModuleContext,
 			library.reexportDeps(timestampFiles...)
 		}
 
+		// override the module's export_include_dirs with llndk.override_export_include_dirs
+		// if it is set.
+		if override := library.Properties.Llndk.Override_export_include_dirs; override != nil {
+			library.flagExporter.Properties.Export_include_dirs = override
+		}
+
 		if Bool(library.Properties.Llndk.Export_headers_as_system) {
 			library.flagExporter.Properties.Export_system_include_dirs = append(
 				library.flagExporter.Properties.Export_system_include_dirs,
 				library.flagExporter.Properties.Export_include_dirs...)
 			library.flagExporter.Properties.Export_include_dirs = nil
+		}
+	}
+
+	if ctx.IsVendorPublicLibrary() {
+		// override the module's export_include_dirs with vendor_public_library.override_export_include_dirs
+		// if it is set.
+		if override := library.Properties.Vendor_public_library.Override_export_include_dirs; override != nil {
+			library.flagExporter.Properties.Export_include_dirs = override
 		}
 	}
 
@@ -1668,7 +1746,18 @@ func (library *libraryDecorator) HeaderOnly() {
 
 // hasLLNDKStubs returns true if this cc_library module has a variant that will build LLNDK stubs.
 func (library *libraryDecorator) hasLLNDKStubs() bool {
-	return String(library.Properties.Llndk_stubs) != ""
+	return String(library.Properties.Llndk.Symbol_file) != ""
+}
+
+// hasLLNDKStubs returns true if this cc_library module has a variant that will build LLNDK stubs.
+func (library *libraryDecorator) hasLLNDKHeaders() bool {
+	return Bool(library.Properties.Llndk.Llndk_headers)
+}
+
+// hasVendorPublicLibrary returns true if this cc_library module has a variant that will build
+// vendor public library stubs.
+func (library *libraryDecorator) hasVendorPublicLibrary() bool {
+	return String(library.Properties.Vendor_public_library.Symbol_file) != ""
 }
 
 func (library *libraryDecorator) implementationModuleName(name string) string {
@@ -1907,9 +1996,7 @@ func LinkageMutator(mctx android.BottomUpMutatorContext) {
 
 		isLLNDK := false
 		if m, ok := mctx.Module().(*Module); ok {
-			// Don't count the vestigial llndk_library module as isLLNDK, it needs a static
-			// variant so that a cc_library_prebuilt can depend on it.
-			isLLNDK = m.IsLlndk() && !isVestigialLLNDKModule(m)
+			isLLNDK = m.IsLlndk()
 		}
 		buildStatic := library.BuildStaticVariant() && !isLLNDK
 		buildShared := library.BuildSharedVariant()
@@ -1972,11 +2059,12 @@ func createVersionVariations(mctx android.BottomUpMutatorContext, versions []str
 
 	m := mctx.Module().(*Module)
 	isLLNDK := m.IsLlndk()
+	isVendorPublicLibrary := m.IsVendorPublicLibrary()
 
 	modules := mctx.CreateLocalVariations(variants...)
 	for i, m := range modules {
 
-		if variants[i] != "" || isLLNDK {
+		if variants[i] != "" || isLLNDK || isVendorPublicLibrary {
 			// A stubs or LLNDK stubs variant.
 			c := m.(*Module)
 			c.sanitize = nil
@@ -2128,13 +2216,14 @@ func maybeInjectBoringSSLHash(ctx android.ModuleContext, outputFile android.Modu
 }
 
 type bazelCcLibraryStaticAttributes struct {
-	Copts      bazel.StringListAttribute
-	Srcs       bazel.LabelListAttribute
-	Deps       bazel.LabelListAttribute
-	Linkopts   bazel.StringListAttribute
-	Linkstatic bool
-	Includes   bazel.StringListAttribute
-	Hdrs       bazel.LabelListAttribute
+	Copts              bazel.StringListAttribute
+	Srcs               bazel.LabelListAttribute
+	Deps               bazel.LabelListAttribute
+	Whole_archive_deps bazel.LabelListAttribute
+	Linkopts           bazel.StringListAttribute
+	Linkstatic         bool
+	Includes           bazel.StringListAttribute
+	Hdrs               bazel.LabelListAttribute
 }
 
 type bazelCcLibraryStatic struct {
@@ -2147,6 +2236,30 @@ func BazelCcLibraryStaticFactory() android.Module {
 	module.AddProperties(&module.bazelCcLibraryStaticAttributes)
 	android.InitBazelTargetModule(module)
 	return module
+}
+
+func ccLibraryStaticBp2BuildInternal(ctx android.TopDownMutatorContext, module *Module) {
+	compilerAttrs := bp2BuildParseCompilerProps(ctx, module)
+	linkerAttrs := bp2BuildParseLinkerProps(ctx, module)
+	exportedIncludes := bp2BuildParseExportedIncludes(ctx, module)
+
+	attrs := &bazelCcLibraryStaticAttributes{
+		Copts:              compilerAttrs.copts,
+		Srcs:               compilerAttrs.srcs,
+		Deps:               linkerAttrs.deps,
+		Whole_archive_deps: linkerAttrs.wholeArchiveDeps,
+
+		Linkopts:   linkerAttrs.linkopts,
+		Linkstatic: true,
+		Includes:   exportedIncludes,
+	}
+
+	props := bazel.BazelTargetModuleProperties{
+		Rule_class:        "cc_library_static",
+		Bzl_load_location: "//build/bazel/rules:cc_library_static.bzl",
+	}
+
+	ctx.CreateBazelTargetModule(BazelCcLibraryStaticFactory, module.Name(), props, attrs)
 }
 
 func CcLibraryStaticBp2Build(ctx android.TopDownMutatorContext) {
@@ -2162,78 +2275,7 @@ func CcLibraryStaticBp2Build(ctx android.TopDownMutatorContext) {
 		return
 	}
 
-	compilerAttrs := bp2BuildParseCompilerProps(ctx, module)
-
-	var includeDirs []string
-	var localIncludeDirs []string
-	for _, props := range module.compiler.compilerProps() {
-		if baseCompilerProps, ok := props.(*BaseCompilerProperties); ok {
-			// TODO: these should be arch and os specific.
-			includeDirs = bp2BuildMakePathsRelativeToModule(ctx, baseCompilerProps.Include_dirs)
-			localIncludeDirs = bp2BuildMakePathsRelativeToModule(ctx, baseCompilerProps.Local_include_dirs)
-			break
-		}
-	}
-
-	// Soong implicitly includes headers from the module's directory.
-	// For Bazel builds to work we have to make these header includes explicit.
-	if module.compiler.(*libraryDecorator).includeBuildDirectory() {
-		localIncludeDirs = append(localIncludeDirs, ".")
-	}
-
-	// For Bazel, be more explicit about headers - list all header files in include dirs as srcs
-	for _, includeDir := range includeDirs {
-		compilerAttrs.srcs.Value.Append(bp2BuildListHeadersInDir(ctx, includeDir))
-	}
-	for _, localIncludeDir := range localIncludeDirs {
-		compilerAttrs.srcs.Value.Append(bp2BuildListHeadersInDir(ctx, localIncludeDir))
-	}
-
-	var staticLibs []string
-	var wholeStaticLibs []string
-	for _, props := range module.linker.linkerProps() {
-		// TODO: move this into bp2buildParseLinkerProps
-		if baseLinkerProperties, ok := props.(*BaseLinkerProperties); ok {
-			staticLibs = baseLinkerProperties.Static_libs
-			wholeStaticLibs = baseLinkerProperties.Whole_static_libs
-			break
-		}
-	}
-
-	// FIXME: Treat Static_libs and Whole_static_libs differently?
-	allDeps := staticLibs
-	allDeps = append(allDeps, wholeStaticLibs...)
-
-	depsLabels := android.BazelLabelForModuleDeps(ctx, allDeps)
-
-	exportedIncludes, exportedIncludesHeaders := bp2BuildParseExportedIncludes(ctx, module)
-
-	// FIXME: Unify absolute vs relative paths
-	// FIXME: Use -I copts instead of setting includes= ?
-	allIncludes := exportedIncludes
-	allIncludes.Value = append(allIncludes.Value, includeDirs...)
-	allIncludes.Value = append(allIncludes.Value, localIncludeDirs...)
-
-	compilerAttrs.hdrs.Append(exportedIncludesHeaders)
-
-	linkerAttrs := bp2BuildParseLinkerProps(ctx, module)
-	depsLabels.Append(linkerAttrs.deps.Value)
-
-	attrs := &bazelCcLibraryStaticAttributes{
-		Copts:      compilerAttrs.copts,
-		Srcs:       compilerAttrs.srcs,
-		Deps:       bazel.MakeLabelListAttribute(depsLabels),
-		Linkstatic: true,
-		Includes:   allIncludes,
-		Hdrs:       compilerAttrs.hdrs,
-	}
-
-	props := bazel.BazelTargetModuleProperties{
-		Rule_class:        "cc_library_static",
-		Bzl_load_location: "//build/bazel/rules:cc_library_static.bzl",
-	}
-
-	ctx.CreateBazelTargetModule(BazelCcLibraryStaticFactory, module.Name(), props, attrs)
+	ccLibraryStaticBp2BuildInternal(ctx, module)
 }
 
 func (m *bazelCcLibraryStatic) Name() string {

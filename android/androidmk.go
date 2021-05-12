@@ -501,7 +501,7 @@ func (a *AndroidMkEntries) fillInEntries(ctx fillInEntriesContext, mod blueprint
 	a.SetString("LOCAL_MODULE", name+a.SubName)
 	a.AddStrings("LOCAL_LICENSE_KINDS", amod.commonProperties.Effective_license_kinds...)
 	a.AddStrings("LOCAL_LICENSE_CONDITIONS", amod.commonProperties.Effective_license_conditions...)
-	a.AddStrings("LOCAL_NOTICE_FILE", amod.commonProperties.Effective_license_text...)
+	a.AddStrings("LOCAL_NOTICE_FILE", amod.commonProperties.Effective_license_text.Strings()...)
 	// TODO(b/151177513): Does this code need to set LOCAL_MODULE_IS_CONTAINER ?
 	if amod.commonProperties.Effective_package_name != nil {
 		a.SetString("LOCAL_LICENSE_PACKAGE_NAME", *amod.commonProperties.Effective_package_name)
@@ -550,7 +550,9 @@ func (a *AndroidMkEntries) fillInEntries(ctx fillInEntriesContext, mod blueprint
 		if !amod.InRamdisk() && !amod.InVendorRamdisk() {
 			a.AddPaths("LOCAL_FULL_INIT_RC", amod.initRcPaths)
 		}
-		a.AddStrings("LOCAL_VINTF_FRAGMENTS", amod.commonProperties.Vintf_fragments...)
+		if len(amod.vintfFragmentsPaths) > 0 {
+			a.AddPaths("LOCAL_FULL_VINTF_FRAGMENTS", amod.vintfFragmentsPaths)
+		}
 		a.SetBoolIfTrue("LOCAL_PROPRIETARY_MODULE", Bool(amod.commonProperties.Proprietary))
 		if Bool(amod.commonProperties.Vendor) || Bool(amod.commonProperties.Soc_specific) {
 			a.SetString("LOCAL_VENDOR_MODULE", "true")

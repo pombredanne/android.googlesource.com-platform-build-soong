@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/google/blueprint"
+	"github.com/google/blueprint/bootstrap"
 	"github.com/google/blueprint/pathtools"
 )
 
@@ -449,6 +450,12 @@ func getPathsFromModuleDep(ctx ModuleWithDepsPathContext, path, moduleName, tag 
 		return outputFiles, nil
 	} else if tag != "" {
 		return nil, fmt.Errorf("path dependency %q is not an output file producing module", path)
+	} else if goBinary, ok := module.(bootstrap.GoBinaryTool); ok {
+		if rel, err := filepath.Rel(PathForOutput(ctx).String(), goBinary.InstallPath()); err == nil {
+			return Paths{PathForOutput(ctx, rel).WithoutRel()}, nil
+		} else {
+			return nil, fmt.Errorf("cannot find output path for %q: %w", goBinary.InstallPath(), err)
+		}
 	} else if srcProducer, ok := module.(SourceFileProducer); ok {
 		return srcProducer.Srcs(), nil
 	} else {
@@ -1691,15 +1698,7 @@ func modulePartition(ctx ModuleInstallPathContext, os OsType) string {
 				partition += "/system"
 			}
 		} else if ctx.InstallInDebugRamdisk() {
-			// The module is only available after switching root into
-			// /first_stage_ramdisk. To expose the module before switching root
-			// on a device without a dedicated recovery partition, install the
-			// recovery variant.
-			if ctx.DeviceConfig().BoardUsesRecoveryAsBoot() {
-				partition = "debug_ramdisk/first_stage_ramdisk"
-			} else {
-				partition = "debug_ramdisk"
-			}
+			partition = "debug_ramdisk"
 		} else if ctx.InstallInRecovery() {
 			if ctx.InstallInRoot() {
 				partition = "recovery/root"
