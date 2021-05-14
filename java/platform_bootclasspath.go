@@ -196,7 +196,7 @@ func (b *platformBootclasspathModule) GenerateAndroidBuildActions(ctx android.Mo
 		return
 	}
 
-	b.generateBootImageBuildActions(ctx, updatableModules)
+	b.generateBootImageBuildActions(ctx, nonUpdatableModules, updatableModules)
 }
 
 // Generate classpaths.proto config
@@ -364,7 +364,7 @@ func (b *platformBootclasspathModule) generateHiddenAPIBuildActions(ctx android.
 
 	outputPath := hiddenAPISingletonPaths(ctx).flags
 	baseFlagsPath := hiddenAPISingletonPaths(ctx).stubFlags
-	ruleToGenerateHiddenApiFlags(ctx, outputPath, baseFlagsPath, moduleSpecificFlagsPaths, flagFileInfo)
+	buildRuleToGenerateHiddenApiFlags(ctx, "hiddenAPIFlagsFile", "hiddenapi flags", outputPath, baseFlagsPath, moduleSpecificFlagsPaths, &flagFileInfo)
 
 	b.generateHiddenAPIStubFlagsRules(ctx, hiddenAPISupportingModules)
 	b.generateHiddenAPIIndexRules(ctx, hiddenAPISupportingModules)
@@ -377,7 +377,7 @@ func (b *platformBootclasspathModule) generateHiddenAPIStubFlagsRules(ctx androi
 		bootDexJars = append(bootDexJars, module.bootDexJar)
 	}
 
-	sdkKindToStubPaths := hiddenAPIGatherStubLibDexJarPaths(ctx)
+	sdkKindToStubPaths := hiddenAPIGatherStubLibDexJarPaths(ctx, nil)
 
 	outputPath := hiddenAPISingletonPaths(ctx).stubFlags
 	rule := ruleToGenerateHiddenAPIStubFlagsFile(ctx, outputPath, bootDexJars, sdkKindToStubPaths)
@@ -430,7 +430,7 @@ func (b *platformBootclasspathModule) generateHiddenApiMakeVars(ctx android.Make
 }
 
 // generateBootImageBuildActions generates ninja rules related to the boot image creation.
-func (b *platformBootclasspathModule) generateBootImageBuildActions(ctx android.ModuleContext, updatableModules []android.Module) {
+func (b *platformBootclasspathModule) generateBootImageBuildActions(ctx android.ModuleContext, nonUpdatableModules, updatableModules []android.Module) {
 	// Force the GlobalSoongConfig to be created and cached for use by the dex_bootjars
 	// GenerateSingletonBuildActions method as it cannot create it for itself.
 	dexpreopt.GetGlobalSoongConfig(ctx)
@@ -450,6 +450,17 @@ func (b *platformBootclasspathModule) generateBootImageBuildActions(ctx android.
 
 	// Generate the updatable bootclasspath packages rule.
 	generateUpdatableBcpPackagesRule(ctx, imageConfig, updatableModules)
+
+	// Copy non-updatable module dex jars to their predefined locations.
+	copyBootJarsToPredefinedLocations(ctx, nonUpdatableModules, imageConfig.modules, imageConfig.dexPaths)
+
+	// Copy updatable module dex jars to their predefined locations.
+	config := GetUpdatableBootConfig(ctx)
+	copyBootJarsToPredefinedLocations(ctx, updatableModules, config.modules, config.dexPaths)
+
+	// Build a profile for the image config and then use that to build the boot image.
+	profile := bootImageProfileRule(ctx, imageConfig)
+	buildBootImage(ctx, imageConfig, profile)
 
 	dumpOatRules(ctx, imageConfig)
 }
