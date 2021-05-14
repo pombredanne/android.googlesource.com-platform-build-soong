@@ -669,6 +669,7 @@ func LibraryHostFactory() android.Module {
 	module.Module.properties.Installable = proptools.BoolPtr(true)
 
 	android.InitApexModule(module)
+	android.InitSdkAwareModule(module)
 	InitJavaModule(module, android.HostSupported)
 	return module
 }
@@ -923,6 +924,7 @@ func TestFactory() android.Module {
 	module.Module.dexpreopter.isTest = true
 	module.Module.linter.test = true
 
+	android.InitSdkAwareModule(module)
 	InitJavaModule(module, android.HostAndDeviceSupported)
 	return module
 }
@@ -1220,6 +1222,13 @@ func (j *Import) LintDepSets() LintDepSets {
 	return LintDepSets{}
 }
 
+func (j *Import) getStrictUpdatabilityLinting() bool {
+	return false
+}
+
+func (j *Import) setStrictUpdatabilityLinting(bool) {
+}
+
 func (j *Import) DepsMutator(ctx android.BottomUpMutatorContext) {
 	ctx.AddVariationDependencies(nil, libTag, j.properties.Libs...)
 
@@ -1296,9 +1305,10 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		if ai.ForPrebuiltApex {
 			if deapexerModule == nil {
 				// This should never happen as a variant for a prebuilt_apex is only created if the
-				// deapxer module has been configured to export the dex implementation jar for this module.
+				// deapexer module has been configured to export the dex implementation jar for this module.
 				ctx.ModuleErrorf("internal error: module %q does not depend on a `deapexer` module for prebuilt_apex %q",
 					j.Name(), ai.ApexVariationName)
+				return
 			}
 
 			// Get the path of the dex implementation jar from the `deapexer` module.
@@ -1540,6 +1550,13 @@ func (a *DexImport) LintDepSets() LintDepSets {
 
 func (j *DexImport) IsInstallable() bool {
 	return true
+}
+
+func (j *DexImport) getStrictUpdatabilityLinting() bool {
+	return false
+}
+
+func (j *DexImport) setStrictUpdatabilityLinting(bool) {
 }
 
 func (j *DexImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {

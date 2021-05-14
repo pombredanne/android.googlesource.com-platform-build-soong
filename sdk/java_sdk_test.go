@@ -83,12 +83,12 @@ func TestBasicSdkWithJavaLibrary(t *testing.T) {
 
 		sdk_snapshot {
 			name: "mysdk@1",
-			java_header_libs: ["sdkmember_mysdk_1"],
+			java_header_libs: ["sdkmember_mysdk@1"],
 		}
 
 		sdk_snapshot {
 			name: "mysdk@2",
-			java_header_libs: ["sdkmember_mysdk_2"],
+			java_header_libs: ["sdkmember_mysdk@2"],
 		}
 
 		java_library {
@@ -100,13 +100,13 @@ func TestBasicSdkWithJavaLibrary(t *testing.T) {
 		}
 
 		java_import {
-			name: "sdkmember_mysdk_1",
+			name: "sdkmember_mysdk@1",
 			sdk_member_name: "sdkmember",
 			host_supported: true,
 		}
 
 		java_import {
-			name: "sdkmember_mysdk_2",
+			name: "sdkmember_mysdk@2",
 			sdk_member_name: "sdkmember",
 			host_supported: true,
 		}
@@ -144,8 +144,8 @@ func TestBasicSdkWithJavaLibrary(t *testing.T) {
 		}
 	`)
 
-	sdkMemberV1 := result.ModuleForTests("sdkmember_mysdk_1", "android_common").Rule("combineJar").Output
-	sdkMemberV2 := result.ModuleForTests("sdkmember_mysdk_2", "android_common").Rule("combineJar").Output
+	sdkMemberV1 := result.ModuleForTests("sdkmember_mysdk@1", "android_common").Rule("combineJar").Output
+	sdkMemberV2 := result.ModuleForTests("sdkmember_mysdk@2", "android_common").Rule("combineJar").Output
 
 	javalibForMyApex := result.ModuleForTests("myjavalib", "android_common_apex10000_mysdk_1")
 	javalibForMyApex2 := result.ModuleForTests("myjavalib", "android_common_apex10000_mysdk_2")
@@ -1086,6 +1086,57 @@ sdk_snapshot {
 			".intermediates/mysdk/common_os/tmp/sdk_library/public/myjavalib_stub_sources.zip",
 			".intermediates/mysdk/common_os/tmp/sdk_library/system/myjavalib_stub_sources.zip",
 			".intermediates/mysdk/common_os/tmp/sdk_library/test/myjavalib_stub_sources.zip"),
+	)
+}
+
+func TestSnapshotWithJavaSdkLibrary_UseSrcJar(t *testing.T) {
+	result := android.GroupFixturePreparers(
+		prepareForSdkTestWithJavaSdkLibrary,
+		android.FixtureMergeEnv(map[string]string{
+			"SOONG_SDK_SNAPSHOT_USE_SRCJAR": "true",
+		}),
+	).RunTestWithBp(t, `
+		sdk {
+			name: "mysdk",
+			java_sdk_libs: ["myjavalib"],
+		}
+
+		java_sdk_library {
+			name: "myjavalib",
+			srcs: ["Test.java"],
+			sdk_version: "current",
+			shared_library: false,
+			public: {
+				enabled: true,
+			},
+		}
+	`)
+
+	CheckSnapshot(t, result, "mysdk", "",
+		checkUnversionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+java_sdk_library_import {
+    name: "myjavalib",
+    prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
+    shared_library: false,
+    public: {
+        jars: ["sdk_library/public/myjavalib-stubs.jar"],
+        stub_srcs: ["sdk_library/public/myjavalib.srcjar"],
+        current_api: "sdk_library/public/myjavalib.txt",
+        removed_api: "sdk_library/public/myjavalib-removed.txt",
+        sdk_version: "current",
+    },
+}
+		`),
+		checkAllCopyRules(`
+.intermediates/myjavalib.stubs/android_common/javac/myjavalib.stubs.jar -> sdk_library/public/myjavalib-stubs.jar
+.intermediates/myjavalib.stubs.source/android_common/metalava/myjavalib.stubs.source-stubs.srcjar -> sdk_library/public/myjavalib.srcjar
+.intermediates/myjavalib.stubs.source/android_common/metalava/myjavalib.stubs.source_api.txt -> sdk_library/public/myjavalib.txt
+.intermediates/myjavalib.stubs.source/android_common/metalava/myjavalib.stubs.source_removed.txt -> sdk_library/public/myjavalib-removed.txt
+		`),
 	)
 }
 

@@ -72,8 +72,8 @@ type platformBootclasspathProperties struct {
 func platformBootclasspathFactory() android.SingletonModule {
 	m := &platformBootclasspathModule{}
 	m.AddProperties(&m.properties)
-	// TODO(satayev): split systemserver and apex jars into separate configs.
-	initClasspathFragment(m)
+	// TODO(satayev): split apex jars into separate configs.
+	initClasspathFragment(m, BOOTCLASSPATH)
 	android.InitAndroidArchModule(m, android.DeviceSupported, android.MultilibCommon)
 	return m
 }
@@ -167,8 +167,6 @@ func (d *platformBootclasspathModule) MakeVars(ctx android.MakeVarsContext) {
 }
 
 func (b *platformBootclasspathModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {
-	b.classpathFragmentBase().generateClasspathProtoBuildActions(ctx)
-
 	// Gather all the dependencies from the art, updatable and non-updatable boot jars.
 	artModules := gatherApexModulePairDepsWithTag(ctx, platformBootclasspathArtBootJarDepTag)
 	nonUpdatableModules := gatherApexModulePairDepsWithTag(ctx, platformBootclasspathNonUpdatableBootJarDepTag)
@@ -189,6 +187,8 @@ func (b *platformBootclasspathModule) GenerateAndroidBuildActions(ctx android.Mo
 	b.checkNonUpdatableModules(ctx, nonUpdatableModules)
 	b.checkUpdatableModules(ctx, updatableModules)
 
+	b.generateClasspathProtoBuildActions(ctx)
+
 	b.generateHiddenAPIBuildActions(ctx, b.configuredModules, b.fragments)
 
 	// Nothing to do if skipping the dexpreopt of boot image jars.
@@ -196,7 +196,25 @@ func (b *platformBootclasspathModule) GenerateAndroidBuildActions(ctx android.Mo
 		return
 	}
 
-	b.generateBootImageBuildActions(ctx, updatableModules)
+	b.generateBootImageBuildActions(ctx, nonUpdatableModules, updatableModules)
+}
+
+// Generate classpaths.proto config
+func (b *platformBootclasspathModule) generateClasspathProtoBuildActions(ctx android.ModuleContext) {
+	// ART and platform boot jars must have a corresponding entry in DEX2OATBOOTCLASSPATH
+	classpathJars := configuredJarListToClasspathJars(ctx, b.ClasspathFragmentToConfiguredJarList(ctx), BOOTCLASSPATH, DEX2OATBOOTCLASSPATH)
+
+	// TODO(satayev): remove updatable boot jars once each apex has its own fragment
+	global := dexpreopt.GetGlobalConfig(ctx)
+	classpathJars = append(classpathJars, configuredJarListToClasspathJars(ctx, global.UpdatableBootJars, BOOTCLASSPATH)...)
+
+	b.classpathFragmentBase().generateClasspathProtoBuildActions(ctx, classpathJars)
+}
+
+func (b *platformBootclasspathModule) ClasspathFragmentToConfiguredJarList(ctx android.ModuleContext) android.ConfiguredJarList {
+	global := dexpreopt.GetGlobalConfig(ctx)
+	// TODO(satayev): split ART apex jars into their own classpathFragment
+	return global.BootJars
 }
 
 // checkNonUpdatableModules ensures that the non-updatable modules supplied are not part of an
@@ -346,7 +364,7 @@ func (b *platformBootclasspathModule) generateHiddenAPIBuildActions(ctx android.
 
 	outputPath := hiddenAPISingletonPaths(ctx).flags
 	baseFlagsPath := hiddenAPISingletonPaths(ctx).stubFlags
-	ruleToGenerateHiddenApiFlags(ctx, outputPath, baseFlagsPath, moduleSpecificFlagsPaths, flagFileInfo)
+	buildRuleToGenerateHiddenApiFlags(ctx, "hiddenAPIFlagsFile", "hiddenapi flags", outputPath, baseFlagsPath, moduleSpecificFlagsPaths, &flagFileInfo)
 
 	b.generateHiddenAPIStubFlagsRules(ctx, hiddenAPISupportingModules)
 	b.generateHiddenAPIIndexRules(ctx, hiddenAPISupportingModules)
@@ -359,7 +377,7 @@ func (b *platformBootclasspathModule) generateHiddenAPIStubFlagsRules(ctx androi
 		bootDexJars = append(bootDexJars, module.bootDexJar)
 	}
 
-	sdkKindToStubPaths := hiddenAPIGatherStubLibDexJarPaths(ctx)
+	sdkKindToStubPaths := hiddenAPIGatherStubLibDexJarPaths(ctx, nil)
 
 	outputPath := hiddenAPISingletonPaths(ctx).stubFlags
 	rule := ruleToGenerateHiddenAPIStubFlagsFile(ctx, outputPath, bootDexJars, sdkKindToStubPaths)
@@ -412,7 +430,7 @@ func (b *platformBootclasspathModule) generateHiddenApiMakeVars(ctx android.Make
 }
 
 // generateBootImageBuildActions generates ninja rules related to the boot image creation.
-func (b *platformBootclasspathModule) generateBootImageBuildActions(ctx android.ModuleContext, updatableModules []android.Module) {
+func (b *platformBootclasspathModule) generateBootImageBuildActions(ctx android.ModuleContext, nonUpdatableModules, updatableModules []android.Module) {
 	// Force the GlobalSoongConfig to be created and cached for use by the dex_bootjars
 	// GenerateSingletonBuildActions method as it cannot create it for itself.
 	dexpreopt.GetGlobalSoongConfig(ctx)
@@ -432,6 +450,17 @@ func (b *platformBootclasspathModule) generateBootImageBuildActions(ctx android.
 
 	// Generate the updatable bootclasspath packages rule.
 	generateUpdatableBcpPackagesRule(ctx, imageConfig, updatableModules)
+
+	// Copy non-updatable module dex jars to their predefined locations.
+	copyBootJarsToPredefinedLocations(ctx, nonUpdatableModules, imageConfig.modules, imageConfig.dexPaths)
+
+	// Copy updatable module dex jars to their predefined locations.
+	config := GetUpdatableBootConfig(ctx)
+	copyBootJarsToPredefinedLocations(ctx, updatableModules, config.modules, config.dexPaths)
+
+	// Build a profile for the image config and then use that to build the boot image.
+	profile := bootImageProfileRule(ctx, imageConfig)
+	buildBootImage(ctx, imageConfig, profile)
 
 	dumpOatRules(ctx, imageConfig)
 }

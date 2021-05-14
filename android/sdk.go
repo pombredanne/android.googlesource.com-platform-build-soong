@@ -41,6 +41,11 @@ type sdkAwareWithoutModule interface {
 	sdkBase() *SdkBase
 	MakeMemberOf(sdk SdkRef)
 	IsInAnySdk() bool
+
+	// IsVersioned determines whether the module is versioned, i.e. has a name of the form
+	// <name>@<version>
+	IsVersioned() bool
+
 	ContainingSdk() SdkRef
 	MemberName() string
 	BuildWithSdks(sdks SdkRefs)
@@ -82,7 +87,7 @@ const SdkVersionSeparator = '@'
 func ParseSdkRef(ctx BaseModuleContext, str string, property string) SdkRef {
 	tokens := strings.Split(str, string(SdkVersionSeparator))
 	if len(tokens) < 1 || len(tokens) > 2 {
-		ctx.PropertyErrorf(property, "%q does not follow name#version syntax", str)
+		ctx.PropertyErrorf(property, "%q does not follow name@version syntax", str)
 		return SdkRef{Name: "invalid sdk name", Version: "invalid sdk version"}
 	}
 
@@ -138,6 +143,11 @@ func (s *SdkBase) MakeMemberOf(sdk SdkRef) {
 // IsInAnySdk returns true if this module is a member of any SDK
 func (s *SdkBase) IsInAnySdk() bool {
 	return s.properties.ContainingSdk != nil
+}
+
+// IsVersioned returns true if this module is versioned.
+func (s *SdkBase) IsVersioned() bool {
+	return strings.Contains(s.module.Name(), "@")
 }
 
 // ContainingSdk returns the SDK that this module is a member of
@@ -274,11 +284,20 @@ type BpPropertySet interface {
 	// Add a property set with the specified name and return so that additional
 	// properties can be added.
 	AddPropertySet(name string) BpPropertySet
+
+	// Add comment for property (or property set).
+	AddCommentForProperty(name, text string)
 }
 
 // A .bp module definition.
 type BpModule interface {
 	BpPropertySet
+
+	// ModuleType returns the module type of the module
+	ModuleType() string
+
+	// Name returns the name of the module or "" if no name has been specified.
+	Name() string
 }
 
 // An individual member of the SDK, includes all of the variants that the SDK
@@ -292,9 +311,7 @@ type SdkMember interface {
 }
 
 // SdkMemberTypeDependencyTag is the interface that a tag must implement in order to allow the
-// dependent module to be automatically added to the sdk. In order for this to work the
-// SdkMemberType of the depending module must return true from
-// SdkMemberType.HasTransitiveSdkMembers.
+// dependent module to be automatically added to the sdk.
 type SdkMemberTypeDependencyTag interface {
 	blueprint.DependencyTag
 
@@ -372,15 +389,12 @@ type SdkMemberType interface {
 	// The name of the member type property on an sdk module.
 	SdkPropertyName() string
 
+	// RequiresBpProperty returns true if this member type requires its property to be usable within
+	// an Android.bp file.
+	RequiresBpProperty() bool
+
 	// True if the member type supports the sdk/sdk_snapshot, false otherwise.
 	UsableWithSdkAndSdkSnapshot() bool
-
-	// Return true if modules of this type can have dependencies which should be
-	// treated as if they are sdk members.
-	//
-	// Any dependency that is to be treated as a member of the sdk needs to implement
-	// SdkAware and be added with an SdkMemberTypeDependencyTag tag.
-	HasTransitiveSdkMembers() bool
 
 	// Return true if prebuilt host artifacts may be specific to the host OS. Only
 	// applicable to modules where HostSupported() is true. If this is true,
@@ -403,6 +417,10 @@ type SdkMemberType interface {
 	// SdkMember. Returning false will cause an error to be logged expaining that
 	// the module is not allowed in whichever sdk property it was added.
 	IsInstance(module Module) bool
+
+	// UsesSourceModuleTypeInSnapshot returns true when the AddPrebuiltModule() method returns a
+	// source module type.
+	UsesSourceModuleTypeInSnapshot() bool
 
 	// Add a prebuilt module that the sdk will populate.
 	//
@@ -447,26 +465,39 @@ type SdkMemberType interface {
 
 // Base type for SdkMemberType implementations.
 type SdkMemberTypeBase struct {
-	PropertyName         string
-	SupportsSdk          bool
-	TransitiveSdkMembers bool
-	HostOsDependent      bool
+	PropertyName string
+
+	// When set to true BpPropertyNotRequired indicates that the member type does not require the
+	// property to be specifiable in an Android.bp file.
+	BpPropertyNotRequired bool
+
+	SupportsSdk     bool
+	HostOsDependent bool
+
+	// When set to true UseSourceModuleTypeInSnapshot indicates that the member type creates a source
+	// module type in its SdkMemberType.AddPrebuiltModule() method. That prevents the sdk snapshot
+	// code from automatically adding a prefer: true flag.
+	UseSourceModuleTypeInSnapshot bool
 }
 
 func (b *SdkMemberTypeBase) SdkPropertyName() string {
 	return b.PropertyName
 }
 
+func (b *SdkMemberTypeBase) RequiresBpProperty() bool {
+	return !b.BpPropertyNotRequired
+}
+
 func (b *SdkMemberTypeBase) UsableWithSdkAndSdkSnapshot() bool {
 	return b.SupportsSdk
 }
 
-func (b *SdkMemberTypeBase) HasTransitiveSdkMembers() bool {
-	return b.TransitiveSdkMembers
-}
-
 func (b *SdkMemberTypeBase) IsHostOsDependent() bool {
 	return b.HostOsDependent
+}
+
+func (b *SdkMemberTypeBase) UsesSourceModuleTypeInSnapshot() bool {
+	return b.UseSourceModuleTypeInSnapshot
 }
 
 // Encapsulates the information about registered SdkMemberTypes.

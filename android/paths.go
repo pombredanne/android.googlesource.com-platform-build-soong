@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/google/blueprint"
+	"github.com/google/blueprint/bootstrap"
 	"github.com/google/blueprint/pathtools"
 )
 
@@ -286,6 +287,17 @@ func (p OptionalPath) Path() Path {
 	return p.path
 }
 
+// AsPaths converts the OptionalPath into Paths.
+//
+// It returns nil if this is not valid, or a single length slice containing the Path embedded in
+// this OptionalPath.
+func (p OptionalPath) AsPaths() Paths {
+	if !p.valid {
+		return nil
+	}
+	return Paths{p.path}
+}
+
 // RelativeToTop returns an OptionalPath with the path that was embedded having been replaced by the
 // result of calling Path.RelativeToTop on it.
 func (p OptionalPath) RelativeToTop() OptionalPath {
@@ -449,6 +461,12 @@ func getPathsFromModuleDep(ctx ModuleWithDepsPathContext, path, moduleName, tag 
 		return outputFiles, nil
 	} else if tag != "" {
 		return nil, fmt.Errorf("path dependency %q is not an output file producing module", path)
+	} else if goBinary, ok := module.(bootstrap.GoBinaryTool); ok {
+		if rel, err := filepath.Rel(PathForOutput(ctx).String(), goBinary.InstallPath()); err == nil {
+			return Paths{PathForOutput(ctx, rel).WithoutRel()}, nil
+		} else {
+			return nil, fmt.Errorf("cannot find output path for %q: %w", goBinary.InstallPath(), err)
+		}
 	} else if srcProducer, ok := module.(SourceFileProducer); ok {
 		return srcProducer.Srcs(), nil
 	} else {

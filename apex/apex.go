@@ -50,8 +50,13 @@ func registerApexBuildComponents(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("override_apex", overrideApexFactory)
 	ctx.RegisterModuleType("apex_set", apexSetFactory)
 
+	ctx.PreArchMutators(registerPreArchMutators)
 	ctx.PreDepsMutators(RegisterPreDepsMutators)
 	ctx.PostDepsMutators(RegisterPostDepsMutators)
+}
+
+func registerPreArchMutators(ctx android.RegisterMutatorsContext) {
+	ctx.TopDown("prebuilt_apex_module_creator", prebuiltApexModuleCreatorMutator).Parallel()
 }
 
 func RegisterPreDepsMutators(ctx android.RegisterMutatorsContext) {
@@ -64,10 +69,12 @@ func RegisterPostDepsMutators(ctx android.RegisterMutatorsContext) {
 	ctx.BottomUp("apex_unique", apexUniqueVariationsMutator).Parallel()
 	ctx.BottomUp("apex_test_for_deps", apexTestForDepsMutator).Parallel()
 	ctx.BottomUp("apex_test_for", apexTestForMutator).Parallel()
+	// Run mark_platform_availability before the apexMutator as the apexMutator needs to know whether
+	// it should create a platform variant.
+	ctx.BottomUp("mark_platform_availability", markPlatformAvailability).Parallel()
 	ctx.BottomUp("apex", apexMutator).Parallel()
 	ctx.BottomUp("apex_directly_in_any", apexDirectlyInAnyMutator).Parallel()
 	ctx.BottomUp("apex_flattened", apexFlattenedMutator).Parallel()
-	ctx.BottomUp("mark_platform_availability", markPlatformAvailability).Parallel()
 }
 
 type apexBundleProperties struct {
@@ -997,9 +1004,8 @@ func markPlatformAvailability(mctx android.BottomUpMutatorContext) {
 		}
 	})
 
-	// Exception 1: stub libraries and native bridge libraries are always available to platform
-	if cc, ok := mctx.Module().(*cc.Module); ok &&
-		(cc.IsStubs() || cc.Target().NativeBridge == android.NativeBridgeEnabled) {
+	// Exception 1: check to see if the module always requires it.
+	if am.AlwaysRequiresPlatformApexVariant() {
 		availableToPlatform = true
 	}
 
@@ -1204,7 +1210,7 @@ func (a *apexBundle) IsNativeCoverageNeeded(ctx android.BaseModuleContext) bool 
 }
 
 // Implements cc.Coverage
-func (a *apexBundle) PreventInstall() {
+func (a *apexBundle) SetPreventInstall() {
 	a.properties.PreventInstall = true
 }
 
@@ -2043,6 +2049,11 @@ func apexBootclasspathFragmentFiles(ctx android.ModuleContext, module blueprint.
 			filesToAdd = append(filesToAdd, af)
 		}
 	}
+
+	// Add classpaths.proto config.
+	classpathProtoOutput := bootclasspathFragmentInfo.ClasspathFragmentProtoOutput
+	classpathProto := newApexFile(ctx, classpathProtoOutput, classpathProtoOutput.Base(), bootclasspathFragmentInfo.ClasspathFragmentProtoInstallDir.Rel(), etc, nil)
+	filesToAdd = append(filesToAdd, classpathProto)
 
 	return filesToAdd
 }
