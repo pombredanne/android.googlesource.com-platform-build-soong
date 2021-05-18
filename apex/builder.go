@@ -574,15 +574,20 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		})
 		a.apisUsedByModuleFile = apisUsedbyOutputFile
 
+		var libNames []string
+		for _, f := range a.filesInfo {
+			if f.class == nativeSharedLib {
+				libNames = append(libNames, f.Stem())
+			}
+		}
 		apisBackedbyOutputFile := android.PathForModuleOut(ctx, a.Name()+"_backing.txt")
 		ndkLibraryList := android.PathForSource(ctx, "system/core/rootdir/etc/public.libraries.android.txt")
 		rule := android.NewRuleBuilder()
 		rule.Command().
 			Tool(android.PathForSource(ctx, "build/soong/scripts/gen_ndk_backedby_apex.sh")).
-			Text(imageDir.String()).
-			Implicits(implicitInputs).
 			Output(apisBackedbyOutputFile).
-			Input(ndkLibraryList)
+			Input(ndkLibraryList).
+			Flags(libNames)
 		rule.Build(pctx, ctx, "ndk_backedby_list", "Generate API libraries backed by Apex")
 		a.apisBackedByModuleFile = apisBackedbyOutputFile
 
@@ -751,6 +756,12 @@ func (a *apexBundle) buildApexDependencyInfo(ctx android.ModuleContext) {
 		if from.Name() == to.Name() {
 			// This can happen for cc.reuseObjTag. We are not interested in tracking this.
 			// As soon as the dependency graph crosses the APEX boundary, don't go further.
+			return !externalDep
+		}
+
+		// Skip dependencies that are only available to APEXes; they are developed with updatability
+		// in mind and don't need manual approval.
+		if to.(android.ApexModule).NotAvailableForPlatform() {
 			return !externalDep
 		}
 

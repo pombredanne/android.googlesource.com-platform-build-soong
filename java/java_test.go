@@ -138,7 +138,6 @@ func testJavaErrorWithConfig(t *testing.T, pattern string, config android.Config
 	}
 
 	t.Fatalf("missing expected error %q (0 errors are returned)", pattern)
-
 	return ctx, config
 }
 
@@ -861,6 +860,110 @@ func TestIncludeSrcs(t *testing.T) {
 	}
 }
 
+func TestJavaLint(t *testing.T) {
+	ctx, _ := testJavaWithFS(t, `
+		java_library {
+			name: "foo",
+			srcs: [
+				"a.java",
+				"b.java",
+				"c.java",
+			],
+			min_sdk_version: "29",
+			sdk_version: "system_current",
+		}
+       `, map[string][]byte{
+		"lint-baseline.xml": nil,
+	})
+
+	foo := ctx.ModuleForTests("foo", "android_common")
+	rule := foo.Rule("lint")
+
+	if !strings.Contains(rule.RuleParams.Command, "--baseline lint-baseline.xml") {
+		t.Error("did not pass --baseline flag")
+	}
+}
+
+func TestJavaLintWithoutBaseline(t *testing.T) {
+	ctx, _ := testJavaWithFS(t, `
+		java_library {
+			name: "foo",
+			srcs: [
+				"a.java",
+				"b.java",
+				"c.java",
+			],
+			min_sdk_version: "29",
+			sdk_version: "system_current",
+		}
+       `, map[string][]byte{})
+
+	foo := ctx.ModuleForTests("foo", "android_common")
+	rule := foo.Rule("lint")
+
+	if strings.Contains(rule.RuleParams.Command, "--baseline") {
+		t.Error("passed --baseline flag for non existent file")
+	}
+}
+
+func TestJavaLintRequiresCustomLintFileToExist(t *testing.T) {
+	config := testConfig(
+		nil,
+		`
+		java_library {
+			name: "foo",
+			srcs: [
+			],
+			min_sdk_version: "29",
+			sdk_version: "system_current",
+			lint: {
+				baseline_filename: "mybaseline.xml",
+			},
+		}
+     `, map[string][]byte{
+			"build/soong/java/lint_defaults.txt":                   nil,
+			"prebuilts/cmdline-tools/tools/bin/lint":               nil,
+			"prebuilts/cmdline-tools/tools/lib/lint-classpath.jar": nil,
+			"framework/aidl":                     nil,
+			"a.java":                             nil,
+			"AndroidManifest.xml":                nil,
+			"build/make/target/product/security": nil,
+		})
+	config.TestAllowNonExistentPaths = false
+	testJavaErrorWithConfig(t,
+		"source path \"mybaseline.xml\" does not exist",
+		config,
+	)
+}
+
+func TestJavaLintUsesCorrectBpConfig(t *testing.T) {
+	ctx, _ := testJavaWithFS(t, `
+		java_library {
+			name: "foo",
+			srcs: [
+				"a.java",
+				"b.java",
+				"c.java",
+			],
+			min_sdk_version: "29",
+			sdk_version: "system_current",
+			lint: {
+				error_checks: ["SomeCheck"],
+				baseline_filename: "mybaseline.xml",
+			},
+		}
+       `, map[string][]byte{
+		"mybaseline.xml": nil,
+	})
+
+	foo := ctx.ModuleForTests("foo", "android_common")
+	rule := foo.Rule("lint")
+
+	if !strings.Contains(rule.RuleParams.Command, "--baseline mybaseline.xml") {
+		t.Error("did not use the correct file for baseline")
+	}
+}
+
 func TestGeneratedSources(t *testing.T) {
 	ctx, _ := testJavaWithFS(t, `
 		java_library {
@@ -1303,6 +1406,12 @@ func TestJavaSdkLibrary(t *testing.T) {
 			libs: ["foo"],
 			sdk_version: "system_29",
 		}
+		java_library {
+			name: "baz-module-30",
+			srcs: ["c.java"],
+			libs: ["foo"],
+			sdk_version: "module_30",
+		}
 		`)
 
 	// check the existence of the internal modules
@@ -1347,6 +1456,13 @@ func TestJavaSdkLibrary(t *testing.T) {
 	if !strings.Contains(baz29Javac.Args["classpath"], "prebuilts/sdk/29/system/foo.jar") {
 		t.Errorf("baz-29 javac classpath %v does not contain %q", baz29Javac.Args["classpath"],
 			"prebuilts/sdk/29/system/foo.jar")
+	}
+
+	bazModule30Javac := ctx.ModuleForTests("baz-module-30", "android_common").Rule("javac")
+	// tests if "baz-module-30" is actually linked to the module 30 stubs lib
+	if !strings.Contains(bazModule30Javac.Args["classpath"], "prebuilts/sdk/30/module-lib/foo.jar") {
+		t.Errorf("baz-module-30 javac classpath %v does not contain %q", bazModule30Javac.Args["classpath"],
+			"prebuilts/sdk/30/module-lib/foo.jar")
 	}
 
 	// test if baz has exported SDK lib names foo and bar to qux
