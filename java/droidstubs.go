@@ -146,6 +146,23 @@ type DroidstubsProperties struct {
 	Write_sdk_values *bool
 }
 
+// Used by xsd_config
+type ApiFilePath interface {
+	ApiFilePath() android.Path
+}
+
+type ApiStubsSrcProvider interface {
+	StubsSrcJar() android.Path
+}
+
+// Provider of information about API stubs, used by java_sdk_library.
+type ApiStubsProvider interface {
+	ApiFilePath
+	RemovedApiFilePath() android.Path
+
+	ApiStubsSrcProvider
+}
+
 // droidstubs passes sources files through Metalava to generate stub .java files that only contain the API to be
 // documented, filtering out hidden classes and methods.  The resulting .java files are intended to be passed to
 // a droiddoc module to generate documentation.
@@ -282,6 +299,8 @@ func (d *Droidstubs) stubsFlags(ctx android.ModuleContext, cmd *android.RuleBuil
 func (d *Droidstubs) annotationsFlags(ctx android.ModuleContext, cmd *android.RuleBuilderCommand) {
 	if Bool(d.properties.Annotations_enabled) {
 		cmd.Flag("--include-annotations")
+
+		cmd.FlagWithArg("--exclude-annotation ", "androidx.annotation.RequiresApi")
 
 		validatingNullability :=
 			strings.Contains(String(d.Javadoc.properties.Args), "--validate-nullability-from-merged-stubs") ||
@@ -516,9 +535,6 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		d.apiLintTimestamp = android.PathForModuleOut(ctx, "metalava", "api_lint.timestamp")
 
 		// Note this string includes a special shell quote $' ... ', which decodes the "\n"s.
-		// However, because $' ... ' doesn't expand environmental variables, we can't just embed
-		// $PWD, so we have to terminate $'...', use "$PWD", then start $' ... ' again,
-		// which is why we have '"$PWD"$' in it.
 		//
 		// TODO: metalava also has a slightly different message hardcoded. Should we unify this
 		// message and metalava's one?
@@ -539,9 +555,9 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			msg += fmt.Sprintf(``+
 				`2. You can update the baseline by executing the following\n`+
 				`   command:\n`+
-				`       cp \\\n`+
-				`       "'"$PWD"$'/%s" \\\n`+
-				`       "'"$PWD"$'/%s"\n`+
+				`       (cd $ANDROID_BUILD_TOP && cp \\\n`+
+				`       "%s" \\\n`+
+				`       "%s")\n`+
 				`   To submit the revised baseline.txt to the main Android\n`+
 				`   repository, you will need approval.\n`, updatedBaselineOutput, baselineFile.Path())
 		} else {

@@ -213,7 +213,7 @@ type BaseModuleContext interface {
 
 	// GetDirectDep returns the Module and DependencyTag for the  direct dependency with the specified
 	// name, or nil if none exists.  If there are multiple dependencies on the same module it returns
-	// the first DependencyTag.  It skips any dependencies that are not an android.Module.
+	// the first DependencyTag.
 	GetDirectDep(name string) (blueprint.Module, blueprint.DependencyTag)
 
 	// VisitDirectDepsBlueprint calls visit for each direct dependency.  If there are multiple
@@ -688,7 +688,7 @@ type commonProperties struct {
 	// Override of module name when reporting licenses
 	Effective_package_name *string `blueprint:"mutated"`
 	// Notice files
-	Effective_license_text []string `blueprint:"mutated"`
+	Effective_license_text Paths `blueprint:"mutated"`
 	// License names
 	Effective_license_kinds []string `blueprint:"mutated"`
 	// License conditions
@@ -1500,7 +1500,7 @@ func (m *ModuleBase) computeInstallDeps(ctx ModuleContext) ([]*installPathsDepSe
 	var installDeps []*installPathsDepSet
 	var packagingSpecs []*packagingSpecsDepSet
 	ctx.VisitDirectDeps(func(dep Module) {
-		if IsInstallDepNeeded(ctx.OtherModuleDependencyTag(dep)) {
+		if IsInstallDepNeeded(ctx.OtherModuleDependencyTag(dep)) && !dep.IsHideFromMake() {
 			installDeps = append(installDeps, dep.base().installFilesDepSet)
 			packagingSpecs = append(packagingSpecs, dep.base().packagingSpecsDepSet)
 		}
@@ -1809,8 +1809,8 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 	if m.Enabled() {
 		// ensure all direct android.Module deps are enabled
 		ctx.VisitDirectDepsBlueprint(func(bm blueprint.Module) {
-			if _, ok := bm.(Module); ok {
-				ctx.validateAndroidModule(bm, ctx.baseModuleContext.strictVisitDeps)
+			if m, ok := bm.(Module); ok {
+				ctx.validateAndroidModule(bm, ctx.OtherModuleDependencyTag(m), ctx.baseModuleContext.strictVisitDeps)
 			}
 		})
 
@@ -2234,7 +2234,12 @@ func (b *baseModuleContext) AddMissingDependencies(deps []string) {
 	}
 }
 
-func (b *baseModuleContext) validateAndroidModule(module blueprint.Module, strict bool) Module {
+type AllowDisabledModuleDependency interface {
+	blueprint.DependencyTag
+	AllowDisabledModuleDependency(target Module) bool
+}
+
+func (b *baseModuleContext) validateAndroidModule(module blueprint.Module, tag blueprint.DependencyTag, strict bool) Module {
 	aModule, _ := module.(Module)
 
 	if !strict {
@@ -2247,21 +2252,24 @@ func (b *baseModuleContext) validateAndroidModule(module blueprint.Module, stric
 	}
 
 	if !aModule.Enabled() {
-		if b.Config().AllowMissingDependencies() {
-			b.AddMissingDependencies([]string{b.OtherModuleName(aModule)})
-		} else {
-			b.ModuleErrorf("depends on disabled module %q", b.OtherModuleName(aModule))
+		if t, ok := tag.(AllowDisabledModuleDependency); !ok || !t.AllowDisabledModuleDependency(aModule) {
+			if b.Config().AllowMissingDependencies() {
+				b.AddMissingDependencies([]string{b.OtherModuleName(aModule)})
+			} else {
+				b.ModuleErrorf("depends on disabled module %q", b.OtherModuleName(aModule))
+			}
 		}
 		return nil
 	}
 	return aModule
 }
 
-func (b *baseModuleContext) getDirectDepInternal(name string, tag blueprint.DependencyTag) (blueprint.Module, blueprint.DependencyTag) {
-	type dep struct {
-		mod blueprint.Module
-		tag blueprint.DependencyTag
-	}
+type dep struct {
+	mod blueprint.Module
+	tag blueprint.DependencyTag
+}
+
+func (b *baseModuleContext) getDirectDepsInternal(name string, tag blueprint.DependencyTag) []dep {
 	var deps []dep
 	b.VisitDirectDepsBlueprint(func(module blueprint.Module) {
 		if aModule, _ := module.(Module); aModule != nil {
@@ -2278,9 +2286,33 @@ func (b *baseModuleContext) getDirectDepInternal(name string, tag blueprint.Depe
 			}
 		}
 	})
+	return deps
+}
+
+func (b *baseModuleContext) getDirectDepInternal(name string, tag blueprint.DependencyTag) (blueprint.Module, blueprint.DependencyTag) {
+	deps := b.getDirectDepsInternal(name, tag)
 	if len(deps) == 1 {
 		return deps[0].mod, deps[0].tag
 	} else if len(deps) >= 2 {
+		panic(fmt.Errorf("Multiple dependencies having same BaseModuleName() %q found from %q",
+			name, b.ModuleName()))
+	} else {
+		return nil, nil
+	}
+}
+
+func (b *baseModuleContext) getDirectDepFirstTag(name string) (blueprint.Module, blueprint.DependencyTag) {
+	foundDeps := b.getDirectDepsInternal(name, nil)
+	deps := map[blueprint.Module]bool{}
+	for _, dep := range foundDeps {
+		deps[dep.mod] = true
+	}
+	if len(deps) == 1 {
+		return foundDeps[0].mod, foundDeps[0].tag
+	} else if len(deps) >= 2 {
+		// this could happen if two dependencies have the same name in different namespaces
+		// TODO(b/186554727): this should not occur if namespaces are handled within
+		// getDirectDepsInternal.
 		panic(fmt.Errorf("Multiple dependencies having same BaseModuleName() %q found from %q",
 			name, b.ModuleName()))
 	} else {
@@ -2305,8 +2337,11 @@ func (m *moduleContext) GetDirectDepWithTag(name string, tag blueprint.Dependenc
 	return module
 }
 
+// GetDirectDep returns the Module and DependencyTag for the direct dependency with the specified
+// name, or nil if none exists. If there are multiple dependencies on the same module it returns the
+// first DependencyTag.
 func (b *baseModuleContext) GetDirectDep(name string) (blueprint.Module, blueprint.DependencyTag) {
-	return b.getDirectDepInternal(name, nil)
+	return b.getDirectDepFirstTag(name)
 }
 
 func (b *baseModuleContext) VisitDirectDepsBlueprint(visit func(blueprint.Module)) {
@@ -2315,7 +2350,7 @@ func (b *baseModuleContext) VisitDirectDepsBlueprint(visit func(blueprint.Module
 
 func (b *baseModuleContext) VisitDirectDeps(visit func(Module)) {
 	b.bp.VisitDirectDeps(func(module blueprint.Module) {
-		if aModule := b.validateAndroidModule(module, b.strictVisitDeps); aModule != nil {
+		if aModule := b.validateAndroidModule(module, b.bp.OtherModuleDependencyTag(module), b.strictVisitDeps); aModule != nil {
 			visit(aModule)
 		}
 	})
@@ -2323,7 +2358,7 @@ func (b *baseModuleContext) VisitDirectDeps(visit func(Module)) {
 
 func (b *baseModuleContext) VisitDirectDepsWithTag(tag blueprint.DependencyTag, visit func(Module)) {
 	b.bp.VisitDirectDeps(func(module blueprint.Module) {
-		if aModule := b.validateAndroidModule(module, b.strictVisitDeps); aModule != nil {
+		if aModule := b.validateAndroidModule(module, b.bp.OtherModuleDependencyTag(module), b.strictVisitDeps); aModule != nil {
 			if b.bp.OtherModuleDependencyTag(aModule) == tag {
 				visit(aModule)
 			}
@@ -2335,7 +2370,7 @@ func (b *baseModuleContext) VisitDirectDepsIf(pred func(Module) bool, visit func
 	b.bp.VisitDirectDepsIf(
 		// pred
 		func(module blueprint.Module) bool {
-			if aModule := b.validateAndroidModule(module, b.strictVisitDeps); aModule != nil {
+			if aModule := b.validateAndroidModule(module, b.bp.OtherModuleDependencyTag(module), b.strictVisitDeps); aModule != nil {
 				return pred(aModule)
 			} else {
 				return false
@@ -2349,7 +2384,7 @@ func (b *baseModuleContext) VisitDirectDepsIf(pred func(Module) bool, visit func
 
 func (b *baseModuleContext) VisitDepsDepthFirst(visit func(Module)) {
 	b.bp.VisitDepsDepthFirst(func(module blueprint.Module) {
-		if aModule := b.validateAndroidModule(module, b.strictVisitDeps); aModule != nil {
+		if aModule := b.validateAndroidModule(module, b.bp.OtherModuleDependencyTag(module), b.strictVisitDeps); aModule != nil {
 			visit(aModule)
 		}
 	})
@@ -2359,7 +2394,7 @@ func (b *baseModuleContext) VisitDepsDepthFirstIf(pred func(Module) bool, visit 
 	b.bp.VisitDepsDepthFirstIf(
 		// pred
 		func(module blueprint.Module) bool {
-			if aModule := b.validateAndroidModule(module, b.strictVisitDeps); aModule != nil {
+			if aModule := b.validateAndroidModule(module, b.bp.OtherModuleDependencyTag(module), b.strictVisitDeps); aModule != nil {
 				return pred(aModule)
 			} else {
 				return false

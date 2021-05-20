@@ -339,12 +339,7 @@ func init() {
 	})
 
 	// Register sdk member types.
-	android.RegisterSdkMemberType(&sdkLibrarySdkMemberType{
-		android.SdkMemberTypeBase{
-			PropertyName: "java_sdk_libs",
-			SupportsSdk:  true,
-		},
-	})
+	android.RegisterSdkMemberType(javaSdkLibrarySdkMemberType)
 }
 
 func RegisterSdkLibraryBuildComponents(ctx android.RegistrationContext) {
@@ -398,6 +393,9 @@ type sdkLibraryProperties struct {
 
 	// List of Java libraries that will be in the classpath when building stubs
 	Stub_only_libs []string `android:"arch_variant"`
+
+	// List of Java libraries that will included in stub libraries
+	Stub_only_static_libs []string `android:"arch_variant"`
 
 	// list of package names that will be documented and publicized as API.
 	// This allows the API to be restricted to a subset of the source files provided.
@@ -534,6 +532,11 @@ type scopePaths struct {
 	// This is not the implementation jar, it still only contains stubs.
 	stubsImplPath android.Paths
 
+	// The dex jar for the stubs.
+	//
+	// This is not the implementation jar, it still only contains stubs.
+	stubsDexJarPath android.Path
+
 	// The API specification file, e.g. system_current.txt.
 	currentApiFilePath android.OptionalPath
 
@@ -549,6 +552,9 @@ func (paths *scopePaths) extractStubsLibraryInfoFromDependency(ctx android.Modul
 		lib := ctx.OtherModuleProvider(dep, JavaInfoProvider).(JavaInfo)
 		paths.stubsHeaderPath = lib.HeaderJars
 		paths.stubsImplPath = lib.ImplementationJars
+
+		libDep := dep.(UsesLibraryDependency)
+		paths.stubsDexJarPath = libDep.DexJarBuildPath()
 		return nil
 	} else {
 		return fmt.Errorf("expected module that has JavaInfoProvider, e.g. java_library")
@@ -825,8 +831,22 @@ func (c *commonToSdkLibraryAndImport) selectHeaderJarsForSdkVersion(ctx android.
 		return PrebuiltJars(ctx, c.moduleBase.BaseModuleName(), sdkVersion)
 	}
 
+	paths := c.selectScopePaths(ctx, sdkVersion.Kind)
+	if paths == nil {
+		return nil
+	}
+
+	return paths.stubsHeaderPath
+}
+
+// selectScopePaths returns the *scopePaths appropriate for the specific kind.
+//
+// If the module does not support the specific kind then it will return the *scopePaths for the
+// closest kind which is a subset of the requested kind. e.g. if requesting android.SdkModule then
+// it will return *scopePaths for android.SdkSystem if available or android.SdkPublic of not.
+func (c *commonToSdkLibraryAndImport) selectScopePaths(ctx android.BaseModuleContext, kind android.SdkKind) *scopePaths {
 	var apiScope *apiScope
-	switch sdkVersion.Kind {
+	switch kind {
 	case android.SdkSystem:
 		apiScope = apiScopeSystem
 	case android.SdkModule:
@@ -851,7 +871,17 @@ func (c *commonToSdkLibraryAndImport) selectHeaderJarsForSdkVersion(ctx android.
 		return nil
 	}
 
-	return paths.stubsHeaderPath
+	return paths
+}
+
+// to satisfy SdkLibraryDependency interface
+func (c *commonToSdkLibraryAndImport) SdkApiStubDexJar(ctx android.BaseModuleContext, kind android.SdkKind) android.Path {
+	paths := c.selectScopePaths(ctx, kind)
+	if paths == nil {
+		return nil
+	}
+
+	return paths.stubsDexJarPath
 }
 
 func (c *commonToSdkLibraryAndImport) sdkComponentPropertiesForChildLibrary() interface{} {
@@ -870,9 +900,15 @@ func (c *commonToSdkLibraryAndImport) sdkComponentPropertiesForChildLibrary() in
 	return componentProps
 }
 
-// Check if this can be used as a shared library.
 func (c *commonToSdkLibraryAndImport) sharedLibrary() bool {
 	return proptools.BoolDefault(c.commonSdkLibraryProperties.Shared_library, true)
+}
+
+// Check if the stub libraries should be compiled for dex
+func (c *commonToSdkLibraryAndImport) stubLibrariesCompiledForDex() bool {
+	// Always compile the dex file files for the stub libraries if they will be used on the
+	// bootclasspath.
+	return !c.sharedLibrary()
 }
 
 // Properties related to the use of a module as an component of a java_sdk_library.
@@ -944,6 +980,13 @@ type SdkLibraryDependency interface {
 	// jars for the stubs. The latter should only be needed when generating JavaDoc as otherwise
 	// they are identical to the corresponding header jars.
 	SdkImplementationJars(ctx android.BaseModuleContext, sdkVersion android.SdkSpec) android.Paths
+
+	// SdkApiStubDexJar returns the dex jar for the stubs. It is needed by the hiddenapi processing
+	// tool which processes dex files.
+	SdkApiStubDexJar(ctx android.BaseModuleContext, kind android.SdkKind) android.Path
+
+	// sharedLibrary returns true if this can be used as a shared library.
+	sharedLibrary() bool
 }
 
 type SdkLibrary struct {
@@ -1192,16 +1235,13 @@ func childModuleVisibility(childVisibility []string) []string {
 
 // Creates the implementation java library
 func (module *SdkLibrary) createImplLibrary(mctx android.DefaultableHookContext) {
-	moduleNamePtr := proptools.StringPtr(module.BaseModuleName())
-
 	visibility := childModuleVisibility(module.sdkLibraryProperties.Impl_library_visibility)
 
 	props := struct {
-		Name              *string
-		Visibility        []string
-		Instrument        bool
-		Libs              []string
-		ConfigurationName *string
+		Name       *string
+		Visibility []string
+		Instrument bool
+		Libs       []string
 	}{
 		Name:       proptools.StringPtr(module.implLibraryModuleName()),
 		Visibility: visibility,
@@ -1210,9 +1250,6 @@ func (module *SdkLibrary) createImplLibrary(mctx android.DefaultableHookContext)
 		// Set the impl_only libs. Note that the module's "Libs" get appended as well, via the
 		// addition of &module.properties below.
 		Libs: module.sdkLibraryProperties.Impl_only_libs,
-
-		// Make the created library behave as if it had the same name as this module.
-		ConfigurationName: moduleNamePtr,
 	}
 
 	properties := []interface{}{
@@ -1239,6 +1276,7 @@ func (module *SdkLibrary) createStubsLibrary(mctx android.DefaultableHookContext
 		System_modules *string
 		Patch_module   *string
 		Libs           []string
+		Static_libs    []string
 		Compile_dex    *bool
 		Java_version   *string
 		Openjdk9       struct {
@@ -1263,6 +1301,7 @@ func (module *SdkLibrary) createStubsLibrary(mctx android.DefaultableHookContext
 	props.Patch_module = module.properties.Patch_module
 	props.Installable = proptools.BoolPtr(false)
 	props.Libs = module.sdkLibraryProperties.Stub_only_libs
+	props.Static_libs = module.sdkLibraryProperties.Stub_only_static_libs
 	// The stub-annotations library contains special versions of the annotations
 	// with CLASS retention policy, so that they're kept.
 	if proptools.Bool(module.sdkLibraryProperties.Annotations_enabled) {
@@ -1273,9 +1312,13 @@ func (module *SdkLibrary) createStubsLibrary(mctx android.DefaultableHookContext
 	// We compile the stubs for 1.8 in line with the main android.jar stubs, and potential
 	// interop with older developer tools that don't support 1.9.
 	props.Java_version = proptools.StringPtr("1.8")
-	if module.dexProperties.Compile_dex != nil {
-		props.Compile_dex = module.dexProperties.Compile_dex
+
+	// The imports need to be compiled to dex if the java_sdk_library requests it.
+	compileDex := module.dexProperties.Compile_dex
+	if module.stubLibrariesCompiledForDex() {
+		compileDex = proptools.BoolPtr(true)
 	}
+	props.Compile_dex = compileDex
 
 	// Dist the class jar artifact for sdk builds.
 	if !Bool(module.sdkLibraryProperties.No_dist) {
@@ -1503,7 +1546,7 @@ func PrebuiltJars(ctx android.BaseModuleContext, baseName string, s android.SdkS
 func withinSameApexesAs(ctx android.BaseModuleContext, other android.Module) bool {
 	apexInfo := ctx.Provider(android.ApexInfoProvider).(android.ApexInfo)
 	otherApexInfo := ctx.OtherModuleProvider(other, android.ApexInfoProvider).(android.ApexInfo)
-	return len(otherApexInfo.InApexes) > 0 && reflect.DeepEqual(apexInfo.InApexes, otherApexInfo.InApexes)
+	return len(otherApexInfo.InApexVariants) > 0 && reflect.DeepEqual(apexInfo.InApexVariants, otherApexInfo.InApexVariants)
 }
 
 func (module *SdkLibrary) sdkJars(ctx android.BaseModuleContext, sdkVersion android.SdkSpec, headerJars bool) android.Paths {
@@ -1720,6 +1763,7 @@ func SdkLibraryFactory() android.Module {
 
 	module.InitSdkLibraryProperties()
 	android.InitApexModule(module)
+	android.InitSdkAwareModule(module)
 	InitJavaModule(module, android.HostAndDeviceSupported)
 
 	// Initialize the map from scope to scope specific properties.
@@ -1781,6 +1825,9 @@ type sdkLibraryImportProperties struct {
 	// List of shared java libs, common to all scopes, that this module has
 	// dependencies to
 	Libs []string
+
+	// If set to true, compile dex files for the stubs. Defaults to false.
+	Compile_dex *bool
 }
 
 type SdkLibraryImport struct {
@@ -1916,6 +1963,7 @@ func (module *SdkLibraryImport) createJavaImportForStubs(mctx android.Defaultabl
 		Libs        []string
 		Jars        []string
 		Prefer      *bool
+		Compile_dex *bool
 	}{}
 	props.Name = proptools.StringPtr(module.stubsLibraryModuleName(apiScope))
 	props.Sdk_version = scopeProperties.Sdk_version
@@ -1926,6 +1974,13 @@ func (module *SdkLibraryImport) createJavaImportForStubs(mctx android.Defaultabl
 
 	// The imports are preferred if the java_sdk_library_import is preferred.
 	props.Prefer = proptools.BoolPtr(module.prebuilt.Prefer())
+
+	// The imports need to be compiled to dex if the java_sdk_library_import requests it.
+	compileDex := module.properties.Compile_dex
+	if module.stubLibrariesCompiledForDex() {
+		compileDex = proptools.BoolPtr(true)
+	}
+	props.Compile_dex = compileDex
 
 	mctx.CreateModule(ImportFactory, &props, module.sdkComponentPropertiesForChildLibrary())
 }
@@ -2066,8 +2121,7 @@ func (module *SdkLibraryImport) GenerateAndroidBuildActions(ctx android.ModuleCo
 			di := ctx.OtherModuleProvider(deapexerModule, android.DeapexerProvider).(android.DeapexerInfo)
 			if dexOutputPath := di.PrebuiltExportPath(module.BaseModuleName(), ".dexjar"); dexOutputPath != nil {
 				module.dexJarFile = dexOutputPath
-				module.initHiddenAPI(ctx, module.configurationName)
-				module.hiddenAPIExtractInformation(ctx, dexOutputPath, module.findScopePaths(apiScopePublic).stubsImplPath[0])
+				module.initHiddenAPI(ctx, dexOutputPath, module.findScopePaths(apiScopePublic).stubsImplPath[0], nil)
 			} else {
 				// This should never happen as a variant for a prebuilt_apex is only created if the
 				// prebuilt_apex has been configured to export the java library dex file.
@@ -2148,6 +2202,20 @@ func (module *SdkLibraryImport) LintDepSets() LintDepSets {
 		return LintDepSets{}
 	} else {
 		return module.implLibraryModule.LintDepSets()
+	}
+}
+
+func (module *SdkLibraryImport) getStrictUpdatabilityLinting() bool {
+	if module.implLibraryModule == nil {
+		return false
+	} else {
+		return module.implLibraryModule.getStrictUpdatabilityLinting()
+	}
+}
+
+func (module *SdkLibraryImport) setStrictUpdatabilityLinting(strictLinting bool) {
+	if module.implLibraryModule != nil {
+		module.implLibraryModule.setStrictUpdatabilityLinting(strictLinting)
 	}
 }
 
@@ -2329,14 +2397,18 @@ func (s *sdkLibrarySdkMemberType) CreateVariantPropertiesStruct() android.SdkMem
 	return &sdkLibrarySdkMemberProperties{}
 }
 
+var javaSdkLibrarySdkMemberType = &sdkLibrarySdkMemberType{
+	android.SdkMemberTypeBase{
+		PropertyName: "java_sdk_libs",
+		SupportsSdk:  true,
+	},
+}
+
 type sdkLibrarySdkMemberProperties struct {
 	android.SdkMemberPropertiesBase
 
 	// Scope to per scope properties.
 	Scopes map[*apiScope]scopeProperties
-
-	// Additional libraries that the exported stubs libraries depend upon.
-	Libs []string
 
 	// The Java stubs source files.
 	Stub_srcs []string
@@ -2347,6 +2419,9 @@ type sdkLibrarySdkMemberProperties struct {
 	// True if the java_sdk_library_import is for a shared library, false
 	// otherwise.
 	Shared_library *bool
+
+	// True if the stub imports should produce dex jars.
+	Compile_dex *bool
 
 	// The paths to the doctag files to add to the prebuilt.
 	Doctag_paths android.Paths
@@ -2386,9 +2461,9 @@ func (s *sdkLibrarySdkMemberProperties) PopulateFromVariant(ctx android.SdkMembe
 		}
 	}
 
-	s.Libs = sdk.properties.Libs
 	s.Naming_scheme = sdk.commonSdkLibraryProperties.Naming_scheme
 	s.Shared_library = proptools.BoolPtr(sdk.sharedLibrary())
+	s.Compile_dex = sdk.dexProperties.Compile_dex
 	s.Doctag_paths = sdk.doctagPaths
 }
 
@@ -2398,6 +2473,9 @@ func (s *sdkLibrarySdkMemberProperties) AddToPropertySet(ctx android.SdkMemberCo
 	}
 	if s.Shared_library != nil {
 		propertySet.AddProperty("shared_library", *s.Shared_library)
+	}
+	if s.Compile_dex != nil {
+		propertySet.AddProperty("compile_dex", *s.Compile_dex)
 	}
 
 	for _, apiScope := range allApiScopes {
@@ -2414,11 +2492,18 @@ func (s *sdkLibrarySdkMemberProperties) AddToPropertySet(ctx android.SdkMemberCo
 			}
 			scopeSet.AddProperty("jars", jars)
 
-			// Merge the stubs source jar into the snapshot zip so that when it is unpacked
-			// the source files are also unpacked.
-			snapshotRelativeDir := filepath.Join(scopeDir, ctx.Name()+"_stub_sources")
-			ctx.SnapshotBuilder().UnzipToSnapshot(properties.StubsSrcJar, snapshotRelativeDir)
-			scopeSet.AddProperty("stub_srcs", []string{snapshotRelativeDir})
+			if ctx.SdkModuleContext().Config().IsEnvTrue("SOONG_SDK_SNAPSHOT_USE_SRCJAR") {
+				// Copy the stubs source jar into the snapshot zip as is.
+				srcJarSnapshotPath := filepath.Join(scopeDir, ctx.Name()+".srcjar")
+				ctx.SnapshotBuilder().CopyToSnapshot(properties.StubsSrcJar, srcJarSnapshotPath)
+				scopeSet.AddProperty("stub_srcs", []string{srcJarSnapshotPath})
+			} else {
+				// Merge the stubs source jar into the snapshot zip so that when it is unpacked
+				// the source files are also unpacked.
+				snapshotRelativeDir := filepath.Join(scopeDir, ctx.Name()+"_stub_sources")
+				ctx.SnapshotBuilder().UnzipToSnapshot(properties.StubsSrcJar, snapshotRelativeDir)
+				scopeSet.AddProperty("stub_srcs", []string{snapshotRelativeDir})
+			}
 
 			if properties.CurrentApiFile != nil {
 				currentApiSnapshotPath := filepath.Join(scopeDir, ctx.Name()+".txt")
@@ -2446,9 +2531,5 @@ func (s *sdkLibrarySdkMemberProperties) AddToPropertySet(ctx android.SdkMemberCo
 			dests = append(dests, dest)
 		}
 		propertySet.AddProperty("doctag_files", dests)
-	}
-
-	if len(s.Libs) > 0 {
-		propertySet.AddPropertyWithTag("libs", s.Libs, ctx.SnapshotBuilder().SdkMemberReferencePropertyTag(false))
 	}
 }

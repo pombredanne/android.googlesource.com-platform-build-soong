@@ -432,14 +432,10 @@ func (library *libraryDecorator) compilerFlags(ctx ModuleContext, flags Flags) F
 func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) android.Path {
 	var outputFile android.ModuleOutPath
 	var fileName string
-	var srcPath android.Path
+	srcPath := library.srcPath(ctx, deps)
 
 	if library.sourceProvider != nil {
-		// Assume the first source from the source provider is the library entry point.
-		srcPath = library.sourceProvider.Srcs()[0]
 		deps.srcProviderFiles = append(deps.srcProviderFiles, library.sourceProvider.Srcs()...)
-	} else {
-		srcPath, _ = srcPathFromModuleSrcs(ctx, library.baseCompiler.Properties.Srcs)
 	}
 
 	flags.RustFlags = append(flags.RustFlags, deps.depFlags...)
@@ -457,25 +453,25 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 		fileName = library.getStem(ctx) + ctx.toolchain().RlibSuffix()
 		outputFile = android.PathForModuleOut(ctx, fileName)
 
-		TransformSrctoRlib(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
+		TransformSrctoRlib(ctx, srcPath, deps, flags, outputFile)
 	} else if library.dylib() {
 		fileName = library.getStem(ctx) + ctx.toolchain().DylibSuffix()
 		outputFile = android.PathForModuleOut(ctx, fileName)
 
-		TransformSrctoDylib(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
+		TransformSrctoDylib(ctx, srcPath, deps, flags, outputFile)
 	} else if library.static() {
 		fileName = library.getStem(ctx) + ctx.toolchain().StaticLibSuffix()
 		outputFile = android.PathForModuleOut(ctx, fileName)
 
-		TransformSrctoStatic(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
+		TransformSrctoStatic(ctx, srcPath, deps, flags, outputFile)
 	} else if library.shared() {
 		fileName = library.sharedLibFilename(ctx)
 		outputFile = android.PathForModuleOut(ctx, fileName)
 
-		TransformSrctoShared(ctx, srcPath, deps, flags, outputFile, deps.linkDirs)
+		TransformSrctoShared(ctx, srcPath, deps, flags, outputFile)
 	}
 
-	if !library.rlib() && library.stripper.NeedsStrip(ctx) {
+	if !library.rlib() && !library.static() && library.stripper.NeedsStrip(ctx) {
 		strippedOutputFile := android.PathForModuleOut(ctx, "stripped", fileName)
 		library.stripper.StripExecutableOrSharedLib(ctx, outputFile, strippedOutputFile)
 		library.strippedOutputFile = android.OptionalPathForPath(strippedOutputFile)
@@ -496,6 +492,7 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 		ctx.SetProvider(cc.SharedLibraryInfoProvider, cc.SharedLibraryInfo{
 			SharedLibrary:           outputFile,
 			UnstrippedSharedLibrary: outputFile,
+			Target:                  ctx.Target(),
 		})
 	}
 
@@ -511,6 +508,31 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 	library.flagExporter.setProvider(ctx)
 
 	return outputFile
+}
+
+func (library *libraryDecorator) srcPath(ctx ModuleContext, deps PathDeps) android.Path {
+	if library.sourceProvider != nil {
+		// Assume the first source from the source provider is the library entry point.
+		return library.sourceProvider.Srcs()[0]
+	} else {
+		path, _ := srcPathFromModuleSrcs(ctx, library.baseCompiler.Properties.Srcs)
+		return path
+	}
+}
+
+func (library *libraryDecorator) rustdoc(ctx ModuleContext, flags Flags,
+	deps PathDeps) android.OptionalPath {
+	// rustdoc has builtin support for documenting config specific information
+	// regardless of the actual config it was given
+	// (https://doc.rust-lang.org/rustdoc/advanced-features.html#cfgdoc-documenting-platform-specific-or-feature-specific-information),
+	// so we generate the rustdoc for only the primary module so that we have a
+	// single set of docs to refer to.
+	if ctx.Module() != ctx.PrimaryModule() {
+		return android.OptionalPath{}
+	}
+
+	return android.OptionalPathForPath(Rustdoc(ctx, library.srcPath(ctx, deps),
+		deps, flags))
 }
 
 func (library *libraryDecorator) getStem(ctx ModuleContext) string {

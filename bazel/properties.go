@@ -35,54 +35,33 @@ const BazelTargetModuleNamePrefix = "__bp2build__"
 
 var productVariableSubstitutionPattern = regexp.MustCompile("%(d|s)")
 
-// Label is used to represent a Bazel compatible Label. Also stores the original bp text to support
-// string replacement.
+// Label is used to represent a Bazel compatible Label. Also stores the original
+// bp text to support string replacement.
 type Label struct {
-	Bp_text string
-	Label   string
+	// The string representation of a Bazel target label. This can be a relative
+	// or fully qualified label. These labels are used for generating BUILD
+	// files with bp2build.
+	Label string
+
+	// The original Soong/Blueprint module name that the label was derived from.
+	// This is used for replacing references to the original name with the new
+	// label, for example in genrule cmds.
+	//
+	// While there is a reversible 1:1 mapping from the module name to Bazel
+	// label with bp2build that could make computing the original module name
+	// from the label automatic, it is not the case for handcrafted targets,
+	// where modules can have a custom label mapping through the { bazel_module:
+	// { label: <label> } } property.
+	//
+	// With handcrafted labels, those modules don't go through bp2build
+	// conversion, but relies on handcrafted targets in the source tree.
+	OriginalModuleName string
 }
 
 // LabelList is used to represent a list of Bazel labels.
 type LabelList struct {
 	Includes []Label
 	Excludes []Label
-}
-
-// GlobsInDir returns a list of glob expressions for a list of extensions
-// (optionally recursive) within a directory.
-func GlobsInDir(dir string, recursive bool, extensions []string) []string {
-	globs := []string{}
-
-	globInfix := ""
-	if dir == "." {
-		if recursive {
-			// e.g "**/*.h"
-			globInfix = "**/"
-		} // else e.g. "*.h"
-		for _, ext := range extensions {
-			globs = append(globs, globInfix+"*"+ext)
-		}
-	} else {
-		if recursive {
-			// e.g. "foo/bar/**/*.h"
-			dir += "/**"
-		} // else e.g. "foo/bar/*.h"
-		for _, ext := range extensions {
-			globs = append(globs, dir+"/*"+ext)
-		}
-	}
-	return globs
-}
-
-// LooseHdrsGlobs returns the list of non-recursive header globs for each parent directory of
-// each source file in this LabelList's Includes.
-func (ll *LabelList) LooseHdrsGlobs(exts []string) []string {
-	var globs []string
-	for _, parentDir := range ll.uniqueParentDirectories() {
-		globs = append(globs,
-			GlobsInDir(parentDir, false, exts)...)
-	}
-	return globs
 }
 
 // uniqueParentDirectories returns a list of the unique parent directories for
@@ -109,7 +88,9 @@ func (ll *LabelList) Append(other LabelList) {
 	}
 }
 
-func UniqueBazelLabels(originalLabels []Label) []Label {
+// UniqueSortedBazelLabels takes a []Label and deduplicates the labels, and returns
+// the slice in a sorted order.
+func UniqueSortedBazelLabels(originalLabels []Label) []Label {
 	uniqueLabelsSet := make(map[Label]bool)
 	for _, l := range originalLabels {
 		uniqueLabelsSet[l] = true
@@ -126,8 +107,8 @@ func UniqueBazelLabels(originalLabels []Label) []Label {
 
 func UniqueBazelLabelList(originalLabelList LabelList) LabelList {
 	var uniqueLabelList LabelList
-	uniqueLabelList.Includes = UniqueBazelLabels(originalLabelList.Includes)
-	uniqueLabelList.Excludes = UniqueBazelLabels(originalLabelList.Excludes)
+	uniqueLabelList.Includes = UniqueSortedBazelLabels(originalLabelList.Includes)
+	uniqueLabelList.Excludes = UniqueSortedBazelLabels(originalLabelList.Excludes)
 	return uniqueLabelList
 }
 
@@ -179,6 +160,14 @@ func SubtractBazelLabels(haystack []Label, needle []Label) []Label {
 	return labels
 }
 
+// Appends two LabelLists, returning the combined list.
+func AppendBazelLabelLists(a LabelList, b LabelList) LabelList {
+	var result LabelList
+	result.Includes = append(a.Includes, b.Includes...)
+	result.Excludes = append(a.Excludes, b.Excludes...)
+	return result
+}
+
 // Subtract needle from haystack
 func SubtractBazelLabelList(haystack LabelList, needle LabelList) LabelList {
 	var result LabelList
@@ -202,6 +191,15 @@ const (
 	OS_LINUX        = "linux_glibc"
 	OS_LINUX_BIONIC = "linux_bionic"
 	OS_WINDOWS      = "windows"
+
+	// This is the string representation of the default condition wherever a
+	// configurable attribute is used in a select statement, i.e.
+	// //conditions:default for Bazel.
+	//
+	// This is consistently named "conditions_default" to mirror the Soong
+	// config variable default key in an Android.bp file, although there's no
+	// integration with Soong config variables (yet).
+	CONDITIONS_DEFAULT = "conditions_default"
 )
 
 var (
@@ -213,26 +211,73 @@ var (
 	// A map of architectures to the Bazel label of the constraint_value
 	// for the @platforms//cpu:cpu constraint_setting
 	PlatformArchMap = map[string]string{
-		ARCH_ARM:    "//build/bazel/platforms/arch:arm",
-		ARCH_ARM64:  "//build/bazel/platforms/arch:arm64",
-		ARCH_X86:    "//build/bazel/platforms/arch:x86",
-		ARCH_X86_64: "//build/bazel/platforms/arch:x86_64",
+		ARCH_ARM:           "//build/bazel/platforms/arch:arm",
+		ARCH_ARM64:         "//build/bazel/platforms/arch:arm64",
+		ARCH_X86:           "//build/bazel/platforms/arch:x86",
+		ARCH_X86_64:        "//build/bazel/platforms/arch:x86_64",
+		CONDITIONS_DEFAULT: "//conditions:default", // The default condition of as arch select map.
 	}
 
 	// A map of target operating systems to the Bazel label of the
 	// constraint_value for the @platforms//os:os constraint_setting
 	PlatformOsMap = map[string]string{
-		OS_ANDROID:      "//build/bazel/platforms/os:android",
-		OS_DARWIN:       "//build/bazel/platforms/os:darwin",
-		OS_FUCHSIA:      "//build/bazel/platforms/os:fuchsia",
-		OS_LINUX:        "//build/bazel/platforms/os:linux",
-		OS_LINUX_BIONIC: "//build/bazel/platforms/os:linux_bionic",
-		OS_WINDOWS:      "//build/bazel/platforms/os:windows",
+		OS_ANDROID:         "//build/bazel/platforms/os:android",
+		OS_DARWIN:          "//build/bazel/platforms/os:darwin",
+		OS_FUCHSIA:         "//build/bazel/platforms/os:fuchsia",
+		OS_LINUX:           "//build/bazel/platforms/os:linux",
+		OS_LINUX_BIONIC:    "//build/bazel/platforms/os:linux_bionic",
+		OS_WINDOWS:         "//build/bazel/platforms/os:windows",
+		CONDITIONS_DEFAULT: "//conditions:default", // The default condition of an os select map.
 	}
 )
 
 type Attribute interface {
 	HasConfigurableValues() bool
+}
+
+// Represents an attribute whose value is a single label
+type LabelAttribute struct {
+	Value  Label
+	X86    Label
+	X86_64 Label
+	Arm    Label
+	Arm64  Label
+}
+
+func (attr *LabelAttribute) GetValueForArch(arch string) Label {
+	switch arch {
+	case ARCH_ARM:
+		return attr.Arm
+	case ARCH_ARM64:
+		return attr.Arm64
+	case ARCH_X86:
+		return attr.X86
+	case ARCH_X86_64:
+		return attr.X86_64
+	case CONDITIONS_DEFAULT:
+		return attr.Value
+	default:
+		panic("Invalid arch type")
+	}
+}
+
+func (attr *LabelAttribute) SetValueForArch(arch string, value Label) {
+	switch arch {
+	case ARCH_ARM:
+		attr.Arm = value
+	case ARCH_ARM64:
+		attr.Arm64 = value
+	case ARCH_X86:
+		attr.X86 = value
+	case ARCH_X86_64:
+		attr.X86_64 = value
+	default:
+		panic("Invalid arch type")
+	}
+}
+
+func (attr LabelAttribute) HasConfigurableValues() bool {
+	return attr.Arm.Label != "" || attr.Arm64.Label != "" || attr.X86.Label != "" || attr.X86_64.Label != ""
 }
 
 // Arch-specific label_list typed Bazel attribute values. This should correspond
@@ -243,6 +288,8 @@ type labelListArchValues struct {
 	Arm    LabelList
 	Arm64  LabelList
 	Common LabelList
+
+	ConditionsDefault LabelList
 }
 
 type labelListOsValues struct {
@@ -252,6 +299,8 @@ type labelListOsValues struct {
 	Linux       LabelList
 	LinuxBionic LabelList
 	Windows     LabelList
+
+	ConditionsDefault LabelList
 }
 
 // LabelListAttribute is used to represent a list of Bazel labels as an
@@ -276,7 +325,7 @@ func MakeLabelListAttribute(value LabelList) LabelListAttribute {
 	return LabelListAttribute{Value: UniqueBazelLabelList(value)}
 }
 
-// Append appends all values, including os and arch specific ones, from another
+// Append all values, including os and arch specific ones, from another
 // LabelListAttribute to this LabelListAttribute.
 func (attrs *LabelListAttribute) Append(other LabelListAttribute) {
 	for arch := range PlatformArchMap {
@@ -315,10 +364,11 @@ func (attrs LabelListAttribute) HasConfigurableValues() bool {
 
 func (attrs *LabelListAttribute) archValuePtrs() map[string]*LabelList {
 	return map[string]*LabelList{
-		ARCH_X86:    &attrs.ArchValues.X86,
-		ARCH_X86_64: &attrs.ArchValues.X86_64,
-		ARCH_ARM:    &attrs.ArchValues.Arm,
-		ARCH_ARM64:  &attrs.ArchValues.Arm64,
+		ARCH_X86:           &attrs.ArchValues.X86,
+		ARCH_X86_64:        &attrs.ArchValues.X86_64,
+		ARCH_ARM:           &attrs.ArchValues.Arm,
+		ARCH_ARM64:         &attrs.ArchValues.Arm64,
+		CONDITIONS_DEFAULT: &attrs.ArchValues.ConditionsDefault,
 	}
 }
 
@@ -342,12 +392,13 @@ func (attrs *LabelListAttribute) SetValueForArch(arch string, value LabelList) {
 
 func (attrs *LabelListAttribute) osValuePtrs() map[string]*LabelList {
 	return map[string]*LabelList{
-		OS_ANDROID:      &attrs.OsValues.Android,
-		OS_DARWIN:       &attrs.OsValues.Darwin,
-		OS_FUCHSIA:      &attrs.OsValues.Fuchsia,
-		OS_LINUX:        &attrs.OsValues.Linux,
-		OS_LINUX_BIONIC: &attrs.OsValues.LinuxBionic,
-		OS_WINDOWS:      &attrs.OsValues.Windows,
+		OS_ANDROID:         &attrs.OsValues.Android,
+		OS_DARWIN:          &attrs.OsValues.Darwin,
+		OS_FUCHSIA:         &attrs.OsValues.Fuchsia,
+		OS_LINUX:           &attrs.OsValues.Linux,
+		OS_LINUX_BIONIC:    &attrs.OsValues.LinuxBionic,
+		OS_WINDOWS:         &attrs.OsValues.Windows,
+		CONDITIONS_DEFAULT: &attrs.OsValues.ConditionsDefault,
 	}
 }
 
@@ -400,6 +451,8 @@ type stringListArchValues struct {
 	Arm    []string
 	Arm64  []string
 	Common []string
+
+	ConditionsDefault []string
 }
 
 type stringListOsValues struct {
@@ -409,6 +462,8 @@ type stringListOsValues struct {
 	Linux       []string
 	LinuxBionic []string
 	Windows     []string
+
+	ConditionsDefault []string
 }
 
 // HasConfigurableValues returns true if the attribute contains
@@ -430,10 +485,11 @@ func (attrs StringListAttribute) HasConfigurableValues() bool {
 
 func (attrs *StringListAttribute) archValuePtrs() map[string]*[]string {
 	return map[string]*[]string{
-		ARCH_X86:    &attrs.ArchValues.X86,
-		ARCH_X86_64: &attrs.ArchValues.X86_64,
-		ARCH_ARM:    &attrs.ArchValues.Arm,
-		ARCH_ARM64:  &attrs.ArchValues.Arm64,
+		ARCH_X86:           &attrs.ArchValues.X86,
+		ARCH_X86_64:        &attrs.ArchValues.X86_64,
+		ARCH_ARM:           &attrs.ArchValues.Arm,
+		ARCH_ARM64:         &attrs.ArchValues.Arm64,
+		CONDITIONS_DEFAULT: &attrs.ArchValues.ConditionsDefault,
 	}
 }
 
@@ -457,12 +513,13 @@ func (attrs *StringListAttribute) SetValueForArch(arch string, value []string) {
 
 func (attrs *StringListAttribute) osValuePtrs() map[string]*[]string {
 	return map[string]*[]string{
-		OS_ANDROID:      &attrs.OsValues.Android,
-		OS_DARWIN:       &attrs.OsValues.Darwin,
-		OS_FUCHSIA:      &attrs.OsValues.Fuchsia,
-		OS_LINUX:        &attrs.OsValues.Linux,
-		OS_LINUX_BIONIC: &attrs.OsValues.LinuxBionic,
-		OS_WINDOWS:      &attrs.OsValues.Windows,
+		OS_ANDROID:         &attrs.OsValues.Android,
+		OS_DARWIN:          &attrs.OsValues.Darwin,
+		OS_FUCHSIA:         &attrs.OsValues.Fuchsia,
+		OS_LINUX:           &attrs.OsValues.Linux,
+		OS_LINUX_BIONIC:    &attrs.OsValues.LinuxBionic,
+		OS_WINDOWS:         &attrs.OsValues.Windows,
+		CONDITIONS_DEFAULT: &attrs.OsValues.ConditionsDefault,
 	}
 }
 
@@ -482,6 +539,26 @@ func (attrs *StringListAttribute) SetValueForOS(os string, value []string) {
 		panic(fmt.Errorf("Unknown os: %s", os))
 	}
 	*v = value
+}
+
+// Append appends all values, including os and arch specific ones, from another
+// StringListAttribute to this StringListAttribute
+func (attrs *StringListAttribute) Append(other StringListAttribute) {
+	for arch := range PlatformArchMap {
+		this := attrs.GetValueForArch(arch)
+		that := other.GetValueForArch(arch)
+		this = append(this, that...)
+		attrs.SetValueForArch(arch, this)
+	}
+
+	for os := range PlatformOsMap {
+		this := attrs.GetValueForOS(os)
+		that := other.GetValueForOS(os)
+		this = append(this, that...)
+		attrs.SetValueForOS(os, this)
+	}
+
+	attrs.Value = append(attrs.Value, other.Value...)
 }
 
 // TryVariableSubstitution, replace string substitution formatting within each string in slice with

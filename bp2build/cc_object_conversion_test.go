@@ -55,8 +55,6 @@ func TestCcObjectBp2Build(t *testing.T) {
         "a/b/*.c"
     ],
     exclude_srcs: ["a/b/exclude.c"],
-
-    bazel_module: { bp2build_available: true },
 }
 `,
 			expectedBazelTargets: []string{`cc_object(
@@ -66,14 +64,10 @@ func TestCcObjectBp2Build(t *testing.T) {
         "-Wno-gcc-compat",
         "-Wall",
         "-Werror",
-    ],
-    hdrs = [
-        "a/b/bar.h",
-        "a/b/foo.h",
-    ],
-    local_include_dirs = [
-        "include",
-        ".",
+        "-Iinclude",
+        "-I$(BINDIR)/include",
+        "-I.",
+        "-I$(BINDIR)/.",
     ],
     srcs = ["a/b/c.c"],
 )`,
@@ -93,7 +87,6 @@ func TestCcObjectBp2Build(t *testing.T) {
     ],
 
     defaults: ["foo_defaults"],
-    bazel_module: { bp2build_available: true },
 }
 
 cc_defaults {
@@ -117,10 +110,10 @@ cc_defaults {
         "-Wall",
         "-Werror",
         "-fno-addrsig",
-    ],
-    local_include_dirs = [
-        "include",
-        ".",
+        "-Iinclude",
+        "-I$(BINDIR)/include",
+        "-I.",
+        "-I$(BINDIR)/.",
     ],
     srcs = ["a/b/c.c"],
 )`,
@@ -139,27 +132,29 @@ cc_defaults {
     name: "foo",
     srcs: ["a/b/c.c"],
     objs: ["bar"],
-
-    bazel_module: { bp2build_available: true },
 }
 
 cc_object {
     name: "bar",
     srcs: ["x/y/z.c"],
-
-    bazel_module: { bp2build_available: true },
 }
 `,
 			expectedBazelTargets: []string{`cc_object(
     name = "bar",
-    copts = ["-fno-addrsig"],
-    local_include_dirs = ["."],
+    copts = [
+        "-fno-addrsig",
+        "-I.",
+        "-I$(BINDIR)/.",
+    ],
     srcs = ["x/y/z.c"],
 )`, `cc_object(
     name = "foo",
-    copts = ["-fno-addrsig"],
+    copts = [
+        "-fno-addrsig",
+        "-I.",
+        "-I$(BINDIR)/.",
+    ],
     deps = [":bar"],
-    local_include_dirs = ["."],
     srcs = ["a/b/c.c"],
 )`,
 			},
@@ -177,8 +172,6 @@ cc_object {
     name: "foo",
     srcs: ["a/b/c.c"],
     include_build_directory: false,
-
-    bazel_module: { bp2build_available: true },
 }
 `,
 			expectedBazelTargets: []string{`cc_object(
@@ -201,8 +194,6 @@ cc_object {
             asflags: ["-DPLATFORM_SDK_VERSION=%d"],
         },
     },
-
-    bazel_module: { bp2build_available: true },
 }
 `,
 			expectedBazelTargets: []string{`cc_object(
@@ -233,14 +224,15 @@ cc_object {
 
 		ctx.RegisterModuleType(testCase.moduleTypeUnderTest, testCase.moduleTypeUnderTestFactory)
 		ctx.RegisterBp2BuildMutator(testCase.moduleTypeUnderTest, testCase.moduleTypeUnderTestBp2BuildMutator)
+		ctx.RegisterBp2BuildConfig(bp2buildConfig)
 		ctx.RegisterForBazelConversion()
 
 		_, errs := ctx.ParseFileList(dir, toParse)
-		if Errored(t, testCase.description, errs) {
+		if errored(t, testCase.description, errs) {
 			continue
 		}
 		_, errs = ctx.ResolveDependencies(config)
-		if Errored(t, testCase.description, errs) {
+		if errored(t, testCase.description, errs) {
 			continue
 		}
 
@@ -290,17 +282,19 @@ func TestCcObjectConfigurableAttributesBp2Build(t *testing.T) {
             srcs: ["arch/arm/file.S"], // label list
         },
     },
-    bazel_module: { bp2build_available: true },
 }
 `,
 			expectedBazelTargets: []string{
 				`cc_object(
     name = "foo",
-    copts = ["-fno-addrsig"] + select({
+    copts = [
+        "-fno-addrsig",
+        "-I.",
+        "-I$(BINDIR)/.",
+    ] + select({
         "//build/bazel/platforms/arch:x86": ["-fPIC"],
         "//conditions:default": [],
     }),
-    local_include_dirs = ["."],
     srcs = ["a.cpp"] + select({
         "//build/bazel/platforms/arch:arm": ["arch/arm/file.S"],
         "//conditions:default": [],
@@ -334,20 +328,22 @@ func TestCcObjectConfigurableAttributesBp2Build(t *testing.T) {
             cflags: ["-Wall"],
         },
     },
-    bazel_module: { bp2build_available: true },
 }
 `,
 			expectedBazelTargets: []string{
 				`cc_object(
     name = "foo",
-    copts = ["-fno-addrsig"] + select({
+    copts = [
+        "-fno-addrsig",
+        "-I.",
+        "-I$(BINDIR)/.",
+    ] + select({
         "//build/bazel/platforms/arch:arm": ["-Wall"],
         "//build/bazel/platforms/arch:arm64": ["-Wall"],
         "//build/bazel/platforms/arch:x86": ["-fPIC"],
         "//build/bazel/platforms/arch:x86_64": ["-fPIC"],
         "//conditions:default": [],
     }),
-    local_include_dirs = ["."],
     srcs = ["base.cpp"] + select({
         "//build/bazel/platforms/arch:arm": ["arm.cpp"],
         "//build/bazel/platforms/arch:arm64": ["arm64.cpp"],
@@ -377,19 +373,21 @@ func TestCcObjectConfigurableAttributesBp2Build(t *testing.T) {
             cflags: ["-Wall"],
         },
     },
-    bazel_module: { bp2build_available: true },
 }
 `,
 			expectedBazelTargets: []string{
 				`cc_object(
     name = "foo",
-    copts = ["-fno-addrsig"] + select({
+    copts = [
+        "-fno-addrsig",
+        "-I.",
+        "-I$(BINDIR)/.",
+    ] + select({
         "//build/bazel/platforms/os:android": ["-fPIC"],
         "//build/bazel/platforms/os:darwin": ["-Wall"],
         "//build/bazel/platforms/os:windows": ["-fPIC"],
         "//conditions:default": [],
     }),
-    local_include_dirs = ["."],
     srcs = ["base.cpp"],
 )`,
 			},
@@ -409,14 +407,15 @@ func TestCcObjectConfigurableAttributesBp2Build(t *testing.T) {
 
 		ctx.RegisterModuleType(testCase.moduleTypeUnderTest, testCase.moduleTypeUnderTestFactory)
 		ctx.RegisterBp2BuildMutator(testCase.moduleTypeUnderTest, testCase.moduleTypeUnderTestBp2BuildMutator)
+		ctx.RegisterBp2BuildConfig(bp2buildConfig)
 		ctx.RegisterForBazelConversion()
 
 		_, errs := ctx.ParseFileList(dir, toParse)
-		if Errored(t, testCase.description, errs) {
+		if errored(t, testCase.description, errs) {
 			continue
 		}
 		_, errs = ctx.ResolveDependencies(config)
-		if Errored(t, testCase.description, errs) {
+		if errored(t, testCase.description, errs) {
 			continue
 		}
 

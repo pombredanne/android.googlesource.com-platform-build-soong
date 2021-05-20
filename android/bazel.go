@@ -126,72 +126,171 @@ const (
 )
 
 var (
+	// Keep any existing BUILD files (and do not generate new BUILD files) for these directories
+	bp2buildKeepExistingBuildFile = map[string]bool{
+		// This is actually build/bazel/build.BAZEL symlinked to ./BUILD
+		".":/*recrusive = */ false,
+
+		"build/bazel":/* recursive = */ true,
+		"build/pesto":/* recursive = */ true,
+
+		// external/bazelbuild-rules_android/... is needed by mixed builds, otherwise mixed builds analysis fails
+		// e.g. ERROR: Analysis of target '@soong_injection//mixed_builds:buildroot' failed
+		"external/bazelbuild-rules_android":/* recursive = */ true,
+
+		"prebuilts/clang/host/linux-x86":/* recursive = */ false,
+		"prebuilts/sdk":/* recursive = */ false,
+		"prebuilts/sdk/tools":/* recursive = */ false,
+	}
+
 	// Configure modules in these directories to enable bp2build_available: true or false by default.
 	bp2buildDefaultConfig = Bp2BuildConfig{
 		"bionic":                Bp2BuildDefaultTrueRecursively,
 		"external/gwp_asan":     Bp2BuildDefaultTrueRecursively,
 		"system/core/libcutils": Bp2BuildDefaultTrueRecursively,
-		"system/logging/liblog": Bp2BuildDefaultTrueRecursively,
+		"system/core/property_service/libpropertyinfoparser": Bp2BuildDefaultTrueRecursively,
+		"system/libbase":                  Bp2BuildDefaultTrueRecursively,
+		"system/logging/liblog":           Bp2BuildDefaultTrueRecursively,
+		"external/jemalloc_new":           Bp2BuildDefaultTrueRecursively,
+		"external/fmtlib":                 Bp2BuildDefaultTrueRecursively,
+		"external/arm-optimized-routines": Bp2BuildDefaultTrueRecursively,
+		"external/scudo":                  Bp2BuildDefaultTrueRecursively,
 	}
 
-	// Per-module denylist to always opt modules out.
+	// Per-module denylist to always opt modules out of both bp2build and mixed builds.
 	bp2buildModuleDoNotConvertList = []string{
-		"libBionicBenchmarksUtils",      // ruperts@, cc_library_static, 'map' file not found
-		"libbionic_spawn_benchmark",     // ruperts@, cc_library_static, depends on //system/libbase
-		"libc_jemalloc_wrapper",         // ruperts@, cc_library_static, depends on //external/jemalloc_new
-		"libc_bootstrap",                // ruperts@, cc_library_static, 'private/bionic_auxv.h' file not found
-		"libc_init_static",              // ruperts@, cc_library_static, 'private/bionic_elf_tls.h' file not found
-		"libc_init_dynamic",             // ruperts@, cc_library_static, 'private/bionic_defs.h' file not found
-		"libc_tzcode",                   // ruperts@, cc_library_static, error: expected expression
-		"libc_netbsd",                   // ruperts@, cc_library_static, 'engine.c' file not found
-		"libc_openbsd_large_stack",      // ruperts@, cc_library_static, 'android/log.h' file not found
-		"libc_openbsd",                  // ruperts@, cc_library_static, 'android/log.h' file not found
-		"libc_fortify",                  // ruperts@, cc_library_static, 'private/bionic_fortify.h' file not found
-		"libc_bionic",                   // ruperts@, cc_library_static, 'private/bionic_asm.h' file not found
-		"libc_bionic_ndk",               // ruperts@, cc_library_static, depends on //bionic/libc/system_properties
-		"libc_bionic_systrace",          // ruperts@, cc_library_static, 'private/bionic_systrace.h' file not found
-		"libc_pthread",                  // ruperts@, cc_library_static, 'private/bionic_defs.h' file not found
-		"libc_syscalls",                 // ruperts@, cc_library_static, mutator panic cannot get direct dep syscalls-arm64.S of libc_syscalls
-		"libc_ndk",                      // ruperts@, cc_library_static, depends on //bionic/libm:libm
-		"libc_nopthread",                // ruperts@, cc_library_static, depends on //external/arm-optimized-routines
-		"libc_common",                   // ruperts@, cc_library_static, depends on //bionic/libc:libc_nopthread
-		"libc_common_static",            // ruperts@, cc_library_static, depends on //bionic/libc:libc_common
-		"libc_common_shared",            // ruperts@, cc_library_static, depends on //bionic/libc:libc_common
-		"libc_unwind_static",            // ruperts@, cc_library_static, 'private/bionic_elf_tls.h' file not found
-		"libc_nomalloc",                 // ruperts@, cc_library_static, depends on //bionic/libc:libc_common
-		"libasync_safe",                 // ruperts@, cc_library_static, 'private/CachedProperty.h' file not found
-		"libc_malloc_debug_backtrace",   // ruperts@, cc_library_static, depends on //system/libbase
-		"libsystemproperties",           // ruperts@, cc_library_static, depends on //system/core/property_service/libpropertyinfoparser
-		"libdl_static",                  // ruperts@, cc_library_static, 'private/CFIShadow.h' file not found
-		"liblinker_main",                // ruperts@, cc_library_static, depends on //system/libbase
-		"liblinker_malloc",              // ruperts@, cc_library_static, depends on //system/logging/liblog:liblog
-		"liblinker_debuggerd_stub",      // ruperts@, cc_library_static, depends on //system/libbase
-		"libbionic_tests_headers_posix", // ruperts@, cc_library_static, 'complex.h' file not found
-		"libc_dns",                      // ruperts@, cc_library_static, 'android/log.h' file not found
+		// Things that transitively depend on unconverted libc_* modules.
+		"libbionic_spawn_benchmark", // http://b/186824595, cc_library_static, depends on //external/google-benchmark (http://b/186822740)
+		//                                                                also depends on //system/logging/liblog:liblog (http://b/186822772)
 
-		// List of all full_cc_libraries in //bionic, with their immediate failures
-		"libc",              // jingwen@, cc_library, depends on //external/gwp_asan
-		"libc_malloc_debug", // jingwen@, cc_library, fatal error: 'assert.h' file not found
-		"libc_malloc_hooks", // jingwen@, cc_library, fatal error: 'errno.h' file not found
-		"libdl",             // jingwen@, cc_library, ld.lld: error: no input files
-		"libm",              // jingwen@, cc_library, fatal error: 'freebsd-compat.h' file not found
-		"libseccomp_policy", // jingwen@, cc_library, fatal error: 'seccomp_policy.h' file not found
-		"libstdc++",         // jingwen@, cc_library, depends on //external/gwp_asan
+		"libc_malloc_debug",           // http://b/186824339, cc_library_static, depends on //system/libbase:libbase (http://b/186823646)
+		"libc_malloc_debug_backtrace", // http://b/186824112, cc_library_static, depends on //external/libcxxabi:libc++demangle (http://b/186823773)
 
-		// For mixed builds specifically
-		"note_memtag_heap_async", // jingwen@, cc_library_static, OK for bp2build but features.h includes not found for mixed builds (b/185079815)
-		"note_memtag_heap_sync",  // jingwen@, cc_library_static, OK for bp2build but features.h includes not found for mixed builds (b/185079815)
-		"libc_gdtoa",             // ruperts@, cc_library_static, OK for bp2build but undefined symbol: __strtorQ for mixed builds
+		"libcutils",         // http://b/186827426, cc_library, depends on //system/core/libprocessgroup:libprocessgroup_headers (http://b/186826841)
+		"libcutils_sockets", // http://b/186826853, cc_library, depends on //system/libbase:libbase (http://b/186826479)
+
+		"liblinker_debuggerd_stub", // http://b/186824327, cc_library_static, depends on //external/zlib:libz (http://b/186823782)
+		//                                                               also depends on //system/libziparchive:libziparchive (http://b/186823656)
+		//                                                               also depends on //system/logging/liblog:liblog (http://b/186822772)
+		"liblinker_main", // http://b/186825989, cc_library_static, depends on //external/zlib:libz (http://b/186823782)
+		//                                                     also depends on //system/libziparchive:libziparchive (http://b/186823656)
+		//                                                     also depends on//system/logging/liblog:liblog (http://b/186822772)
+		"liblinker_malloc", // http://b/186826466, cc_library_static, depends on //external/zlib:libz (http://b/186823782)
+		//                                                       also depends on //system/libziparchive:libziparchive (http://b/186823656)
+		//                                                       also depends on //system/logging/liblog:liblog (http://b/186822772)
+		"libc_ndk",          // http://b/187013218, cc_library_static, depends on //bionic/libm:libm (http://b/183064661)
+		"libc",              // http://b/183064430, cc_library, depends on //external/jemalloc_new:libjemalloc5 (http://b/186828626)
+		"libc_malloc_hooks", // http://b/187016307, cc_library, ld.lld: error: undefined symbol: __malloc_hook
+		"libm",              // http://b/183064661, cc_library, math.h:25:16: error: unexpected token in argument list
+
+		// http://b/186823769: Needs C++ STL support, includes from unconverted standard libraries in //external/libcxx
+		// c++_static
+		"libbase_ndk", // http://b/186826477, cc_library, no such target '//build/bazel/platforms/os:darwin' when --platforms //build/bazel/platforms:android_x86 is added
+		// libcxx
+		"libBionicBenchmarksUtils", // cc_library_static, fatal error: 'map' file not found, from libcxx
+		"fmtlib",                   // cc_library_static, fatal error: 'cassert' file not found, from libcxx
+		"fmtlib_ndk",               // cc_library_static, fatal error: 'cassert' file not found
+		"libbase",                  // http://b/186826479, cc_library, fatal error: 'memory' file not found, from libcxx
+
+		// http://b/186024507: Includes errors because of the system_shared_libs default value.
+		// Missing -isystem bionic/libc/include through the libc/libm/libdl
+		// default dependencies if system_shared_libs is unset.
+		"liblog",                 // http://b/186822772: cc_library, 'sys/cdefs.h' file not found
+		"libjemalloc5_jet",       // cc_library, 'sys/cdefs.h' file not found
+		"libseccomp_policy",      // http://b/186476753: cc_library, 'linux/filter.h' not found
+		"note_memtag_heap_async", // http://b/185127353: cc_library_static, error: feature.h not found
+		"note_memtag_heap_sync",  // http://b/185127353: cc_library_static, error: feature.h not found
+
+		"gwp_asan_crash_handler", // cc_library, ld.lld: error: undefined symbol: memset
+
+		// Tests. Handle later.
+		"libbionic_tests_headers_posix", // http://b/186024507, cc_library_static, sched.h, time.h not found
+		"libjemalloc5_integrationtest",
+		"libjemalloc5_stresstestlib",
+		"libjemalloc5_unittest",
 	}
+
+	// Per-module denylist of cc_library modules to only generate the static
+	// variant if their shared variant isn't ready or buildable by Bazel.
+	bp2buildCcLibraryStaticOnlyList = []string{
+		"libstdc++",    // http://b/186822597, cc_library, ld.lld: error: undefined symbol: __errno
+		"libjemalloc5", // http://b/188503688, cc_library, `target: { android: { enabled: false } }` for android targets.
+	}
+
+	// Per-module denylist to opt modules out of mixed builds. Such modules will
+	// still be generated via bp2build.
+	mixedBuildsDisabledList = []string{
+		"libc_bionic_ndk",                  // cparsons@ cc_library_static, depends on //bionic/libc:libsystemproperties
+		"libc_common",                      // cparsons@ cc_library_static, depends on //bionic/libc:libc_nopthread
+		"libc_common_static",               // cparsons@ cc_library_static, depends on //bionic/libc:libc_common
+		"libc_common_shared",               // cparsons@ cc_library_static, depends on //bionic/libc:libc_common
+		"libc_netbsd",                      // lberki@, cc_library_static, version script assignment of 'LIBC_PRIVATE' to symbol 'SHA1Final' failed: symbol not defined
+		"libc_nopthread",                   // cparsons@ cc_library_static, depends on //bionic/libc:libc_bionic_ndk
+		"libc_openbsd",                     // ruperts@, cc_library_static, OK for bp2build but error: duplicate symbol: strcpy for mixed builds
+		"libsystemproperties",              // cparsons@, cc_library_static, wrong include paths
+		"libpropertyinfoparser",            // cparsons@, cc_library_static, wrong include paths
+		"libarm-optimized-routines-string", // jingwen@, cc_library_static, OK for bp2build but b/186615213 (asflags not handled in  bp2build), version script assignment of 'LIBC' to symbol 'memcmp' failed: symbol not defined (also for memrchr, strnlen)
+		"fmtlib_ndk",                       // http://b/187040371, cc_library_static, OK for bp2build but format-inl.h:11:10: fatal error: 'cassert' file not found for mixed builds
+		"libc_nomalloc",                    // cc_library_static, OK for bp2build but ld.lld: error: undefined symbol: pthread_mutex_lock (and others)
+    }
 
 	// Used for quicker lookups
-	bp2buildModuleDoNotConvert = map[string]bool{}
+	bp2buildModuleDoNotConvert  = map[string]bool{}
+	bp2buildCcLibraryStaticOnly = map[string]bool{}
+	mixedBuildsDisabled         = map[string]bool{}
 )
 
 func init() {
 	for _, moduleName := range bp2buildModuleDoNotConvertList {
 		bp2buildModuleDoNotConvert[moduleName] = true
 	}
+
+	for _, moduleName := range bp2buildCcLibraryStaticOnlyList {
+		bp2buildCcLibraryStaticOnly[moduleName] = true
+	}
+
+	for _, moduleName := range mixedBuildsDisabledList {
+		mixedBuildsDisabled[moduleName] = true
+	}
+}
+
+func GenerateCcLibraryStaticOnly(ctx BazelConversionPathContext) bool {
+	return bp2buildCcLibraryStaticOnly[ctx.Module().Name()]
+}
+
+func ShouldKeepExistingBuildFileForDir(dir string) bool {
+	if _, ok := bp2buildKeepExistingBuildFile[dir]; ok {
+		// Exact dir match
+		return true
+	}
+	// Check if subtree match
+	for prefix, recursive := range bp2buildKeepExistingBuildFile {
+		if recursive {
+			if strings.HasPrefix(dir, prefix+"/") {
+				return true
+			}
+		}
+	}
+	// Default
+	return false
+}
+
+// MixedBuildsEnabled checks that a module is ready to be replaced by a
+// converted or handcrafted Bazel target.
+func (b *BazelModuleBase) MixedBuildsEnabled(ctx BazelConversionPathContext) bool {
+	if !ctx.Config().BazelContext.BazelEnabled() {
+		return false
+	}
+	if len(b.GetBazelLabel(ctx, ctx.Module())) == 0 {
+		return false
+	}
+	if GenerateCcLibraryStaticOnly(ctx) {
+		// Don't use partially-converted cc_library targets in mixed builds,
+		// since mixed builds would generally rely on both static and shared
+		// variants of a cc_library.
+		return false
+	}
+	return !mixedBuildsDisabled[ctx.Module().Name()]
 }
 
 // ConvertWithBp2build returns whether the given BazelModuleBase should be converted with bp2build.

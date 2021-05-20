@@ -30,21 +30,8 @@ type stubLibraries struct {
 }
 
 // Check if the module defines stub, or itself is stub
-func isStubTarget(m *Module) bool {
-	if m.IsStubs() || m.HasStubsVariants() {
-		return true
-	}
-
-	// Library which defines LLNDK Stub is also Stub target.
-	// Pure LLNDK Stub target would not contain any packaging
-	// with target file path.
-	if library, ok := m.linker.(*libraryDecorator); ok {
-		if library.Properties.Llndk_stubs != nil {
-			return true
-		}
-	}
-
-	return false
+func IsStubTarget(m *Module) bool {
+	return m.IsStubs() || m.HasStubsVariants()
 }
 
 // Get target file name to be installed from this module
@@ -61,7 +48,7 @@ func (s *stubLibraries) GenerateBuildActions(ctx android.SingletonContext) {
 	// Visit all generated soong modules and store stub library file names.
 	ctx.VisitAllModules(func(module android.Module) {
 		if m, ok := module.(*Module); ok {
-			if isStubTarget(m) {
+			if IsStubTarget(m) {
 				if name := getInstalledFileName(m); name != "" {
 					s.stubLibraryMap[name] = true
 				}

@@ -14,11 +14,13 @@ bootstrap_go_package {
         "constants.go",
         "conversion.go",
         "metrics.go",
+        "symlink_forest.go",
     ],
     deps: [
         "soong-android",
         "soong-bazel",
         "soong-cc",
+        "soong-cc-config",
         "soong-genrule",
         "soong-python",
         "soong-sh",

@@ -247,7 +247,7 @@ func createSdkFrameworkAidl(ctx android.SingletonContext) {
 	}
 
 	combinedAidl := sdkFrameworkAidlPath(ctx)
-	tempPath := combinedAidl.ReplaceExtension(ctx, "aidl.tmp")
+	tempPath := tempPathForRestat(ctx, combinedAidl)
 
 	rule := createFrameworkAidl(stubsModules, tempPath, ctx)
 
@@ -261,7 +261,7 @@ func createNonUpdatableFrameworkAidl(ctx android.SingletonContext) {
 	stubsModules := []string{"android_module_lib_stubs_current"}
 
 	combinedAidl := nonUpdatableFrameworkAidlPath(ctx)
-	tempPath := combinedAidl.ReplaceExtension(ctx, "aidl.tmp")
+	tempPath := tempPathForRestat(ctx, combinedAidl)
 
 	rule := createFrameworkAidl(stubsModules, tempPath, ctx)
 
@@ -270,7 +270,7 @@ func createNonUpdatableFrameworkAidl(ctx android.SingletonContext) {
 	rule.Build("framework_non_updatable_aidl", "generate framework_non_updatable.aidl")
 }
 
-func createFrameworkAidl(stubsModules []string, path android.OutputPath, ctx android.SingletonContext) *android.RuleBuilder {
+func createFrameworkAidl(stubsModules []string, path android.WritablePath, ctx android.SingletonContext) *android.RuleBuilder {
 	stubsJars := make([]android.Paths, len(stubsModules))
 
 	ctx.VisitAllModules(func(module android.Module) {
@@ -356,6 +356,7 @@ func createAPIFingerprint(ctx android.SingletonContext) {
 			"frameworks-base-api-current.txt",
 			"frameworks-base-api-system-current.txt",
 			"frameworks-base-api-module-lib-current.txt",
+			"services-system-server-current.txt",
 		}
 		count := 0
 		ctx.VisitAllModules(func(module android.Module) {
@@ -369,8 +370,7 @@ func createAPIFingerprint(ctx android.SingletonContext) {
 			ctx.Errorf("Could not find all the expected API modules %v, found %d\n", apiTxtFileModules, count)
 			return
 		}
-		cmd.Input(android.PathForSource(ctx, "frameworks/base/services/api/current.txt")).
-			Text("| md5sum | cut -d' ' -f1 >").
+		cmd.Text("| md5sum | cut -d' ' -f1 >").
 			Output(out)
 	} else {
 		// Unbundled build

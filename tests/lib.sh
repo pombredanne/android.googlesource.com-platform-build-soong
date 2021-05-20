@@ -1,5 +1,7 @@
 #!/bin/bash -eu
 
+set -o pipefail
+
 HARDWIRED_MOCK_TOP=
 # Uncomment this to be able to view the source tree after a test is run
 # HARDWIRED_MOCK_TOP=/tmp/td
@@ -95,14 +97,33 @@ function setup() {
 
   echo
   echo ----------------------------------------------------------------------------
-  info "Running test case ${FUNCNAME[1]}"
+  info "Running test case \e[96;1m${FUNCNAME[1]}\e[0m"
   cd "$MOCK_TOP"
 
   tar xzf "$WARMED_UP_MOCK_TOP"
 }
 
 function run_soong() {
-  build/soong/soong_ui.bash --make-mode --skip-ninja --skip-make --skip-soong-tests
+  build/soong/soong_ui.bash --make-mode --skip-ninja --skip-make --skip-soong-tests "$@"
+}
+
+function create_mock_bazel() {
+  copy_directory build/bazel
+
+  symlink_directory prebuilts/bazel
+  symlink_directory prebuilts/jdk
+
+  symlink_file WORKSPACE
+  symlink_file BUILD
+  symlink_file tools/bazel
+}
+
+run_bazel() {
+  tools/bazel "$@"
+}
+
+run_bp2build() {
+  GENERATE_BAZEL_FILES=true build/soong/soong_ui.bash --make-mode --skip-ninja --skip-make --skip-soong-tests nothing
 }
 
 info "Starting Soong integration test suite $(basename $0)"

@@ -902,7 +902,7 @@ func sanitizerDepsMutator(t SanitizerType) func(android.TopDownMutatorContext) {
 					if d, ok := child.(PlatformSanitizeable); ok && d.SanitizePropDefined() &&
 						!d.SanitizeNever() &&
 						!d.IsSanitizerExplicitlyDisabled(t) {
-						if t == cfi || t == Hwasan || t == scs {
+						if t == cfi || t == Hwasan || t == scs || t == Asan {
 							if d.StaticallyLinked() && d.SanitizerSupported(t) {
 								// Rust does not support some of these sanitizers, so we need to check if it's
 								// supported before setting this true.
@@ -1075,7 +1075,7 @@ func sanitizerRuntimeMutator(mctx android.BottomUpMutatorContext) {
 			sanitizers = append(sanitizers, "shadow-call-stack")
 		}
 
-		if Bool(c.sanitize.Properties.Sanitize.Memtag_heap) && c.binary() {
+		if Bool(c.sanitize.Properties.Sanitize.Memtag_heap) && c.Binary() {
 			noteDep := "note_memtag_heap_async"
 			if Bool(c.sanitize.Properties.Sanitize.Diag.Memtag_heap) {
 				noteDep = "note_memtag_heap_sync"
@@ -1208,6 +1208,14 @@ type Sanitizeable interface {
 	AddSanitizerDependencies(ctx android.BottomUpMutatorContext, sanitizerName string)
 }
 
+func (c *Module) MinimalRuntimeDep() bool {
+	return c.sanitize.Properties.MinimalRuntimeDep
+}
+
+func (c *Module) UbsanRuntimeDep() bool {
+	return c.sanitize.Properties.UbsanRuntimeDep
+}
+
 func (c *Module) SanitizePropDefined() bool {
 	return c.sanitize != nil
 }
@@ -1253,7 +1261,7 @@ func sanitizerMutator(t SanitizerType) func(android.BottomUpMutatorContext) {
 				modules[0].(PlatformSanitizeable).SetSanitizer(t, true)
 			} else if c.IsSanitizerEnabled(t) || c.SanitizeDep() {
 				isSanitizerEnabled := c.IsSanitizerEnabled(t)
-				if c.StaticallyLinked() || c.Header() || t == Asan || t == Fuzzer {
+				if c.StaticallyLinked() || c.Header() || t == Fuzzer {
 					// Static and header libs are split into non-sanitized and sanitized variants.
 					// Shared libs are not split. However, for asan and fuzzer, we split even for shared
 					// libs because a library sanitized for asan/fuzzer can't be linked from a library
@@ -1439,6 +1447,14 @@ func enableMinimalRuntime(sanitize *sanitize) bool {
 		return true
 	}
 	return false
+}
+
+func (m *Module) UbsanRuntimeNeeded() bool {
+	return enableUbsanRuntime(m.sanitize)
+}
+
+func (m *Module) MinimalRuntimeNeeded() bool {
+	return enableMinimalRuntime(m.sanitize)
 }
 
 func enableUbsanRuntime(sanitize *sanitize) bool {

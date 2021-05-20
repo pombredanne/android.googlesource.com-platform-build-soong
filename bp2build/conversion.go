@@ -2,6 +2,8 @@ package bp2build
 
 import (
 	"android/soong/android"
+	"android/soong/cc/config"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -13,6 +15,15 @@ type BazelFile struct {
 	Dir      string
 	Basename string
 	Contents string
+}
+
+func CreateSoongInjectionFiles() []BazelFile {
+	var files []BazelFile
+
+	files = append(files, newFile("cc_toolchain", "BUILD", "")) // Creates a //cc_toolchain package.
+	files = append(files, newFile("cc_toolchain", "constants.bzl", config.BazelCcToolchainVars()))
+
+	return files
 }
 
 func CreateBazelFiles(
@@ -48,6 +59,10 @@ func CreateBazelFiles(
 func createBuildFiles(buildToTargets map[string]BazelTargets, mode CodegenMode) []BazelFile {
 	files := make([]BazelFile, 0, len(buildToTargets))
 	for _, dir := range android.SortedStringKeys(buildToTargets) {
+		if mode == Bp2Build && android.ShouldKeepExistingBuildFileForDir(dir) {
+			fmt.Printf("[bp2build] Not writing generated BUILD file for dir: '%s'\n", dir)
+			continue
+		}
 		targets := buildToTargets[dir]
 		sort.Slice(targets, func(i, j int) bool {
 			// this will cover all bp2build generated targets

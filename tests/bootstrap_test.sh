@@ -1,9 +1,13 @@
 #!/bin/bash -eu
 
+set -o pipefail
+
 # This test exercises the bootstrapping process of the build system
 # in a source tree that only contains enough files for Bazel and Soong to work.
 
 source "$(dirname "$0")/lib.sh"
+
+readonly GENERATED_BUILD_FILE_NAME="BUILD.bazel"
 
 function test_smoke {
   setup
@@ -124,6 +128,11 @@ EOF
 function test_glob_noop_incremental() {
   setup
 
+  # This test needs to start from a clean build, but setup creates an
+  # initialized tree that has already been built once.  Clear the out
+  # directory to start from scratch (see b/185591972)
+  rm -rf out
+
   mkdir -p a
   cat > a/Android.bp <<'EOF'
 python_binary_host {
@@ -135,7 +144,7 @@ EOF
   run_soong
   local ninja_mtime1=$(stat -c "%y" out/soong/build.ninja)
 
-  local glob_deps_file=out/soong/.glob/a/__py.glob.d
+  local glob_deps_file=out/soong/.primary/globs/0.d
 
   if [ -e "$glob_deps_file" ]; then
     fail "Glob deps file unexpectedly written on first build"
@@ -477,15 +486,14 @@ function test_null_build_after_docs {
   fi
 }
 
-function test_integrated_bp2build_smoke {
+function test_bp2build_smoke {
   setup
-  INTEGRATED_BP2BUILD=1 run_soong
-  if [[ ! -e out/soong/.bootstrap/bp2build_workspace_marker ]]; then
-    fail "bp2build marker file not created"
-  fi
+  GENERATE_BAZEL_FILES=1 run_soong
+  [[ -e out/soong/.bootstrap/bp2build_workspace_marker ]] || fail "bp2build marker file not created"
+  [[ -e out/soong/workspace ]] || fail "Bazel workspace not created"
 }
 
-function test_integrated_bp2build_add_android_bp {
+function test_bp2build_add_android_bp {
   setup
 
   mkdir -p a
@@ -498,10 +506,9 @@ filegroup {
 }
 EOF
 
-  INTEGRATED_BP2BUILD=1 run_soong
-  if [[ ! -e out/soong/bp2build/a/BUILD ]]; then
-    fail "a/BUILD not created";
-  fi
+  GENERATE_BAZEL_FILES=1 run_soong
+  [[ -e out/soong/bp2build/a/${GENERATED_BUILD_FILE_NAME} ]] || fail "a/${GENERATED_BUILD_FILE_NAME} not created"
+  [[ -L out/soong/workspace/a/${GENERATED_BUILD_FILE_NAME} ]] || fail "a/${GENERATED_BUILD_FILE_NAME} not symlinked"
 
   mkdir -p b
   touch b/b.txt
@@ -513,19 +520,18 @@ filegroup {
 }
 EOF
 
-  INTEGRATED_BP2BUILD=1 run_soong
-  if [[ ! -e out/soong/bp2build/b/BUILD ]]; then
-    fail "b/BUILD not created";
-  fi
+  GENERATE_BAZEL_FILES=1 run_soong
+  [[ -e out/soong/bp2build/b/${GENERATED_BUILD_FILE_NAME} ]] || fail "a/${GENERATED_BUILD_FILE_NAME} not created"
+  [[ -L out/soong/workspace/b/${GENERATED_BUILD_FILE_NAME} ]] || fail "a/${GENERATED_BUILD_FILE_NAME} not symlinked"
 }
 
-function test_integrated_bp2build_null_build {
+function test_bp2build_null_build {
   setup
 
-  INTEGRATED_BP2BUILD=1 run_soong
+  GENERATE_BAZEL_FILES=1 run_soong
   local mtime1=$(stat -c "%y" out/soong/build.ninja)
 
-  INTEGRATED_BP2BUILD=1 run_soong
+  GENERATE_BAZEL_FILES=1 run_soong
   local mtime2=$(stat -c "%y" out/soong/build.ninja)
 
   if [[ "$mtime1" != "$mtime2" ]]; then
@@ -533,7 +539,7 @@ function test_integrated_bp2build_null_build {
   fi
 }
 
-function test_integrated_bp2build_add_to_glob {
+function test_bp2build_add_to_glob {
   setup
 
   mkdir -p a
@@ -546,12 +552,12 @@ filegroup {
 }
 EOF
 
-  INTEGRATED_BP2BUILD=1 run_soong
-  grep -q a1.txt out/soong/bp2build/a/BUILD || fail "a1.txt not in BUILD file"
+  GENERATE_BAZEL_FILES=1 run_soong
+  grep -q a1.txt "out/soong/bp2build/a/${GENERATED_BUILD_FILE_NAME}" || fail "a1.txt not in ${GENERATED_BUILD_FILE_NAME} file"
 
   touch a/a2.txt
-  INTEGRATED_BP2BUILD=1 run_soong
-  grep -q a2.txt out/soong/bp2build/a/BUILD || fail "a2.txt not in BUILD file"
+  GENERATE_BAZEL_FILES=1 run_soong
+  grep -q a2.txt "out/soong/bp2build/a/${GENERATED_BUILD_FILE_NAME}" || fail "a2.txt not in ${GENERATED_BUILD_FILE_NAME} file"
 }
 
 function test_dump_json_module_graph() {
@@ -560,6 +566,102 @@ function test_dump_json_module_graph() {
   if [[ ! -r "$MOCK_TOP/modules.json" ]]; then
     fail "JSON file was not created"
   fi
+}
+
+function test_bp2build_bazel_workspace_structure {
+  setup
+
+  mkdir -p a/b
+  touch a/a.txt
+  touch a/b/b.txt
+  cat > a/b/Android.bp <<'EOF'
+filegroup {
+  name: "b",
+  srcs: ["b.txt"],
+  bazel_module: { bp2build_available: true },
+}
+EOF
+
+  GENERATE_BAZEL_FILES=1 run_soong
+  [[ -e out/soong/workspace ]] || fail "Bazel workspace not created"
+  [[ -d out/soong/workspace/a/b ]] || fail "module directory not a directory"
+  [[ -L "out/soong/workspace/a/b/${GENERATED_BUILD_FILE_NAME}" ]] || fail "${GENERATED_BUILD_FILE_NAME} file not symlinked"
+  [[ "$(readlink -f out/soong/workspace/a/b/${GENERATED_BUILD_FILE_NAME})" =~ "bp2build/a/b/${GENERATED_BUILD_FILE_NAME}"$ ]] \
+    || fail "BUILD files symlinked at the wrong place"
+  [[ -L out/soong/workspace/a/b/b.txt ]] || fail "a/b/b.txt not symlinked"
+  [[ -L out/soong/workspace/a/a.txt ]] || fail "a/b/a.txt not symlinked"
+  [[ ! -e out/soong/workspace/out ]] || fail "out directory symlinked"
+}
+
+function test_bp2build_bazel_workspace_add_file {
+  setup
+
+  mkdir -p a
+  touch a/a.txt
+  cat > a/Android.bp <<EOF
+filegroup {
+  name: "a",
+  srcs: ["a.txt"],
+  bazel_module: { bp2build_available: true },
+}
+EOF
+
+  GENERATE_BAZEL_FILES=1 run_soong
+
+  touch a/a2.txt  # No reference in the .bp file needed
+  GENERATE_BAZEL_FILES=1 run_soong
+  [[ -L out/soong/workspace/a/a2.txt ]] || fail "a/a2.txt not symlinked"
+}
+
+function test_bp2build_build_file_precedence {
+  setup
+
+  mkdir -p a
+  touch a/a.txt
+  touch a/${GENERATED_BUILD_FILE_NAME}
+  cat > a/Android.bp <<EOF
+filegroup {
+  name: "a",
+  srcs: ["a.txt"],
+  bazel_module: { bp2build_available: true },
+}
+EOF
+
+  GENERATE_BAZEL_FILES=1 run_soong
+  [[ -L "out/soong/workspace/a/${GENERATED_BUILD_FILE_NAME}" ]] || fail "${GENERATED_BUILD_FILE_NAME} file not symlinked"
+  [[ "$(readlink -f out/soong/workspace/a/${GENERATED_BUILD_FILE_NAME})" =~ "bp2build/a/${GENERATED_BUILD_FILE_NAME}"$ ]] \
+    || fail "${GENERATED_BUILD_FILE_NAME} files symlinked to the wrong place"
+}
+
+function test_bp2build_reports_multiple_errors {
+  setup
+
+  mkdir -p "a/${GENERATED_BUILD_FILE_NAME}"
+  touch a/a.txt
+  cat > a/Android.bp <<EOF
+filegroup {
+  name: "a",
+  srcs: ["a.txt"],
+  bazel_module: { bp2build_available: true },
+}
+EOF
+
+  mkdir -p "b/${GENERATED_BUILD_FILE_NAME}"
+  touch b/b.txt
+  cat > b/Android.bp <<EOF
+filegroup {
+  name: "b",
+  srcs: ["b.txt"],
+  bazel_module: { bp2build_available: true },
+}
+EOF
+
+  if GENERATE_BAZEL_FILES=1 run_soong >& "$MOCK_TOP/errors"; then
+    fail "Build should have failed"
+  fi
+
+  grep -q "a/${GENERATED_BUILD_FILE_NAME}' exist" "$MOCK_TOP/errors" || fail "Error for a/${GENERATED_BUILD_FILE_NAME} not found"
+  grep -q "b/${GENERATED_BUILD_FILE_NAME}' exist" "$MOCK_TOP/errors" || fail "Error for b/${GENERATED_BUILD_FILE_NAME} not found"
 }
 
 test_smoke
@@ -575,6 +677,11 @@ test_add_file_to_soong_build
 test_glob_during_bootstrapping
 test_soong_build_rerun_iff_environment_changes
 test_dump_json_module_graph
-test_integrated_bp2build_smoke
-test_integrated_bp2build_null_build
-test_integrated_bp2build_add_to_glob
+test_bp2build_smoke
+test_bp2build_null_build
+test_bp2build_add_android_bp
+test_bp2build_add_to_glob
+test_bp2build_bazel_workspace_structure
+test_bp2build_bazel_workspace_add_file
+test_bp2build_build_file_precedence
+test_bp2build_reports_multiple_errors

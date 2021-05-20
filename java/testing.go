@@ -24,6 +24,7 @@ import (
 	"android/soong/android"
 	"android/soong/cc"
 	"android/soong/dexpreopt"
+
 	"github.com/google/blueprint"
 )
 
@@ -55,8 +56,9 @@ var PrepareForTestWithJavaBuildComponents = android.GroupFixturePreparers(
 	}.AddToFixture(),
 )
 
-// Test fixture preparer that will define default java modules, e.g. standard prebuilt modules.
-var PrepareForTestWithJavaDefaultModules = android.GroupFixturePreparers(
+// Test fixture preparer that will define all default java modules except the
+// fake_tool_binary for dex2oatd.
+var PrepareForTestWithJavaDefaultModulesWithoutFakeDex2oatd = android.GroupFixturePreparers(
 	// Make sure that all the module types used in the defaults are registered.
 	PrepareForTestWithJavaBuildComponents,
 	// Additional files needed when test disallows non-existent source.
@@ -72,6 +74,11 @@ var PrepareForTestWithJavaDefaultModules = android.GroupFixturePreparers(
 	android.FixtureAddTextFile(defaultJavaDir+"/Android.bp", gatherRequiredDepsForTest()),
 	// Add dexpreopt compat libs (android.test.base, etc.) and a fake dex2oatd module.
 	dexpreopt.PrepareForTestWithDexpreoptCompatLibs,
+)
+
+// Test fixture preparer that will define default java modules, e.g. standard prebuilt modules.
+var PrepareForTestWithJavaDefaultModules = android.GroupFixturePreparers(
+	PrepareForTestWithJavaDefaultModulesWithoutFakeDex2oatd,
 	dexpreopt.PrepareForTestWithFakeDex2oatd,
 )
 
@@ -200,6 +207,9 @@ func FixtureConfigureBootJars(bootJars ...string) android.FixturePreparer {
 		}),
 		dexpreopt.FixtureSetBootJars(bootJars...),
 		dexpreopt.FixtureSetArtBootJars(artBootJars...),
+
+		// Add a fake dex2oatd module.
+		dexpreopt.PrepareForTestWithFakeDex2oatd,
 	)
 }
 
@@ -212,6 +222,9 @@ func FixtureConfigureUpdatableBootJars(bootJars ...string) android.FixturePrepar
 			variables.UpdatableBootJars = android.CreateTestConfiguredJarList(bootJars)
 		}),
 		dexpreopt.FixtureSetUpdatableBootJars(bootJars...),
+
+		// Add a fake dex2oatd module.
+		dexpreopt.PrepareForTestWithFakeDex2oatd,
 	)
 }
 
@@ -226,7 +239,8 @@ func registerRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
 	RegisterAppBuildComponents(ctx)
 	RegisterAppImportBuildComponents(ctx)
 	RegisterAppSetBuildComponents(ctx)
-	RegisterBootImageBuildComponents(ctx)
+	registerBootclasspathBuildComponents(ctx)
+	registerBootclasspathFragmentBuildComponents(ctx)
 	RegisterDexpreoptBootJarsComponents(ctx)
 	RegisterDocsBuildComponents(ctx)
 	RegisterGenRuleBuildComponents(ctx)
@@ -237,6 +251,8 @@ func registerRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
 	RegisterSdkLibraryBuildComponents(ctx)
 	RegisterStubsBuildComponents(ctx)
 	RegisterSystemModulesBuildComponents(ctx)
+	registerSystemserverClasspathBuildComponents(ctx)
+	registerLintBuildComponents(ctx)
 }
 
 // gatherRequiredDepsForTest gathers the module definitions used by
@@ -362,7 +378,7 @@ func apexNamePairFromModule(ctx *android.TestContext, module android.Module) str
 	if apexInfo.IsForPlatform() {
 		apex = "platform"
 	} else {
-		apex = apexInfo.InApexes[0]
+		apex = apexInfo.InApexVariants[0]
 	}
 
 	return fmt.Sprintf("%s:%s", apex, name)

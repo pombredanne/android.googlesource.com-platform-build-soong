@@ -233,11 +233,11 @@ func vndkIsVndkDepAllowed(from *vndkdep, to *vndkdep) error {
 type moduleListerFunc func(ctx android.SingletonContext) (moduleNames, fileNames []string)
 
 var (
-	llndkLibraries                = vndkModuleLister(func(m *Module) bool { return m.VendorProperties.IsLLNDK && !isVestigialLLNDKModule(m) })
+	llndkLibraries                = vndkModuleLister(func(m *Module) bool { return m.VendorProperties.IsLLNDK && !m.Header() })
 	llndkLibrariesWithoutHWASAN   = vndkModuleListRemover(llndkLibraries, "libclang_rt.hwasan-")
 	vndkSPLibraries               = vndkModuleLister(func(m *Module) bool { return m.VendorProperties.IsVNDKSP })
 	vndkCoreLibraries             = vndkModuleLister(func(m *Module) bool { return m.VendorProperties.IsVNDKCore })
-	vndkPrivateLibraries          = vndkModuleLister(func(m *Module) bool { return m.VendorProperties.IsVNDKPrivate && !isVestigialLLNDKModule(m) })
+	vndkPrivateLibraries          = vndkModuleLister(func(m *Module) bool { return m.VendorProperties.IsVNDKPrivate })
 	vndkProductLibraries          = vndkModuleLister(func(m *Module) bool { return m.VendorProperties.IsVNDKProduct })
 	vndkUsingCoreVariantLibraries = vndkModuleLister(func(m *Module) bool { return m.VendorProperties.IsVNDKUsingCoreVariant })
 )
@@ -296,15 +296,6 @@ func setVndkMustUseVendorVariantListForTest(config android.Config, mustUseVendor
 	config.Once(vndkMustUseVendorVariantListKey, func() interface{} {
 		return mustUseVendorVariantList
 	})
-}
-
-func processLlndkLibrary(mctx android.BottomUpMutatorContext, m *Module) {
-	lib := m.linker.(*llndkStubDecorator)
-
-	m.VendorProperties.IsLLNDK = true
-	if Bool(lib.Properties.Private) {
-		m.VendorProperties.IsVNDKPrivate = true
-	}
 }
 
 func processVndkLibrary(mctx android.BottomUpMutatorContext, m *Module) {
@@ -381,7 +372,7 @@ func IsForVndkApex(mctx android.BottomUpMutatorContext, m *Module) bool {
 			if mctx.ModuleName() == "libz" {
 				return false
 			}
-			return m.ImageVariation().Variation == android.CoreVariation && lib.shared() && m.isVndkSp()
+			return m.ImageVariation().Variation == android.CoreVariation && lib.shared() && m.IsVndkSp()
 		}
 
 		useCoreVariant := m.VndkVersion() == mctx.DeviceConfig().PlatformVndkVersion() &&
@@ -402,34 +393,16 @@ func VndkMutator(mctx android.BottomUpMutatorContext) {
 		return
 	}
 
-	if _, ok := m.linker.(*llndkStubDecorator); ok {
-		processLlndkLibrary(mctx, m)
-		return
-	}
-
-	// This is a temporary measure to copy the properties from an llndk_library into the cc_library
-	// that will actually build the stubs.  It will be removed once the properties are moved into
-	// the cc_library in the Android.bp files.
-	mergeLLNDKToLib := func(llndk *Module, llndkProperties *llndkLibraryProperties, flagExporter *flagExporter) {
-		if llndkLib := moduleLibraryInterface(llndk); llndkLib != nil {
-			*llndkProperties = llndkLib.(*llndkStubDecorator).Properties
-			flagExporter.Properties = llndkLib.(*llndkStubDecorator).flagExporter.Properties
-
-			m.VendorProperties.IsLLNDK = llndk.VendorProperties.IsLLNDK
-			m.VendorProperties.IsVNDKPrivate = llndk.VendorProperties.IsVNDKPrivate
-		}
-	}
-
 	lib, isLib := m.linker.(*libraryDecorator)
 	prebuiltLib, isPrebuiltLib := m.linker.(*prebuiltLibraryLinker)
 
 	if m.UseVndk() && isLib && lib.hasLLNDKStubs() {
-		llndk := mctx.AddVariationDependencies(nil, llndkStubDepTag, String(lib.Properties.Llndk_stubs))
-		mergeLLNDKToLib(llndk[0].(*Module), &lib.Properties.Llndk, &lib.flagExporter)
+		m.VendorProperties.IsLLNDK = true
+		m.VendorProperties.IsVNDKPrivate = Bool(lib.Properties.Llndk.Private)
 	}
 	if m.UseVndk() && isPrebuiltLib && prebuiltLib.hasLLNDKStubs() {
-		llndk := mctx.AddVariationDependencies(nil, llndkStubDepTag, String(prebuiltLib.Properties.Llndk_stubs))
-		mergeLLNDKToLib(llndk[0].(*Module), &prebuiltLib.Properties.Llndk, &prebuiltLib.flagExporter)
+		m.VendorProperties.IsLLNDK = true
+		m.VendorProperties.IsVNDKPrivate = Bool(prebuiltLib.Properties.Llndk.Private)
 	}
 
 	if (isLib && lib.buildShared()) || (isPrebuiltLib && prebuiltLib.buildShared()) {
@@ -601,31 +574,37 @@ type vndkSnapshotSingleton struct {
 	vndkSnapshotZipFile android.OptionalPath
 }
 
-func isVndkSnapshotAware(config android.DeviceConfig, m *Module,
-	apexInfo android.ApexInfo) (i snapshotLibraryInterface, vndkType string, isVndkSnapshotLib bool) {
+func isVndkSnapshotAware(config android.DeviceConfig, m LinkableInterface,
+	apexInfo android.ApexInfo) (vndkType string, isVndkSnapshotLib bool) {
 
 	if m.Target().NativeBridge == android.NativeBridgeEnabled {
-		return nil, "", false
+		return "", false
 	}
 	// !inVendor: There's product/vendor variants for VNDK libs. We only care about vendor variants.
 	// !installable: Snapshot only cares about "installable" modules.
+	// !m.IsLlndk: llndk stubs are required for building against snapshots.
 	// IsSnapshotPrebuilt: Snapshotting a snapshot doesn't make sense.
-	if !m.InVendor() || !m.installable(apexInfo) || m.IsSnapshotPrebuilt() {
-		return nil, "", false
+	// !outputFile.Valid: Snapshot requires valid output file.
+	if !m.InVendor() || (!installable(m, apexInfo) && !m.IsLlndk()) || m.IsSnapshotPrebuilt() || !m.OutputFile().Valid() {
+		return "", false
 	}
-	l, ok := m.linker.(snapshotLibraryInterface)
-	if !ok || !l.shared() {
-		return nil, "", false
+	if !m.IsSnapshotLibrary() || !m.Shared() {
+		return "", false
 	}
-	if m.VndkVersion() == config.PlatformVndkVersion() && m.IsVndk() && !m.IsVndkExt() {
-		if m.isVndkSp() {
-			return l, "vndk-sp", true
-		} else {
-			return l, "vndk-core", true
+	if m.VndkVersion() == config.PlatformVndkVersion() {
+		if m.IsVndk() && !m.IsVndkExt() {
+			if m.IsVndkSp() {
+				return "vndk-sp", true
+			} else {
+				return "vndk-core", true
+			}
+		} else if m.HasLlndkStubs() && m.StubsVersion() == "" {
+			// Use default version for the snapshot.
+			return "llndk-stub", true
 		}
 	}
 
-	return nil, "", false
+	return "", false
 }
 
 func (c *vndkSnapshotSingleton) GenerateBuildActions(ctx android.SingletonContext) {
@@ -652,12 +631,16 @@ func (c *vndkSnapshotSingleton) GenerateBuildActions(ctx android.SingletonContex
 						(VNDK-core libraries, e.g. libbinder.so)
 					vndk-sp/
 						(VNDK-SP libraries, e.g. libc++.so)
+					llndk-stub/
+						(LLNDK stub libraries)
 			arch-{TARGET_2ND_ARCH}-{TARGET_2ND_ARCH_VARIANT}/
 				shared/
 					vndk-core/
 						(VNDK-core libraries, e.g. libbinder.so)
 					vndk-sp/
 						(VNDK-SP libraries, e.g. libc++.so)
+					llndk-stub/
+						(LLNDK stub libraries)
 			binder32/
 				(This directory is newly introduced in v28 (Android P) to hold
 				prebuilts built for 32-bit binder interface.)
@@ -738,7 +721,7 @@ func (c *vndkSnapshotSingleton) GenerateBuildActions(ctx android.SingletonContex
 
 		apexInfo := ctx.ModuleProvider(module, android.ApexInfoProvider).(android.ApexInfo)
 
-		l, vndkType, ok := isVndkSnapshotAware(ctx.DeviceConfig(), m, apexInfo)
+		vndkType, ok := isVndkSnapshotAware(ctx.DeviceConfig(), m, apexInfo)
 		if !ok {
 			return
 		}
@@ -777,7 +760,7 @@ func (c *vndkSnapshotSingleton) GenerateBuildActions(ctx android.SingletonContex
 		}
 
 		if ctx.Config().VndkSnapshotBuildArtifacts() {
-			headers = append(headers, l.snapshotHeaders()...)
+			headers = append(headers, m.SnapshotHeaders()...)
 		}
 	})
 
@@ -853,9 +836,6 @@ func getVndkFileName(m *Module) (string, error) {
 	}
 	if prebuilt, ok := m.linker.(*prebuiltLibraryLinker); ok {
 		return prebuilt.libraryDecorator.getLibNameHelper(m.BaseModuleName(), true, false) + ".so", nil
-	}
-	if library, ok := m.linker.(*llndkStubDecorator); ok {
-		return library.getLibNameHelper(m.BaseModuleName(), true, false) + ".so", nil
 	}
 	return "", fmt.Errorf("VNDK library should have libraryDecorator or prebuiltLibraryLinker as linker: %T", m.linker)
 }

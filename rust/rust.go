@@ -22,6 +22,7 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
+	"android/soong/bloaty"
 	"android/soong/cc"
 	cc_config "android/soong/cc/config"
 	"android/soong/rust/config"
@@ -57,6 +58,7 @@ type Flags struct {
 	RustFlags       []string // Flags that apply to rust
 	LinkFlags       []string // Flags that apply to linker
 	ClippyFlags     []string // Flags that apply to clippy-driver, during the linting
+	RustdocFlags    []string // Flags that apply to rustdoc
 	Toolchain       config.Toolchain
 	Coverage        bool
 	Clippy          bool
@@ -95,6 +97,7 @@ type BaseProperties struct {
 
 	PreventInstall bool
 	HideFromMake   bool
+	Installable    *bool
 }
 
 type Module struct {
@@ -123,6 +126,7 @@ type Module struct {
 	// as a library. The stripped output which is used for installation can be found via
 	// compiler.strippedOutputFile if it exists.
 	unstrippedOutputFile android.OptionalPath
+	docTimestampFile     android.OptionalPath
 
 	hideApexVariantFromMake bool
 }
@@ -138,6 +142,10 @@ func (mod *Module) SetPreventInstall() {
 
 func (mod *Module) SetHideFromMake() {
 	mod.Properties.HideFromMake = true
+}
+
+func (c *Module) HiddenFromMake() bool {
+	return c.Properties.HideFromMake
 }
 
 func (mod *Module) SanitizePropDefined() bool {
@@ -207,6 +215,38 @@ func (mod *Module) Shared() bool {
 	return false
 }
 
+func (mod *Module) Dylib() bool {
+	if mod.compiler != nil {
+		if library, ok := mod.compiler.(libraryInterface); ok {
+			return library.dylib()
+		}
+	}
+	return false
+}
+
+func (mod *Module) Rlib() bool {
+	if mod.compiler != nil {
+		if library, ok := mod.compiler.(libraryInterface); ok {
+			return library.rlib()
+		}
+	}
+	return false
+}
+
+func (mod *Module) Binary() bool {
+	if mod.compiler != nil {
+		if _, ok := mod.compiler.(*binaryDecorator); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (mod *Module) Object() bool {
+	// Rust has no modules which produce only object files.
+	return false
+}
+
 func (mod *Module) Toc() android.OptionalPath {
 	if mod.compiler != nil {
 		if _, ok := mod.compiler.(libraryInterface); ok {
@@ -220,12 +260,13 @@ func (mod *Module) UseSdk() bool {
 	return false
 }
 
-// Returns true if the module is using VNDK libraries instead of the libraries in /system/lib or /system/lib64.
-// "product" and "vendor" variant modules return true for this function.
-// When BOARD_VNDK_VERSION is set, vendor variants of "vendor_available: true", "vendor: true",
-// "soc_specific: true" and more vendor installed modules are included here.
-// When PRODUCT_PRODUCT_VNDK_VERSION is set, product variants of "vendor_available: true" or
-// "product_specific: true" modules are included here.
+func (mod *Module) RelativeInstallPath() string {
+	if mod.compiler != nil {
+		return mod.compiler.relativeInstallPath()
+	}
+	return ""
+}
+
 func (mod *Module) UseVndk() bool {
 	return mod.Properties.VndkVersion != ""
 }
@@ -247,6 +288,10 @@ func (mod *Module) IsVndkExt() bool {
 	return false
 }
 
+func (mod *Module) IsVndkSp() bool {
+	return false
+}
+
 func (c *Module) IsVndkPrivate() bool {
 	return false
 }
@@ -259,20 +304,24 @@ func (c *Module) IsLlndkPublic() bool {
 	return false
 }
 
-func (m *Module) IsLlndkHeaders() bool {
-	return false
-}
-
-func (m *Module) IsLlndkLibrary() bool {
-	return false
-}
-
 func (mod *Module) KernelHeadersDecorator() bool {
 	return false
 }
 
-func (m *Module) HasLlndkStubs() bool {
+func (m *Module) NeedsLlndkVariants() bool {
 	return false
+}
+
+func (m *Module) NeedsVendorPublicLibraryVariants() bool {
+	return false
+}
+
+func (mod *Module) HasLlndkStubs() bool {
+	return false
+}
+
+func (mod *Module) StubsVersion() string {
+	panic(fmt.Errorf("StubsVersion called on non-versioned module: %q", mod.BaseModuleName()))
 }
 
 func (mod *Module) SdkVersion() string {
@@ -354,13 +403,16 @@ type compiler interface {
 	compile(ctx ModuleContext, flags Flags, deps PathDeps) android.Path
 	compilerDeps(ctx DepsContext, deps Deps) Deps
 	crateName() string
+	rustdoc(ctx ModuleContext, flags Flags, deps PathDeps) android.OptionalPath
 
 	// Output directory in which source-generated code from dependencies is
 	// copied. This is equivalent to Cargo's OUT_DIR variable.
 	CargoOutDir() android.OptionalPath
+
 	inData() bool
 	install(ctx ModuleContext)
 	relativeInstallPath() string
+	everInstallable() bool
 
 	nativeCoverage() bool
 
@@ -422,8 +474,12 @@ func (mod *Module) IsNativeCoverageNeeded(ctx android.BaseModuleContext) bool {
 	return mod.coverage != nil && mod.coverage.Properties.NeedCoverageVariant
 }
 
-func (mod *Module) PreventInstall() {
-	mod.Properties.PreventInstall = true
+func (mod *Module) VndkVersion() string {
+	return mod.Properties.VndkVersion
+}
+
+func (mod *Module) PreventInstall() bool {
+	return mod.Properties.PreventInstall
 }
 
 func (mod *Module) HideFromMake() {
@@ -563,6 +619,10 @@ func (mod *Module) CoverageFiles() android.Paths {
 }
 
 func (mod *Module) installable(apexInfo android.ApexInfo) bool {
+	if !mod.EverInstallable() {
+		return false
+	}
+
 	// The apex variant is not installable because it is included in the APEX and won't appear
 	// in the system partition as a standalone file.
 	if !apexInfo.IsForPlatform() {
@@ -675,6 +735,16 @@ func (mod *Module) nativeCoverage() bool {
 	return mod.compiler != nil && mod.compiler.nativeCoverage()
 }
 
+func (mod *Module) EverInstallable() bool {
+	return mod.compiler != nil &&
+		// Check to see whether the module is actually ever installable.
+		mod.compiler.everInstallable()
+}
+
+func (mod *Module) Installable() *bool {
+	return mod.Properties.Installable
+}
+
 func (mod *Module) toolchain(ctx android.BaseModuleContext) config.Toolchain {
 	if mod.cachedToolchain == nil {
 		mod.cachedToolchain = config.FindToolchain(ctx.Os(), ctx.Arch())
@@ -751,8 +821,10 @@ func (mod *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 	if mod.compiler != nil && !mod.compiler.Disabled() {
 		mod.compiler.initialize(ctx)
 		unstrippedOutputFile := mod.compiler.compile(ctx, flags, deps)
-
 		mod.unstrippedOutputFile = android.OptionalPathForPath(unstrippedOutputFile)
+		bloaty.MeasureSizeForPaths(ctx, mod.compiler.strippedOutputFilePath(), mod.unstrippedOutputFile)
+
+		mod.docTimestampFile = mod.compiler.rustdoc(ctx, flags, deps)
 
 		apexInfo := actx.Provider(android.ApexInfoProvider).(android.ApexInfo)
 		if mod.installable(apexInfo) {
