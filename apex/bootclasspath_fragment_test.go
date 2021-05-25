@@ -512,15 +512,18 @@ func TestBootclasspathFragmentContentsNoName(t *testing.T) {
 
 	checkFragmentExportedDexJar := func(name string, expectedDexJar string) {
 		module := result.Module(name, "android_common_apex10000")
-		dexJar := info.DexBootJarPathForContentModule(module)
+		dexJar, err := info.DexBootJarPathForContentModule(module)
+		if err != nil {
+			t.Error(err)
+		}
 		android.AssertPathRelativeToTopEquals(t, name+" dex", expectedDexJar, dexJar)
 
 		expectedCopyCommand := fmt.Sprintf("&& cp -f %s out/soong/.intermediates/myapex/android_common_myapex_image/image.apex/javalib/%s.jar", expectedDexJar, name)
 		android.AssertStringDoesContain(t, name+" apex copy command", copyCommands, expectedCopyCommand)
 	}
 
-	checkFragmentExportedDexJar("foo", "out/soong/.intermediates/foo/android_common_apex10000/hiddenapi/foo.jar")
-	checkFragmentExportedDexJar("bar", "out/soong/.intermediates/bar/android_common_apex10000/hiddenapi/bar.jar")
+	checkFragmentExportedDexJar("foo", "out/soong/.intermediates/mybootclasspathfragment/android_common_apex10000/hiddenapi-modular/encoded/foo.jar")
+	checkFragmentExportedDexJar("bar", "out/soong/.intermediates/mybootclasspathfragment/android_common_apex10000/hiddenapi-modular/encoded/bar.jar")
 }
 
 // TODO(b/177892522) - add test for host apex.
