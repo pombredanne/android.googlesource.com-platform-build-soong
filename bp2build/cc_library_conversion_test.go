@@ -41,6 +41,7 @@ toolchain_library {
 )
 
 func runCcLibraryTestCase(t *testing.T, tc bp2buildTestCase) {
+	t.Helper()
 	runBp2BuildTestCase(t, registerCcLibraryModuleTypes, tc)
 }
 
@@ -52,6 +53,7 @@ func registerCcLibraryModuleTypes(ctx android.RegistrationContext) {
 }
 
 func runBp2BuildTestCase(t *testing.T, registerModuleTypes func(ctx android.RegistrationContext), tc bp2buildTestCase) {
+	t.Helper()
 	dir := "."
 	filesystem := make(map[string][]byte)
 	toParse := []string{
@@ -311,7 +313,7 @@ cc_library {
         "//build/bazel/platforms/arch:arm64": ["-DHAVE_FAST_FMA=1"],
         "//conditions:default": [],
     }),
-    srcs = ["math/cosf.c"],
+    srcs_c = ["math/cosf.c"],
 )`},
 	})
 }
@@ -394,6 +396,141 @@ cc_library { name: "shared_dep_for_both" }
     whole_archive_deps = [":whole_static_lib_for_both"],
     whole_archive_deps_for_shared = [":whole_static_lib_for_shared"],
     whole_archive_deps_for_static = [":whole_static_lib_for_static"],
+)`},
+	})
+}
+
+func TestCcLibrarySharedStaticPropsInArch(t *testing.T) {
+	runCcLibraryTestCase(t, bp2buildTestCase{
+		description:                        "cc_library shared/static props in arch",
+		moduleTypeUnderTest:                "cc_library",
+		moduleTypeUnderTestFactory:         cc.LibraryFactory,
+		moduleTypeUnderTestBp2BuildMutator: cc.CcLibraryBp2Build,
+		depsMutators:                       []android.RegisterMutatorFunc{cc.RegisterDepsBp2Build},
+		dir:                                "foo/bar",
+		filesystem: map[string]string{
+			"foo/bar/arm.cpp":        "",
+			"foo/bar/x86.cpp":        "",
+			"foo/bar/sharedonly.cpp": "",
+			"foo/bar/staticonly.cpp": "",
+			"foo/bar/Android.bp": `
+cc_library {
+    name: "a",
+    arch: {
+        arm: {
+            shared: {
+                srcs: ["arm_shared.cpp"],
+                cflags: ["-DARM_SHARED"],
+                static_libs: ["arm_static_dep_for_shared"],
+                whole_static_libs: ["arm_whole_static_dep_for_shared"],
+                shared_libs: ["arm_shared_dep_for_shared"],
+            },
+        },
+        x86: {
+            static: {
+                srcs: ["x86_static.cpp"],
+                cflags: ["-DX86_STATIC"],
+                static_libs: ["x86_dep_for_static"],
+            },
+        },
+    },
+    target: {
+        android: {
+            shared: {
+                srcs: ["android_shared.cpp"],
+                cflags: ["-DANDROID_SHARED"],
+                static_libs: ["android_dep_for_shared"],
+            },
+        },
+        android_arm: {
+            shared: {
+                cflags: ["-DANDROID_ARM_SHARED"],
+            },
+        },
+    },
+    srcs: ["both.cpp"],
+    cflags: ["bothflag"],
+    static_libs: ["static_dep_for_both"],
+    static: {
+        srcs: ["staticonly.cpp"],
+        cflags: ["staticflag"],
+        static_libs: ["static_dep_for_static"],
+    },
+    shared: {
+        srcs: ["sharedonly.cpp"],
+        cflags: ["sharedflag"],
+        static_libs: ["static_dep_for_shared"],
+    },
+    bazel_module: { bp2build_available: true },
+}
+
+cc_library_static { name: "static_dep_for_shared" }
+cc_library_static { name: "static_dep_for_static" }
+cc_library_static { name: "static_dep_for_both" }
+
+cc_library_static { name: "arm_static_dep_for_shared" }
+cc_library_static { name: "arm_whole_static_dep_for_shared" }
+cc_library_static { name: "arm_shared_dep_for_shared" }
+
+cc_library_static { name: "x86_dep_for_static" }
+
+cc_library_static { name: "android_dep_for_shared" }
+`,
+		},
+		blueprint: soongCcLibraryPreamble,
+		expectedBazelTargets: []string{`cc_library(
+    name = "a",
+    copts = [
+        "bothflag",
+        "-Ifoo/bar",
+        "-I$(BINDIR)/foo/bar",
+    ],
+    dynamic_deps_for_shared = select({
+        "//build/bazel/platforms/arch:arm": [":arm_shared_dep_for_shared"],
+        "//conditions:default": [],
+    }),
+    implementation_deps = [":static_dep_for_both"],
+    shared_copts = ["sharedflag"] + select({
+        "//build/bazel/platforms/arch:arm": ["-DARM_SHARED"],
+        "//conditions:default": [],
+    }) + select({
+        "//build/bazel/platforms/os:android": ["-DANDROID_SHARED"],
+        "//conditions:default": [],
+    }) + select({
+        "//build/bazel/platforms/os_arch:android_arm": ["-DANDROID_ARM_SHARED"],
+        "//conditions:default": [],
+    }),
+    shared_srcs = ["sharedonly.cpp"] + select({
+        "//build/bazel/platforms/arch:arm": ["arm_shared.cpp"],
+        "//conditions:default": [],
+    }) + select({
+        "//build/bazel/platforms/os:android": ["android_shared.cpp"],
+        "//conditions:default": [],
+    }),
+    srcs = ["both.cpp"],
+    static_copts = ["staticflag"] + select({
+        "//build/bazel/platforms/arch:x86": ["-DX86_STATIC"],
+        "//conditions:default": [],
+    }),
+    static_deps_for_shared = [":static_dep_for_shared"] + select({
+        "//build/bazel/platforms/arch:arm": [":arm_static_dep_for_shared"],
+        "//conditions:default": [],
+    }) + select({
+        "//build/bazel/platforms/os:android": [":android_dep_for_shared"],
+        "//conditions:default": [],
+    }),
+    static_deps_for_static = [":static_dep_for_static"] + select({
+        "//build/bazel/platforms/arch:x86": [":x86_dep_for_static"],
+        "//conditions:default": [],
+    }),
+    static_srcs = ["staticonly.cpp"] + select({
+        "//build/bazel/platforms/arch:x86": ["x86_static.cpp"],
+        "//conditions:default": [],
+    }),
+    whole_archive_deps_for_shared = select({
+        "//build/bazel/platforms/arch:arm": [":arm_whole_static_dep_for_shared"],
+        "//conditions:default": [],
+    }),
 )`},
 	})
 }
@@ -618,7 +755,7 @@ cc_library {
 
 func TestCcLibraryCppFlagsGoesIntoCopts(t *testing.T) {
 	runCcLibraryTestCase(t, bp2buildTestCase{
-		description:                        "cc_library cppflags goes into copts",
+		description:                        "cc_library cppflags usage",
 		moduleTypeUnderTest:                "cc_library",
 		moduleTypeUnderTestFactory:         cc.LibraryFactory,
 		moduleTypeUnderTestBp2BuildMutator: cc.CcLibraryBp2Build,
@@ -654,10 +791,12 @@ func TestCcLibraryCppFlagsGoesIntoCopts(t *testing.T) {
     name = "a",
     copts = [
         "-Wall",
-        "-fsigned-char",
-        "-pedantic",
         "-Ifoo/bar",
         "-I$(BINDIR)/foo/bar",
+    ],
+    cppflags = [
+        "-fsigned-char",
+        "-pedantic",
     ] + select({
         "//build/bazel/platforms/arch:arm64": ["-DARM64=1"],
         "//conditions:default": [],
@@ -666,6 +805,49 @@ func TestCcLibraryCppFlagsGoesIntoCopts(t *testing.T) {
         "//conditions:default": [],
     }),
     srcs = ["a.cpp"],
+)`},
+	})
+}
+
+func TestCcLibraryLabelAttributeGetTargetProperties(t *testing.T) {
+	runCcLibraryTestCase(t, bp2buildTestCase{
+		description:                        "cc_library GetTargetProperties on a LabelAttribute",
+		moduleTypeUnderTest:                "cc_library",
+		moduleTypeUnderTestFactory:         cc.LibraryFactory,
+		moduleTypeUnderTestBp2BuildMutator: cc.CcLibraryBp2Build,
+		depsMutators:                       []android.RegisterMutatorFunc{cc.RegisterDepsBp2Build},
+		dir:                                "foo/bar",
+		filesystem: map[string]string{
+			"foo/bar/Android.bp": `
+		cc_library {
+		   name: "a",
+		   srcs: ["a.cpp"],
+		   target: {
+		     android_arm: {
+		       version_script: "android_arm.map",
+		     },
+		     linux_bionic_arm64: {
+		       version_script: "linux_bionic_arm64.map",
+		     },
+		   },
+
+		   bazel_module: { bp2build_available: true },
+		}
+		`,
+		},
+		blueprint: soongCcLibraryPreamble,
+		expectedBazelTargets: []string{`cc_library(
+    name = "a",
+    copts = [
+        "-Ifoo/bar",
+        "-I$(BINDIR)/foo/bar",
+    ],
+    srcs = ["a.cpp"],
+    version_script = select({
+        "//build/bazel/platforms/os_arch:android_arm": "android_arm.map",
+        "//build/bazel/platforms/os_arch:linux_bionic_arm64": "linux_bionic_arm64.map",
+        "//conditions:default": None,
+    }),
 )`},
 	})
 }
