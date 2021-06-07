@@ -20,6 +20,7 @@ import (
 
 	"android/soong/android"
 	"github.com/google/blueprint"
+	"github.com/google/blueprint/proptools"
 )
 
 // Contains support for processing hiddenAPI in a modular fashion.
@@ -66,6 +67,12 @@ var _ android.SdkMemberTypeDependencyTag = hiddenAPIStubsDependencyTag{}
 
 // hiddenAPIRelevantSdkKinds lists all the android.SdkKind instances that are needed by the hidden
 // API processing.
+//
+// These are in order from narrowest API surface to widest. Widest means the API stubs with the
+// biggest API surface, e.g. test is wider than system is wider than public. Core platform is
+// considered wider than test even though it has no relationship with test because the libraries
+// that provide core platform API don't provide test. While the core platform API is being converted
+// to a system API the system API is still a subset of core platform.
 var hiddenAPIRelevantSdkKinds = []android.SdkKind{
 	android.SdkPublic,
 	android.SdkSystem,
@@ -163,14 +170,30 @@ func ruleToGenerateHiddenAPIStubFlagsFile(ctx android.BuilderContext, outputPath
 
 	tempPath := tempPathForRestat(ctx, outputPath)
 
+	// Find the widest API stubs provided by the fragments on which this depends, if any.
+	var dependencyStubDexJars android.Paths
+	for i := len(hiddenAPIRelevantSdkKinds) - 1; i >= 0; i-- {
+		kind := hiddenAPIRelevantSdkKinds[i]
+		stubsForKind := input.DependencyStubDexJarsByKind[kind]
+		if len(stubsForKind) != 0 {
+			dependencyStubDexJars = stubsForKind
+			break
+		}
+	}
+
 	command := rule.Command().
 		Tool(ctx.Config().HostToolPath(ctx, "hiddenapi")).
 		Text("list").
+		FlagForEachInput("--dependency-stub-dex=", dependencyStubDexJars).
 		FlagForEachInput("--boot-dex=", bootDexJars)
 
 	// Iterate over the sdk kinds in a fixed order.
 	for _, sdkKind := range hiddenAPIRelevantSdkKinds {
-		paths := input.StubDexJarsByKind[sdkKind]
+		// Merge in the stub dex jar paths for this kind from the fragments on which it depends. They
+		// will be needed to resolve dependencies from this fragment's stubs to classes in the other
+		// fragment's APIs.
+		dependencyPaths := input.DependencyStubDexJarsByKind[sdkKind]
+		paths := append(dependencyPaths, input.StubDexJarsByKind[sdkKind]...)
 		if len(paths) > 0 {
 			option := sdkKindToHiddenapiListOption[sdkKind]
 			command.FlagWithInputList("--"+option+"=", paths, ":")
@@ -237,6 +260,22 @@ type hiddenAPIFlagFileCategory struct {
 	commandMutator func(command *android.RuleBuilderCommand, path android.Path)
 }
 
+// The flag file category for removed members of the API.
+//
+// This is extracted from hiddenAPIFlagFileCategories as it is needed to add the dex signatures
+// list of removed API members that are generated automatically from the removed.txt files provided
+// by API stubs.
+var hiddenAPIRemovedFlagFileCategory = &hiddenAPIFlagFileCategory{
+	// See HiddenAPIFlagFileProperties.Removed
+	propertyName: "removed",
+	propertyValueReader: func(properties *HiddenAPIFlagFileProperties) []string {
+		return properties.Removed
+	},
+	commandMutator: func(command *android.RuleBuilderCommand, path android.Path) {
+		command.FlagWithInput("--unsupported ", path).Flag("--ignore-conflicts ").FlagWithArg("--tag ", "removed")
+	},
+}
+
 var hiddenAPIFlagFileCategories = []*hiddenAPIFlagFileCategory{
 	// See HiddenAPIFlagFileProperties.Unsupported
 	{
@@ -248,16 +287,7 @@ var hiddenAPIFlagFileCategories = []*hiddenAPIFlagFileCategory{
 			command.FlagWithInput("--unsupported ", path)
 		},
 	},
-	// See HiddenAPIFlagFileProperties.Removed
-	{
-		propertyName: "removed",
-		propertyValueReader: func(properties *HiddenAPIFlagFileProperties) []string {
-			return properties.Removed
-		},
-		commandMutator: func(command *android.RuleBuilderCommand, path android.Path) {
-			command.FlagWithInput("--unsupported ", path).Flag("--ignore-conflicts ").FlagWithArg("--tag ", "removed")
-		},
-	},
+	hiddenAPIRemovedFlagFileCategory,
 	// See HiddenAPIFlagFileProperties.Max_target_r_low_priority
 	{
 		propertyName: "max_target_r_low_priority",
@@ -347,8 +377,33 @@ type HiddenAPIInfo struct {
 	// that category.
 	FlagFilesByCategory FlagFilesByCategory
 
+	// The paths to the stub dex jars for each of the android.SdkKind in hiddenAPIRelevantSdkKinds.
+	TransitiveStubDexJarsByKind StubDexJarsByKind
+
 	// The output from the hidden API processing needs to be made available to other modules.
 	HiddenAPIFlagOutput
+}
+
+func newHiddenAPIInfo() *HiddenAPIInfo {
+	info := HiddenAPIInfo{
+		FlagFilesByCategory:         FlagFilesByCategory{},
+		TransitiveStubDexJarsByKind: StubDexJarsByKind{},
+	}
+	return &info
+}
+
+func (i *HiddenAPIInfo) mergeFromFragmentDeps(ctx android.ModuleContext, fragments []android.Module) {
+	// Merge all the information from the fragments. The fragments form a DAG so it is possible that
+	// this will introduce duplicates so they will be resolved after processing all the fragments.
+	for _, fragment := range fragments {
+		if ctx.OtherModuleHasProvider(fragment, HiddenAPIInfoProvider) {
+			info := ctx.OtherModuleProvider(fragment, HiddenAPIInfoProvider).(HiddenAPIInfo)
+			i.TransitiveStubDexJarsByKind.append(info.TransitiveStubDexJarsByKind)
+		}
+	}
+
+	// Dedup and sort paths.
+	i.TransitiveStubDexJarsByKind.dedupAndSort()
 }
 
 var HiddenAPIInfoProvider = blueprint.NewProvider(HiddenAPIInfo{})
@@ -383,6 +438,15 @@ type HiddenAPIFlagInput struct {
 	// StubDexJarsByKind contains the stub dex jars for different android.SdkKind and which determine
 	// the initial flags for each dex member.
 	StubDexJarsByKind StubDexJarsByKind
+
+	// DependencyStubDexJarsByKind contains the stub dex jars provided by the fragments on which this
+	// depends. It is the result of merging HiddenAPIInfo.TransitiveStubDexJarsByKind from each
+	// fragment on which this depends.
+	DependencyStubDexJarsByKind StubDexJarsByKind
+
+	// RemovedTxtFiles is the list of removed.txt files provided by java_sdk_library modules that are
+	// specified in the bootclasspath_fragment's stub_libs and contents properties.
+	RemovedTxtFiles android.Paths
 }
 
 // newHiddenAPIFlagInput creates a new initialize HiddenAPIFlagInput struct.
@@ -395,6 +459,42 @@ func newHiddenAPIFlagInput() HiddenAPIFlagInput {
 	return input
 }
 
+// canPerformHiddenAPIProcessing determines whether hidden API processing should be performed.
+//
+// A temporary workaround to avoid existing bootclasspath_fragments that do not provide the
+// appropriate information needed for hidden API processing breaking the build.
+// TODO(b/179354495): Remove this workaround.
+func (i *HiddenAPIFlagInput) canPerformHiddenAPIProcessing(ctx android.ModuleContext, properties bootclasspathFragmentProperties) bool {
+	// Performing hidden API processing without stubs is not supported and it is unlikely to ever be
+	// required as the whole point of adding something to the bootclasspath fragment is to add it to
+	// the bootclasspath in order to be used by something else in the system. Without any stubs it
+	// cannot do that.
+	if len(i.StubDexJarsByKind) == 0 {
+		return false
+	}
+
+	// Hidden API processing is always enabled in tests.
+	if ctx.Config().TestProductVariables != nil {
+		return true
+	}
+
+	// A module that has fragments should have access to the information it needs in order to perform
+	// hidden API processing.
+	if len(properties.Fragments) != 0 {
+		return true
+	}
+
+	// The art bootclasspath fragment does not depend on any other fragments but already supports
+	// hidden API processing.
+	imageName := proptools.String(properties.Image_name)
+	if imageName == "art" {
+		return true
+	}
+
+	// Disable it for everything else.
+	return false
+}
+
 // gatherStubLibInfo gathers information from the stub libs needed by hidden API processing from the
 // dependencies added in hiddenAPIAddStubLibDependencies.
 //
@@ -404,6 +504,11 @@ func (i *HiddenAPIFlagInput) gatherStubLibInfo(ctx android.ModuleContext, conten
 		dexJar := hiddenAPIRetrieveDexJarBuildPath(ctx, module, kind)
 		if dexJar != nil {
 			i.StubDexJarsByKind[kind] = append(i.StubDexJarsByKind[kind], dexJar)
+		}
+
+		if sdkLibrary, ok := module.(SdkLibraryDependency); ok {
+			removedTxtFile := sdkLibrary.SdkRemovedTxtFile(ctx, kind)
+			i.RemovedTxtFiles = append(i.RemovedTxtFiles, removedTxtFile.AsPaths()...)
 		}
 	}
 
@@ -429,6 +534,7 @@ func (i *HiddenAPIFlagInput) gatherStubLibInfo(ctx android.ModuleContext, conten
 
 	// Normalize the paths, i.e. remove duplicates and sort.
 	i.StubDexJarsByKind.dedupAndSort()
+	i.RemovedTxtFiles = android.SortedUniquePaths(i.RemovedTxtFiles)
 }
 
 // extractFlagFilesFromProperties extracts the paths to flag files that are specified in the
@@ -438,6 +544,12 @@ func (i *HiddenAPIFlagInput) extractFlagFilesFromProperties(ctx android.ModuleCo
 		paths := android.PathsForModuleSrc(ctx, category.propertyValueReader(p))
 		i.FlagFilesByCategory[category] = paths
 	}
+}
+
+func (i *HiddenAPIFlagInput) transitiveStubDexJarsByKind() StubDexJarsByKind {
+	transitive := i.DependencyStubDexJarsByKind
+	transitive.append(i.StubDexJarsByKind)
+	return transitive
 }
 
 // HiddenAPIFlagOutput contains paths to output files from the hidden API flag generation for a
@@ -482,7 +594,9 @@ func pathForValidation(ctx android.PathContext, path android.WritablePath) andro
 //
 // hiddenAPIInfo is a struct containing paths to files that augment the information provided by
 // the annotationFlags.
-func buildRuleToGenerateHiddenApiFlags(ctx android.BuilderContext, name, desc string, outputPath android.WritablePath, baseFlagsPath android.Path, annotationFlags android.Path, flagFilesByCategory FlagFilesByCategory, allFlagsPaths android.Paths) {
+func buildRuleToGenerateHiddenApiFlags(ctx android.BuilderContext, name, desc string,
+	outputPath android.WritablePath, baseFlagsPath android.Path, annotationFlags android.Path,
+	flagFilesByCategory FlagFilesByCategory, allFlagsPaths android.Paths, generatedRemovedDexSignatures android.OptionalPath) {
 
 	// The file which is used to record that the flags file is valid.
 	var validFile android.WritablePath
@@ -521,6 +635,12 @@ func buildRuleToGenerateHiddenApiFlags(ctx android.BuilderContext, name, desc st
 		for _, path := range paths {
 			category.commandMutator(command, path)
 		}
+	}
+
+	// If available then pass the automatically generated file containing dex signatures of removed
+	// API members to the rule so they can be marked as removed.
+	if generatedRemovedDexSignatures.Valid() {
+		hiddenAPIRemovedFlagFileCategory.commandMutator(command, generatedRemovedDexSignatures.Path())
 	}
 
 	commitChangeForRestat(rule, tempPath, outputPath)
@@ -579,14 +699,15 @@ func hiddenAPIGenerateAllFlagsForBootclasspathFragment(ctx android.ModuleContext
 	// Removed APIs need to be marked and in order to do that the hiddenAPIInfo needs to specify files
 	// containing dex signatures of all the removed APIs. In the monolithic files that is done by
 	// manually combining all the removed.txt files for each API and then converting them to dex
-	// signatures, see the combined-removed-dex module. That will all be done automatically in future.
-	// For now removed APIs are ignored.
-	// TODO(b/179354495): handle removed apis automatically.
+	// signatures, see the combined-removed-dex module. This does that automatically by using the
+	// *removed.txt files retrieved from the java_sdk_library modules that are specified in the
+	// stub_libs and contents properties of a bootclasspath_fragment.
+	removedDexSignatures := buildRuleToGenerateRemovedDexSignatures(ctx, input.RemovedTxtFiles)
 
 	// Generate the all-flags.csv which are the flags that will, in future, be encoded into the dex
 	// files.
 	outputPath := android.PathForModuleOut(ctx, hiddenApiSubDir, "all-flags.csv")
-	buildRuleToGenerateHiddenApiFlags(ctx, "modularHiddenApiAllFlags", "modular hiddenapi all flags", outputPath, stubFlagsCSV, annotationFlagsCSV, input.FlagFilesByCategory, nil)
+	buildRuleToGenerateHiddenApiFlags(ctx, "modularHiddenApiAllFlags", "modular hiddenapi all flags", outputPath, stubFlagsCSV, annotationFlagsCSV, input.FlagFilesByCategory, nil, removedDexSignatures)
 
 	// Store the paths in the info for use by other modules and sdk snapshot generation.
 	output := HiddenAPIFlagOutput{
@@ -597,6 +718,23 @@ func hiddenAPIGenerateAllFlagsForBootclasspathFragment(ctx android.ModuleContext
 		AllFlagsPath:        outputPath,
 	}
 	return &output
+}
+
+func buildRuleToGenerateRemovedDexSignatures(ctx android.ModuleContext, removedTxtFiles android.Paths) android.OptionalPath {
+	if len(removedTxtFiles) == 0 {
+		return android.OptionalPath{}
+	}
+
+	output := android.PathForModuleOut(ctx, "modular-hiddenapi/removed-dex-signatures.txt")
+
+	rule := android.NewRuleBuilder(pctx, ctx)
+	rule.Command().
+		BuiltTool("metalava").
+		Flag("--no-banner").
+		Inputs(removedTxtFiles).
+		FlagWithOutput("--dex-api ", output)
+	rule.Build("modular-hiddenapi-removed-dex-signatures", "modular hiddenapi removed dex signatures")
+	return android.OptionalPathForPath(output)
 }
 
 // gatherHiddenAPIModuleFromContents gathers the hiddenAPIModule from the supplied contents.

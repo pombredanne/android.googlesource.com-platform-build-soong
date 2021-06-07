@@ -51,7 +51,6 @@ type Droidstubs struct {
 	lastReleasedApiXmlFile  android.WritablePath
 	privateApiFile          android.WritablePath
 	removedApiFile          android.WritablePath
-	removedDexApiFile       android.WritablePath
 	nullabilityWarningsFile android.WritablePath
 
 	checkCurrentApiTimestamp      android.WritablePath
@@ -78,9 +77,6 @@ type DroidstubsProperties struct {
 
 	// the generated removed API filename by Metalava, defaults to <module>_removed.txt
 	Removed_api_filename *string
-
-	// the generated removed Dex API filename by Metalava.
-	Removed_dex_api_filename *string
 
 	Check_api struct {
 		Last_released ApiToCheck
@@ -274,11 +270,6 @@ func (d *Droidstubs) stubsFlags(ctx android.ModuleContext, cmd *android.RuleBuil
 		d.removedApiFilePath = android.PathForModuleSrc(ctx, sourceRemovedApiFile)
 	}
 
-	if String(d.properties.Removed_dex_api_filename) != "" {
-		d.removedDexApiFile = android.PathForModuleOut(ctx, "metalava", String(d.properties.Removed_dex_api_filename))
-		cmd.FlagWithOutput("--removed-dex-api ", d.removedDexApiFile)
-	}
-
 	if Bool(d.properties.Write_sdk_values) {
 		d.metadataDir = android.PathForModuleOut(ctx, "metalava", "metadata")
 		cmd.FlagWithArg("--sdk-values ", d.metadataDir.String())
@@ -372,7 +363,8 @@ func (d *Droidstubs) apiLevelsAnnotationsFlags(ctx android.ModuleContext, cmd *a
 	cmd.FlagWithOutput("--generate-api-levels ", d.apiVersionsXml)
 	cmd.FlagWithInput("--apply-api-levels ", d.apiVersionsXml)
 	cmd.FlagWithArg("--current-version ", ctx.Config().PlatformSdkVersion().String())
-	cmd.FlagWithArg("--current-codename ", ctx.Config().PlatformSdkCodename())
+	// STOPSHIP: RESTORE THIS LOGIC WHEN DECLARING "REL" BUILD
+	// cmd.FlagWithArg("--current-codename ", ctx.Config().PlatformSdkCodename())
 
 	filename := proptools.StringDefault(d.properties.Api_levels_jar_filename, "android.jar")
 
@@ -406,7 +398,17 @@ func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersi
 	rule.Command().Text("rm -rf").Flag(homeDir.String())
 	rule.Command().Text("mkdir -p").Flag(homeDir.String())
 
-	cmd := rule.Command()
+	var cmd *android.RuleBuilderCommand
+	if len(sourcepaths) > 0 {
+		// We are passing the sourcepaths as an argument to metalava below, but the directories may
+		// not exist already (if they do not contain any listed inputs for metalava). Note that this
+		// is in a rule.SboxInputs()rule, so we are not modifying the actual source tree by creating
+		// these directories.
+		cmd = rule.Command()
+		cmd.Text("mkdir -p").Flags(cmd.PathsForInputs(sourcepaths))
+	}
+
+	cmd = rule.Command()
 	cmd.FlagWithArg("ANDROID_PREFS_ROOT=", homeDir.String())
 
 	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_METALAVA") {
@@ -440,6 +442,7 @@ func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersi
 	}
 
 	if len(sourcepaths) > 0 {
+		// TODO(b/153703940): Pass .html files to metalava and remove this argument.
 		cmd.FlagWithList("-sourcepath ", sourcepaths.Strings(), ":")
 	} else {
 		cmd.FlagWithArg("-sourcepath ", `""`)

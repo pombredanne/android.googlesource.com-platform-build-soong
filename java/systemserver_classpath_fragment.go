@@ -17,6 +17,7 @@ package java
 import (
 	"android/soong/android"
 	"android/soong/dexpreopt"
+
 	"github.com/google/blueprint"
 )
 
@@ -53,13 +54,7 @@ func (p *platformSystemServerClasspathModule) GenerateAndroidBuildActions(ctx an
 
 func (p *platformSystemServerClasspathModule) ClasspathFragmentToConfiguredJarList(ctx android.ModuleContext) android.ConfiguredJarList {
 	global := dexpreopt.GetGlobalConfig(ctx)
-
-	jars := global.SystemServerJars
-	// TODO(satayev): split apex jars into separate configs.
-	for i := 0; i < global.UpdatableSystemServerJars.Len(); i++ {
-		jars = jars.Append(global.UpdatableSystemServerJars.Apex(i), global.UpdatableSystemServerJars.Jar(i))
-	}
-	return jars
+	return global.SystemServerJars
 }
 
 type SystemServerClasspathModule struct {
@@ -101,13 +96,34 @@ func (s *SystemServerClasspathModule) GenerateAndroidBuildActions(ctx android.Mo
 }
 
 func (s *SystemServerClasspathModule) ClasspathFragmentToConfiguredJarList(ctx android.ModuleContext) android.ConfiguredJarList {
-	// TODO(satayev): populate with actual content
-	return android.EmptyConfiguredJarList()
+	global := dexpreopt.GetGlobalConfig(ctx)
+
+	// Convert content names to their appropriate stems, in case a test library is overriding an actual boot jar
+	var stems []string
+	for _, name := range s.properties.Contents {
+		dep := ctx.GetDirectDepWithTag(name, systemServerClasspathFragmentContentDepTag)
+		if m, ok := dep.(ModuleWithStem); ok {
+			stems = append(stems, m.Stem())
+		} else {
+			ctx.PropertyErrorf("contents", "%v is not a ModuleWithStem", name)
+		}
+	}
+
+	// Only create configs for updatable boot jars. Non-updatable system server jars must be part of the
+	// platform_systemserverclasspath's classpath proto config to guarantee that they come before any
+	// updatable jars at runtime.
+	return global.UpdatableSystemServerJars.Filter(stems)
 }
 
 type systemServerClasspathFragmentContentDependencyTag struct {
 	blueprint.BaseDependencyTag
 }
+
+// Contents of system server fragments in an apex are considered to be directly in the apex, as if
+// they were listed in java_libs.
+func (systemServerClasspathFragmentContentDependencyTag) CopyDirectlyInAnyApex() {}
+
+var _ android.CopyDirectlyInAnyApexTag = systemServerClasspathFragmentContentDepTag
 
 // The tag used for the dependency between the systemserverclasspath_fragment module and its contents.
 var systemServerClasspathFragmentContentDepTag = systemServerClasspathFragmentContentDependencyTag{}
