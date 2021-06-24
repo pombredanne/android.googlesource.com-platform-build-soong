@@ -193,23 +193,6 @@ func apiCheckEnabled(ctx android.ModuleContext, apiToCheck ApiToCheck, apiVersio
 	return false
 }
 
-// Used by xsd_config
-type ApiFilePath interface {
-	ApiFilePath() android.Path
-}
-
-type ApiStubsSrcProvider interface {
-	StubsSrcJar() android.Path
-}
-
-// Provider of information about API stubs, used by java_sdk_library.
-type ApiStubsProvider interface {
-	ApiFilePath
-	RemovedApiFilePath() android.Path
-
-	ApiStubsSrcProvider
-}
-
 //
 // Javadoc
 //
@@ -261,20 +244,20 @@ func JavadocHostFactory() android.Module {
 
 var _ android.OutputFileProducer = (*Javadoc)(nil)
 
-func (j *Javadoc) SdkVersion() android.SdkSpec {
-	return android.SdkSpecFrom(String(j.properties.Sdk_version))
+func (j *Javadoc) SdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
+	return android.SdkSpecFrom(ctx, String(j.properties.Sdk_version))
 }
 
 func (j *Javadoc) SystemModules() string {
 	return proptools.String(j.properties.System_modules)
 }
 
-func (j *Javadoc) MinSdkVersion() android.SdkSpec {
-	return j.SdkVersion()
+func (j *Javadoc) MinSdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
+	return j.SdkVersion(ctx)
 }
 
-func (j *Javadoc) TargetSdkVersion() android.SdkSpec {
-	return j.SdkVersion()
+func (j *Javadoc) TargetSdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
+	return j.SdkVersion(ctx)
 }
 
 func (j *Javadoc) addDeps(ctx android.BottomUpMutatorContext) {
@@ -386,7 +369,7 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 			}
 		case libTag:
 			if dep, ok := module.(SdkLibraryDependency); ok {
-				deps.classpath = append(deps.classpath, dep.SdkHeaderJars(ctx, j.SdkVersion())...)
+				deps.classpath = append(deps.classpath, dep.SdkHeaderJars(ctx, j.SdkVersion(ctx))...)
 			} else if ctx.OtherModuleHasProvider(module, JavaInfoProvider) {
 				dep := ctx.OtherModuleProvider(module, JavaInfoProvider).(JavaInfo)
 				deps.classpath = append(deps.classpath, dep.HeaderJars...)
@@ -441,23 +424,6 @@ func (j *Javadoc) collectDeps(ctx android.ModuleContext) deps {
 		return filtered
 	}
 	srcFiles = filterByPackage(srcFiles, j.properties.Filter_packages)
-
-	// While metalava needs package html files, it does not need them to be explicit on the command
-	// line. javadoc complains if it receives html files on the command line. The filter
-	// below excludes html files from the rsp file metalava. Note that the html
-	// files are still included as implicit inputs for successful remote execution and correct
-	// incremental builds.
-	filterHtml := func(srcs []android.Path) []android.Path {
-		filtered := []android.Path{}
-		for _, src := range srcs {
-			if src.Ext() == ".html" {
-				continue
-			}
-			filtered = append(filtered, src)
-		}
-		return filtered
-	}
-	srcFiles = filterHtml(srcFiles)
 
 	aidlFlags := j.collectAidlFlags(ctx, deps)
 	srcFiles = j.genSources(ctx, srcFiles, aidlFlags)

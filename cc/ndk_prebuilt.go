@@ -186,8 +186,8 @@ func (ndk *ndkPrebuiltStlLinker) link(ctx ModuleContext, flags Flags,
 		})
 	} else {
 		ctx.SetProvider(SharedLibraryInfoProvider, SharedLibraryInfo{
-			SharedLibrary:           lib,
-			UnstrippedSharedLibrary: lib,
+			SharedLibrary: lib,
+			Target:        ctx.Target(),
 		})
 	}
 

@@ -31,7 +31,7 @@ var vendorSnapshotSingleton = snapshotSingleton{
 	"SOONG_VENDOR_SNAPSHOT_ZIP",
 	android.OptionalPath{},
 	true,
-	vendorSnapshotImageSingleton,
+	VendorSnapshotImageSingleton,
 	false, /* fake */
 }
 
@@ -40,7 +40,7 @@ var vendorFakeSnapshotSingleton = snapshotSingleton{
 	"SOONG_VENDOR_FAKE_SNAPSHOT_ZIP",
 	android.OptionalPath{},
 	true,
-	vendorSnapshotImageSingleton,
+	VendorSnapshotImageSingleton,
 	true, /* fake */
 }
 
@@ -82,7 +82,7 @@ type snapshotSingleton struct {
 	// Implementation of the image interface specific to the image
 	// associated with this snapshot (e.g., specific to the vendor image,
 	// recovery image, etc.).
-	image snapshotImage
+	image SnapshotImage
 
 	// Whether this singleton is for fake snapshot or not.
 	// Fake snapshot is a snapshot whose prebuilt binaries and headers are empty.
@@ -104,7 +104,7 @@ func isRecoveryProprietaryPath(dir string, deviceConfig android.DeviceConfig) bo
 	return RecoverySnapshotSingleton().(*snapshotSingleton).image.isProprietaryPath(dir, deviceConfig)
 }
 
-func isVendorProprietaryModule(ctx android.BaseModuleContext) bool {
+func IsVendorProprietaryModule(ctx android.BaseModuleContext) bool {
 	// Any module in a vendor proprietary path is a vendor proprietary
 	// module.
 	if isVendorProprietaryPath(ctx.ModuleDir(), ctx.DeviceConfig()) {
@@ -115,7 +115,7 @@ func isVendorProprietaryModule(ctx android.BaseModuleContext) bool {
 	// still be a vendor proprietary module. This happens for cc modules
 	// that are excluded from the vendor snapshot, and it means that the
 	// vendor has assumed control of the framework-provided module.
-	if c, ok := ctx.Module().(*Module); ok {
+	if c, ok := ctx.Module().(LinkableInterface); ok {
 		if c.ExcludeFromVendorSnapshot() {
 			return true
 		}
@@ -137,7 +137,7 @@ func isRecoveryProprietaryModule(ctx android.BaseModuleContext) bool {
 	// that are excluded from the recovery snapshot, and it means that the
 	// vendor has assumed control of the framework-provided module.
 
-	if c, ok := ctx.Module().(*Module); ok {
+	if c, ok := ctx.Module().(LinkableInterface); ok {
 		if c.ExcludeFromRecoverySnapshot() {
 			return true
 		}
@@ -147,8 +147,8 @@ func isRecoveryProprietaryModule(ctx android.BaseModuleContext) bool {
 }
 
 // Determines if the module is a candidate for snapshot.
-func isSnapshotAware(cfg android.DeviceConfig, m *Module, inProprietaryPath bool, apexInfo android.ApexInfo, image snapshotImage) bool {
-	if !m.Enabled() || m.Properties.HideFromMake {
+func isSnapshotAware(cfg android.DeviceConfig, m LinkableInterface, inProprietaryPath bool, apexInfo android.ApexInfo, image SnapshotImage) bool {
+	if !m.Enabled() || m.HiddenFromMake() {
 		return false
 	}
 	// When android/prebuilt.go selects between source and prebuilt, it sets
@@ -173,61 +173,55 @@ func isSnapshotAware(cfg android.DeviceConfig, m *Module, inProprietaryPath bool
 		return false
 	}
 	// the module must be installed in target image
-	if !apexInfo.IsForPlatform() || m.isSnapshotPrebuilt() || !image.inImage(m)() {
+	if !apexInfo.IsForPlatform() || m.IsSnapshotPrebuilt() || !image.inImage(m)() {
 		return false
 	}
 	// skip kernel_headers which always depend on vendor
-	if _, ok := m.linker.(*kernelHeadersDecorator); ok {
+	if m.KernelHeadersDecorator() {
 		return false
 	}
-	// skip llndk_library and llndk_headers which are backward compatible
+
 	if m.IsLlndk() {
-		return false
-	}
-	if _, ok := m.linker.(*llndkStubDecorator); ok {
-		return false
-	}
-	if _, ok := m.linker.(*llndkHeadersDecorator); ok {
 		return false
 	}
 
 	// Libraries
-	if l, ok := m.linker.(snapshotLibraryInterface); ok {
-		if m.sanitize != nil {
+	if sanitizable, ok := m.(PlatformSanitizeable); ok && sanitizable.IsSnapshotLibrary() {
+		if sanitizable.SanitizePropDefined() {
 			// scs and hwasan export both sanitized and unsanitized variants for static and header
 			// Always use unsanitized variants of them.
-			for _, t := range []SanitizerType{scs, hwasan} {
-				if !l.shared() && m.sanitize.isSanitizerEnabled(t) {
+			for _, t := range []SanitizerType{scs, Hwasan} {
+				if !sanitizable.Shared() && sanitizable.IsSanitizerEnabled(t) {
 					return false
 				}
 			}
 			// cfi also exports both variants. But for static, we capture both.
 			// This is because cfi static libraries can't be linked from non-cfi modules,
 			// and vice versa. This isn't the case for scs and hwasan sanitizers.
-			if !l.static() && !l.shared() && m.sanitize.isSanitizerEnabled(cfi) {
+			if !sanitizable.Static() && !sanitizable.Shared() && sanitizable.IsSanitizerEnabled(cfi) {
 				return false
 			}
 		}
-		if l.static() {
-			return m.outputFile.Valid() && !image.private(m)
+		if sanitizable.Static() {
+			return sanitizable.OutputFile().Valid() && !image.private(m)
 		}
-		if l.shared() {
-			if !m.outputFile.Valid() {
+		if sanitizable.Shared() || sanitizable.Rlib() {
+			if !sanitizable.OutputFile().Valid() {
 				return false
 			}
 			if image.includeVndk() {
-				if !m.IsVndk() {
+				if !sanitizable.IsVndk() {
 					return true
 				}
-				return m.IsVndkExt()
+				return sanitizable.IsVndkExt()
 			}
 		}
 		return true
 	}
 
 	// Binaries and Objects
-	if m.binary() || m.object() {
-		return m.outputFile.Valid()
+	if m.Binary() || m.Object() {
+		return m.OutputFile().Valid()
 	}
 
 	return false
@@ -238,7 +232,6 @@ func isSnapshotAware(cfg android.DeviceConfig, m *Module, inProprietaryPath bool
 type snapshotJsonFlags struct {
 	ModuleName          string `json:",omitempty"`
 	RelativeInstallPath string `json:",omitempty"`
-	AndroidMkSuffix     string `json:",omitempty"`
 
 	// library flags
 	ExportedDirs       []string `json:",omitempty"`
@@ -330,7 +323,7 @@ func (c *snapshotSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 
 	// installSnapshot function copies prebuilt file (.so, .a, or executable) and json flag file.
 	// For executables, init_rc and vintf_fragments files are also copied.
-	installSnapshot := func(m *Module, fake bool) android.Paths {
+	installSnapshot := func(m LinkableInterface, fake bool) android.Paths {
 		targetArch := "arch-" + m.Target().Arch.ArchType.String()
 		if m.Target().Arch.ArchVariant != "" {
 			targetArch += "-" + m.Target().Arch.ArchVariant
@@ -344,7 +337,7 @@ func (c *snapshotSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 		prop.ModuleName = ctx.ModuleName(m)
 		if c.supportsVndkExt && m.IsVndkExt() {
 			// vndk exts are installed to /vendor/lib(64)?/vndk(-sp)?
-			if m.isVndkSp() {
+			if m.IsVndkSp() {
 				prop.RelativeInstallPath = "vndk-sp"
 			} else {
 				prop.RelativeInstallPath = "vndk"
@@ -352,8 +345,7 @@ func (c *snapshotSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 		} else {
 			prop.RelativeInstallPath = m.RelativeInstallPath()
 		}
-		prop.AndroidMkSuffix = m.Properties.SubName
-		prop.RuntimeLibs = m.Properties.SnapshotRuntimeLibs
+		prop.RuntimeLibs = m.SnapshotRuntimeLibs()
 		prop.Required = m.RequiredModuleNames()
 		for _, path := range m.InitRc() {
 			prop.InitRc = append(prop.InitRc, filepath.Join("configs", path.Base()))
@@ -373,8 +365,8 @@ func (c *snapshotSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 
 		var propOut string
 
-		if l, ok := m.linker.(snapshotLibraryInterface); ok {
-			exporterInfo := ctx.ModuleProvider(m, FlagExporterInfoProvider).(FlagExporterInfo)
+		if m.IsSnapshotLibrary() {
+			exporterInfo := ctx.ModuleProvider(m.Module(), FlagExporterInfoProvider).(FlagExporterInfo)
 
 			// library flags
 			prop.ExportedFlags = exporterInfo.Flags
@@ -384,20 +376,25 @@ func (c *snapshotSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 			for _, dir := range exporterInfo.SystemIncludeDirs {
 				prop.ExportedSystemDirs = append(prop.ExportedSystemDirs, filepath.Join("include", dir.String()))
 			}
+
 			// shared libs dependencies aren't meaningful on static or header libs
-			if l.shared() {
-				prop.SharedLibs = m.Properties.SnapshotSharedLibs
+			if m.Shared() {
+				prop.SharedLibs = m.SnapshotSharedLibs()
 			}
-			if l.static() && m.sanitize != nil {
-				prop.SanitizeMinimalDep = m.sanitize.Properties.MinimalRuntimeDep || enableMinimalRuntime(m.sanitize)
-				prop.SanitizeUbsanDep = m.sanitize.Properties.UbsanRuntimeDep || enableUbsanRuntime(m.sanitize)
+			if sanitizable, ok := m.(PlatformSanitizeable); ok {
+				if sanitizable.Static() && sanitizable.SanitizePropDefined() {
+					prop.SanitizeMinimalDep = sanitizable.MinimalRuntimeDep() || sanitizable.MinimalRuntimeNeeded()
+					prop.SanitizeUbsanDep = sanitizable.UbsanRuntimeDep() || sanitizable.UbsanRuntimeNeeded()
+				}
 			}
 
 			var libType string
-			if l.static() {
+			if m.Static() {
 				libType = "static"
-			} else if l.shared() {
+			} else if m.Shared() {
 				libType = "shared"
+			} else if m.Rlib() {
+				libType = "rlib"
 			} else {
 				libType = "header"
 			}
@@ -406,16 +403,18 @@ func (c *snapshotSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 
 			// install .a or .so
 			if libType != "header" {
-				libPath := m.outputFile.Path()
+				libPath := m.OutputFile().Path()
 				stem = libPath.Base()
-				if l.static() && m.sanitize != nil && m.sanitize.isSanitizerEnabled(cfi) {
-					// both cfi and non-cfi variant for static libraries can exist.
-					// attach .cfi to distinguish between cfi and non-cfi.
-					// e.g. libbase.a -> libbase.cfi.a
-					ext := filepath.Ext(stem)
-					stem = strings.TrimSuffix(stem, ext) + ".cfi" + ext
-					prop.Sanitize = "cfi"
-					prop.ModuleName += ".cfi"
+				if sanitizable, ok := m.(PlatformSanitizeable); ok {
+					if (sanitizable.Static() || sanitizable.Rlib()) && sanitizable.SanitizePropDefined() && sanitizable.IsSanitizerEnabled(cfi) {
+						// both cfi and non-cfi variant for static libraries can exist.
+						// attach .cfi to distinguish between cfi and non-cfi.
+						// e.g. libbase.a -> libbase.cfi.a
+						ext := filepath.Ext(stem)
+						stem = strings.TrimSuffix(stem, ext) + ".cfi" + ext
+						prop.Sanitize = "cfi"
+						prop.ModuleName += ".cfi"
+					}
 				}
 				snapshotLibOut := filepath.Join(snapshotArchDir, targetArch, libType, stem)
 				ret = append(ret, copyFile(ctx, libPath, snapshotLibOut, fake))
@@ -424,20 +423,20 @@ func (c *snapshotSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 			}
 
 			propOut = filepath.Join(snapshotArchDir, targetArch, libType, stem+".json")
-		} else if m.binary() {
+		} else if m.Binary() {
 			// binary flags
 			prop.Symlinks = m.Symlinks()
-			prop.SharedLibs = m.Properties.SnapshotSharedLibs
+			prop.SharedLibs = m.SnapshotSharedLibs()
 
 			// install bin
-			binPath := m.outputFile.Path()
+			binPath := m.OutputFile().Path()
 			snapshotBinOut := filepath.Join(snapshotArchDir, targetArch, "binary", binPath.Base())
 			ret = append(ret, copyFile(ctx, binPath, snapshotBinOut, fake))
 			propOut = snapshotBinOut + ".json"
-		} else if m.object() {
+		} else if m.Object() {
 			// object files aren't installed to the device, so their names can conflict.
 			// Use module name as stem.
-			objPath := m.outputFile.Path()
+			objPath := m.OutputFile().Path()
 			snapshotObjOut := filepath.Join(snapshotArchDir, targetArch, "object",
 				ctx.ModuleName(m)+filepath.Ext(objPath.Base()))
 			ret = append(ret, copyFile(ctx, objPath, snapshotObjOut, fake))
@@ -458,7 +457,7 @@ func (c *snapshotSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 	}
 
 	ctx.VisitAllModules(func(module android.Module) {
-		m, ok := module.(*Module)
+		m, ok := module.(LinkableInterface)
 		if !ok {
 			return
 		}
@@ -492,8 +491,8 @@ func (c *snapshotSingleton) GenerateBuildActions(ctx android.SingletonContext) {
 		// installSnapshot installs prebuilts and json flag files
 		snapshotOutputs = append(snapshotOutputs, installSnapshot(m, installAsFake)...)
 		// just gather headers and notice files here, because they are to be deduplicated
-		if l, ok := m.linker.(snapshotLibraryInterface); ok {
-			headers = append(headers, l.snapshotHeaders()...)
+		if m.IsSnapshotLibrary() {
+			headers = append(headers, m.SnapshotHeaders()...)
 		}
 
 		if len(m.NoticeFiles()) > 0 {

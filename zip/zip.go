@@ -292,11 +292,11 @@ func zipTo(args ZipArgs, w io.Writer) error {
 				continue
 			}
 
-			globbed, _, err := z.fs.Glob(s, nil, followSymlinks)
+			result, err := z.fs.Glob(s, nil, followSymlinks)
 			if err != nil {
 				return err
 			}
-			if len(globbed) == 0 {
+			if len(result.Matches) == 0 {
 				err := &os.PathError{
 					Op:   "lstat",
 					Path: s,
@@ -308,7 +308,7 @@ func zipTo(args ZipArgs, w io.Writer) error {
 					return err
 				}
 			}
-			srcs = append(srcs, globbed...)
+			srcs = append(srcs, result.Matches...)
 		}
 		if fa.GlobDir != "" {
 			if exists, isDir, err := z.fs.Exists(fa.GlobDir); err != nil {
@@ -336,11 +336,11 @@ func zipTo(args ZipArgs, w io.Writer) error {
 					return err
 				}
 			}
-			globbed, _, err := z.fs.Glob(filepath.Join(fa.GlobDir, "**/*"), nil, followSymlinks)
+			result, err := z.fs.Glob(filepath.Join(fa.GlobDir, "**/*"), nil, followSymlinks)
 			if err != nil {
 				return err
 			}
-			srcs = append(srcs, globbed...)
+			srcs = append(srcs, result.Matches...)
 		}
 		for _, src := range srcs {
 			err := fillPathPairs(fa, src, &pathMappings, args.NonDeflatedFiles, noCompression)
@@ -656,9 +656,11 @@ func (z *ZipWriter) addFile(dest, src string, method uint16, emulateJar, srcJar 
 			UncompressedSize64: uint64(fileSize),
 		}
 
+		mode := os.FileMode(0644)
 		if executable {
-			header.SetMode(0700)
+			mode = 0755
 		}
+		header.SetMode(mode)
 
 		err = createParentDirs(dest, src)
 		if err != nil {
@@ -953,7 +955,7 @@ func (z *ZipWriter) writeDirectory(dir string, src string, emulateJar bool) erro
 				dirHeader = &zip.FileHeader{
 					Name: cleanDir + "/",
 				}
-				dirHeader.SetMode(0700 | os.ModeDir)
+				dirHeader.SetMode(0755 | os.ModeDir)
 			}
 
 			dirHeader.SetModTime(z.time)

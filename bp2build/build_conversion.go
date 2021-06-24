@@ -19,6 +19,7 @@ import (
 	"android/soong/bazel"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	"github.com/google/blueprint"
@@ -31,9 +32,11 @@ type BazelAttributes struct {
 
 type BazelTarget struct {
 	name            string
+	packageName     string
 	content         string
 	ruleClass       string
 	bzlLoadLocation string
+	handcrafted     bool
 }
 
 // IsLoadedFromStarlark determines if the BazelTarget's rule class is loaded from a .bzl file,
@@ -42,8 +45,41 @@ func (t BazelTarget) IsLoadedFromStarlark() bool {
 	return t.bzlLoadLocation != ""
 }
 
+// Label is the fully qualified Bazel label constructed from the BazelTarget's
+// package name and target name.
+func (t BazelTarget) Label() string {
+	if t.packageName == "." {
+		return "//:" + t.name
+	} else {
+		return "//" + t.packageName + ":" + t.name
+	}
+}
+
 // BazelTargets is a typedef for a slice of BazelTarget objects.
 type BazelTargets []BazelTarget
+
+// HasHandcraftedTargetsreturns true if a set of bazel targets contain
+// handcrafted ones.
+func (targets BazelTargets) hasHandcraftedTargets() bool {
+	for _, target := range targets {
+		if target.handcrafted {
+			return true
+		}
+	}
+	return false
+}
+
+// sort a list of BazelTargets in-place, by name, and by generated/handcrafted types.
+func (targets BazelTargets) sort() {
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].handcrafted != targets[j].handcrafted {
+			// Handcrafted targets will be generated after the bp2build generated targets.
+			return targets[j].handcrafted
+		}
+		// This will cover all bp2build generated targets.
+		return targets[i].name < targets[j].name
+	})
+}
 
 // String returns the string representation of BazelTargets, without load
 // statements (use LoadStatements for that), since the targets are usually not
@@ -51,6 +87,18 @@ type BazelTargets []BazelTarget
 func (targets BazelTargets) String() string {
 	var res string
 	for i, target := range targets {
+		// There is only at most 1 handcrafted "target", because its contents
+		// represent the entire BUILD file content from the tree. See
+		// build_conversion.go#getHandcraftedBuildContent for more information.
+		//
+		// Add a header to make it easy to debug where the handcrafted targets
+		// are in a generated BUILD file.
+		if target.handcrafted {
+			res += "# -----------------------------\n"
+			res += "# Section: Handcrafted targets. \n"
+			res += "# -----------------------------\n\n"
+		}
+
 		res += target.content
 		if i != len(targets)-1 {
 			res += "\n\n"
@@ -176,7 +224,7 @@ func propsToAttributes(props map[string]string) string {
 	return attributes
 }
 
-func GenerateBazelTargets(ctx *CodegenContext) (map[string]BazelTargets, CodegenMetrics) {
+func GenerateBazelTargets(ctx *CodegenContext, generateFilegroups bool) (map[string]BazelTargets, CodegenMetrics, CodegenCompatLayer) {
 	buildFileToTargets := make(map[string]BazelTargets)
 	buildFileToAppend := make(map[string]bool)
 
@@ -185,9 +233,17 @@ func GenerateBazelTargets(ctx *CodegenContext) (map[string]BazelTargets, Codegen
 		RuleClassCount: make(map[string]int),
 	}
 
+	compatLayer := CodegenCompatLayer{
+		NameToLabelMap: make(map[string]string),
+	}
+
+	dirs := make(map[string]bool)
+
 	bpCtx := ctx.Context()
 	bpCtx.VisitAllModules(func(m blueprint.Module) {
 		dir := bpCtx.ModuleDir(m)
+		dirs[dir] = true
+
 		var t BazelTarget
 
 		switch ctx.Mode() {
@@ -195,6 +251,7 @@ func GenerateBazelTargets(ctx *CodegenContext) (map[string]BazelTargets, Codegen
 			if b, ok := m.(android.Bazelable); ok && b.HasHandcraftedLabel() {
 				metrics.handCraftedTargetCount += 1
 				metrics.TotalModuleCount += 1
+				compatLayer.AddNameToLabelEntry(m.Name(), b.HandcraftedLabel())
 				pathToBuildFile := getBazelPackagePath(b)
 				// We are using the entire contents of handcrafted build file, so if multiple targets within
 				// a package have handcrafted targets, we only want to include the contents one time.
@@ -212,6 +269,7 @@ func GenerateBazelTargets(ctx *CodegenContext) (map[string]BazelTargets, Codegen
 			} else if btm, ok := m.(android.BazelTargetModule); ok {
 				t = generateBazelTarget(bpCtx, m, btm)
 				metrics.RuleClassCount[t.ruleClass] += 1
+				compatLayer.AddNameToLabelEntry(m.Name(), t.Label())
 			} else {
 				metrics.TotalModuleCount += 1
 				return
@@ -230,8 +288,19 @@ func GenerateBazelTargets(ctx *CodegenContext) (map[string]BazelTargets, Codegen
 
 		buildFileToTargets[dir] = append(buildFileToTargets[dir], t)
 	})
+	if generateFilegroups {
+		// Add a filegroup target that exposes all sources in the subtree of this package
+		// NOTE: This also means we generate a BUILD file for every Android.bp file (as long as it has at least one module)
+		for dir, _ := range dirs {
+			buildFileToTargets[dir] = append(buildFileToTargets[dir], BazelTarget{
+				name:      "bp2build_all_srcs",
+				content:   `filegroup(name = "bp2build_all_srcs", srcs = glob(["**/*"]))`,
+				ruleClass: "filegroup",
+			})
+		}
+	}
 
-	return buildFileToTargets, metrics
+	return buildFileToTargets, metrics, compatLayer
 }
 
 func getBazelPackagePath(b android.Bazelable) string {
@@ -252,7 +321,8 @@ func getHandcraftedBuildContent(ctx *CodegenContext, b android.Bazelable, pathTo
 	}
 	// TODO(b/181575318): once this is more targeted, we need to include name, rule class, etc
 	return BazelTarget{
-		content: c,
+		content:     c,
+		handcrafted: true,
 	}, nil
 }
 
@@ -271,6 +341,7 @@ func generateBazelTarget(ctx bpToBuildContext, m blueprint.Module, btm android.B
 	targetName := targetNameForBp2Build(ctx, m)
 	return BazelTarget{
 		name:            targetName,
+		packageName:     ctx.ModuleDir(m),
 		ruleClass:       ruleClass,
 		bzlLoadLocation: bzlLoadLocation,
 		content: fmt.Sprintf(
@@ -279,6 +350,7 @@ func generateBazelTarget(ctx bpToBuildContext, m blueprint.Module, btm android.B
 			targetName,
 			attributes,
 		),
+		handcrafted: false,
 	}
 }
 
@@ -374,16 +446,9 @@ func prettyPrint(propertyValue reflect.Value, indent int) (string, error) {
 		// value>)" to set the default value of unset attributes. In the cases
 		// where the bp2build converter didn't set the default value within the
 		// mutator when creating the BazelTargetModule, this would be a zero
-		// value. For those cases, we return a non-surprising default value so
-		// generated BUILD files are syntactically correct.
-		switch propertyValue.Kind() {
-		case reflect.Slice:
-			return "[]", nil
-		case reflect.Map:
-			return "{}", nil
-		default:
-			return "", nil
-		}
+		// value. For those cases, we return an empty string so we don't
+		// unnecessarily generate empty values.
+		return "", nil
 	}
 
 	var ret string
@@ -397,21 +462,38 @@ func prettyPrint(propertyValue reflect.Value, indent int) (string, error) {
 	case reflect.Ptr:
 		return prettyPrint(propertyValue.Elem(), indent)
 	case reflect.Slice:
-		ret = "[\n"
-		for i := 0; i < propertyValue.Len(); i++ {
-			indexedValue, err := prettyPrint(propertyValue.Index(i), indent+1)
+		if propertyValue.Len() == 0 {
+			return "[]", nil
+		}
+
+		if propertyValue.Len() == 1 {
+			// Single-line list for list with only 1 element
+			ret += "["
+			indexedValue, err := prettyPrint(propertyValue.Index(0), indent)
 			if err != nil {
 				return "", err
 			}
+			ret += indexedValue
+			ret += "]"
+		} else {
+			// otherwise, use a multiline list.
+			ret += "[\n"
+			for i := 0; i < propertyValue.Len(); i++ {
+				indexedValue, err := prettyPrint(propertyValue.Index(i), indent+1)
+				if err != nil {
+					return "", err
+				}
 
-			if indexedValue != "" {
-				ret += makeIndent(indent + 1)
-				ret += indexedValue
-				ret += ",\n"
+				if indexedValue != "" {
+					ret += makeIndent(indent + 1)
+					ret += indexedValue
+					ret += ",\n"
+				}
 			}
+			ret += makeIndent(indent)
+			ret += "]"
 		}
-		ret += makeIndent(indent)
-		ret += "]"
+
 	case reflect.Struct:
 		// Special cases where the bp2build sends additional information to the codegenerator
 		// by wrapping the attributes in a custom struct type.
@@ -424,6 +506,9 @@ func prettyPrint(propertyValue reflect.Value, indent int) (string, error) {
 		ret = "{\n"
 		// Sort and print the struct props by the key.
 		structProps := extractStructProperties(propertyValue, indent)
+		if len(structProps) == 0 {
+			return "", nil
+		}
 		for _, k := range android.SortedStringKeys(structProps) {
 			ret += makeIndent(indent + 1)
 			ret += fmt.Sprintf("%q: %s,\n", k, structProps[k])
@@ -494,9 +579,7 @@ func isZero(value reflect.Value) bool {
 	case reflect.Struct:
 		valueIsZero := true
 		for i := 0; i < value.NumField(); i++ {
-			if value.Field(i).CanSet() {
-				valueIsZero = valueIsZero && isZero(value.Field(i))
-			}
+			valueIsZero = valueIsZero && isZero(value.Field(i))
 		}
 		return valueIsZero
 	case reflect.Ptr:
@@ -505,7 +588,14 @@ func isZero(value reflect.Value) bool {
 		} else {
 			return true
 		}
+	// Always print bools, if you want a bool attribute to be able to take the default value, use a
+	// bool pointer instead
+	case reflect.Bool:
+		return false
 	default:
+		if !value.IsValid() {
+			return true
+		}
 		zeroValue := reflect.Zero(value.Type())
 		result := value.Interface() == zeroValue.Interface()
 		return result

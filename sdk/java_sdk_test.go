@@ -83,12 +83,12 @@ func TestBasicSdkWithJavaLibrary(t *testing.T) {
 
 		sdk_snapshot {
 			name: "mysdk@1",
-			java_header_libs: ["sdkmember_mysdk_1"],
+			java_header_libs: ["sdkmember_mysdk@1"],
 		}
 
 		sdk_snapshot {
 			name: "mysdk@2",
-			java_header_libs: ["sdkmember_mysdk_2"],
+			java_header_libs: ["sdkmember_mysdk@2"],
 		}
 
 		java_library {
@@ -100,13 +100,13 @@ func TestBasicSdkWithJavaLibrary(t *testing.T) {
 		}
 
 		java_import {
-			name: "sdkmember_mysdk_1",
+			name: "sdkmember_mysdk@1",
 			sdk_member_name: "sdkmember",
 			host_supported: true,
 		}
 
 		java_import {
-			name: "sdkmember_mysdk_2",
+			name: "sdkmember_mysdk@2",
 			sdk_member_name: "sdkmember",
 			host_supported: true,
 		}
@@ -144,8 +144,8 @@ func TestBasicSdkWithJavaLibrary(t *testing.T) {
 		}
 	`)
 
-	sdkMemberV1 := result.ModuleForTests("sdkmember_mysdk_1", "android_common").Rule("combineJar").Output
-	sdkMemberV2 := result.ModuleForTests("sdkmember_mysdk_2", "android_common").Rule("combineJar").Output
+	sdkMemberV1 := result.ModuleForTests("sdkmember_mysdk@1", "android_common").Rule("combineJar").Output
+	sdkMemberV2 := result.ModuleForTests("sdkmember_mysdk@2", "android_common").Rule("combineJar").Output
 
 	javalibForMyApex := result.ModuleForTests("myjavalib", "android_common_apex10000_mysdk_1")
 	javalibForMyApex2 := result.ModuleForTests("myjavalib", "android_common_apex10000_mysdk_2")
@@ -179,7 +179,18 @@ func TestSnapshotWithJavaHeaderLibrary(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "mysdk", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+java_import {
+    name: "myjavalib",
+    prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
+    jars: ["java/myjavalib.jar"],
+}
+`),
+		checkVersionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_import {
@@ -190,20 +201,11 @@ java_import {
     jars: ["java/myjavalib.jar"],
 }
 
-java_import {
-    name: "myjavalib",
-    prefer: false,
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
-}
-
 sdk_snapshot {
     name: "mysdk@current",
     visibility: ["//visibility:public"],
     java_header_libs: ["mysdk_myjavalib@current"],
 }
-
 `),
 		checkAllCopyRules(`
 .intermediates/myjavalib/android_common/turbine-combined/myjavalib.jar -> java/myjavalib.jar
@@ -239,22 +241,25 @@ func TestHostSnapshotWithJavaHeaderLibrary(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "mysdk", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_import {
-    name: "mysdk_myjavalib@current",
-    sdk_member_name: "myjavalib",
+    name: "myjavalib",
+    prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     jars: ["java/myjavalib.jar"],
 }
+`),
+		checkVersionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
 
 java_import {
-    name: "myjavalib",
-    prefer: false,
+    name: "mysdk_myjavalib@current",
+    sdk_member_name: "myjavalib",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     device_supported: false,
@@ -296,12 +301,12 @@ func TestDeviceAndHostSnapshotWithJavaHeaderLibrary(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "mysdk", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_import {
-    name: "mysdk_myjavalib@current",
-    sdk_member_name: "myjavalib",
+    name: "myjavalib",
+    prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     host_supported: true,
@@ -314,10 +319,13 @@ java_import {
         },
     },
 }
+`),
+		checkVersionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
 
 java_import {
-    name: "myjavalib",
-    prefer: false,
+    name: "mysdk_myjavalib@current",
+    sdk_member_name: "myjavalib",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     host_supported: true,
@@ -371,7 +379,18 @@ func TestSnapshotWithJavaImplLibrary(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "myexports", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+java_import {
+    name: "myjavalib",
+    prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
+    jars: ["java/myjavalib.jar"],
+}
+`),
+		checkVersionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_import {
@@ -382,20 +401,11 @@ java_import {
     jars: ["java/myjavalib.jar"],
 }
 
-java_import {
-    name: "myjavalib",
-    prefer: false,
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
-}
-
 module_exports_snapshot {
     name: "myexports@current",
     visibility: ["//visibility:public"],
     java_libs: ["myexports_myjavalib@current"],
 }
-
 `),
 		checkAllCopyRules(`
 .intermediates/myjavalib/android_common/withres/myjavalib.jar -> java/myjavalib.jar
@@ -431,20 +441,23 @@ func TestSnapshotWithJavaBootLibrary(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "myexports", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+java_import {
+    name: "myjavalib",
+    prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
+    jars: ["java/myjavalib.jar"],
+}
+`),
+		checkVersionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_import {
     name: "myexports_myjavalib@current",
     sdk_member_name: "myjavalib",
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
-}
-
-java_import {
-    name: "myjavalib",
-    prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     jars: ["java/myjavalib.jar"],
@@ -489,22 +502,25 @@ func TestHostSnapshotWithJavaImplLibrary(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "myexports", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_import {
-    name: "myexports_myjavalib@current",
-    sdk_member_name: "myjavalib",
+    name: "myjavalib",
+    prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     device_supported: false,
     host_supported: true,
     jars: ["java/myjavalib.jar"],
 }
+`),
+		checkVersionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
 
 java_import {
-    name: "myjavalib",
-    prefer: false,
+    name: "myexports_myjavalib@current",
+    sdk_member_name: "myjavalib",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     device_supported: false,
@@ -545,21 +561,24 @@ func TestSnapshotWithJavaTest(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "myexports", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_test_import {
-    name: "myexports_myjavatests@current",
-    sdk_member_name: "myjavatests",
+    name: "myjavatests",
+    prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     jars: ["java/myjavatests.jar"],
     test_config: "java/myjavatests-AndroidTest.xml",
 }
+`),
+		checkVersionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
 
 java_test_import {
-    name: "myjavatests",
-    prefer: false,
+    name: "myexports_myjavatests@current",
+    sdk_member_name: "myjavatests",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     jars: ["java/myjavatests.jar"],
@@ -600,12 +619,12 @@ func TestHostSnapshotWithJavaTest(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "myexports", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_test_import {
-    name: "myexports_myjavatests@current",
-    sdk_member_name: "myjavatests",
+    name: "myjavatests",
+    prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     device_supported: false,
@@ -613,10 +632,13 @@ java_test_import {
     jars: ["java/myjavatests.jar"],
     test_config: "java/myjavatests-AndroidTest.xml",
 }
+`),
+		checkVersionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
 
 java_test_import {
-    name: "myjavatests",
-    prefer: false,
+    name: "myexports_myjavatests@current",
+    sdk_member_name: "myjavatests",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     device_supported: false,
@@ -641,16 +663,28 @@ module_exports_snapshot {
 }
 
 func TestSnapshotWithJavaSystemModules(t *testing.T) {
-	result := android.GroupFixturePreparers(prepareForSdkTestWithJava).RunTestWithBp(t, `
+	result := android.GroupFixturePreparers(prepareForSdkTestWithJavaSdkLibrary).RunTestWithBp(t, `
 		sdk {
 			name: "mysdk",
 			java_header_libs: ["exported-system-module"],
+			java_sdk_libs: ["myjavalib"],
 			java_system_modules: ["my-system-modules"],
+		}
+
+		java_sdk_library {
+			name: "myjavalib",
+			apex_available: ["//apex_available:anyapex"],
+			srcs: ["Test.java"],
+			sdk_version: "current",
+			shared_library: false,
+			public: {
+				enabled: true,
+			},
 		}
 
 		java_system_modules {
 			name: "my-system-modules",
-			libs: ["system-module", "exported-system-module"],
+			libs: ["system-module", "exported-system-module", "myjavalib.stubs"],
 		}
 
 		java_library {
@@ -669,20 +703,57 @@ func TestSnapshotWithJavaSystemModules(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "mysdk", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_import {
-    name: "mysdk_exported-system-module@current",
-    sdk_member_name: "exported-system-module",
+    name: "exported-system-module",
+    prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     jars: ["java/exported-system-module.jar"],
 }
 
 java_import {
-    name: "exported-system-module",
+    name: "mysdk_system-module",
     prefer: false,
+    visibility: ["//visibility:private"],
+    apex_available: ["//apex_available:platform"],
+    jars: ["java/system-module.jar"],
+}
+
+java_sdk_library_import {
+    name: "myjavalib",
+    prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:anyapex"],
+    shared_library: false,
+    public: {
+        jars: ["sdk_library/public/myjavalib-stubs.jar"],
+        stub_srcs: ["sdk_library/public/myjavalib_stub_sources"],
+        current_api: "sdk_library/public/myjavalib.txt",
+        removed_api: "sdk_library/public/myjavalib-removed.txt",
+        sdk_version: "current",
+    },
+}
+
+java_system_modules_import {
+    name: "my-system-modules",
+    prefer: false,
+    visibility: ["//visibility:public"],
+    libs: [
+        "mysdk_system-module",
+        "exported-system-module",
+        "myjavalib.stubs",
+    ],
+}
+`),
+		checkVersionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+java_import {
+    name: "mysdk_exported-system-module@current",
+    sdk_member_name: "exported-system-module",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     jars: ["java/exported-system-module.jar"],
@@ -696,12 +767,19 @@ java_import {
     jars: ["java/system-module.jar"],
 }
 
-java_import {
-    name: "mysdk_system-module",
-    prefer: false,
-    visibility: ["//visibility:private"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/system-module.jar"],
+java_sdk_library_import {
+    name: "mysdk_myjavalib@current",
+    sdk_member_name: "myjavalib",
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:anyapex"],
+    shared_library: false,
+    public: {
+        jars: ["sdk_library/public/myjavalib-stubs.jar"],
+        stub_srcs: ["sdk_library/public/myjavalib_stub_sources"],
+        current_api: "sdk_library/public/myjavalib.txt",
+        removed_api: "sdk_library/public/myjavalib-removed.txt",
+        sdk_version: "current",
+    },
 }
 
 java_system_modules_import {
@@ -711,16 +789,7 @@ java_system_modules_import {
     libs: [
         "mysdk_system-module@current",
         "mysdk_exported-system-module@current",
-    ],
-}
-
-java_system_modules_import {
-    name: "my-system-modules",
-    prefer: false,
-    visibility: ["//visibility:public"],
-    libs: [
-        "mysdk_system-module",
-        "exported-system-module",
+        "mysdk_myjavalib.stubs@current",
     ],
 }
 
@@ -728,12 +797,16 @@ sdk_snapshot {
     name: "mysdk@current",
     visibility: ["//visibility:public"],
     java_header_libs: ["mysdk_exported-system-module@current"],
+    java_sdk_libs: ["mysdk_myjavalib@current"],
     java_system_modules: ["mysdk_my-system-modules@current"],
 }
 `),
 		checkAllCopyRules(`
 .intermediates/exported-system-module/android_common/turbine-combined/exported-system-module.jar -> java/exported-system-module.jar
 .intermediates/system-module/android_common/turbine-combined/system-module.jar -> java/system-module.jar
+.intermediates/myjavalib.stubs/android_common/javac/myjavalib.stubs.jar -> sdk_library/public/myjavalib-stubs.jar
+.intermediates/myjavalib.stubs.source/android_common/metalava/myjavalib.stubs.source_api.txt -> sdk_library/public/myjavalib.txt
+.intermediates/myjavalib.stubs.source/android_common/metalava/myjavalib.stubs.source_removed.txt -> sdk_library/public/myjavalib-removed.txt
 `),
 	)
 }
@@ -765,12 +838,12 @@ func TestHostSnapshotWithJavaSystemModules(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "mysdk", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_import {
-    name: "mysdk_system-module@current",
-    sdk_member_name: "system-module",
+    name: "mysdk_system-module",
+    prefer: false,
     visibility: ["//visibility:private"],
     apex_available: ["//apex_available:platform"],
     device_supported: false,
@@ -778,9 +851,21 @@ java_import {
     jars: ["java/system-module.jar"],
 }
 
-java_import {
-    name: "mysdk_system-module",
+java_system_modules_import {
+    name: "my-system-modules",
     prefer: false,
+    visibility: ["//visibility:public"],
+    device_supported: false,
+    host_supported: true,
+    libs: ["mysdk_system-module"],
+}
+`),
+		checkVersionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+java_import {
+    name: "mysdk_system-module@current",
+    sdk_member_name: "system-module",
     visibility: ["//visibility:private"],
     apex_available: ["//apex_available:platform"],
     device_supported: false,
@@ -795,15 +880,6 @@ java_system_modules_import {
     device_supported: false,
     host_supported: true,
     libs: ["mysdk_system-module@current"],
-}
-
-java_system_modules_import {
-    name: "my-system-modules",
-    prefer: false,
-    visibility: ["//visibility:public"],
-    device_supported: false,
-    host_supported: true,
-    libs: ["mysdk_system-module"],
 }
 
 sdk_snapshot {
@@ -856,12 +932,12 @@ func TestDeviceAndHostSnapshotWithOsSpecificMembers(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "myexports", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_import {
-    name: "myexports_hostjavalib@current",
-    sdk_member_name: "hostjavalib",
+    name: "hostjavalib",
+    prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     device_supported: false,
@@ -870,8 +946,35 @@ java_import {
 }
 
 java_import {
-    name: "hostjavalib",
+    name: "androidjavalib",
     prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
+    jars: ["java/androidjavalib.jar"],
+}
+
+java_import {
+    name: "myjavalib",
+    prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
+    host_supported: true,
+    target: {
+        android: {
+            jars: ["java/android/myjavalib.jar"],
+        },
+        linux_glibc: {
+            jars: ["java/linux_glibc/myjavalib.jar"],
+        },
+    },
+}
+`),
+		checkVersionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+java_import {
+    name: "myexports_hostjavalib@current",
+    sdk_member_name: "hostjavalib",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     device_supported: false,
@@ -888,32 +991,8 @@ java_import {
 }
 
 java_import {
-    name: "androidjavalib",
-    prefer: false,
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/androidjavalib.jar"],
-}
-
-java_import {
     name: "myexports_myjavalib@current",
     sdk_member_name: "myjavalib",
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    host_supported: true,
-    target: {
-        android: {
-            jars: ["java/android/myjavalib.jar"],
-        },
-        linux_glibc: {
-            jars: ["java/linux_glibc/myjavalib.jar"],
-        },
-    },
-}
-
-java_import {
-    name: "myjavalib",
-    prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     host_supported: true,
@@ -970,12 +1049,12 @@ func TestSnapshotWithJavaSdkLibrary(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "mysdk", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_sdk_library_import {
-    name: "mysdk_myjavalib@current",
-    sdk_member_name: "myjavalib",
+    name: "myjavalib",
+    prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: false,
@@ -1001,10 +1080,13 @@ java_sdk_library_import {
         sdk_version: "test_current",
     },
 }
+`),
+		checkVersionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
 
 java_sdk_library_import {
-    name: "myjavalib",
-    prefer: false,
+    name: "mysdk_myjavalib@current",
+    sdk_member_name: "myjavalib",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: false,
@@ -1051,7 +1133,139 @@ sdk_snapshot {
 		checkMergeZips(
 			".intermediates/mysdk/common_os/tmp/sdk_library/public/myjavalib_stub_sources.zip",
 			".intermediates/mysdk/common_os/tmp/sdk_library/system/myjavalib_stub_sources.zip",
-			".intermediates/mysdk/common_os/tmp/sdk_library/test/myjavalib_stub_sources.zip"),
+			".intermediates/mysdk/common_os/tmp/sdk_library/test/myjavalib_stub_sources.zip",
+		),
+		snapshotTestChecker(checkSnapshotWithoutSource, func(t *testing.T, result *android.TestResult) {
+			// Make sure that the name of the child modules created by a versioned java_sdk_library_import
+			// module is correct, i.e. the suffix is added before the version and not after.
+			result.Module("mysdk_myjavalib.stubs@current", "android_common")
+			result.Module("mysdk_myjavalib.stubs.source@current", "android_common")
+		}),
+	)
+}
+
+func TestSnapshotWithJavaSdkLibrary_UseSrcJar(t *testing.T) {
+	result := android.GroupFixturePreparers(
+		prepareForSdkTestWithJavaSdkLibrary,
+		android.FixtureMergeEnv(map[string]string{
+			"SOONG_SDK_SNAPSHOT_USE_SRCJAR": "true",
+		}),
+	).RunTestWithBp(t, `
+		sdk {
+			name: "mysdk",
+			java_sdk_libs: ["myjavalib"],
+		}
+
+		java_sdk_library {
+			name: "myjavalib",
+			srcs: ["Test.java"],
+			sdk_version: "current",
+			shared_library: false,
+			public: {
+				enabled: true,
+			},
+		}
+	`)
+
+	CheckSnapshot(t, result, "mysdk", "",
+		checkUnversionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+java_sdk_library_import {
+    name: "myjavalib",
+    prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
+    shared_library: false,
+    public: {
+        jars: ["sdk_library/public/myjavalib-stubs.jar"],
+        stub_srcs: ["sdk_library/public/myjavalib.srcjar"],
+        current_api: "sdk_library/public/myjavalib.txt",
+        removed_api: "sdk_library/public/myjavalib-removed.txt",
+        sdk_version: "current",
+    },
+}
+		`),
+		checkAllCopyRules(`
+.intermediates/myjavalib.stubs/android_common/javac/myjavalib.stubs.jar -> sdk_library/public/myjavalib-stubs.jar
+.intermediates/myjavalib.stubs.source/android_common/metalava/myjavalib.stubs.source-stubs.srcjar -> sdk_library/public/myjavalib.srcjar
+.intermediates/myjavalib.stubs.source/android_common/metalava/myjavalib.stubs.source_api.txt -> sdk_library/public/myjavalib.txt
+.intermediates/myjavalib.stubs.source/android_common/metalava/myjavalib.stubs.source_removed.txt -> sdk_library/public/myjavalib-removed.txt
+		`),
+	)
+}
+
+func TestSnapshotWithJavaSdkLibrary_CompileDex(t *testing.T) {
+	result := android.GroupFixturePreparers(prepareForSdkTestWithJavaSdkLibrary).RunTestWithBp(t, `
+		sdk {
+			name: "mysdk",
+			java_sdk_libs: ["myjavalib"],
+		}
+
+		java_sdk_library {
+			name: "myjavalib",
+			srcs: ["Test.java"],
+			sdk_version: "current",
+			shared_library: false,
+			compile_dex: true,
+			public: {
+				enabled: true,
+			},
+			system: {
+				enabled: true,
+			},
+		}
+	`)
+
+	CheckSnapshot(t, result, "mysdk", "",
+		checkUnversionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+java_sdk_library_import {
+    name: "myjavalib",
+    prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
+    shared_library: false,
+    compile_dex: true,
+    public: {
+        jars: ["sdk_library/public/myjavalib-stubs.jar"],
+        stub_srcs: ["sdk_library/public/myjavalib_stub_sources"],
+        current_api: "sdk_library/public/myjavalib.txt",
+        removed_api: "sdk_library/public/myjavalib-removed.txt",
+        sdk_version: "current",
+    },
+    system: {
+        jars: ["sdk_library/system/myjavalib-stubs.jar"],
+        stub_srcs: ["sdk_library/system/myjavalib_stub_sources"],
+        current_api: "sdk_library/system/myjavalib.txt",
+        removed_api: "sdk_library/system/myjavalib-removed.txt",
+        sdk_version: "system_current",
+    },
+}
+`),
+		snapshotTestChecker(checkSnapshotWithSourcePreferred, func(t *testing.T, result *android.TestResult) {
+			ctx := android.ModuleInstallPathContextForTesting(result.Config)
+			dexJarBuildPath := func(name string, kind android.SdkKind) string {
+				dep := result.Module(name, "android_common").(java.SdkLibraryDependency)
+				path := dep.SdkApiStubDexJar(ctx, kind)
+				return path.RelativeToTop().String()
+			}
+
+			dexJarPath := dexJarBuildPath("myjavalib", android.SdkPublic)
+			android.AssertStringEquals(t, "source dex public stubs jar build path", "out/soong/.intermediates/myjavalib.stubs/android_common/dex/myjavalib.stubs.jar", dexJarPath)
+
+			dexJarPath = dexJarBuildPath("myjavalib", android.SdkSystem)
+			systemDexJar := "out/soong/.intermediates/myjavalib.stubs.system/android_common/dex/myjavalib.stubs.system.jar"
+			android.AssertStringEquals(t, "source dex system stubs jar build path", systemDexJar, dexJarPath)
+
+			// This should fall back to system as module is not available.
+			dexJarPath = dexJarBuildPath("myjavalib", android.SdkModule)
+			android.AssertStringEquals(t, "source dex module stubs jar build path", systemDexJar, dexJarPath)
+
+			dexJarPath = dexJarBuildPath(android.PrebuiltNameFromSource("myjavalib"), android.SdkPublic)
+			android.AssertStringEquals(t, "prebuilt dex public stubs jar build path", "out/soong/.intermediates/snapshot/prebuilt_myjavalib.stubs/android_common/dex/myjavalib.stubs.jar", dexJarPath)
+		}),
 	)
 }
 
@@ -1071,12 +1285,12 @@ func TestSnapshotWithJavaSdkLibrary_SdkVersion_None(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "mysdk", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_sdk_library_import {
-    name: "mysdk_myjavalib@current",
-    sdk_member_name: "myjavalib",
+    name: "myjavalib",
+    prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     shared_library: true,
@@ -1088,10 +1302,13 @@ java_sdk_library_import {
         sdk_version: "none",
     },
 }
+`),
+		checkVersionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
 
 java_sdk_library_import {
-    name: "myjavalib",
-    prefer: false,
+    name: "mysdk_myjavalib@current",
+    sdk_member_name: "myjavalib",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     shared_library: true,
@@ -1140,12 +1357,12 @@ func TestSnapshotWithJavaSdkLibrary_SdkVersion_ForScope(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "mysdk", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_sdk_library_import {
-    name: "mysdk_myjavalib@current",
-    sdk_member_name: "myjavalib",
+    name: "myjavalib",
+    prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     shared_library: true,
@@ -1157,10 +1374,13 @@ java_sdk_library_import {
         sdk_version: "module_current",
     },
 }
+`),
+		checkVersionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
 
 java_sdk_library_import {
-    name: "myjavalib",
-    prefer: false,
+    name: "mysdk_myjavalib@current",
+    sdk_member_name: "myjavalib",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     shared_library: true,
@@ -1212,12 +1432,12 @@ func TestSnapshotWithJavaSdkLibrary_ApiScopes(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "mysdk", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_sdk_library_import {
-    name: "mysdk_myjavalib@current",
-    sdk_member_name: "myjavalib",
+    name: "myjavalib",
+    prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: true,
@@ -1236,10 +1456,13 @@ java_sdk_library_import {
         sdk_version: "system_current",
     },
 }
+`),
+		checkVersionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
 
 java_sdk_library_import {
-    name: "myjavalib",
-    prefer: false,
+    name: "mysdk_myjavalib@current",
+    sdk_member_name: "myjavalib",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: true,
@@ -1305,12 +1528,12 @@ func TestSnapshotWithJavaSdkLibrary_ModuleLib(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "mysdk", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_sdk_library_import {
-    name: "mysdk_myjavalib@current",
-    sdk_member_name: "myjavalib",
+    name: "myjavalib",
+    prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: true,
@@ -1336,10 +1559,13 @@ java_sdk_library_import {
         sdk_version: "module_current",
     },
 }
+`),
+		checkVersionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
 
 java_sdk_library_import {
-    name: "myjavalib",
-    prefer: false,
+    name: "mysdk_myjavalib@current",
+    sdk_member_name: "myjavalib",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: true,
@@ -1413,12 +1639,12 @@ func TestSnapshotWithJavaSdkLibrary_SystemServer(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "mysdk", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_sdk_library_import {
-    name: "mysdk_myjavalib@current",
-    sdk_member_name: "myjavalib",
+    name: "myjavalib",
+    prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: true,
@@ -1437,10 +1663,13 @@ java_sdk_library_import {
         sdk_version: "system_server_current",
     },
 }
+`),
+		checkVersionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
 
 java_sdk_library_import {
-    name: "myjavalib",
-    prefer: false,
+    name: "mysdk_myjavalib@current",
+    sdk_member_name: "myjavalib",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: true,
@@ -1501,12 +1730,12 @@ func TestSnapshotWithJavaSdkLibrary_NamingScheme(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "mysdk", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_sdk_library_import {
-    name: "mysdk_myjavalib@current",
-    sdk_member_name: "myjavalib",
+    name: "myjavalib",
+    prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     naming_scheme: "default",
@@ -1519,10 +1748,13 @@ java_sdk_library_import {
         sdk_version: "current",
     },
 }
+`),
+		checkVersionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
 
 java_sdk_library_import {
-    name: "myjavalib",
-    prefer: false,
+    name: "mysdk_myjavalib@current",
+    sdk_member_name: "myjavalib",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     naming_scheme: "default",
@@ -1580,12 +1812,12 @@ func TestSnapshotWithJavaSdkLibrary_DoctagFiles(t *testing.T) {
 	`)
 
 	CheckSnapshot(t, result, "mysdk", "",
-		checkAndroidBpContents(`
+		checkUnversionedAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 java_sdk_library_import {
-    name: "mysdk_myjavalib@current",
-    sdk_member_name: "myjavalib",
+    name: "myjavalib",
+    prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     shared_library: true,
@@ -1598,10 +1830,13 @@ java_sdk_library_import {
         sdk_version: "current",
     },
 }
+`),
+		checkVersionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
 
 java_sdk_library_import {
-    name: "myjavalib",
-    prefer: false,
+    name: "mysdk_myjavalib@current",
+    sdk_member_name: "myjavalib",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     shared_library: true,

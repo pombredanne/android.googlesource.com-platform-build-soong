@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/google/blueprint/proptools"
 )
 
 type strsTestCase struct {
@@ -139,6 +141,9 @@ func TestOptionalPath(t *testing.T) {
 
 	path = OptionalPathForPath(nil)
 	checkInvalidOptionalPath(t, path)
+
+	path = OptionalPathForPath(PathForTesting("path"))
+	checkValidOptionalPath(t, path, "path")
 }
 
 func checkInvalidOptionalPath(t *testing.T, path OptionalPath) {
@@ -149,11 +154,30 @@ func checkInvalidOptionalPath(t *testing.T, path OptionalPath) {
 	if path.String() != "" {
 		t.Errorf("Uninitialized OptionalPath String() should return \"\", not %q", path.String())
 	}
+	paths := path.AsPaths()
+	if len(paths) != 0 {
+		t.Errorf("Uninitialized OptionalPath AsPaths() should return empty Paths, not %q", paths)
+	}
 	defer func() {
 		if r := recover(); r == nil {
 			t.Errorf("Expected a panic when calling Path() on an uninitialized OptionalPath")
 		}
 	}()
+	path.Path()
+}
+
+func checkValidOptionalPath(t *testing.T, path OptionalPath, expectedString string) {
+	t.Helper()
+	if !path.Valid() {
+		t.Errorf("Initialized OptionalPath should not be invalid")
+	}
+	if path.String() != expectedString {
+		t.Errorf("Initialized OptionalPath String() should return %q, not %q", expectedString, path.String())
+	}
+	paths := path.AsPaths()
+	if len(paths) != 1 {
+		t.Errorf("Initialized OptionalPath AsPaths() should return Paths with length 1, not %q", paths)
+	}
 	path.Path()
 }
 
@@ -338,6 +362,73 @@ func TestPathForModuleInstall(t *testing.T) {
 			partitionDir: "target/product/test_device/recovery/root",
 		},
 
+		{
+			name: "ramdisk binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inRamdisk: true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/ramdisk/system/my_test",
+			partitionDir: "target/product/test_device/ramdisk/system",
+		},
+		{
+			name: "ramdisk root binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inRamdisk: true,
+				inRoot:    true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/ramdisk/my_test",
+			partitionDir: "target/product/test_device/ramdisk",
+		},
+		{
+			name: "vendor_ramdisk binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inVendorRamdisk: true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/vendor_ramdisk/system/my_test",
+			partitionDir: "target/product/test_device/vendor_ramdisk/system",
+		},
+		{
+			name: "vendor_ramdisk root binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inVendorRamdisk: true,
+				inRoot:          true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/vendor_ramdisk/my_test",
+			partitionDir: "target/product/test_device/vendor_ramdisk",
+		},
+		{
+			name: "debug_ramdisk binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inDebugRamdisk: true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/debug_ramdisk/my_test",
+			partitionDir: "target/product/test_device/debug_ramdisk",
+		},
 		{
 			name: "system native test binary",
 			ctx: &testModuleInstallPathContext{
@@ -615,6 +706,67 @@ func TestPathForModuleInstall(t *testing.T) {
 			in:           []string{"my_test", "my_test_bin"},
 			out:          "host/linux-x86/testcases/my_test/my_test_bin",
 			partitionDir: "host/linux-x86/testcases",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.ctx.baseModuleContext.config = testConfig
+			output := PathForModuleInstall(tc.ctx, tc.in...)
+			if output.basePath.path != tc.out {
+				t.Errorf("unexpected path:\n got: %q\nwant: %q\n",
+					output.basePath.path,
+					tc.out)
+			}
+			if output.partitionDir != tc.partitionDir {
+				t.Errorf("unexpected partitionDir:\n got: %q\nwant: %q\n",
+					output.partitionDir, tc.partitionDir)
+			}
+		})
+	}
+}
+
+func TestPathForModuleInstallRecoveryAsBoot(t *testing.T) {
+	testConfig := pathTestConfig("")
+	testConfig.TestProductVariables.BoardUsesRecoveryAsBoot = proptools.BoolPtr(true)
+	testConfig.TestProductVariables.BoardMoveRecoveryResourcesToVendorBoot = proptools.BoolPtr(true)
+	deviceTarget := Target{Os: Android, Arch: Arch{ArchType: Arm64}}
+
+	testCases := []struct {
+		name         string
+		ctx          *testModuleInstallPathContext
+		in           []string
+		out          string
+		partitionDir string
+	}{
+		{
+			name: "ramdisk binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inRamdisk: true,
+				inRoot:    true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/recovery/root/first_stage_ramdisk/my_test",
+			partitionDir: "target/product/test_device/recovery/root/first_stage_ramdisk",
+		},
+
+		{
+			name: "vendor_ramdisk binary",
+			ctx: &testModuleInstallPathContext{
+				baseModuleContext: baseModuleContext{
+					os:     deviceTarget.Os,
+					target: deviceTarget,
+				},
+				inVendorRamdisk: true,
+				inRoot:          true,
+			},
+			in:           []string{"my_test"},
+			out:          "target/product/test_device/vendor_ramdisk/first_stage_ramdisk/my_test",
+			partitionDir: "target/product/test_device/vendor_ramdisk/first_stage_ramdisk",
 		},
 	}
 

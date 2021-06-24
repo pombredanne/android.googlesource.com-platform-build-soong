@@ -62,6 +62,8 @@ func (stl *stl) begin(ctx BaseModuleContext) {
 		s := ""
 		if stl.Properties.Stl != nil {
 			s = *stl.Properties.Stl
+		} else if ctx.header() {
+			s = "none"
 		}
 		if ctx.useSdk() && ctx.Device() {
 			switch s {
@@ -140,6 +142,17 @@ func needsLibAndroidSupport(ctx BaseModuleContext) bool {
 }
 
 func staticUnwinder(ctx android.BaseModuleContext) string {
+	vndkVersion := ctx.Module().(*Module).VndkVersion()
+
+	// Modules using R vndk use different unwinder
+	if vndkVersion == "30" {
+		if ctx.Arch().ArchType == android.Arm {
+			return "libunwind_llvm"
+		} else {
+			return "libgcc_stripped"
+		}
+	}
+
 	return "libunwind"
 }
 
@@ -186,7 +199,9 @@ func (stl *stl) deps(ctx BaseModuleContext, deps Deps) Deps {
 			deps.StaticLibs = append(deps.StaticLibs, stl.Properties.SelectedStl, "ndk_libc++abi")
 		}
 		if needsLibAndroidSupport(ctx) {
-			deps.StaticLibs = append(deps.StaticLibs, "ndk_libandroid_support")
+			// Use LateStaticLibs for ndk_libandroid_support so that its include directories
+			// come after ndk_libc++_static or ndk_libc++_shared.
+			deps.LateStaticLibs = append(deps.LateStaticLibs, "ndk_libandroid_support")
 		}
 		deps.StaticLibs = append(deps.StaticLibs, "ndk_libunwind")
 	default:

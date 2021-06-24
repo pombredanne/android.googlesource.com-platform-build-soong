@@ -15,7 +15,6 @@
 package android
 
 import (
-	"android/soong/bazel"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -25,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/google/blueprint"
+	"github.com/google/blueprint/bootstrap"
 	"github.com/google/blueprint/pathtools"
 )
 
@@ -107,6 +107,7 @@ type ModuleInstallPathContext interface {
 	InstallInSanitizerDir() bool
 	InstallInRamdisk() bool
 	InstallInVendorRamdisk() bool
+	InstallInDebugRamdisk() bool
 	InstallInRecovery() bool
 	InstallInRoot() bool
 	InstallBypassMake() bool
@@ -286,6 +287,17 @@ func (p OptionalPath) Path() Path {
 	return p.path
 }
 
+// AsPaths converts the OptionalPath into Paths.
+//
+// It returns nil if this is not valid, or a single length slice containing the Path embedded in
+// this OptionalPath.
+func (p OptionalPath) AsPaths() Paths {
+	if !p.valid {
+		return nil
+	}
+	return Paths{p.path}
+}
+
 // RelativeToTop returns an OptionalPath with the path that was embedded having been replaced by the
 // result of calling Path.RelativeToTop on it.
 func (p OptionalPath) RelativeToTop() OptionalPath {
@@ -355,23 +367,42 @@ func ExistentPathsForSources(ctx PathContext, paths []string) Paths {
 	return ret
 }
 
-// PathsForModuleSrc returns Paths rooted from the module's local source directory.  It expands globs, references to
-// SourceFileProducer modules using the ":name" syntax, and references to OutputFileProducer modules using the
-// ":name{.tag}" syntax.  Properties passed as the paths argument must have been annotated with struct tag
+// PathsForModuleSrc returns a Paths{} containing the resolved references in paths:
+// * filepath, relative to local module directory, resolves as a filepath relative to the local
+//   source directory
+// * glob, relative to the local module directory, resolves as filepath(s), relative to the local
+//  source directory.
+// * other modules using the ":name{.tag}" syntax. These modules must implement SourceFileProducer
+//    or OutputFileProducer. These resolve as a filepath to an output filepath or generated source
+//    filepath.
+// Properties passed as the paths argument must have been annotated with struct tag
 // `android:"path"` so that dependencies on SourceFileProducer modules will have already been handled by the
-// path_properties mutator.  If ctx.Config().AllowMissingDependencies() is true then any missing SourceFileProducer or
-// OutputFileProducer dependencies will cause the module to be marked as having missing dependencies.
+// path_deps mutator.
+// If a requested module is not found as a dependency:
+//   * if ctx.Config().AllowMissingDependencies() is true, this module to be marked as having
+//     missing dependencies
+//   * otherwise, a ModuleError is thrown.
 func PathsForModuleSrc(ctx ModuleMissingDepsPathContext, paths []string) Paths {
 	return PathsForModuleSrcExcludes(ctx, paths, nil)
 }
 
-// PathsForModuleSrcExcludes returns Paths rooted from the module's local source directory, excluding paths listed in
-// the excludes arguments.  It expands globs, references to SourceFileProducer modules using the ":name" syntax, and
-// references to OutputFileProducer modules using the ":name{.tag}" syntax.  Properties passed as the paths or excludes
-// argument must have been annotated with struct tag `android:"path"` so that dependencies on SourceFileProducer modules
-// will have already been handled by the path_properties mutator.  If ctx.Config().AllowMissingDependencies() is
-// true then any missing SourceFileProducer or OutputFileProducer dependencies will cause the module to be marked as
-// having missing dependencies.
+// PathsForModuleSrcExcludes returns a Paths{} containing the resolved references in paths, minus
+// those listed in excludes. Elements of paths and excludes are resolved as:
+// * filepath, relative to local module directory, resolves as a filepath relative to the local
+//   source directory
+// * glob, relative to the local module directory, resolves as filepath(s), relative to the local
+//  source directory. Not valid in excludes.
+// * other modules using the ":name{.tag}" syntax. These modules must implement SourceFileProducer
+//    or OutputFileProducer. These resolve as a filepath to an output filepath or generated source
+//    filepath.
+// excluding the items (similarly resolved
+// Properties passed as the paths argument must have been annotated with struct tag
+// `android:"path"` so that dependencies on SourceFileProducer modules will have already been handled by the
+// path_deps mutator.
+// If a requested module is not found as a dependency:
+//   * if ctx.Config().AllowMissingDependencies() is true, this module to be marked as having
+//     missing dependencies
+//   * otherwise, a ModuleError is thrown.
 func PathsForModuleSrcExcludes(ctx ModuleMissingDepsPathContext, paths, excludes []string) Paths {
 	ret, missingDeps := PathsAndMissingDepsForModuleSrcExcludes(ctx, paths, excludes)
 	if ctx.Config().AllowMissingDependencies() {
@@ -382,153 +413,6 @@ func PathsForModuleSrcExcludes(ctx ModuleMissingDepsPathContext, paths, excludes
 		}
 	}
 	return ret
-}
-
-// A subset of the ModuleContext methods which are sufficient to resolve references to paths/deps in
-// order to form a Bazel-compatible label for conversion.
-type BazelConversionPathContext interface {
-	EarlyModulePathContext
-
-	GetDirectDep(name string) (blueprint.Module, blueprint.DependencyTag)
-	Module() Module
-	ModuleType() string
-	OtherModuleName(m blueprint.Module) string
-	OtherModuleDir(m blueprint.Module) string
-}
-
-// BazelLabelForModuleDeps returns a Bazel-compatible label for the requested modules which
-// correspond to dependencies on the module within the given ctx.
-func BazelLabelForModuleDeps(ctx BazelConversionPathContext, modules []string) bazel.LabelList {
-	var labels bazel.LabelList
-	for _, module := range modules {
-		bpText := module
-		if m := SrcIsModule(module); m == "" {
-			module = ":" + module
-		}
-		if m, t := SrcIsModuleWithTag(module); m != "" {
-			l := getOtherModuleLabel(ctx, m, t)
-			l.Bp_text = bpText
-			labels.Includes = append(labels.Includes, l)
-		} else {
-			ctx.ModuleErrorf("%q, is not a module reference", module)
-		}
-	}
-	return labels
-}
-
-// BazelLabelForModuleSrc returns bazel.LabelList with paths rooted from the module's local source
-// directory. It expands globs, and resolves references to modules using the ":name" syntax to
-// bazel-compatible labels.  Properties passed as the paths or excludes argument must have been
-// annotated with struct tag `android:"path"` so that dependencies on other modules will have
-// already been handled by the path_properties mutator.
-func BazelLabelForModuleSrc(ctx BazelConversionPathContext, paths []string) bazel.LabelList {
-	return BazelLabelForModuleSrcExcludes(ctx, paths, []string(nil))
-}
-
-// BazelLabelForModuleSrcExcludes returns bazel.LabelList with paths rooted from the module's local
-// source directory, excluding labels included in the excludes argument. It expands globs, and
-// resolves references to modules using the ":name" syntax to bazel-compatible labels. Properties
-// passed as the paths or excludes argument must have been annotated with struct tag
-// `android:"path"` so that dependencies on other modules will have already been handled by the
-// path_properties mutator.
-func BazelLabelForModuleSrcExcludes(ctx BazelConversionPathContext, paths, excludes []string) bazel.LabelList {
-	excludeLabels := expandSrcsForBazel(ctx, excludes, []string(nil))
-	excluded := make([]string, 0, len(excludeLabels.Includes))
-	for _, e := range excludeLabels.Includes {
-		excluded = append(excluded, e.Label)
-	}
-	labels := expandSrcsForBazel(ctx, paths, excluded)
-	labels.Excludes = excludeLabels.Includes
-	return labels
-}
-
-// expandSrcsForBazel returns bazel.LabelList with paths rooted from the module's local
-// source directory, excluding labels included in the excludes argument. It expands globs, and
-// resolves references to modules using the ":name" syntax to bazel-compatible labels.  Properties
-// passed as the paths or excludes argument must have been annotated with struct tag
-// `android:"path"` so that dependencies on other modules will have already been handled by the
-// path_properties mutator.
-func expandSrcsForBazel(ctx BazelConversionPathContext, paths, expandedExcludes []string) bazel.LabelList {
-	if paths == nil {
-		return bazel.LabelList{}
-	}
-	labels := bazel.LabelList{
-		Includes: []bazel.Label{},
-	}
-	for _, p := range paths {
-		if m, tag := SrcIsModuleWithTag(p); m != "" {
-			l := getOtherModuleLabel(ctx, m, tag)
-			if !InList(l.Label, expandedExcludes) {
-				l.Bp_text = fmt.Sprintf(":%s", m)
-				labels.Includes = append(labels.Includes, l)
-			}
-		} else {
-			var expandedPaths []bazel.Label
-			if pathtools.IsGlob(p) {
-				globbedPaths := GlobFiles(ctx, pathForModuleSrc(ctx, p).String(), expandedExcludes)
-				globbedPaths = PathsWithModuleSrcSubDir(ctx, globbedPaths, "")
-				for _, path := range globbedPaths {
-					s := path.Rel()
-					expandedPaths = append(expandedPaths, bazel.Label{Label: s})
-				}
-			} else {
-				if !InList(p, expandedExcludes) {
-					expandedPaths = append(expandedPaths, bazel.Label{Label: p})
-				}
-			}
-			labels.Includes = append(labels.Includes, expandedPaths...)
-		}
-	}
-	return labels
-}
-
-// getOtherModuleLabel returns a bazel.Label for the given dependency/tag combination for the
-// module. The label will be relative to the current directory if appropriate. The dependency must
-// already be resolved by either deps mutator or path deps mutator.
-func getOtherModuleLabel(ctx BazelConversionPathContext, dep, tag string) bazel.Label {
-	m, _ := ctx.GetDirectDep(dep)
-	if m == nil {
-		panic(fmt.Errorf("cannot get direct dep %s of %s", dep, ctx.Module().Name()))
-	}
-	otherLabel := bazelModuleLabel(ctx, m, tag)
-	label := bazelModuleLabel(ctx, ctx.Module(), "")
-	if samePackage(label, otherLabel) {
-		otherLabel = bazelShortLabel(otherLabel)
-	}
-
-	return bazel.Label{
-		Label: otherLabel,
-	}
-}
-
-func bazelModuleLabel(ctx BazelConversionPathContext, module blueprint.Module, tag string) string {
-	// TODO(b/165114590): Convert tag (":name{.tag}") to corresponding Bazel implicit output targets.
-	b, ok := module.(Bazelable)
-	// TODO(b/181155349): perhaps return an error here if the module can't be/isn't being converted
-	if !ok || !b.ConvertedToBazel(ctx) {
-		return bp2buildModuleLabel(ctx, module)
-	}
-	return b.GetBazelLabel(ctx, module)
-}
-
-func bazelShortLabel(label string) string {
-	i := strings.Index(label, ":")
-	return label[i:]
-}
-
-func bazelPackage(label string) string {
-	i := strings.Index(label, ":")
-	return label[0:i]
-}
-
-func samePackage(label1, label2 string) bool {
-	return bazelPackage(label1) == bazelPackage(label2)
-}
-
-func bp2buildModuleLabel(ctx BazelConversionPathContext, module blueprint.Module) string {
-	moduleName := ctx.OtherModuleName(module)
-	moduleDir := ctx.OtherModuleDir(module)
-	return fmt.Sprintf("//%s:%s", moduleDir, moduleName)
 }
 
 // OutputPaths is a slice of OutputPath objects, with helpers to operate on the collection.
@@ -577,6 +461,12 @@ func getPathsFromModuleDep(ctx ModuleWithDepsPathContext, path, moduleName, tag 
 		return outputFiles, nil
 	} else if tag != "" {
 		return nil, fmt.Errorf("path dependency %q is not an output file producing module", path)
+	} else if goBinary, ok := module.(bootstrap.GoBinaryTool); ok {
+		if rel, err := filepath.Rel(PathForOutput(ctx).String(), goBinary.InstallPath()); err == nil {
+			return Paths{PathForOutput(ctx, rel).WithoutRel()}, nil
+		} else {
+			return nil, fmt.Errorf("cannot find output path for %q: %w", goBinary.InstallPath(), err)
+		}
 	} else if srcProducer, ok := module.(SourceFileProducer); ok {
 		return srcProducer.Srcs(), nil
 	} else {
@@ -584,14 +474,19 @@ func getPathsFromModuleDep(ctx ModuleWithDepsPathContext, path, moduleName, tag 
 	}
 }
 
-// PathsAndMissingDepsForModuleSrcExcludes returns Paths rooted from the module's local source directory, excluding
-// paths listed in the excludes arguments, and a list of missing dependencies.  It expands globs, references to
-// SourceFileProducer modules using the ":name" syntax, and references to OutputFileProducer modules using the
-// ":name{.tag}" syntax.  Properties passed as the paths or excludes argument must have been annotated with struct tag
+// PathsAndMissingDepsForModuleSrcExcludes returns a Paths{} containing the resolved references in
+// paths, minus those listed in excludes. Elements of paths and excludes are resolved as:
+// * filepath, relative to local module directory, resolves as a filepath relative to the local
+//   source directory
+// * glob, relative to the local module directory, resolves as filepath(s), relative to the local
+//  source directory. Not valid in excludes.
+// * other modules using the ":name{.tag}" syntax. These modules must implement SourceFileProducer
+//    or OutputFileProducer. These resolve as a filepath to an output filepath or generated source
+//    filepath.
+// and a list of the module names of missing module dependencies are returned as the second return.
+// Properties passed as the paths argument must have been annotated with struct tag
 // `android:"path"` so that dependencies on SourceFileProducer modules will have already been handled by the
-// path_properties mutator.  If ctx.Config().AllowMissingDependencies() is true then any missing SourceFileProducer or
-// OutputFileProducer dependencies will be returned, and they will NOT cause the module to be marked as having missing
-// dependencies.
+// path_deps mutator.
 func PathsAndMissingDepsForModuleSrcExcludes(ctx ModuleWithDepsPathContext, paths, excludes []string) (Paths, []string) {
 	prefix := pathForModuleSrc(ctx).String()
 
@@ -1095,11 +990,12 @@ func existsWithDependencies(ctx PathContext, path SourcePath) (exists bool, err 
 		// a single file.
 		files, err = gctx.GlobWithDeps(path.String(), nil)
 	} else {
-		var deps []string
+		var result pathtools.GlobResult
 		// We cannot add build statements in this context, so we fall back to
 		// AddNinjaFileDeps
-		files, deps, err = ctx.Config().fs.Glob(path.String(), nil, pathtools.FollowSymlinks)
-		ctx.AddNinjaFileDeps(deps...)
+		result, err = ctx.Config().fs.Glob(path.String(), nil, pathtools.FollowSymlinks)
+		ctx.AddNinjaFileDeps(result.Deps...)
+		files = result.Matches
 	}
 
 	if err != nil {
@@ -1470,17 +1366,6 @@ func pathForModuleOut(ctx ModuleOutPathContext) OutputPath {
 	return PathForOutput(ctx, ".intermediates", ctx.ModuleDir(), ctx.ModuleName(), ctx.ModuleSubDir())
 }
 
-type BazelOutPath struct {
-	OutputPath
-}
-
-var _ Path = BazelOutPath{}
-var _ objPathProvider = BazelOutPath{}
-
-func (p BazelOutPath) objPathWithExt(ctx ModuleOutPathContext, subdir, ext string) ModuleObjPath {
-	return PathForModuleObj(ctx, subdir, pathtools.ReplaceExtension(p.path, ext))
-}
-
 // PathForVndkRefAbiDump returns an OptionalPath representing the path of the
 // reference abi dump for the given module. This is not guaranteed to be valid.
 func PathForVndkRefAbiDump(ctx ModuleInstallPathContext, version, fileName string,
@@ -1517,25 +1402,6 @@ func PathForVndkRefAbiDump(ctx ModuleInstallPathContext, version, fileName strin
 	return ExistentPathForSource(ctx, "prebuilts", "abi-dumps", dirName,
 		version, binderBitness, archNameAndVariant, "source-based",
 		fileName+ext)
-}
-
-// PathForBazelOut returns a Path representing the paths... under an output directory dedicated to
-// bazel-owned outputs.
-func PathForBazelOut(ctx PathContext, paths ...string) BazelOutPath {
-	execRootPathComponents := append([]string{"execroot", "__main__"}, paths...)
-	execRootPath := filepath.Join(execRootPathComponents...)
-	validatedExecRootPath, err := validatePath(execRootPath)
-	if err != nil {
-		reportPathError(ctx, err)
-	}
-
-	outputPath := OutputPath{basePath{"", ""},
-		ctx.Config().buildDir,
-		ctx.Config().BazelContext.OutputBase()}
-
-	return BazelOutPath{
-		OutputPath: outputPath.withRel(validatedExecRootPath),
-	}
 }
 
 // PathForModuleOut returns a Path representing the paths... under the module's
@@ -1725,6 +1591,18 @@ func (p InstallPath) ToMakePath() InstallPath {
 // PathForModuleInstall returns a Path representing the install path for the
 // module appended with paths...
 func PathForModuleInstall(ctx ModuleInstallPathContext, pathComponents ...string) InstallPath {
+	os, arch := osAndArch(ctx)
+	partition := modulePartition(ctx, os)
+	return makePathForInstall(ctx, os, arch, partition, ctx.Debug(), pathComponents...)
+}
+
+// PathForModuleInPartitionInstall is similar to PathForModuleInstall but partition is provided by the caller
+func PathForModuleInPartitionInstall(ctx ModuleInstallPathContext, partition string, pathComponents ...string) InstallPath {
+	os, arch := osAndArch(ctx)
+	return makePathForInstall(ctx, os, arch, partition, ctx.Debug(), pathComponents...)
+}
+
+func osAndArch(ctx ModuleInstallPathContext) (OsType, ArchType) {
 	os := ctx.Os()
 	arch := ctx.Arch().ArchType
 	forceOS, forceArch := ctx.InstallForceOS()
@@ -1734,14 +1612,14 @@ func PathForModuleInstall(ctx ModuleInstallPathContext, pathComponents ...string
 	if forceArch != nil {
 		arch = *forceArch
 	}
-	partition := modulePartition(ctx, os)
+	return os, arch
+}
 
-	ret := pathForInstall(ctx, os, arch, partition, ctx.Debug(), pathComponents...)
-
+func makePathForInstall(ctx ModuleInstallPathContext, os OsType, arch ArchType, partition string, debug bool, pathComponents ...string) InstallPath {
+	ret := pathForInstall(ctx, os, arch, partition, debug, pathComponents...)
 	if ctx.InstallBypassMake() && ctx.Config().KatiEnabled() {
 		ret = ret.ToMakePath()
 	}
-
 	return ret
 }
 
@@ -1842,6 +1720,8 @@ func modulePartition(ctx ModuleInstallPathContext, os OsType) string {
 			if !ctx.InstallInRoot() {
 				partition += "/system"
 			}
+		} else if ctx.InstallInDebugRamdisk() {
+			partition = "debug_ramdisk"
 		} else if ctx.InstallInRecovery() {
 			if ctx.InstallInRoot() {
 				partition = "recovery/root"
@@ -2012,6 +1892,7 @@ type testModuleInstallPathContext struct {
 	inSanitizerDir  bool
 	inRamdisk       bool
 	inVendorRamdisk bool
+	inDebugRamdisk  bool
 	inRecovery      bool
 	inRoot          bool
 	forceOS         *OsType
@@ -2042,6 +1923,10 @@ func (m testModuleInstallPathContext) InstallInRamdisk() bool {
 
 func (m testModuleInstallPathContext) InstallInVendorRamdisk() bool {
 	return m.inVendorRamdisk
+}
+
+func (m testModuleInstallPathContext) InstallInDebugRamdisk() bool {
+	return m.inDebugRamdisk
 }
 
 func (m testModuleInstallPathContext) InstallInRecovery() bool {
@@ -2117,6 +2002,10 @@ func RemoveAllOutputDir(path WritablePath) error {
 
 func CreateOutputDirIfNonexistent(path WritablePath, perm os.FileMode) error {
 	dir := absolutePath(path.String())
+	return createDirIfNonexistent(dir, perm)
+}
+
+func createDirIfNonexistent(dir string, perm os.FileMode) error {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return os.MkdirAll(dir, os.ModePerm)
 	} else {
@@ -2124,6 +2013,9 @@ func CreateOutputDirIfNonexistent(path WritablePath, perm os.FileMode) error {
 	}
 }
 
+// absolutePath is deliberately private so that Soong's Go plugins can't use it to find and
+// read arbitrary files without going through the methods in the current package that track
+// dependencies.
 func absolutePath(path string) string {
 	if filepath.IsAbs(path) {
 		return path

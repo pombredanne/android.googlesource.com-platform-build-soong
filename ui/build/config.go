@@ -48,6 +48,7 @@ type configImpl struct {
 	dist           bool
 	skipConfig     bool
 	skipKati       bool
+	skipKatiNinja  bool
 	skipNinja      bool
 	skipSoongTests bool
 
@@ -57,6 +58,7 @@ type configImpl struct {
 	katiSuffix      string
 	targetDevice    string
 	targetDeviceDir string
+	sandboxConfig   *SandboxConfig
 
 	// Autodetected
 	totalRAM uint64
@@ -72,6 +74,9 @@ type configImpl struct {
 	// During Bazel execution, Bazel cannot write outside OUT_DIR.
 	// So if DIST_DIR is set to an external dir (outside of OUT_DIR), we need to rig it temporarily and then migrate files at the end of the build.
 	riggedDistDirForBazel string
+
+	// Set by multiproduct_kati
+	emptyNinjaFile bool
 }
 
 const srcDirFileCheck = "build/soong/root.bp"
@@ -93,6 +98,21 @@ const (
 	BUILD_MODULES
 )
 
+type bazelBuildMode int
+
+// Bazel-related build modes.
+const (
+	// Don't use bazel at all.
+	noBazel bazelBuildMode = iota
+
+	// Only generate build files (in a subdirectory of the out directory) and exit.
+	generateBuildFiles
+
+	// Generate synthetic build files and incorporate these files into a build which
+	// partially uses Bazel. Build metadata may come from Android.bp or BUILD files.
+	mixedBuild
+)
+
 // checkTopDir validates that the current directory is at the root directory of the source tree.
 func checkTopDir(ctx Context) {
 	if _, err := os.Stat(srcDirFileCheck); err != nil {
@@ -105,7 +125,8 @@ func checkTopDir(ctx Context) {
 
 func NewConfig(ctx Context, args ...string) Config {
 	ret := &configImpl{
-		environ: OsEnvironment(),
+		environ:       OsEnvironment(),
+		sandboxConfig: &SandboxConfig{},
 	}
 
 	// Default matching ninja
@@ -188,9 +209,6 @@ func NewConfig(ctx Context, args ...string) Config {
 		"ANDROID_DEV_SCRIPTS",
 		"ANDROID_EMULATOR_PREBUILTS",
 		"ANDROID_PRE_BUILD_PATHS",
-
-		// Only set in multiproduct_kati after config generation
-		"EMPTY_NINJA_FILE",
 	)
 
 	if ret.UseGoma() || ret.ForceUseGoma() {
@@ -550,16 +568,24 @@ func getTargetsFromDirs(ctx Context, relDir string, dirs []string, targetNamePre
 func (c *configImpl) parseArgs(ctx Context, args []string) {
 	for i := 0; i < len(args); i++ {
 		arg := strings.TrimSpace(args[i])
-		if arg == "--make-mode" {
-		} else if arg == "showcommands" {
+		if arg == "showcommands" {
 			c.verbose = true
 		} else if arg == "--skip-ninja" {
 			c.skipNinja = true
 		} else if arg == "--skip-make" {
+			// TODO(ccross): deprecate this, it has confusing behaviors.  It doesn't run kati,
+			//   but it does run a Kati ninja file if the .kati_enabled marker file was created
+			//   by a previous build.
 			c.skipConfig = true
 			c.skipKati = true
 		} else if arg == "--skip-kati" {
+			// TODO: remove --skip-kati once module builds have been migrated to --song-only
 			c.skipKati = true
+		} else if arg == "--soong-only" {
+			c.skipKati = true
+			c.skipKatiNinja = true
+		} else if arg == "--skip-config" {
+			c.skipConfig = true
 		} else if arg == "--skip-soong-tests" {
 			c.skipSoongTests = true
 		} else if len(arg) > 0 && arg[0] == '-' {
@@ -775,8 +801,16 @@ func (c *configImpl) SkipKati() bool {
 	return c.skipKati
 }
 
+func (c *configImpl) SkipKatiNinja() bool {
+	return c.skipKatiNinja
+}
+
 func (c *configImpl) SkipNinja() bool {
 	return c.skipNinja
+}
+
+func (c *configImpl) SetSkipNinja(v bool) {
+	c.skipNinja = v
 }
 
 func (c *configImpl) SkipConfig() bool {
@@ -895,6 +929,16 @@ func (c *configImpl) UseRBE() bool {
 
 func (c *configImpl) UseBazel() bool {
 	return c.useBazel
+}
+
+func (c *configImpl) bazelBuildMode() bazelBuildMode {
+	if c.Environment().IsEnvTrue("USE_BAZEL_ANALYSIS") {
+		return mixedBuild
+	} else if c.Environment().IsEnvTrue("GENERATE_BAZEL_FILES") {
+		return generateBuildFiles
+	} else {
+		return noBazel
+	}
 }
 
 func (c *configImpl) StartRBE() bool {
@@ -1163,4 +1207,12 @@ func (c *configImpl) LogsDir() string {
 // where the bazel profiles are located.
 func (c *configImpl) BazelMetricsDir() string {
 	return filepath.Join(c.LogsDir(), "bazel_metrics")
+}
+
+func (c *configImpl) SetEmptyNinjaFile(v bool) {
+	c.emptyNinjaFile = v
+}
+
+func (c *configImpl) EmptyNinjaFile() bool {
+	return c.emptyNinjaFile
 }

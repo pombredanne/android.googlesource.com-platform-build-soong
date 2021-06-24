@@ -131,6 +131,7 @@ func getSdkSnapshotBuildInfo(t *testing.T, result *android.TestResult, sdk *sdk)
 	info := &snapshotBuildInfo{
 		t:                            t,
 		r:                            result,
+		version:                      sdk.builderForTests.version,
 		androidBpContents:            sdk.GetAndroidBpContentsForTests(),
 		androidUnversionedBpContents: sdk.GetUnversionedAndroidBpContentsForTests(),
 		androidVersionedBpContents:   sdk.GetVersionedAndroidBpContentsForTests(),
@@ -236,8 +237,13 @@ func CheckSnapshot(t *testing.T, result *android.TestResult, name string, dir st
 	if dir != "" {
 		dir = filepath.Clean(dir) + "/"
 	}
-	android.AssertStringEquals(t, "Snapshot zip file in wrong place",
-		fmt.Sprintf(".intermediates/%s%s/%s/%s-current.zip", dir, name, variant, name), actual)
+	suffix := ""
+	if snapshotBuildInfo.version != soongSdkSnapshotVersionUnversioned {
+		suffix = "-" + snapshotBuildInfo.version
+	}
+
+	expectedZipPath := fmt.Sprintf(".intermediates/%s%s/%s/%s%s.zip", dir, name, variant, name, suffix)
+	android.AssertStringEquals(t, "Snapshot zip file in wrong place", expectedZipPath, actual)
 
 	// Populate a mock filesystem with the files that would have been copied by
 	// the rules.
@@ -254,14 +260,16 @@ func CheckSnapshot(t *testing.T, result *android.TestResult, name string, dir st
 	snapshotPreparer := android.GroupFixturePreparers(sourcePreparers, fs.AddToFixture())
 
 	var runSnapshotTestWithCheckers = func(t *testing.T, testConfig snapshotTest, extraPreparer android.FixturePreparer) {
+		t.Helper()
 		customization := snapshotBuildInfo.snapshotTestCustomization(testConfig)
+		customizedPreparers := android.GroupFixturePreparers(customization.preparers...)
 
 		// TODO(b/183184375): Set Config.TestAllowNonExistentPaths = false to verify that all the
 		//  files the snapshot needs are actually copied into the snapshot.
 
 		// Run the snapshot with the snapshot preparer and the extra preparer, which must come after as
 		// it may need to modify parts of the MockFS populated by the snapshot preparer.
-		result := android.GroupFixturePreparers(snapshotPreparer, extraPreparer).
+		result := android.GroupFixturePreparers(snapshotPreparer, extraPreparer, customizedPreparers).
 			ExtendWithErrorHandler(customization.errorHandler).
 			RunTest(t)
 
@@ -369,6 +377,15 @@ func checkMergeZips(expected ...string) snapshotBuildInfoChecker {
 
 type resultChecker func(t *testing.T, result *android.TestResult)
 
+// snapshotTestPreparer registers a preparer that will be used to customize the specified
+// snapshotTest.
+func snapshotTestPreparer(snapshotTest snapshotTest, preparer android.FixturePreparer) snapshotBuildInfoChecker {
+	return func(info *snapshotBuildInfo) {
+		customization := info.snapshotTestCustomization(snapshotTest)
+		customization.preparers = append(customization.preparers, preparer)
+	}
+}
+
 // snapshotTestChecker registers a checker that will be run against the result of processing the
 // generated snapshot for the specified snapshotTest.
 func snapshotTestChecker(snapshotTest snapshotTest, checker resultChecker) snapshotBuildInfoChecker {
@@ -395,6 +412,9 @@ func snapshotTestErrorHandler(snapshotTest snapshotTest, handler android.Fixture
 
 // Encapsulates information provided by each test to customize a specific snapshotTest.
 type snapshotTestCustomization struct {
+	// Preparers that are used to customize the test fixture before running the test.
+	preparers []android.FixturePreparer
+
 	// Checkers that are run on the result of processing the preferred snapshot in a specific test
 	// case.
 	checkers []resultChecker
@@ -417,6 +437,11 @@ type snapshotBuildInfo struct {
 
 	// The result from RunTest()
 	r *android.TestResult
+
+	// The version of the generated snapshot.
+	//
+	// See snapshotBuilder.version for more information about this field.
+	version string
 
 	// The contents of the generated Android.bp file
 	androidBpContents string

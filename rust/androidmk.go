@@ -60,6 +60,10 @@ func (mod *Module) AndroidMkEntries() []android.AndroidMkEntries {
 				entries.AddStrings("LOCAL_SHARED_LIBRARIES", mod.Properties.AndroidMkSharedLibs...)
 				entries.AddStrings("LOCAL_STATIC_LIBRARIES", mod.Properties.AndroidMkStaticLibs...)
 				entries.AddStrings("LOCAL_SOONG_LINK_TYPE", mod.makeLinkType)
+				if mod.UseVndk() {
+					entries.SetBool("LOCAL_USE_VNDK", true)
+				}
+
 			},
 		},
 	}
@@ -70,6 +74,12 @@ func (mod *Module) AndroidMkEntries() []android.AndroidMkEntries {
 		// If the compiler is disabled, this is a SourceProvider.
 		mod.SubAndroidMk(&ret, mod.sourceProvider)
 	}
+
+	if mod.sanitize != nil {
+		mod.SubAndroidMk(&ret, mod.sanitize)
+	}
+
+	ret.SubName += mod.Properties.RustSubName
 	ret.SubName += mod.Properties.SubName
 
 	return []android.AndroidMkEntries{ret}
@@ -81,7 +91,6 @@ func (binary *binaryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.Andr
 	if binary.distFile.Valid() {
 		ret.DistFiles = android.MakeDefaultDistFiles(binary.distFile.Path())
 	}
-
 	ret.Class = "EXECUTABLES"
 }
 
@@ -100,6 +109,20 @@ func (test *testDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidM
 		})
 
 	cc.AndroidMkWriteTestData(test.data, ret)
+}
+
+func (benchmark *benchmarkDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkEntries) {
+	benchmark.binaryDecorator.AndroidMk(ctx, ret)
+	ret.Class = "NATIVE_TESTS"
+	ret.ExtraEntries = append(ret.ExtraEntries,
+		func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
+			entries.AddCompatibilityTestSuites(benchmark.Properties.Test_suites...)
+			if benchmark.testConfig != nil {
+				entries.SetString("LOCAL_FULL_TEST_CONFIG", benchmark.testConfig.String())
+			}
+			entries.SetBool("LOCAL_NATIVE_BENCHMARK", true)
+			entries.SetBoolIfTrue("LOCAL_DISABLE_AUTO_GENERATE_TEST_CONFIG", !BoolDefault(benchmark.Properties.Auto_gen_config, true))
+		})
 }
 
 func (library *libraryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkEntries) {
@@ -176,4 +199,37 @@ func (compiler *baseCompiler) AndroidMk(ctx AndroidMkContext, ret *android.Andro
 			entries.SetString("LOCAL_MODULE_PATH", path)
 			entries.SetString("LOCAL_MODULE_STEM", stem)
 		})
+}
+
+func (fuzz *fuzzDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
+	ctx.SubAndroidMk(entries, fuzz.binaryDecorator)
+
+	var fuzzFiles []string
+	for _, d := range fuzz.corpus {
+		fuzzFiles = append(fuzzFiles,
+			filepath.Dir(fuzz.corpusIntermediateDir.String())+":corpus/"+d.Base())
+	}
+
+	for _, d := range fuzz.data {
+		fuzzFiles = append(fuzzFiles,
+			filepath.Dir(fuzz.dataIntermediateDir.String())+":data/"+d.Rel())
+	}
+
+	if fuzz.dictionary != nil {
+		fuzzFiles = append(fuzzFiles,
+			filepath.Dir(fuzz.dictionary.String())+":"+fuzz.dictionary.Base())
+	}
+
+	if fuzz.config != nil {
+		fuzzFiles = append(fuzzFiles,
+			filepath.Dir(fuzz.config.String())+":config.json")
+	}
+
+	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext,
+		entries *android.AndroidMkEntries) {
+		entries.SetBool("LOCAL_IS_FUZZ_TARGET", true)
+		if len(fuzzFiles) > 0 {
+			entries.AddStrings("LOCAL_TEST_DATA", fuzzFiles...)
+		}
+	})
 }

@@ -40,13 +40,21 @@ import (
 // This is intentionally not registered by name as it is not intended to be used from within an
 // `Android.bp` file.
 
-// Properties that are specific to `deapexer` but which need to be provided on the `prebuilt_apex`
-// module.`
+// DeapexerProperties specifies the properties supported by the deapexer module.
+//
+// As these are never intended to be supplied in a .bp file they use a different naming convention
+// to make it clear that they are different.
 type DeapexerProperties struct {
-	// List of java libraries that are embedded inside this prebuilt APEX bundle and for which this
-	// APEX bundle will provide dex implementation jars for use by dexpreopt and boot jars package
-	// check.
-	Exported_java_libs []string
+	// List of common modules that may need access to files exported by this module.
+	//
+	// A common module in this sense is one that is not arch specific but uses a common variant for
+	// all architectures, e.g. java.
+	CommonModules []string
+
+	// List of files exported from the .apex file by this module
+	//
+	// Each entry is a path from the apex root, e.g. javalib/core-libart.jar.
+	ExportedFiles []string
 }
 
 type SelectedApexProperties struct {
@@ -77,7 +85,7 @@ func privateDeapexerFactory() android.Module {
 func (p *Deapexer) DepsMutator(ctx android.BottomUpMutatorContext) {
 	// Add dependencies from the java modules to which this exports files from the `.apex` file onto
 	// this module so that they can access the `DeapexerInfo` object that this provides.
-	for _, lib := range p.properties.Exported_java_libs {
+	for _, lib := range p.properties.CommonModules {
 		dep := prebuiltApexExportedModuleName(ctx, lib)
 		ctx.AddReverseDependency(ctx.Module(), android.DeapexerTag, dep)
 	}
@@ -91,25 +99,23 @@ func (p *Deapexer) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	exports := make(map[string]android.Path)
 
-	// Create mappings from name+tag to all the required exported paths.
-	for _, l := range p.properties.Exported_java_libs {
-		// Populate the exports that this makes available. The path here must match the path of the
-		// file in the APEX created by apexFileForJavaModule(...).
-		exports[l+"{.dexjar}"] = deapexerOutput.Join(ctx, "javalib", l+".jar")
+	// Create mappings from apex relative path to the extracted file's path.
+	exportedPaths := make(android.Paths, 0, len(exports))
+	for _, path := range p.properties.ExportedFiles {
+		// Populate the exports that this makes available.
+		extractedPath := deapexerOutput.Join(ctx, path)
+		exports[path] = extractedPath
+		exportedPaths = append(exportedPaths, extractedPath)
 	}
 
 	// If the prebuilt_apex exports any files then create a build rule that unpacks the apex using
 	// deapexer and verifies that all the required files were created. Also, make the mapping from
-	// name+tag to path available for other modules.
+	// apex relative path to extracted file path available for other modules.
 	if len(exports) > 0 {
 		// Make the information available for other modules.
 		ctx.SetProvider(android.DeapexerProvider, android.NewDeapexerInfo(exports))
 
 		// Create a sorted list of the files that this exports.
-		exportedPaths := make(android.Paths, 0, len(exports))
-		for _, p := range exports {
-			exportedPaths = append(exportedPaths, p)
-		}
 		exportedPaths = android.SortedUniquePaths(exportedPaths)
 
 		// The apex needs to export some files so create a ninja rule to unpack the apex and check that

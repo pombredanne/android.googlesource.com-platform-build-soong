@@ -30,6 +30,10 @@ type ImageInterface interface {
 	// vendor ramdisk partition).
 	VendorRamdiskVariantNeeded(ctx BaseModuleContext) bool
 
+	// DebugRamdiskVariantNeeded should return true if the module needs a debug ramdisk variant (installed on the
+	// debug ramdisk partition: $(PRODUCT_OUT)/debug_ramdisk).
+	DebugRamdiskVariantNeeded(ctx BaseModuleContext) bool
+
 	// RecoveryVariantNeeded should return true if the module needs a recovery variant (installed on the
 	// recovery partition).
 	RecoveryVariantNeeded(ctx BaseModuleContext) bool
@@ -39,10 +43,9 @@ type ImageInterface interface {
 	// its variation.
 	ExtraImageVariations(ctx BaseModuleContext) []string
 
-	// SetImageVariation will be passed a newly created recovery variant of the module.  ModuleBase implements
-	// SetImageVariation, most module types will not need to override it, and those that do must call the
-	// overridden method.  Implementors of SetImageVariation must be careful to modify the module argument
-	// and not the receiver.
+	// SetImageVariation is called for each newly created image variant. The receiver is the original
+	// module, "variation" is the name of the newly created variant and "module" is the newly created
+	// variant itself.
 	SetImageVariation(ctx BaseModuleContext, variation string, module Module)
 }
 
@@ -60,6 +63,9 @@ const (
 
 	// VendorRamdiskVariation means a module to be installed to vendor ramdisk image.
 	VendorRamdiskVariation string = "vendor_ramdisk"
+
+	// DebugRamdiskVariation means a module to be installed to debug ramdisk image.
+	DebugRamdiskVariation string = "debug_ramdisk"
 )
 
 // imageMutator creates variants for modules that implement the ImageInterface that
@@ -82,6 +88,9 @@ func imageMutator(ctx BottomUpMutatorContext) {
 		}
 		if m.VendorRamdiskVariantNeeded(ctx) {
 			variations = append(variations, VendorRamdiskVariation)
+		}
+		if m.DebugRamdiskVariantNeeded(ctx) {
+			variations = append(variations, DebugRamdiskVariation)
 		}
 		if m.RecoveryVariantNeeded(ctx) {
 			variations = append(variations, RecoveryVariation)

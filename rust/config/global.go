@@ -24,7 +24,7 @@ import (
 var pctx = android.NewPackageContext("android/soong/rust/config")
 
 var (
-	RustDefaultVersion = "1.50.0"
+	RustDefaultVersion = "1.51.0"
 	RustDefaultBase    = "prebuilts/rust/"
 	DefaultEdition     = "2018"
 	Stdlibs            = []string{
@@ -47,6 +47,7 @@ var (
 		"-C debuginfo=2",
 		"-C opt-level=3",
 		"-C relocation-model=pic",
+		"-C overflow-checks=on",
 		// Use v0 mangling to distinguish from C++ symbols
 		"-Z symbol-mangling-version=v0",
 	}

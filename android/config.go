@@ -35,6 +35,7 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android/soongconfig"
+	"android/soong/bazel"
 	"android/soong/remoteexec"
 )
 
@@ -169,7 +170,7 @@ func loadConfig(config *config) error {
 
 // loadFromConfigFile loads and decodes configuration options from a JSON file
 // in the current working directory.
-func loadFromConfigFile(configurable jsonConfigurable, filename string) error {
+func loadFromConfigFile(configurable *productVariables, filename string) error {
 	// Try to open the file
 	configFileReader, err := os.Open(filename)
 	defer configFileReader.Close()
@@ -194,13 +195,20 @@ func loadFromConfigFile(configurable jsonConfigurable, filename string) error {
 		}
 	}
 
-	// No error
-	return nil
+	if Bool(configurable.GcovCoverage) && Bool(configurable.ClangCoverage) {
+		return fmt.Errorf("GcovCoverage and ClangCoverage cannot both be set")
+	}
+
+	configurable.Native_coverage = proptools.BoolPtr(
+		Bool(configurable.GcovCoverage) ||
+			Bool(configurable.ClangCoverage))
+
+	return saveToBazelConfigFile(configurable, filepath.Dir(filename))
 }
 
 // atomically writes the config file in case two copies of soong_build are running simultaneously
 // (for example, docs generation and ninja manifest generation)
-func saveToConfigFile(config jsonConfigurable, filename string) error {
+func saveToConfigFile(config *productVariables, filename string) error {
 	data, err := json.MarshalIndent(&config, "", "    ")
 	if err != nil {
 		return fmt.Errorf("cannot marshal config data: %s", err.Error())
@@ -225,6 +233,35 @@ func saveToConfigFile(config jsonConfigurable, filename string) error {
 
 	f.Close()
 	os.Rename(f.Name(), filename)
+
+	return nil
+}
+
+func saveToBazelConfigFile(config *productVariables, outDir string) error {
+	dir := filepath.Join(outDir, bazel.SoongInjectionDirName, "product_config")
+	err := createDirIfNonexistent(dir, os.ModePerm)
+	if err != nil {
+		return fmt.Errorf("Could not create dir %s: %s", dir, err)
+	}
+
+	data, err := json.MarshalIndent(&config, "", "    ")
+	if err != nil {
+		return fmt.Errorf("cannot marshal config data: %s", err.Error())
+	}
+
+	bzl := []string{
+		bazel.GeneratedBazelFileWarning,
+		fmt.Sprintf(`_product_vars = json.decode("""%s""")`, data),
+		"product_vars = _product_vars\n",
+	}
+	err = ioutil.WriteFile(filepath.Join(dir, "product_variables.bzl"), []byte(strings.Join(bzl, "\n")), 0644)
+	if err != nil {
+		return fmt.Errorf("Could not write .bzl config file %s", err)
+	}
+	err = ioutil.WriteFile(filepath.Join(dir, "BUILD"), []byte(bazel.GeneratedBazelFileWarning), 0644)
+	if err != nil {
+		return fmt.Errorf("Could not write BUILD config file %s", err)
+	}
 
 	return nil
 }
@@ -345,7 +382,7 @@ func TestArchConfig(buildDir string, env map[string]string, bp string, fs map[st
 // multiple runs in the same program execution is carried over (such as Bazel
 // context or environment deps).
 func ConfigForAdditionalRun(c Config) (Config, error) {
-	newConfig, err := NewConfig(c.srcDir, c.buildDir, c.moduleListFile)
+	newConfig, err := NewConfig(c.srcDir, c.buildDir, c.moduleListFile, c.env)
 	if err != nil {
 		return Config{}, err
 	}
@@ -356,12 +393,12 @@ func ConfigForAdditionalRun(c Config) (Config, error) {
 
 // NewConfig creates a new Config object. The srcDir argument specifies the path
 // to the root source directory. It also loads the config file, if found.
-func NewConfig(srcDir, buildDir string, moduleListFile string) (Config, error) {
+func NewConfig(srcDir, buildDir string, moduleListFile string, availableEnv map[string]string) (Config, error) {
 	// Make a config with default options.
 	config := &config{
 		ProductVariablesFileName: filepath.Join(buildDir, productVariablesFileName),
 
-		env: originalEnv,
+		env: availableEnv,
 
 		srcDir:            srcDir,
 		buildDir:          buildDir,
@@ -447,14 +484,6 @@ func NewConfig(srcDir, buildDir string, moduleListFile string) (Config, error) {
 		config.AndroidCommonTarget = getCommonTargets(config.Targets[Android])[0]
 		config.AndroidFirstDeviceTarget = firstTarget(config.Targets[Android], "lib64", "lib32")[0]
 	}
-
-	if Bool(config.productVariables.GcovCoverage) && Bool(config.productVariables.ClangCoverage) {
-		return Config{}, fmt.Errorf("GcovCoverage and ClangCoverage cannot both be set")
-	}
-
-	config.productVariables.Native_coverage = proptools.BoolPtr(
-		Bool(config.productVariables.GcovCoverage) ||
-			Bool(config.productVariables.ClangCoverage))
 
 	config.BazelContext, err = NewBazelContext(config)
 	config.bp2buildPackageConfig = bp2buildDefaultConfig
@@ -1259,7 +1288,7 @@ func (c *config) CFIEnabledForPath(path string) bool {
 	if len(c.productVariables.CFIIncludePaths) == 0 {
 		return false
 	}
-	return HasAnyPrefix(path, c.productVariables.CFIIncludePaths)
+	return HasAnyPrefix(path, c.productVariables.CFIIncludePaths) && !c.CFIDisabledForPath(path)
 }
 
 func (c *config) MemtagHeapDisabledForPath(path string) bool {
@@ -1273,14 +1302,14 @@ func (c *config) MemtagHeapAsyncEnabledForPath(path string) bool {
 	if len(c.productVariables.MemtagHeapAsyncIncludePaths) == 0 {
 		return false
 	}
-	return HasAnyPrefix(path, c.productVariables.MemtagHeapAsyncIncludePaths)
+	return HasAnyPrefix(path, c.productVariables.MemtagHeapAsyncIncludePaths) && !c.MemtagHeapDisabledForPath(path)
 }
 
 func (c *config) MemtagHeapSyncEnabledForPath(path string) bool {
 	if len(c.productVariables.MemtagHeapSyncIncludePaths) == 0 {
 		return false
 	}
-	return HasAnyPrefix(path, c.productVariables.MemtagHeapSyncIncludePaths)
+	return HasAnyPrefix(path, c.productVariables.MemtagHeapSyncIncludePaths) && !c.MemtagHeapDisabledForPath(path)
 }
 
 func (c *config) VendorConfig(name string) VendorConfig {
@@ -1293,10 +1322,6 @@ func (c *config) NdkAbis() bool {
 
 func (c *config) AmlAbis() bool {
 	return Bool(c.productVariables.Aml_abis)
-}
-
-func (c *config) ExcludeDraftNdkApis() bool {
-	return Bool(c.productVariables.Exclude_draft_ndk_apis)
 }
 
 func (c *config) FlattenApex() bool {
@@ -1498,6 +1523,10 @@ func (c *deviceConfig) BuildBrokenTrebleSyspropNeverallow() bool {
 	return c.config.productVariables.BuildBrokenTrebleSyspropNeverallow
 }
 
+func (c *deviceConfig) BuildDebugfsRestrictionsEnabled() bool {
+	return c.config.productVariables.BuildDebugfsRestrictionsEnabled
+}
+
 func (c *deviceConfig) BuildBrokenVendorPropertyNamespace() bool {
 	return c.config.productVariables.BuildBrokenVendorPropertyNamespace
 }
@@ -1564,6 +1593,15 @@ func (l *ConfiguredJarList) containsApexJarPair(apex, jar string) bool {
 	return false
 }
 
+// ApexOfJar returns the apex component of the first pair with the given jar name on the list, or
+// an empty string if not found.
+func (l *ConfiguredJarList) ApexOfJar(jar string) string {
+	if idx := IndexList(jar, l.jars); idx != -1 {
+		return l.Apex(IndexList(jar, l.jars))
+	}
+	return ""
+}
+
 // IndexOfJar returns the first pair with the given jar name on the list, or -1
 // if not found.
 func (l *ConfiguredJarList) IndexOfJar(jar string) int {
@@ -1609,6 +1647,21 @@ func (l *ConfiguredJarList) RemoveList(list ConfiguredJarList) ConfiguredJarList
 	return ConfiguredJarList{apexes, jars}
 }
 
+// Filter keeps the entries if a jar appears in the given list of jars to keep; returns a new list.
+func (l *ConfiguredJarList) Filter(jarsToKeep []string) ConfiguredJarList {
+	var apexes []string
+	var jars []string
+
+	for i, jar := range l.jars {
+		if InList(jar, jarsToKeep) {
+			apexes = append(apexes, l.apexes[i])
+			jars = append(jars, jar)
+		}
+	}
+
+	return ConfiguredJarList{apexes, jars}
+}
+
 // CopyOfJars returns a copy of the list of strings containing jar module name
 // components.
 func (l *ConfiguredJarList) CopyOfJars() []string {
@@ -1633,6 +1686,16 @@ func (l *ConfiguredJarList) BuildPaths(ctx PathContext, dir OutputPath) Writable
 	paths := make(WritablePaths, l.Len())
 	for i, jar := range l.jars {
 		paths[i] = dir.Join(ctx, ModuleStem(jar)+".jar")
+	}
+	return paths
+}
+
+// BuildPathsByModule returns a map from module name to build paths based on the given directory
+// prefix.
+func (l *ConfiguredJarList) BuildPathsByModule(ctx PathContext, dir OutputPath) map[string]WritablePath {
+	paths := map[string]WritablePath{}
+	for _, jar := range l.jars {
+		paths[jar] = dir.Join(ctx, ModuleStem(jar)+".jar")
 	}
 	return paths
 }

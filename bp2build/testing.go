@@ -1,6 +1,8 @@
 package bp2build
 
 import (
+	"testing"
+
 	"android/soong/android"
 	"android/soong/bazel"
 )
@@ -10,6 +12,8 @@ var (
 	bp2buildConfig = android.Bp2BuildConfig{
 		android.BP2BUILD_TOPLEVEL: android.Bp2BuildDefaultTrueRecursively,
 	}
+
+	buildDir string
 )
 
 type nestedProps struct {
@@ -28,6 +32,8 @@ type customProps struct {
 
 	Nested_props     nestedProps
 	Nested_props_ptr *nestedProps
+
+	Arch_paths []string `android:"path,arch_variant"`
 }
 
 type customModule struct {
@@ -35,6 +41,17 @@ type customModule struct {
 	android.BazelModuleBase
 
 	props customProps
+}
+
+func errored(t *testing.T, desc string, errs []error) bool {
+	t.Helper()
+	if len(errs) > 0 {
+		for _, err := range errs {
+			t.Errorf("%s: %s", desc, err)
+		}
+		return true
+	}
+	return false
 }
 
 // OutputFiles is needed because some instances of this module use dist with a
@@ -56,7 +73,7 @@ func customModuleFactoryBase() android.Module {
 
 func customModuleFactory() android.Module {
 	m := customModuleFactoryBase()
-	android.InitAndroidModule(m)
+	android.InitAndroidArchModule(m, android.HostAndDeviceSupported, android.MultilibBoth)
 	return m
 }
 
@@ -114,6 +131,7 @@ func customDefaultsModuleFactory() android.Module {
 type customBazelModuleAttributes struct {
 	String_prop      string
 	String_list_prop []string
+	Arch_paths       bazel.LabelListAttribute
 }
 
 type customBazelModule struct {
@@ -137,9 +155,20 @@ func customBp2BuildMutator(ctx android.TopDownMutatorContext) {
 			return
 		}
 
+		paths := bazel.MakeLabelListAttribute(android.BazelLabelForModuleSrc(ctx, m.props.Arch_paths))
+
+		for axis, configToProps := range m.GetArchVariantProperties(ctx, &customProps{}) {
+			for config, props := range configToProps {
+				if archProps, ok := props.(*customProps); ok && archProps.Arch_paths != nil {
+					paths.SetSelectValue(axis, config, android.BazelLabelForModuleSrc(ctx, archProps.Arch_paths))
+				}
+			}
+		}
+
 		attrs := &customBazelModuleAttributes{
 			String_prop:      m.props.String_prop,
 			String_list_prop: m.props.String_list_prop,
+			Arch_paths:       paths,
 		}
 
 		props := bazel.BazelTargetModuleProperties{
@@ -183,6 +212,7 @@ func customBp2BuildMutatorFromStarlark(ctx android.TopDownMutatorContext) {
 
 // Helper method for tests to easily access the targets in a dir.
 func generateBazelTargetsForDir(codegenCtx *CodegenContext, dir string) BazelTargets {
-	buildFileToTargets, _ := GenerateBazelTargets(codegenCtx)
+	// TODO: Set generateFilegroups to true and/or remove the generateFilegroups argument completely
+	buildFileToTargets, _, _ := GenerateBazelTargets(codegenCtx, false)
 	return buildFileToTargets[dir]
 }

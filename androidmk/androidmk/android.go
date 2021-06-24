@@ -104,6 +104,7 @@ func init() {
 			"LOCAL_NDK_STL_VARIANT":         "stl",
 			"LOCAL_JAR_MANIFEST":            "manifest",
 			"LOCAL_CERTIFICATE":             "certificate",
+			"LOCAL_CERTIFICATE_LINEAGE":     "lineage",
 			"LOCAL_PACKAGE_NAME":            "name",
 			"LOCAL_MODULE_RELATIVE_PATH":    "relative_install_path",
 			"LOCAL_PROTOC_OPTIMIZE_TYPE":    "proto.type",
@@ -216,6 +217,8 @@ func init() {
 			"LOCAL_JETIFIER_ENABLED":      "jetifier",
 
 			"LOCAL_IS_UNIT_TEST": "unit_test",
+
+			"LOCAL_ENFORCE_USES_LIBRARIES": "enforce_uses_libs",
 		})
 }
 

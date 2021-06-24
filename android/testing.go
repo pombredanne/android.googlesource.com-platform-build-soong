@@ -74,6 +74,42 @@ var PrepareForTestWithOverrides = FixtureRegisterWithContext(func(ctx Registrati
 	ctx.PostDepsMutators(RegisterOverridePostDepsMutators)
 })
 
+var PrepareForTestWithLicenses = GroupFixturePreparers(
+	FixtureRegisterWithContext(RegisterLicenseKindBuildComponents),
+	FixtureRegisterWithContext(RegisterLicenseBuildComponents),
+	FixtureRegisterWithContext(registerLicenseMutators),
+)
+
+func registerLicenseMutators(ctx RegistrationContext) {
+	ctx.PreArchMutators(RegisterLicensesPackageMapper)
+	ctx.PreArchMutators(RegisterLicensesPropertyGatherer)
+	ctx.PostDepsMutators(RegisterLicensesDependencyChecker)
+}
+
+var PrepareForTestWithLicenseDefaultModules = GroupFixturePreparers(
+	FixtureAddTextFile("build/soong/licenses/Android.bp", `
+		license {
+				name: "Android-Apache-2.0",
+				package_name: "Android",
+				license_kinds: ["SPDX-license-identifier-Apache-2.0"],
+				copyright_notice: "Copyright (C) The Android Open Source Project",
+				license_text: ["LICENSE"],
+		}
+
+		license_kind {
+				name: "SPDX-license-identifier-Apache-2.0",
+				conditions: ["notice"],
+				url: "https://spdx.org/licenses/Apache-2.0.html",
+		}
+
+		license_kind {
+				name: "legacy_unencumbered",
+				conditions: ["unencumbered"],
+		}
+	`),
+	FixtureAddFile("build/soong/licenses/LICENSE", nil),
+)
+
 // Test fixture preparer that will register most java build components.
 //
 // Singletons and mutators should only be added here if they are needed for a majority of java
@@ -677,9 +713,11 @@ func (b baseTestingComponent) newTestingBuildParams(bparams BuildParams) Testing
 
 func (b baseTestingComponent) maybeBuildParamsFromRule(rule string) (TestingBuildParams, []string) {
 	var searchedRules []string
-	for _, p := range b.provider.BuildParamsForTests() {
-		searchedRules = append(searchedRules, p.Rule.String())
-		if strings.Contains(p.Rule.String(), rule) {
+	buildParams := b.provider.BuildParamsForTests()
+	for _, p := range buildParams {
+		ruleAsString := p.Rule.String()
+		searchedRules = append(searchedRules, ruleAsString)
+		if strings.Contains(ruleAsString, rule) {
 			return b.newTestingBuildParams(p), searchedRules
 		}
 	}
@@ -689,7 +727,7 @@ func (b baseTestingComponent) maybeBuildParamsFromRule(rule string) (TestingBuil
 func (b baseTestingComponent) buildParamsFromRule(rule string) TestingBuildParams {
 	p, searchRules := b.maybeBuildParamsFromRule(rule)
 	if p.Rule == nil {
-		panic(fmt.Errorf("couldn't find rule %q.\nall rules: %v", rule, searchRules))
+		panic(fmt.Errorf("couldn't find rule %q.\nall rules:\n%s", rule, strings.Join(searchRules, "\n")))
 	}
 	return p
 }

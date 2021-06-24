@@ -76,11 +76,11 @@ type BaseCompilerProperties struct {
 	// errors). The default value is "default".
 	Lints *string
 
-	// flags to pass to rustc
-	Flags []string `android:"path,arch_variant"`
+	// flags to pass to rustc. To enable configuration options or features, use the "cfgs" or "features" properties.
+	Flags []string `android:"arch_variant"`
 
 	// flags to pass to the linker
-	Ld_flags []string `android:"path,arch_variant"`
+	Ld_flags []string `android:"arch_variant"`
 
 	// list of rust rlib crate dependencies
 	Rlibs []string `android:"arch_variant"`
@@ -124,6 +124,9 @@ type BaseCompilerProperties struct {
 
 	// list of features to enable for this crate
 	Features []string `android:"arch_variant"`
+
+	// list of configuration options to enable for this crate. To enable features, use the "features" property.
+	Cfgs []string `android:"arch_variant"`
 
 	// specific rust edition that should be used if the default version is not desired
 	Edition *string `android:"arch_variant"`
@@ -210,9 +213,17 @@ func (compiler *baseCompiler) compilerProps() []interface{} {
 	return []interface{}{&compiler.Properties}
 }
 
-func (compiler *baseCompiler) featuresToFlags(features []string) []string {
+func (compiler *baseCompiler) cfgsToFlags() []string {
 	flags := []string{}
-	for _, feature := range features {
+	for _, cfg := range compiler.Properties.Cfgs {
+		flags = append(flags, "--cfg '"+cfg+"'")
+	}
+	return flags
+}
+
+func (compiler *baseCompiler) featuresToFlags() []string {
+	flags := []string{}
+	for _, feature := range compiler.Properties.Features {
 		flags = append(flags, "--cfg 'feature=\""+feature+"\"'")
 	}
 	return flags
@@ -226,8 +237,12 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags) Flag
 	}
 	flags.RustFlags = append(flags.RustFlags, lintFlags)
 	flags.RustFlags = append(flags.RustFlags, compiler.Properties.Flags...)
-	flags.RustFlags = append(flags.RustFlags, compiler.featuresToFlags(compiler.Properties.Features)...)
+	flags.RustFlags = append(flags.RustFlags, compiler.cfgsToFlags()...)
+	flags.RustFlags = append(flags.RustFlags, compiler.featuresToFlags()...)
+	flags.RustdocFlags = append(flags.RustdocFlags, compiler.cfgsToFlags()...)
+	flags.RustdocFlags = append(flags.RustdocFlags, compiler.featuresToFlags()...)
 	flags.RustFlags = append(flags.RustFlags, "--edition="+compiler.edition())
+	flags.RustdocFlags = append(flags.RustdocFlags, "--edition="+compiler.edition())
 	flags.LinkFlags = append(flags.LinkFlags, compiler.Properties.Ld_flags...)
 	flags.GlobalRustFlags = append(flags.GlobalRustFlags, config.GlobalRustFlags...)
 	flags.GlobalRustFlags = append(flags.GlobalRustFlags, ctx.toolchain().ToolchainRustFlags())
@@ -258,6 +273,12 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags) Flag
 
 func (compiler *baseCompiler) compile(ctx ModuleContext, flags Flags, deps PathDeps) android.Path {
 	panic(fmt.Errorf("baseCrater doesn't know how to crate things!"))
+}
+
+func (compiler *baseCompiler) rustdoc(ctx ModuleContext, flags Flags,
+	deps PathDeps) android.OptionalPath {
+
+	return android.OptionalPath{}
 }
 
 func (compiler *baseCompiler) initialize(ctx ModuleContext) {
@@ -291,7 +312,6 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 			if ctx.Target().Os == android.BuildOs {
 				stdlib = stdlib + "_" + ctx.toolchain().RustTriple()
 			}
-
 			deps.Stdlibs = append(deps.Stdlibs, stdlib)
 		}
 	}
@@ -321,6 +341,11 @@ func (compiler *baseCompiler) crateName() string {
 	return compiler.Properties.Crate_name
 }
 
+func (compiler *baseCompiler) everInstallable() bool {
+	// Most modules are installable, so return true by default.
+	return true
+}
+
 func (compiler *baseCompiler) installDir(ctx ModuleContext) android.InstallPath {
 	dir := compiler.dir
 	if ctx.toolchain().Is64Bit() && compiler.dir64 != "" {
@@ -331,6 +356,10 @@ func (compiler *baseCompiler) installDir(ctx ModuleContext) android.InstallPath 
 	}
 	if !ctx.Host() && ctx.Config().HasMultilibConflict(ctx.Arch().ArchType) {
 		dir = filepath.Join(dir, ctx.Arch().ArchType.String())
+	}
+
+	if compiler.location == InstallInData && ctx.RustModule().UseVndk() {
+		dir = filepath.Join(dir, "vendor")
 	}
 	return android.PathForModuleInstall(ctx, dir, compiler.subDir,
 		compiler.relativeInstallPath(), compiler.relative)

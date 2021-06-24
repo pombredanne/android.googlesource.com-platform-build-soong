@@ -84,7 +84,7 @@ func classifySourceAbiDump(ctx android.BaseModuleContext) string {
 		return "LLNDK"
 	}
 	if m.UseVndk() && m.IsVndk() && !m.IsVndkPrivate() {
-		if m.isVndkSp() {
+		if m.IsVndkSp() {
 			if m.IsVndkExt() {
 				return "VNDK-SP-ext"
 			} else {
@@ -141,7 +141,7 @@ func shouldCreateSourceAbiDumpForLibrary(ctx android.BaseModuleContext) bool {
 	}
 
 	// Don't create ABI dump for prebuilts.
-	if m.Prebuilt() != nil || m.isSnapshotPrebuilt() {
+	if m.Prebuilt() != nil || m.IsSnapshotPrebuilt() {
 		return false
 	}
 
@@ -192,7 +192,7 @@ func sabiDepsMutator(mctx android.TopDownMutatorContext) {
 			// Mark all of its static library dependencies.
 			mctx.VisitDirectDeps(func(child android.Module) {
 				depTag := mctx.OtherModuleDependencyTag(child)
-				if libDepTag, ok := depTag.(libraryDependencyTag); ok && libDepTag.static() {
+				if IsStaticDepTag(depTag) || depTag == reuseObjTag {
 					if c, ok := child.(*Module); ok && c.sabi != nil {
 						// Mark this module so that .sdump for this static library can be generated.
 						c.sabi.Properties.ShouldCreateSourceAbiDump = true

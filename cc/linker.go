@@ -18,7 +18,6 @@ import (
 	"android/soong/android"
 	"android/soong/cc/config"
 	"fmt"
-	"strconv"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
@@ -123,7 +122,7 @@ type BaseLinkerProperties struct {
 
 			// version script for vendor or product variant
 			Version_script *string `android:"arch_variant"`
-		}
+		} `android:"arch_variant"`
 		Recovery struct {
 			// list of shared libs that only should be used to build the recovery
 			// variant of the C/C++ module.
@@ -183,7 +182,7 @@ type BaseLinkerProperties struct {
 			// variant of the C/C++ module.
 			Exclude_static_libs []string
 		}
-	}
+	} `android:"arch_variant"`
 
 	// make android::build:GetBuildNumber() available containing the build ID.
 	Use_version_lib *bool `android:"arch_variant"`
@@ -199,6 +198,18 @@ type BaseLinkerProperties struct {
 
 	// list of shared libs that should not be used to build this module
 	Exclude_shared_libs []string `android:"arch_variant"`
+}
+
+func invertBoolPtr(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	ret := !(*value)
+	return &ret
+}
+
+func (blp *BaseLinkerProperties) libCrt() *bool {
+	return invertBoolPtr(blp.No_libcrt)
 }
 
 func NewBaseLinker(sanitize *sanitize) *baseLinker {
@@ -322,7 +333,7 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 
 	if ctx.toolchain().Bionic() {
 		// libclang_rt.builtins has to be last on the command line
-		if !Bool(linker.Properties.No_libcrt) {
+		if !Bool(linker.Properties.No_libcrt) && !ctx.header() {
 			deps.LateStaticLibs = append(deps.LateStaticLibs, config.BuiltinsRuntimeLibrary(ctx.toolchain()))
 		}
 
@@ -390,17 +401,17 @@ func (linker *baseLinker) useClangLld(ctx ModuleContext) bool {
 }
 
 // Check whether the SDK version is not older than the specific one
-func CheckSdkVersionAtLeast(ctx ModuleContext, SdkVersion int) bool {
-	if ctx.sdkVersion() == "current" {
+func CheckSdkVersionAtLeast(ctx ModuleContext, SdkVersion android.ApiLevel) bool {
+	if ctx.minSdkVersion() == "current" {
 		return true
 	}
-	parsedSdkVersion, err := strconv.Atoi(ctx.sdkVersion())
+	parsedSdkVersion, err := nativeApiLevelFromUser(ctx, ctx.minSdkVersion())
 	if err != nil {
-		ctx.PropertyErrorf("sdk_version",
-			"Invalid sdk_version value (must be int or current): %q",
-			ctx.sdkVersion())
+		ctx.PropertyErrorf("min_sdk_version",
+			"Invalid min_sdk_version value (must be int or current): %q",
+			ctx.minSdkVersion())
 	}
-	if parsedSdkVersion < SdkVersion {
+	if parsedSdkVersion.LessThan(SdkVersion) {
 		return false
 	}
 	return true
@@ -421,13 +432,17 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 		if !BoolDefault(linker.Properties.Pack_relocations, true) {
 			flags.Global.LdFlags = append(flags.Global.LdFlags, "-Wl,--pack-dyn-relocs=none")
 		} else if ctx.Device() {
-			// The SHT_RELR relocations is only supported by API level >= 28.
-			// Do not turn this on if older version NDK is used.
-			if !ctx.useSdk() || CheckSdkVersionAtLeast(ctx, 28) {
+			// SHT_RELR relocations are only supported at API level >= 30.
+			// ANDROID_RELR relocations were supported at API level >= 28.
+			// Relocation packer was supported at API level >= 23.
+			// Do the best we can...
+			if (!ctx.useSdk() && ctx.minSdkVersion() == "") || CheckSdkVersionAtLeast(ctx, android.FirstShtRelrVersion) {
+				flags.Global.LdFlags = append(flags.Global.LdFlags, "-Wl,--pack-dyn-relocs=android+relr")
+			} else if CheckSdkVersionAtLeast(ctx, android.FirstAndroidRelrVersion) {
 				flags.Global.LdFlags = append(flags.Global.LdFlags,
 					"-Wl,--pack-dyn-relocs=android+relr",
 					"-Wl,--use-android-relr-tags")
-			} else if CheckSdkVersionAtLeast(ctx, 23) {
+			} else if CheckSdkVersionAtLeast(ctx, android.FirstPackedRelocationsVersion) {
 				flags.Global.LdFlags = append(flags.Global.LdFlags, "-Wl,--pack-dyn-relocs=android")
 			}
 		}
@@ -590,29 +605,4 @@ func (linker *baseLinker) injectVersionSymbol(ctx ModuleContext, in android.Path
 			"buildNumberFile": buildNumberFile.String(),
 		},
 	})
-}
-
-// Rule to generate .bss symbol ordering file.
-
-var (
-	_                   = pctx.SourcePathVariable("genSortedBssSymbolsPath", "build/soong/scripts/gen_sorted_bss_symbols.sh")
-	genSortedBssSymbols = pctx.AndroidStaticRule("gen_sorted_bss_symbols",
-		blueprint.RuleParams{
-			Command:     "CLANG_BIN=${clangBin} $genSortedBssSymbolsPath ${in} ${out}",
-			CommandDeps: []string{"$genSortedBssSymbolsPath", "${clangBin}/llvm-nm"},
-		},
-		"clangBin")
-)
-
-func (linker *baseLinker) sortBssSymbolsBySize(ctx ModuleContext, in android.Path, symbolOrderingFile android.ModuleOutPath, flags builderFlags) string {
-	ctx.Build(pctx, android.BuildParams{
-		Rule:        genSortedBssSymbols,
-		Description: "generate bss symbol order " + symbolOrderingFile.Base(),
-		Output:      symbolOrderingFile,
-		Input:       in,
-		Args: map[string]string{
-			"clangBin": "${config.ClangBin}",
-		},
-	})
-	return "-Wl,--symbol-ordering-file," + symbolOrderingFile.String()
 }

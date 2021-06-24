@@ -543,7 +543,7 @@ func (g *Module) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	bazelModuleLabel := g.GetBazelLabel(ctx, g)
 	bazelActionsUsed := false
-	if ctx.Config().BazelContext.BazelEnabled() && len(bazelModuleLabel) > 0 {
+	if g.MixedBuildsEnabled(ctx) {
 		bazelActionsUsed = g.generateBazelBuildActions(ctx, bazelModuleLabel)
 	}
 	if !bazelActionsUsed {
@@ -626,6 +626,7 @@ func (x noopImageInterface) ImageMutatorBegin(android.BaseModuleContext)        
 func (x noopImageInterface) CoreVariantNeeded(android.BaseModuleContext) bool            { return false }
 func (x noopImageInterface) RamdiskVariantNeeded(android.BaseModuleContext) bool         { return false }
 func (x noopImageInterface) VendorRamdiskVariantNeeded(android.BaseModuleContext) bool   { return false }
+func (x noopImageInterface) DebugRamdiskVariantNeeded(android.BaseModuleContext) bool    { return false }
 func (x noopImageInterface) RecoveryVariantNeeded(android.BaseModuleContext) bool        { return false }
 func (x noopImageInterface) ExtraImageVariations(ctx android.BaseModuleContext) []string { return nil }
 func (x noopImageInterface) SetImageVariation(ctx android.BaseModuleContext, variation string, module android.Module) {
@@ -855,8 +856,8 @@ func GenruleBp2Build(ctx android.TopDownMutatorContext) {
 			cmd = strings.Replace(cmd, "$(locations)", fmt.Sprintf("$(locations %s)", tools.Value.Includes[0].Label), -1)
 		}
 		for _, l := range allReplacements.Includes {
-			bpLoc := fmt.Sprintf("$(location %s)", l.Bp_text)
-			bpLocs := fmt.Sprintf("$(locations %s)", l.Bp_text)
+			bpLoc := fmt.Sprintf("$(location %s)", l.OriginalModuleName)
+			bpLocs := fmt.Sprintf("$(locations %s)", l.OriginalModuleName)
 			bazelLoc := fmt.Sprintf("$(location %s)", l.Label)
 			bazelLocs := fmt.Sprintf("$(locations %s)", l.Label)
 			cmd = strings.Replace(cmd, bpLoc, bazelLoc, -1)

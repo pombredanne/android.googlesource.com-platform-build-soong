@@ -11,90 +11,177 @@ import (
 
 type selects map[string]reflect.Value
 
-func getStringListValues(list bazel.StringListAttribute) (reflect.Value, selects, selects) {
+func getStringListValues(list bazel.StringListAttribute) (reflect.Value, []selects) {
 	value := reflect.ValueOf(list.Value)
 	if !list.HasConfigurableValues() {
-		return value, nil, nil
+		return value, []selects{}
 	}
 
-	archSelects := map[string]reflect.Value{}
-	for arch, selectKey := range bazel.PlatformArchMap {
-		archSelects[selectKey] = reflect.ValueOf(list.GetValueForArch(arch))
+	var ret []selects
+	for _, axis := range list.SortedConfigurationAxes() {
+		configToLists := list.ConfigurableValues[axis]
+		archSelects := map[string]reflect.Value{}
+		for config, labels := range configToLists {
+			selectKey := axis.SelectKey(config)
+			archSelects[selectKey] = reflect.ValueOf(labels)
+		}
+		if len(archSelects) > 0 {
+			ret = append(ret, archSelects)
+		}
 	}
 
-	osSelects := map[string]reflect.Value{}
-	for os, selectKey := range bazel.PlatformOsMap {
-		osSelects[selectKey] = reflect.ValueOf(list.GetValueForOS(os))
-	}
-
-	return value, archSelects, osSelects
+	return value, ret
 }
 
-func getLabelListValues(list bazel.LabelListAttribute) (reflect.Value, selects, selects) {
+func getLabelValue(label bazel.LabelAttribute) (reflect.Value, []selects) {
+	value := reflect.ValueOf(label.Value)
+	if !label.HasConfigurableValues() {
+		return value, []selects{}
+	}
+
+	ret := selects{}
+	for _, axis := range label.SortedConfigurationAxes() {
+		configToLabels := label.ConfigurableValues[axis]
+		for config, labels := range configToLabels {
+			selectKey := axis.SelectKey(config)
+			ret[selectKey] = reflect.ValueOf(labels)
+		}
+	}
+
+	return value, []selects{ret}
+}
+
+func getBoolValue(boolAttr bazel.BoolAttribute) (reflect.Value, []selects) {
+	value := reflect.ValueOf(boolAttr.Value)
+	if !boolAttr.HasConfigurableValues() {
+		return value, []selects{}
+	}
+
+	ret := selects{}
+	for _, axis := range boolAttr.SortedConfigurationAxes() {
+		configToBools := boolAttr.ConfigurableValues[axis]
+		for config, bools := range configToBools {
+			selectKey := axis.SelectKey(config)
+			ret[selectKey] = reflect.ValueOf(bools)
+		}
+	}
+	// if there is a select, use the base value as the conditions default value
+	if len(ret) > 0 {
+		ret[bazel.ConditionsDefaultSelectKey] = value
+		value = reflect.Zero(value.Type())
+	}
+
+	return value, []selects{ret}
+}
+func getLabelListValues(list bazel.LabelListAttribute) (reflect.Value, []selects) {
 	value := reflect.ValueOf(list.Value.Includes)
-	if !list.HasConfigurableValues() {
-		return value, nil, nil
+	var ret []selects
+	for _, axis := range list.SortedConfigurationAxes() {
+		configToLabels := list.ConfigurableValues[axis]
+		if !configToLabels.HasConfigurableValues() {
+			continue
+		}
+		archSelects := map[string]reflect.Value{}
+		for config, labels := range configToLabels {
+			selectKey := axis.SelectKey(config)
+			if use, value := labelListSelectValue(selectKey, labels); use {
+				archSelects[selectKey] = value
+			}
+		}
+		if len(archSelects) > 0 {
+			ret = append(ret, archSelects)
+		}
 	}
 
-	archSelects := map[string]reflect.Value{}
-	for arch, selectKey := range bazel.PlatformArchMap {
-		archSelects[selectKey] = reflect.ValueOf(list.GetValueForArch(arch).Includes)
-	}
-
-	osSelects := map[string]reflect.Value{}
-	for os, selectKey := range bazel.PlatformOsMap {
-		osSelects[selectKey] = reflect.ValueOf(list.GetValueForOS(os).Includes)
-	}
-
-	return value, archSelects, osSelects
+	return value, ret
 }
+
+func labelListSelectValue(selectKey string, list bazel.LabelList) (bool, reflect.Value) {
+	if selectKey == bazel.ConditionsDefaultSelectKey || len(list.Includes) > 0 {
+		return true, reflect.ValueOf(list.Includes)
+	} else if len(list.Excludes) > 0 {
+		// if there is still an excludes -- we need to have an empty list for this select & use the
+		// value in conditions default Includes
+		return true, reflect.ValueOf([]string{})
+	}
+	return false, reflect.Zero(reflect.TypeOf([]string{}))
+}
+
+var (
+	emptyBazelList = "[]"
+	bazelNone      = "None"
+)
 
 // prettyPrintAttribute converts an Attribute to its Bazel syntax. May contain
 // select statements.
 func prettyPrintAttribute(v bazel.Attribute, indent int) (string, error) {
 	var value reflect.Value
-	var archSelects, osSelects selects
-
+	var configurableAttrs []selects
+	var defaultSelectValue *string
 	switch list := v.(type) {
 	case bazel.StringListAttribute:
-		value, archSelects, osSelects = getStringListValues(list)
+		value, configurableAttrs = getStringListValues(list)
+		defaultSelectValue = &emptyBazelList
 	case bazel.LabelListAttribute:
-		value, archSelects, osSelects = getLabelListValues(list)
+		value, configurableAttrs = getLabelListValues(list)
+		defaultSelectValue = &emptyBazelList
+	case bazel.LabelAttribute:
+		value, configurableAttrs = getLabelValue(list)
+		defaultSelectValue = &bazelNone
+	case bazel.BoolAttribute:
+		value, configurableAttrs = getBoolValue(list)
+		defaultSelectValue = &bazelNone
 	default:
 		return "", fmt.Errorf("Not a supported Bazel attribute type: %s", v)
 	}
 
-	ret, err := prettyPrint(value, indent)
-	if err != nil {
-		return ret, err
+	var err error
+	ret := ""
+	if value.Kind() != reflect.Invalid {
+		s, err := prettyPrint(value, indent)
+		if err != nil {
+			return ret, err
+		}
+
+		ret += s
+	}
+	// Convenience function to append selects components to an attribute value.
+	appendSelects := func(selectsData selects, defaultValue *string, s string) (string, error) {
+		selectMap, err := prettyPrintSelectMap(selectsData, defaultValue, indent)
+		if err != nil {
+			return "", err
+		}
+		if s != "" && selectMap != "" {
+			s += " + "
+		}
+		s += selectMap
+
+		return s, nil
 	}
 
-	// Create the selects for arch specific values.
-	selectMap, err := prettyPrintSelectMap(archSelects, "[]", indent)
-	if err != nil {
-		return "", err
+	for _, configurableAttr := range configurableAttrs {
+		ret, err = appendSelects(configurableAttr, defaultSelectValue, ret)
+		if err != nil {
+			return "", err
+		}
 	}
-	ret += selectMap
 
-	// Create the selects for target os specific values.
-	selectMap, err = prettyPrintSelectMap(osSelects, "[]", indent)
-	if err != nil {
-		return "", err
-	}
-	ret += selectMap
-
-	return ret, err
+	return ret, nil
 }
 
 // prettyPrintSelectMap converts a map of select keys to reflected Values as a generic way
 // to construct a select map for any kind of attribute type.
-func prettyPrintSelectMap(selectMap map[string]reflect.Value, defaultValue string, indent int) (string, error) {
+func prettyPrintSelectMap(selectMap map[string]reflect.Value, defaultValue *string, indent int) (string, error) {
 	if selectMap == nil {
 		return "", nil
 	}
 
 	var selects string
 	for _, selectKey := range android.SortedStringKeys(selectMap) {
+		if selectKey == bazel.ConditionsDefaultSelectKey {
+			// Handle default condition later.
+			continue
+		}
 		value := selectMap[selectKey]
 		if isZero(value) {
 			// Ignore zero values to not generate empty lists.
@@ -104,7 +191,11 @@ func prettyPrintSelectMap(selectMap map[string]reflect.Value, defaultValue strin
 		if err != nil {
 			return "", err
 		}
-		selects += s + ",\n"
+		// s could still be an empty string, e.g. unset slices of structs with
+		// length of 0.
+		if s != "" {
+			selects += s + ",\n"
+		}
 	}
 
 	if len(selects) == 0 {
@@ -113,10 +204,24 @@ func prettyPrintSelectMap(selectMap map[string]reflect.Value, defaultValue strin
 	}
 
 	// Create the map.
-	ret := " + select({\n"
+	ret := "select({\n"
 	ret += selects
-	// default condition comes last.
-	ret += fmt.Sprintf("%s\"%s\": %s,\n", makeIndent(indent+1), "//conditions:default", defaultValue)
+
+	// Handle the default condition
+	s, err := prettyPrintSelectEntry(selectMap[bazel.ConditionsDefaultSelectKey], bazel.ConditionsDefaultSelectKey, indent)
+	if err != nil {
+		return "", err
+	}
+	if s != "" {
+		// Print the custom default value.
+		ret += s
+		ret += ",\n"
+	} else if defaultValue != nil {
+		// Print an explicit empty list (the default value) even if the value is
+		// empty, to avoid errors about not finding a configuration that matches.
+		ret += fmt.Sprintf("%s\"%s\": %s,\n", makeIndent(indent+1), bazel.ConditionsDefaultSelectKey, *defaultValue)
+	}
+
 	ret += makeIndent(indent)
 	ret += "})"
 
@@ -130,6 +235,9 @@ func prettyPrintSelectEntry(value reflect.Value, key string, indent int) (string
 	v, err := prettyPrint(value, indent+1)
 	if err != nil {
 		return "", err
+	}
+	if v == "" {
+		return "", nil
 	}
 	s += fmt.Sprintf("\"%s\": %s", key, v)
 	return s, nil

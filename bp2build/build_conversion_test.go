@@ -23,14 +23,14 @@ import (
 
 func TestGenerateSoongModuleTargets(t *testing.T) {
 	testCases := []struct {
+		description         string
 		bp                  string
 		expectedBazelTarget string
 	}{
 		{
-			bp: `custom {
-	name: "foo",
-}
-		`,
+			description: "only name",
+			bp: `custom { name: "foo" }
+    `,
 			expectedBazelTarget: `soong_module(
     name = "foo",
     soong_module_name = "foo",
@@ -38,14 +38,16 @@ func TestGenerateSoongModuleTargets(t *testing.T) {
     soong_module_variant = "",
     soong_module_deps = [
     ],
+    bool_prop = False,
 )`,
 		},
 		{
+			description: "handles bool",
 			bp: `custom {
-	name: "foo",
-	ramdisk: true,
+  name: "foo",
+  bool_prop: true,
 }
-		`,
+    `,
 			expectedBazelTarget: `soong_module(
     name = "foo",
     soong_module_name = "foo",
@@ -53,15 +55,16 @@ func TestGenerateSoongModuleTargets(t *testing.T) {
     soong_module_variant = "",
     soong_module_deps = [
     ],
-    ramdisk = True,
+    bool_prop = True,
 )`,
 		},
 		{
+			description: "string escaping",
 			bp: `custom {
-	name: "foo",
-	owner: "a_string_with\"quotes\"_and_\\backslashes\\\\",
+  name: "foo",
+  owner: "a_string_with\"quotes\"_and_\\backslashes\\\\",
 }
-		`,
+    `,
 			expectedBazelTarget: `soong_module(
     name = "foo",
     soong_module_name = "foo",
@@ -69,15 +72,17 @@ func TestGenerateSoongModuleTargets(t *testing.T) {
     soong_module_variant = "",
     soong_module_deps = [
     ],
+    bool_prop = False,
     owner = "a_string_with\"quotes\"_and_\\backslashes\\\\",
 )`,
 		},
 		{
+			description: "single item string list",
 			bp: `custom {
-	name: "foo",
-	required: ["bar"],
+  name: "foo",
+  required: ["bar"],
 }
-		`,
+    `,
 			expectedBazelTarget: `soong_module(
     name = "foo",
     soong_module_name = "foo",
@@ -85,17 +90,17 @@ func TestGenerateSoongModuleTargets(t *testing.T) {
     soong_module_variant = "",
     soong_module_deps = [
     ],
-    required = [
-        "bar",
-    ],
+    bool_prop = False,
+    required = ["bar"],
 )`,
 		},
 		{
+			description: "list of strings",
 			bp: `custom {
-	name: "foo",
-	target_required: ["qux", "bazqux"],
+  name: "foo",
+  target_required: ["qux", "bazqux"],
 }
-		`,
+    `,
 			expectedBazelTarget: `soong_module(
     name = "foo",
     soong_module_name = "foo",
@@ -103,6 +108,7 @@ func TestGenerateSoongModuleTargets(t *testing.T) {
     soong_module_variant = "",
     soong_module_deps = [
     ],
+    bool_prop = False,
     target_required = [
         "qux",
         "bazqux",
@@ -110,20 +116,19 @@ func TestGenerateSoongModuleTargets(t *testing.T) {
 )`,
 		},
 		{
+			description: "dist/dists",
 			bp: `custom {
-	name: "foo",
-	dist: {
-		targets: ["goal_foo"],
-		tag: ".foo",
-	},
-	dists: [
-		{
-			targets: ["goal_bar"],
-			tag: ".bar",
-		},
-	],
+  name: "foo",
+  dist: {
+    targets: ["goal_foo"],
+    tag: ".foo",
+  },
+  dists: [{
+    targets: ["goal_bar"],
+    tag: ".bar",
+  }],
 }
-		`,
+    `,
 			expectedBazelTarget: `soong_module(
     name = "foo",
     soong_module_name = "foo",
@@ -131,37 +136,33 @@ func TestGenerateSoongModuleTargets(t *testing.T) {
     soong_module_variant = "",
     soong_module_deps = [
     ],
+    bool_prop = False,
     dist = {
         "tag": ".foo",
-        "targets": [
-            "goal_foo",
-        ],
+        "targets": ["goal_foo"],
     },
-    dists = [
-        {
-            "tag": ".bar",
-            "targets": [
-                "goal_bar",
-            ],
-        },
-    ],
+    dists = [{
+        "tag": ".bar",
+        "targets": ["goal_bar"],
+    }],
 )`,
 		},
 		{
+			description: "put it together",
 			bp: `custom {
-	name: "foo",
-	required: ["bar"],
-	target_required: ["qux", "bazqux"],
-	ramdisk: true,
-	owner: "custom_owner",
-	dists: [
-		{
-			tag: ".tag",
-			targets: ["my_goal"],
-		},
-	],
+  name: "foo",
+  required: ["bar"],
+  target_required: ["qux", "bazqux"],
+  bool_prop: true,
+  owner: "custom_owner",
+  dists: [
+    {
+      tag: ".tag",
+      targets: ["my_goal"],
+    },
+  ],
 }
-		`,
+    `,
 			expectedBazelTarget: `soong_module(
     name = "foo",
     soong_module_name = "foo",
@@ -169,19 +170,13 @@ func TestGenerateSoongModuleTargets(t *testing.T) {
     soong_module_variant = "",
     soong_module_deps = [
     ],
-    dists = [
-        {
-            "tag": ".tag",
-            "targets": [
-                "my_goal",
-            ],
-        },
-    ],
+    bool_prop = True,
+    dists = [{
+        "tag": ".tag",
+        "targets": ["my_goal"],
+    }],
     owner = "custom_owner",
-    ramdisk = True,
-    required = [
-        "bar",
-    ],
+    required = ["bar"],
     target_required = [
         "qux",
         "bazqux",
@@ -192,38 +187,41 @@ func TestGenerateSoongModuleTargets(t *testing.T) {
 
 	dir := "."
 	for _, testCase := range testCases {
-		config := android.TestConfig(buildDir, nil, testCase.bp, nil)
-		ctx := android.NewTestContext(config)
+		t.Run(testCase.description, func(t *testing.T) {
+			config := android.TestConfig(buildDir, nil, testCase.bp, nil)
+			ctx := android.NewTestContext(config)
 
-		ctx.RegisterModuleType("custom", customModuleFactory)
-		ctx.Register()
+			ctx.RegisterModuleType("custom", customModuleFactory)
+			ctx.Register()
 
-		_, errs := ctx.ParseFileList(dir, []string{"Android.bp"})
-		android.FailIfErrored(t, errs)
-		_, errs = ctx.PrepareBuildActions(config)
-		android.FailIfErrored(t, errs)
+			_, errs := ctx.ParseFileList(dir, []string{"Android.bp"})
+			android.FailIfErrored(t, errs)
+			_, errs = ctx.PrepareBuildActions(config)
+			android.FailIfErrored(t, errs)
 
-		codegenCtx := NewCodegenContext(config, *ctx.Context, QueryView)
-		bazelTargets := generateBazelTargetsForDir(codegenCtx, dir)
-		if actualCount, expectedCount := len(bazelTargets), 1; actualCount != expectedCount {
-			t.Fatalf("Expected %d bazel target, got %d", expectedCount, actualCount)
-		}
+			codegenCtx := NewCodegenContext(config, *ctx.Context, QueryView)
+			bazelTargets := generateBazelTargetsForDir(codegenCtx, dir)
+			if actualCount, expectedCount := len(bazelTargets), 1; actualCount != expectedCount {
+				t.Fatalf("Expected %d bazel target, got %d", expectedCount, actualCount)
+			}
 
-		actualBazelTarget := bazelTargets[0]
-		if actualBazelTarget.content != testCase.expectedBazelTarget {
-			t.Errorf(
-				"Expected generated Bazel target to be '%s', got '%s'",
-				testCase.expectedBazelTarget,
-				actualBazelTarget.content,
-			)
-		}
+			actualBazelTarget := bazelTargets[0]
+			if actualBazelTarget.content != testCase.expectedBazelTarget {
+				t.Errorf(
+					"Expected generated Bazel target to be '%s', got '%s'",
+					testCase.expectedBazelTarget,
+					actualBazelTarget.content,
+				)
+			}
+		})
 	}
 }
 
 func TestGenerateBazelTargetModules(t *testing.T) {
 	testCases := []struct {
-		bp                  string
-		expectedBazelTarget string
+		name                 string
+		bp                   string
+		expectedBazelTargets []string
 	}{
 		{
 			bp: `custom {
@@ -232,7 +230,7 @@ func TestGenerateBazelTargetModules(t *testing.T) {
     string_prop: "a",
     bazel_module: { bp2build_available: true },
 }`,
-			expectedBazelTarget: `custom(
+			expectedBazelTargets: []string{`custom(
     name = "foo",
     string_list_prop = [
         "a",
@@ -240,6 +238,7 @@ func TestGenerateBazelTargetModules(t *testing.T) {
     ],
     string_prop = "a",
 )`,
+			},
 		},
 		{
 			bp: `custom {
@@ -248,7 +247,7 @@ func TestGenerateBazelTargetModules(t *testing.T) {
     string_prop: "a\t\n\r",
     bazel_module: { bp2build_available: true },
 }`,
-			expectedBazelTarget: `custom(
+			expectedBazelTargets: []string{`custom(
     name = "control_characters",
     string_list_prop = [
         "\t",
@@ -256,6 +255,77 @@ func TestGenerateBazelTargetModules(t *testing.T) {
     ],
     string_prop = "a\t\n\r",
 )`,
+			},
+		},
+		{
+			bp: `custom {
+  name: "has_dep",
+  arch_paths: [":dep"],
+  bazel_module: { bp2build_available: true },
+}
+
+custom {
+  name: "dep",
+  arch_paths: ["abc"],
+  bazel_module: { bp2build_available: true },
+}`,
+			expectedBazelTargets: []string{`custom(
+    name = "dep",
+    arch_paths = ["abc"],
+)`,
+				`custom(
+    name = "has_dep",
+    arch_paths = [":dep"],
+)`,
+			},
+		},
+		{
+			bp: `custom {
+    name: "arch_paths",
+    arch: {
+      x86: {
+        arch_paths: ["abc"],
+      },
+    },
+    bazel_module: { bp2build_available: true },
+}`,
+			expectedBazelTargets: []string{`custom(
+    name = "arch_paths",
+    arch_paths = select({
+        "//build/bazel/platforms/arch:x86": ["abc"],
+        "//conditions:default": [],
+    }),
+)`,
+			},
+		},
+		{
+			bp: `custom {
+  name: "has_dep",
+  arch: {
+    x86: {
+      arch_paths: [":dep"],
+    },
+  },
+  bazel_module: { bp2build_available: true },
+}
+
+custom {
+    name: "dep",
+    arch_paths: ["abc"],
+    bazel_module: { bp2build_available: true },
+}`,
+			expectedBazelTargets: []string{`custom(
+    name = "dep",
+    arch_paths = ["abc"],
+)`,
+				`custom(
+    name = "has_dep",
+    arch_paths = select({
+        "//build/bazel/platforms/arch:x86": [":dep"],
+        "//conditions:default": [],
+    }),
+)`,
+			},
 		},
 	}
 
@@ -269,27 +339,29 @@ func TestGenerateBazelTargetModules(t *testing.T) {
 		ctx.RegisterForBazelConversion()
 
 		_, errs := ctx.ParseFileList(dir, []string{"Android.bp"})
-		if Errored(t, "", errs) {
+		if errored(t, "", errs) {
 			continue
 		}
 		_, errs = ctx.ResolveDependencies(config)
-		if Errored(t, "", errs) {
+		if errored(t, "", errs) {
 			continue
 		}
 
 		codegenCtx := NewCodegenContext(config, *ctx.Context, Bp2Build)
 		bazelTargets := generateBazelTargetsForDir(codegenCtx, dir)
 
-		if actualCount, expectedCount := len(bazelTargets), 1; actualCount != expectedCount {
+		if actualCount, expectedCount := len(bazelTargets), len(testCase.expectedBazelTargets); actualCount != expectedCount {
 			t.Errorf("Expected %d bazel target, got %d", expectedCount, actualCount)
 		} else {
-			actualBazelTarget := bazelTargets[0]
-			if actualBazelTarget.content != testCase.expectedBazelTarget {
-				t.Errorf(
-					"Expected generated Bazel target to be '%s', got '%s'",
-					testCase.expectedBazelTarget,
-					actualBazelTarget.content,
-				)
+			for i, expectedBazelTarget := range testCase.expectedBazelTargets {
+				actualBazelTarget := bazelTargets[i]
+				if actualBazelTarget.content != expectedBazelTarget {
+					t.Errorf(
+						"Expected generated Bazel target to be '%s', got '%s'",
+						expectedBazelTarget,
+						actualBazelTarget.content,
+					)
+				}
 			}
 		}
 	}
@@ -553,9 +625,7 @@ genrule {
 }`,
 			expectedBazelTargets: []string{`filegroup(
     name = "fg_foo",
-    srcs = [
-        "b",
-    ],
+    srcs = ["b"],
 )`,
 			},
 		},
@@ -625,7 +695,7 @@ genrule {
 			bp: `filegroup {
     name: "foobar",
     srcs: [
-      ":foo",
+        ":foo",
         "c",
     ],
     bazel_module: { bp2build_available: true },
@@ -671,25 +741,15 @@ genrule {
 				`genrule(
     name = "foo",
     cmd = "$(location :foo.tool) --genDir=$(GENDIR) arg $(SRCS) $(OUTS)",
-    outs = [
-        "foo.out",
-    ],
-    srcs = [
-        "foo.in",
-    ],
-    tools = [
-        ":foo.tool",
-    ],
+    outs = ["foo.out"],
+    srcs = ["foo.in"],
+    tools = [":foo.tool"],
 )`,
 				`genrule(
     name = "foo.tool",
     cmd = "cp $(SRCS) $(OUTS)",
-    outs = [
-        "foo_tool.out",
-    ],
-    srcs = [
-        "foo_tool.in",
-    ],
+    outs = ["foo_tool.out"],
+    srcs = ["foo_tool.in"],
 )`,
 			},
 		},
@@ -718,15 +778,9 @@ genrule {
 			expectedBazelTargets: []string{`genrule(
     name = "foo",
     cmd = "$(locations :foo.tools) -s $(OUTS) $(SRCS)",
-    outs = [
-        "foo.out",
-    ],
-    srcs = [
-        "foo.in",
-    ],
-    tools = [
-        ":foo.tools",
-    ],
+    outs = ["foo.out"],
+    srcs = ["foo.in"],
+    tools = [":foo.tools"],
 )`,
 				`genrule(
     name = "foo.tools",
@@ -735,9 +789,7 @@ genrule {
         "foo_tool.out",
         "foo_tool2.out",
     ],
-    srcs = [
-        "foo_tool.in",
-    ],
+    srcs = ["foo_tool.in"],
 )`,
 			},
 		},
@@ -758,15 +810,9 @@ genrule {
 			expectedBazelTargets: []string{`genrule(
     name = "foo",
     cmd = "$(locations //other:foo.tool) -s $(OUTS) $(SRCS)",
-    outs = [
-        "foo.out",
-    ],
-    srcs = [
-        "foo.in",
-    ],
-    tools = [
-        "//other:foo.tool",
-    ],
+    outs = ["foo.out"],
+    srcs = ["foo.in"],
+    tools = ["//other:foo.tool"],
 )`,
 			},
 			fs: otherGenruleBp,
@@ -788,15 +834,9 @@ genrule {
 			expectedBazelTargets: []string{`genrule(
     name = "foo",
     cmd = "$(locations //other:foo.tool) -s $(OUTS) $(location //other:other.tool)",
-    outs = [
-        "foo.out",
-    ],
-    srcs = [
-        "//other:other.tool",
-    ],
-    tools = [
-        "//other:foo.tool",
-    ],
+    outs = ["foo.out"],
+    srcs = ["//other:other.tool"],
+    tools = ["//other:foo.tool"],
 )`,
 			},
 			fs: otherGenruleBp,
@@ -818,12 +858,8 @@ genrule {
 			expectedBazelTargets: []string{`genrule(
     name = "foo",
     cmd = "$(location //other:foo.tool) -s $(OUTS) $(SRCS)",
-    outs = [
-        "foo.out",
-    ],
-    srcs = [
-        "foo.in",
-    ],
+    outs = ["foo.out"],
+    srcs = ["foo.in"],
     tools = [
         "//other:foo.tool",
         "//other:other.tool",
@@ -849,12 +885,8 @@ genrule {
 			expectedBazelTargets: []string{`genrule(
     name = "foo",
     cmd = "$(locations //other:foo.tool) -s $(OUTS) $(SRCS)",
-    outs = [
-        "foo.out",
-    ],
-    srcs = [
-        "foo.in",
-    ],
+    outs = ["foo.out"],
+    srcs = ["foo.in"],
     tools = [
         "//other:foo.tool",
         "//other:other.tool",
@@ -879,12 +911,8 @@ genrule {
 			expectedBazelTargets: []string{`genrule(
     name = "foo",
     cmd = "cp $(SRCS) $(OUTS)",
-    outs = [
-        "foo.out",
-    ],
-    srcs = [
-        "foo.in",
-    ],
+    outs = ["foo.out"],
+    srcs = ["foo.in"],
 )`,
 			},
 		},
@@ -912,11 +940,11 @@ genrule {
 		ctx.RegisterForBazelConversion()
 
 		_, errs := ctx.ParseFileList(dir, toParse)
-		if Errored(t, testCase.description, errs) {
+		if errored(t, testCase.description, errs) {
 			continue
 		}
 		_, errs = ctx.ResolveDependencies(config)
-		if Errored(t, testCase.description, errs) {
+		if errored(t, testCase.description, errs) {
 			continue
 		}
 
@@ -942,17 +970,6 @@ genrule {
 			}
 		}
 	}
-}
-
-func Errored(t *testing.T, desc string, errs []error) bool {
-	t.Helper()
-	if len(errs) > 0 {
-		for _, err := range errs {
-			t.Errorf("%s: %s", desc, err)
-		}
-		return true
-	}
-	return false
 }
 
 type bp2buildMutator = func(android.TopDownMutatorContext)
@@ -988,12 +1005,8 @@ genrule {
 			expectedBazelTarget: `genrule(
     name = "gen",
     cmd = "do-something $(SRCS) $(OUTS)",
-    outs = [
-        "out",
-    ],
-    srcs = [
-        "in1",
-    ],
+    outs = ["out"],
+    srcs = ["in1"],
 )`,
 			description: "genrule applies properties from a genrule_defaults dependency if not specified",
 		},
@@ -1062,12 +1075,8 @@ genrule {
 			expectedBazelTarget: `genrule(
     name = "gen",
     cmd = "cp $(SRCS) $(OUTS)",
-    outs = [
-        "out",
-    ],
-    srcs = [
-        "in1",
-    ],
+    outs = ["out"],
+    srcs = ["in1"],
 )`,
 			description: "genrule applies properties from list of genrule_defaults",
 		},
@@ -1115,8 +1124,8 @@ genrule {
         "out",
     ],
     srcs = [
-        "in1",
         "srcs-from-3",
+        "in1",
     ],
 )`,
 			description: "genrule applies properties from genrule_defaults transitively",
@@ -1389,14 +1398,14 @@ func TestCombineBuildFilesBp2buildTargets(t *testing.T) {
 			moduleTypeUnderTestFactory:         android.FileGroupFactory,
 			moduleTypeUnderTestBp2BuildMutator: android.FilegroupBp2Build,
 			bp: `filegroup {
-    name: "fg_foo",
-    bazel_module: { label: "//other:fg_foo" },
-}
+		    name: "fg_foo",
+		    bazel_module: { label: "//other:fg_foo" },
+		}
 
-filegroup {
-    name: "foo",
-    bazel_module: { label: "//other:foo" },
-}`,
+		filegroup {
+		    name: "foo",
+		    bazel_module: { label: "//other:foo" },
+		}`,
 			expectedBazelTargets: []string{
 				`// BUILD file`,
 			},
@@ -1405,25 +1414,31 @@ filegroup {
 			},
 		},
 		{
-			description:                        "filegroup bazel_module.label and bp2build",
+			description:                        "filegroup bazel_module.label and bp2build in subdir",
 			moduleTypeUnderTest:                "filegroup",
 			moduleTypeUnderTestFactory:         android.FileGroupFactory,
 			moduleTypeUnderTestBp2BuildMutator: android.FilegroupBp2Build,
-			bp: `filegroup {
-    name: "fg_foo",
-    bazel_module: {
-      label: "//other:fg_foo",
-      bp2build_available: true,
-    },
-}`,
+			dir:                                "other",
+			bp:                                 ``,
+			fs: map[string]string{
+				"other/Android.bp": `filegroup {
+				name: "fg_foo",
+				bazel_module: {
+					bp2build_available: true,
+				},
+			}
+			filegroup {
+				name: "fg_bar",
+				bazel_module: {
+					label: "//other:fg_bar"
+				},
+			}`,
+				"other/BUILD.bazel": `// definition for fg_bar`,
+			},
 			expectedBazelTargets: []string{
 				`filegroup(
     name = "fg_foo",
-)`,
-				`// BUILD file`,
-			},
-			fs: map[string]string{
-				"other/BUILD.bazel": `// BUILD file`,
+)`, `// definition for fg_bar`,
 			},
 		},
 		{
@@ -1432,18 +1447,18 @@ filegroup {
 			moduleTypeUnderTestFactory:         android.FileGroupFactory,
 			moduleTypeUnderTestBp2BuildMutator: android.FilegroupBp2Build,
 			bp: `filegroup {
-    name: "fg_foo",
-    bazel_module: {
-      label: "//other:fg_foo",
-    },
-}
+		    name: "fg_foo",
+		    bazel_module: {
+		      label: "//other:fg_foo",
+		    },
+		}
 
-filegroup {
-    name: "fg_bar",
-    bazel_module: {
-      bp2build_available: true,
-    },
-}`,
+		filegroup {
+		    name: "fg_bar",
+		    bazel_module: {
+		      bp2build_available: true,
+		    },
+		}`,
 			expectedBazelTargets: []string{
 				`filegroup(
     name = "fg_bar",
@@ -1452,6 +1467,140 @@ filegroup {
 			},
 			fs: map[string]string{
 				"other/BUILD.bazel": `// BUILD file`,
+			},
+		},
+	}
+
+	dir := "."
+	for _, testCase := range testCases {
+		t.Run(testCase.description, func(t *testing.T) {
+			fs := make(map[string][]byte)
+			toParse := []string{
+				"Android.bp",
+			}
+			for f, content := range testCase.fs {
+				if strings.HasSuffix(f, "Android.bp") {
+					toParse = append(toParse, f)
+				}
+				fs[f] = []byte(content)
+			}
+			config := android.TestConfig(buildDir, nil, testCase.bp, fs)
+			ctx := android.NewTestContext(config)
+			ctx.RegisterModuleType(testCase.moduleTypeUnderTest, testCase.moduleTypeUnderTestFactory)
+			for _, m := range testCase.depsMutators {
+				ctx.DepsBp2BuildMutators(m)
+			}
+			ctx.RegisterBp2BuildMutator(testCase.moduleTypeUnderTest, testCase.moduleTypeUnderTestBp2BuildMutator)
+			ctx.RegisterForBazelConversion()
+
+			_, errs := ctx.ParseFileList(dir, toParse)
+			if errored(t, testCase.description, errs) {
+				return
+			}
+			_, errs = ctx.ResolveDependencies(config)
+			if errored(t, testCase.description, errs) {
+				return
+			}
+
+			checkDir := dir
+			if testCase.dir != "" {
+				checkDir = testCase.dir
+			}
+			bazelTargets := generateBazelTargetsForDir(NewCodegenContext(config, *ctx.Context, Bp2Build), checkDir)
+			bazelTargets.sort()
+			actualCount := len(bazelTargets)
+			expectedCount := len(testCase.expectedBazelTargets)
+			if actualCount != expectedCount {
+				t.Errorf("Expected %d bazel target, got %d\n%s", expectedCount, actualCount, bazelTargets)
+			}
+			if !strings.Contains(bazelTargets.String(), "Section: Handcrafted targets. ") {
+				t.Errorf("Expected string representation of bazelTargets to contain handcrafted section header.")
+			}
+			for i, target := range bazelTargets {
+				actualContent := target.content
+				expectedContent := testCase.expectedBazelTargets[i]
+				if expectedContent != actualContent {
+					t.Errorf(
+						"Expected generated Bazel target to be '%s', got '%s'",
+						expectedContent,
+						actualContent,
+					)
+				}
+			}
+		})
+	}
+}
+
+func TestGlobExcludeSrcs(t *testing.T) {
+	testCases := []struct {
+		description                        string
+		moduleTypeUnderTest                string
+		moduleTypeUnderTestFactory         android.ModuleFactory
+		moduleTypeUnderTestBp2BuildMutator func(android.TopDownMutatorContext)
+		bp                                 string
+		expectedBazelTargets               []string
+		fs                                 map[string]string
+		dir                                string
+	}{
+		{
+			description:                        "filegroup top level exclude_srcs",
+			moduleTypeUnderTest:                "filegroup",
+			moduleTypeUnderTestFactory:         android.FileGroupFactory,
+			moduleTypeUnderTestBp2BuildMutator: android.FilegroupBp2Build,
+			bp: `filegroup {
+    name: "fg_foo",
+    srcs: ["**/*.txt"],
+    exclude_srcs: ["c.txt"],
+    bazel_module: { bp2build_available: true },
+}`,
+			expectedBazelTargets: []string{`filegroup(
+    name = "fg_foo",
+    srcs = [
+        "a.txt",
+        "b.txt",
+        "//dir:e.txt",
+        "//dir:f.txt",
+    ],
+)`,
+			},
+			fs: map[string]string{
+				"a.txt":          "",
+				"b.txt":          "",
+				"c.txt":          "",
+				"dir/Android.bp": "",
+				"dir/e.txt":      "",
+				"dir/f.txt":      "",
+			},
+		},
+		{
+			description:                        "filegroup in subdir exclude_srcs",
+			moduleTypeUnderTest:                "filegroup",
+			moduleTypeUnderTestFactory:         android.FileGroupFactory,
+			moduleTypeUnderTestBp2BuildMutator: android.FilegroupBp2Build,
+			bp:                                 "",
+			dir:                                "dir",
+			fs: map[string]string{
+				"dir/Android.bp": `filegroup {
+    name: "fg_foo",
+    srcs: ["**/*.txt"],
+    exclude_srcs: ["b.txt"],
+    bazel_module: { bp2build_available: true },
+}
+`,
+				"dir/a.txt":             "",
+				"dir/b.txt":             "",
+				"dir/subdir/Android.bp": "",
+				"dir/subdir/e.txt":      "",
+				"dir/subdir/f.txt":      "",
+			},
+			expectedBazelTargets: []string{`filegroup(
+    name = "fg_foo",
+    srcs = [
+        "a.txt",
+        "//dir/subdir:e.txt",
+        "//dir/subdir:f.txt",
+    ],
+)`,
 			},
 		},
 	}
@@ -1471,18 +1620,15 @@ filegroup {
 		config := android.TestConfig(buildDir, nil, testCase.bp, fs)
 		ctx := android.NewTestContext(config)
 		ctx.RegisterModuleType(testCase.moduleTypeUnderTest, testCase.moduleTypeUnderTestFactory)
-		for _, m := range testCase.depsMutators {
-			ctx.DepsBp2BuildMutators(m)
-		}
 		ctx.RegisterBp2BuildMutator(testCase.moduleTypeUnderTest, testCase.moduleTypeUnderTestBp2BuildMutator)
 		ctx.RegisterForBazelConversion()
 
 		_, errs := ctx.ParseFileList(dir, toParse)
-		if Errored(t, testCase.description, errs) {
+		if errored(t, testCase.description, errs) {
 			continue
 		}
 		_, errs = ctx.ResolveDependencies(config)
-		if Errored(t, testCase.description, errs) {
+		if errored(t, testCase.description, errs) {
 			continue
 		}
 

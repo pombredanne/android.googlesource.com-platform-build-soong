@@ -96,7 +96,8 @@ func (cov *coverage) flags(ctx ModuleContext, flags Flags, deps PathDeps) (Flags
 			// flags that the module may use.
 			flags.Local.CFlags = append(flags.Local.CFlags, "-Wno-frame-larger-than=", "-O0")
 		} else if clangCoverage {
-			flags.Local.CommonFlags = append(flags.Local.CommonFlags, profileInstrFlag, "-fcoverage-mapping", "-Wno-pass-failed")
+			flags.Local.CommonFlags = append(flags.Local.CommonFlags, profileInstrFlag,
+				"-fcoverage-mapping", "-Wno-pass-failed", "-D__ANDROID_CLANG_COVERAGE__")
 		}
 	}
 
@@ -203,7 +204,7 @@ func SetCoverageProperties(ctx android.BaseModuleContext, properties CoveragePro
 type Coverage interface {
 	android.Module
 	IsNativeCoverageNeeded(ctx android.BaseModuleContext) bool
-	PreventInstall()
+	SetPreventInstall()
 	HideFromMake()
 	MarkAsCoverageVariant(bool)
 	EnableCoverageIfNeeded()
@@ -236,7 +237,7 @@ func coverageMutator(mctx android.BottomUpMutatorContext) {
 		// to an APEX via 'data' property.
 		m := mctx.CreateVariations("", "cov")
 		m[0].(Coverage).MarkAsCoverageVariant(false)
-		m[0].(Coverage).PreventInstall()
+		m[0].(Coverage).SetPreventInstall()
 		m[0].(Coverage).HideFromMake()
 
 		m[1].(Coverage).MarkAsCoverageVariant(true)

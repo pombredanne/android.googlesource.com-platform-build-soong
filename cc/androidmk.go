@@ -191,17 +191,31 @@ func makeOverrideModuleNames(ctx AndroidMkContext, overrides []string) []string 
 }
 
 func (library *libraryDecorator) androidMkWriteExportedFlags(entries *android.AndroidMkEntries) {
-	exportedFlags := library.flagExporter.flags
-	for _, dir := range library.flagExporter.dirs {
+	var exportedFlags []string
+	var includeDirs android.Paths
+	var systemIncludeDirs android.Paths
+	var exportedDeps android.Paths
+
+	if library.flagExporterInfo != nil {
+		exportedFlags = library.flagExporterInfo.Flags
+		includeDirs = library.flagExporterInfo.IncludeDirs
+		systemIncludeDirs = library.flagExporterInfo.SystemIncludeDirs
+		exportedDeps = library.flagExporterInfo.Deps
+	} else {
+		exportedFlags = library.flagExporter.flags
+		includeDirs = library.flagExporter.dirs
+		systemIncludeDirs = library.flagExporter.systemDirs
+		exportedDeps = library.flagExporter.deps
+	}
+	for _, dir := range includeDirs {
 		exportedFlags = append(exportedFlags, "-I"+dir.String())
 	}
-	for _, dir := range library.flagExporter.systemDirs {
+	for _, dir := range systemIncludeDirs {
 		exportedFlags = append(exportedFlags, "-isystem "+dir.String())
 	}
 	if len(exportedFlags) > 0 {
 		entries.AddStrings("LOCAL_EXPORT_CFLAGS", exportedFlags...)
 	}
-	exportedDeps := library.flagExporter.deps
 	if len(exportedDeps) > 0 {
 		entries.AddStrings("LOCAL_EXPORT_C_INCLUDE_DEPS", exportedDeps.Strings()...)
 	}
@@ -471,12 +485,6 @@ func (c *stubDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.
 	})
 }
 
-func (c *llndkStubDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
-	// Don't write anything for an llndk_library module, the vendor variant of the cc_library
-	// module will write the Android.mk entries.
-	entries.Disabled = true
-}
-
 func (c *vndkPrebuiltLibraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
 	entries.Class = "SHARED_LIBRARIES"
 
@@ -570,20 +578,6 @@ func (c *snapshotObjectLinker) AndroidMkEntries(ctx AndroidMkContext, entries *a
 
 func (c *ndkPrebuiltStlLinker) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
 	entries.Class = "SHARED_LIBRARIES"
-}
-
-func (c *vendorPublicLibraryStubDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
-	entries.Class = "SHARED_LIBRARIES"
-	entries.SubName = vendorPublicLibrarySuffix
-
-	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-		c.libraryDecorator.androidMkWriteExportedFlags(entries)
-		_, _, ext := android.SplitFileExt(entries.OutputFile.Path().Base())
-
-		entries.SetString("LOCAL_BUILT_MODULE_STEM", "$(LOCAL_MODULE)"+ext)
-		entries.SetBool("LOCAL_UNINSTALLABLE_MODULE", true)
-		entries.SetBool("LOCAL_NO_NOTICE_FILE", true)
-	})
 }
 
 func (p *prebuiltLinker) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {

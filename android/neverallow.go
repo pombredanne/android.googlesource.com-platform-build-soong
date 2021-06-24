@@ -55,6 +55,7 @@ func init() {
 	AddNeverAllowRules(createCcSdkVariantRules()...)
 	AddNeverAllowRules(createUncompressDexRules()...)
 	AddNeverAllowRules(createMakefileGoalRules()...)
+	AddNeverAllowRules(createInitFirstStageRules()...)
 }
 
 // Add a NeverAllow rule to the set of rules to apply.
@@ -63,8 +64,7 @@ func AddNeverAllowRules(rules ...Rule) {
 }
 
 func createIncludeDirsRules() []Rule {
-	// The list of paths that cannot be referenced using include_dirs
-	paths := []string{
+	notInIncludeDir := []string{
 		"art",
 		"art/libnativebridge",
 		"art/libnativeloader",
@@ -80,18 +80,35 @@ func createIncludeDirsRules() []Rule {
 		"external/vixl",
 		"external/wycheproof",
 	}
+	noUseIncludeDir := []string{
+		"frameworks/av/apex",
+		"frameworks/av/tools",
+		"frameworks/native/cmds",
+		"system/apex",
+		"system/bpf",
+		"system/gatekeeper",
+		"system/hwservicemanager",
+		"system/libbase",
+		"system/libfmq",
+		"system/libvintf",
+	}
 
-	// Create a composite matcher that will match if the value starts with any of the restricted
-	// paths. A / is appended to the prefix to ensure that restricting path X does not affect paths
-	// XY.
-	rules := make([]Rule, 0, len(paths))
-	for _, path := range paths {
+	rules := make([]Rule, 0, len(notInIncludeDir)+len(noUseIncludeDir))
+
+	for _, path := range notInIncludeDir {
 		rule :=
 			NeverAllow().
 				WithMatcher("include_dirs", StartsWith(path+"/")).
 				Because("include_dirs is deprecated, all usages of '" + path + "' have been migrated" +
 					" to use alternate mechanisms and so can no longer be used.")
 
+		rules = append(rules, rule)
+	}
+
+	for _, path := range noUseIncludeDir {
+		rule := NeverAllow().In(path+"/").WithMatcher("include_dirs", isSetMatcherInstance).
+			Because("include_dirs is deprecated, all usages of them in '" + path + "' have been migrated" +
+				" to use alternate mechanisms and so can no longer be used.")
 		rules = append(rules, rule)
 	}
 
@@ -197,6 +214,15 @@ func createMakefileGoalRules() []Rule {
 			ModuleType("makefile_goal").
 			WithoutMatcher("product_out_path", Regexp("^boot[0-9a-zA-Z.-]*[.]img$")).
 			Because("Only boot images may be imported as a makefile goal."),
+	}
+}
+
+func createInitFirstStageRules() []Rule {
+	return []Rule{
+		NeverAllow().
+			Without("name", "init_first_stage").
+			With("install_in_root", "true").
+			Because("install_in_root is only for init_first_stage."),
 	}
 }
 

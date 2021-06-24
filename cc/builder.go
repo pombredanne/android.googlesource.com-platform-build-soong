@@ -126,17 +126,24 @@ var (
 
 	_ = pctx.SourcePathVariable("stripPath", "build/soong/scripts/strip.sh")
 	_ = pctx.SourcePathVariable("xzCmd", "prebuilts/build-tools/${config.HostPrebuiltTag}/bin/xz")
+	_ = pctx.SourcePathVariable("createMiniDebugInfo", "prebuilts/build-tools/${config.HostPrebuiltTag}/bin/create_minidebuginfo")
 
 	// Rule to invoke `strip` (to discard symbols and data from object files).
 	strip = pctx.AndroidStaticRule("strip",
 		blueprint.RuleParams{
-			Depfile:     "${out}.d",
-			Deps:        blueprint.DepsGCC,
-			Command:     "CROSS_COMPILE=$crossCompile XZ=$xzCmd CLANG_BIN=${config.ClangBin} $stripPath ${args} -i ${in} -o ${out} -d ${out}.d",
-			CommandDeps: []string{"$stripPath", "$xzCmd"},
-			Pool:        darwinStripPool,
+			Depfile: "${out}.d",
+			Deps:    blueprint.DepsGCC,
+			Command: "XZ=$xzCmd CREATE_MINIDEBUGINFO=$createMiniDebugInfo CLANG_BIN=${config.ClangBin} $stripPath ${args} -i ${in} -o ${out} -d ${out}.d",
+			CommandDeps: func() []string {
+				if runtime.GOOS != "darwin" {
+					return []string{"$stripPath", "$xzCmd", "$createMiniDebugInfo"}
+				} else {
+					return []string{"$stripPath", "$xzCmd"}
+				}
+			}(),
+			Pool: darwinStripPool,
 		},
-		"args", "crossCompile")
+		"args")
 
 	// Rule to invoke `strip` (to discard symbols and data from object files) on darwin architecture.
 	darwinStrip = pctx.AndroidStaticRule("darwinStrip",
@@ -527,7 +534,7 @@ func transformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles and
 				Implicits:   cFlagsDeps,
 				OrderOnly:   pathDeps,
 				Args: map[string]string{
-					"windresCmd": gccCmd(flags.toolchain, "windres"),
+					"windresCmd": mingwCmd(flags.toolchain, "windres"),
 					"flags":      flags.toolchain.WindresFlags(),
 				},
 			})
@@ -723,8 +730,9 @@ func transformObjToStaticLib(ctx android.ModuleContext,
 // Generate a rule for compiling multiple .o files, plus static libraries, whole static libraries,
 // and shared libraries, to a shared library (.so) or dynamic executable
 func transformObjToDynamicBinary(ctx android.ModuleContext,
-	objFiles, sharedLibs, staticLibs, lateStaticLibs, wholeStaticLibs, deps android.Paths,
-	crtBegin, crtEnd android.OptionalPath, groupLate bool, flags builderFlags, outputFile android.WritablePath, implicitOutputs android.WritablePaths) {
+	objFiles, sharedLibs, staticLibs, lateStaticLibs, wholeStaticLibs, deps, crtBegin, crtEnd android.Paths,
+	groupLate bool, flags builderFlags, outputFile android.WritablePath,
+	implicitOutputs android.WritablePaths, validations android.WritablePaths) {
 
 	ldCmd := "${config.ClangBin}/clang++"
 
@@ -771,18 +779,17 @@ func transformObjToDynamicBinary(ctx android.ModuleContext,
 	deps = append(deps, staticLibs...)
 	deps = append(deps, lateStaticLibs...)
 	deps = append(deps, wholeStaticLibs...)
-	if crtBegin.Valid() {
-		deps = append(deps, crtBegin.Path(), crtEnd.Path())
-	}
+	deps = append(deps, crtBegin...)
+	deps = append(deps, crtEnd...)
 
 	rule := ld
 	args := map[string]string{
 		"ldCmd":         ldCmd,
-		"crtBegin":      crtBegin.String(),
+		"crtBegin":      strings.Join(crtBegin.Strings(), " "),
 		"libFlags":      strings.Join(libFlagsList, " "),
 		"extraLibFlags": flags.extraLibFlags,
 		"ldFlags":       flags.globalLdFlags + " " + flags.localLdFlags,
-		"crtEnd":        crtEnd.String(),
+		"crtEnd":        strings.Join(crtEnd.Strings(), " "),
 	}
 	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_CXX_LINKS") {
 		rule = ldRE
@@ -797,6 +804,8 @@ func transformObjToDynamicBinary(ctx android.ModuleContext,
 		ImplicitOutputs: implicitOutputs,
 		Inputs:          objFiles,
 		Implicits:       deps,
+		OrderOnly:       sharedLibs,
+		Validations:     validations.Paths(),
 		Args:            args,
 	})
 }
@@ -968,7 +977,7 @@ func transformObjsToObj(ctx android.ModuleContext, objFiles android.Paths,
 func transformBinaryPrefixSymbols(ctx android.ModuleContext, prefix string, inputFile android.Path,
 	flags builderFlags, outputFile android.WritablePath) {
 
-	objcopyCmd := gccCmd(flags.toolchain, "objcopy")
+	objcopyCmd := "${config.ClangBin}/llvm-objcopy"
 
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        prefixSymbols,
@@ -986,7 +995,6 @@ func transformBinaryPrefixSymbols(ctx android.ModuleContext, prefix string, inpu
 func transformStrip(ctx android.ModuleContext, inputFile android.Path,
 	outputFile android.WritablePath, flags StripFlags) {
 
-	crossCompile := gccCmd(flags.Toolchain, "")
 	args := ""
 	if flags.StripAddGnuDebuglink {
 		args += " --add-gnu-debuglink"
@@ -1003,9 +1011,6 @@ func transformStrip(ctx android.ModuleContext, inputFile android.Path,
 	if flags.StripKeepSymbolsAndDebugFrame {
 		args += " --keep-symbols-and-debug-frame"
 	}
-	if flags.StripUseGnuStrip {
-		args += " --use-gnu-strip"
-	}
 
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        strip,
@@ -1013,8 +1018,7 @@ func transformStrip(ctx android.ModuleContext, inputFile android.Path,
 		Output:      outputFile,
 		Input:       inputFile,
 		Args: map[string]string{
-			"crossCompile": crossCompile,
-			"args":         args,
+			"args": args,
 		},
 	})
 }
@@ -1066,6 +1070,6 @@ func transformArchiveRepack(ctx android.ModuleContext, inputFile android.Path,
 	})
 }
 
-func gccCmd(toolchain config.Toolchain, cmd string) string {
+func mingwCmd(toolchain config.Toolchain, cmd string) string {
 	return filepath.Join(toolchain.GccRoot(), "bin", toolchain.GccTriple()+"-"+cmd)
 }
