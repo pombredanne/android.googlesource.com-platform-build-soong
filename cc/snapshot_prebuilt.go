@@ -28,7 +28,7 @@ import (
 
 // Defines the specifics of different images to which the snapshot process is applicable, e.g.,
 // vendor, recovery, ramdisk.
-type snapshotImage interface {
+type SnapshotImage interface {
 	// Returns true if a snapshot should be generated for this image.
 	shouldGenerateSnapshot(ctx android.SingletonContext) bool
 
@@ -108,7 +108,7 @@ var (
 	}
 )
 
-func (vendorSnapshotImage) init(ctx android.RegistrationContext) {
+func (vendorSnapshotImage) Init(ctx android.RegistrationContext) {
 	ctx.RegisterSingletonType("vendor-snapshot", VendorSnapshotSingleton)
 	ctx.RegisterModuleType("vendor_snapshot", vendorSnapshotFactory)
 	ctx.RegisterModuleType("vendor_snapshot_shared", VendorSnapshotSharedFactory)
@@ -118,6 +118,10 @@ func (vendorSnapshotImage) init(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("vendor_snapshot_object", VendorSnapshotObjectFactory)
 
 	ctx.RegisterSingletonType("vendor-fake-snapshot", VendorFakeSnapshotSingleton)
+}
+
+func (vendorSnapshotImage) RegisterAdditionalModule(ctx android.RegistrationContext, name string, factory android.ModuleFactory) {
+	ctx.RegisterModuleType(name, factory)
 }
 
 func (vendorSnapshotImage) shouldGenerateSnapshot(ctx android.SingletonContext) bool {
@@ -254,26 +258,28 @@ func (recoverySnapshotImage) moduleNameSuffix() string {
 	return recoverySuffix
 }
 
-var vendorSnapshotImageSingleton vendorSnapshotImage
+var VendorSnapshotImageSingleton vendorSnapshotImage
 var recoverySnapshotImageSingleton recoverySnapshotImage
 
 func init() {
-	vendorSnapshotImageSingleton.init(android.InitRegistrationContext)
+	VendorSnapshotImageSingleton.Init(android.InitRegistrationContext)
 	recoverySnapshotImageSingleton.init(android.InitRegistrationContext)
 }
 
 const (
 	snapshotHeaderSuffix = "_header."
-	snapshotSharedSuffix = "_shared."
-	snapshotStaticSuffix = "_static."
+	SnapshotSharedSuffix = "_shared."
+	SnapshotStaticSuffix = "_static."
 	snapshotBinarySuffix = "_binary."
 	snapshotObjectSuffix = "_object."
+	SnapshotRlibSuffix   = "_rlib."
 )
 
 type SnapshotProperties struct {
 	Header_libs []string `android:"arch_variant"`
 	Static_libs []string `android:"arch_variant"`
 	Shared_libs []string `android:"arch_variant"`
+	Rlibs       []string `android:"arch_variant"`
 	Vndk_libs   []string `android:"arch_variant"`
 	Binaries    []string `android:"arch_variant"`
 	Objects     []string `android:"arch_variant"`
@@ -284,14 +290,14 @@ type snapshot struct {
 
 	properties SnapshotProperties
 
-	baseSnapshot baseSnapshotDecorator
+	baseSnapshot BaseSnapshotDecorator
 
-	image snapshotImage
+	image SnapshotImage
 }
 
 func (s *snapshot) ImageMutatorBegin(ctx android.BaseModuleContext) {
 	cfg := ctx.DeviceConfig()
-	if !s.image.isUsingSnapshot(cfg) || s.image.targetSnapshotVersion(cfg) != s.baseSnapshot.version() {
+	if !s.image.isUsingSnapshot(cfg) || s.image.targetSnapshotVersion(cfg) != s.baseSnapshot.Version() {
 		s.Disable()
 	}
 }
@@ -341,7 +347,7 @@ func (s *snapshot) DepsMutator(ctx android.BottomUpMutatorContext) {
 		for _, name := range names {
 			snapshotMap[name] = name +
 				getSnapshotNameSuffix(snapshotSuffix+moduleSuffix,
-					s.baseSnapshot.version(),
+					s.baseSnapshot.Version(),
 					ctx.DeviceConfig().Arches()[0].ArchType.String())
 		}
 		return snapshotMap
@@ -351,8 +357,9 @@ func (s *snapshot) DepsMutator(ctx android.BottomUpMutatorContext) {
 	headers := collectSnapshotMap(s.properties.Header_libs, snapshotSuffix, snapshotHeaderSuffix)
 	binaries := collectSnapshotMap(s.properties.Binaries, snapshotSuffix, snapshotBinarySuffix)
 	objects := collectSnapshotMap(s.properties.Objects, snapshotSuffix, snapshotObjectSuffix)
-	staticLibs := collectSnapshotMap(s.properties.Static_libs, snapshotSuffix, snapshotStaticSuffix)
-	sharedLibs := collectSnapshotMap(s.properties.Shared_libs, snapshotSuffix, snapshotSharedSuffix)
+	staticLibs := collectSnapshotMap(s.properties.Static_libs, snapshotSuffix, SnapshotStaticSuffix)
+	sharedLibs := collectSnapshotMap(s.properties.Shared_libs, snapshotSuffix, SnapshotSharedSuffix)
+	rlibs := collectSnapshotMap(s.properties.Rlibs, snapshotSuffix, SnapshotRlibSuffix)
 	vndkLibs := collectSnapshotMap(s.properties.Vndk_libs, "", vndkSuffix)
 	for k, v := range vndkLibs {
 		sharedLibs[k] = v
@@ -364,11 +371,12 @@ func (s *snapshot) DepsMutator(ctx android.BottomUpMutatorContext) {
 		Objects:    objects,
 		StaticLibs: staticLibs,
 		SharedLibs: sharedLibs,
+		Rlibs:      rlibs,
 	})
 }
 
 type SnapshotInfo struct {
-	HeaderLibs, Binaries, Objects, StaticLibs, SharedLibs map[string]string
+	HeaderLibs, Binaries, Objects, StaticLibs, SharedLibs, Rlibs map[string]string
 }
 
 var SnapshotInfoProvider = blueprint.NewMutatorProvider(SnapshotInfo{}, "deps")
@@ -376,14 +384,14 @@ var SnapshotInfoProvider = blueprint.NewMutatorProvider(SnapshotInfo{}, "deps")
 var _ android.ImageInterface = (*snapshot)(nil)
 
 func vendorSnapshotFactory() android.Module {
-	return snapshotFactory(vendorSnapshotImageSingleton)
+	return snapshotFactory(VendorSnapshotImageSingleton)
 }
 
 func recoverySnapshotFactory() android.Module {
 	return snapshotFactory(recoverySnapshotImageSingleton)
 }
 
-func snapshotFactory(image snapshotImage) android.Module {
+func snapshotFactory(image SnapshotImage) android.Module {
 	snapshot := &snapshot{}
 	snapshot.image = image
 	snapshot.AddProperties(
@@ -393,7 +401,7 @@ func snapshotFactory(image snapshotImage) android.Module {
 	return snapshot
 }
 
-type baseSnapshotDecoratorProperties struct {
+type BaseSnapshotDecoratorProperties struct {
 	// snapshot version.
 	Version string
 
@@ -408,7 +416,7 @@ type baseSnapshotDecoratorProperties struct {
 	ModuleSuffix string `blueprint:"mutated"`
 }
 
-// baseSnapshotDecorator provides common basic functions for all snapshot modules, such as snapshot
+// BaseSnapshotDecorator provides common basic functions for all snapshot modules, such as snapshot
 // version, snapshot arch, etc. It also adds a special suffix to Soong module name, so it doesn't
 // collide with source modules. e.g. the following example module,
 //
@@ -420,61 +428,80 @@ type baseSnapshotDecoratorProperties struct {
 // }
 //
 // will be seen as "libbase.vendor_static.30.arm64" by Soong.
-type baseSnapshotDecorator struct {
-	baseProperties baseSnapshotDecoratorProperties
-	image          snapshotImage
+type BaseSnapshotDecorator struct {
+	baseProperties BaseSnapshotDecoratorProperties
+	image          SnapshotImage
 }
 
-func (p *baseSnapshotDecorator) Name(name string) string {
+func (p *BaseSnapshotDecorator) Name(name string) string {
 	return name + p.NameSuffix()
 }
 
-func (p *baseSnapshotDecorator) NameSuffix() string {
-	return getSnapshotNameSuffix(p.moduleSuffix(), p.version(), p.arch())
+func (p *BaseSnapshotDecorator) NameSuffix() string {
+	return getSnapshotNameSuffix(p.moduleSuffix(), p.Version(), p.Arch())
 }
 
-func (p *baseSnapshotDecorator) version() string {
+func (p *BaseSnapshotDecorator) Version() string {
 	return p.baseProperties.Version
 }
 
-func (p *baseSnapshotDecorator) arch() string {
+func (p *BaseSnapshotDecorator) Arch() string {
 	return p.baseProperties.Target_arch
 }
 
-func (p *baseSnapshotDecorator) moduleSuffix() string {
+func (p *BaseSnapshotDecorator) moduleSuffix() string {
 	return p.baseProperties.ModuleSuffix
 }
 
-func (p *baseSnapshotDecorator) isSnapshotPrebuilt() bool {
+func (p *BaseSnapshotDecorator) IsSnapshotPrebuilt() bool {
 	return true
 }
 
-func (p *baseSnapshotDecorator) snapshotAndroidMkSuffix() string {
+func (p *BaseSnapshotDecorator) SnapshotAndroidMkSuffix() string {
 	return p.baseProperties.Androidmk_suffix
 }
 
-func (p *baseSnapshotDecorator) setSnapshotAndroidMkSuffix(ctx android.ModuleContext) {
-	coreVariations := append(ctx.Target().Variations(), blueprint.Variation{
+func (p *BaseSnapshotDecorator) SetSnapshotAndroidMkSuffix(ctx android.ModuleContext, variant string) {
+	// If there are any 2 or more variations among {core, product, vendor, recovery}
+	// we have to add the androidmk suffix to avoid duplicate modules with the same
+	// name.
+	variations := append(ctx.Target().Variations(), blueprint.Variation{
 		Mutator:   "image",
 		Variation: android.CoreVariation})
 
-	if ctx.OtherModuleFarDependencyVariantExists(coreVariations, ctx.Module().(*Module).BaseModuleName()) {
+	if ctx.OtherModuleFarDependencyVariantExists(variations, ctx.Module().(LinkableInterface).BaseModuleName()) {
 		p.baseProperties.Androidmk_suffix = p.image.moduleNameSuffix()
 		return
 	}
 
-	// If there is no matching core variation, there could still be a
-	// product variation, for example if a module is product specific and
-	// vendor available. In that case, we also want to add the androidmk
-	// suffix.
-
-	productVariations := append(ctx.Target().Variations(), blueprint.Variation{
+	variations = append(ctx.Target().Variations(), blueprint.Variation{
 		Mutator:   "image",
 		Variation: ProductVariationPrefix + ctx.DeviceConfig().PlatformVndkVersion()})
 
-	if ctx.OtherModuleFarDependencyVariantExists(productVariations, ctx.Module().(*Module).BaseModuleName()) {
+	if ctx.OtherModuleFarDependencyVariantExists(variations, ctx.Module().(LinkableInterface).BaseModuleName()) {
 		p.baseProperties.Androidmk_suffix = p.image.moduleNameSuffix()
 		return
+	}
+
+	images := []SnapshotImage{VendorSnapshotImageSingleton, recoverySnapshotImageSingleton}
+
+	for _, image := range images {
+		if p.image == image {
+			continue
+		}
+		variations = append(ctx.Target().Variations(), blueprint.Variation{
+			Mutator:   "image",
+			Variation: image.imageVariantName(ctx.DeviceConfig())})
+
+		if ctx.OtherModuleFarDependencyVariantExists(variations,
+			ctx.Module().(LinkableInterface).BaseModuleName()+
+				getSnapshotNameSuffix(
+					image.moduleNameSuffix()+variant,
+					p.Version(),
+					ctx.DeviceConfig().Arches()[0].ArchType.String())) {
+			p.baseProperties.Androidmk_suffix = p.image.moduleNameSuffix()
+			return
+		}
 	}
 
 	p.baseProperties.Androidmk_suffix = ""
@@ -482,7 +509,7 @@ func (p *baseSnapshotDecorator) setSnapshotAndroidMkSuffix(ctx android.ModuleCon
 
 // Call this with a module suffix after creating a snapshot module, such as
 // vendorSnapshotSharedSuffix, recoverySnapshotBinarySuffix, etc.
-func (p *baseSnapshotDecorator) init(m *Module, image snapshotImage, moduleSuffix string) {
+func (p *BaseSnapshotDecorator) Init(m LinkableInterface, image SnapshotImage, moduleSuffix string) {
 	p.image = image
 	p.baseProperties.ModuleSuffix = image.moduleNameSuffix() + moduleSuffix
 	m.AddProperties(&p.baseProperties)
@@ -493,8 +520,8 @@ func (p *baseSnapshotDecorator) init(m *Module, image snapshotImage, moduleSuffi
 
 // vendorSnapshotLoadHook disables snapshots if it's not BOARD_VNDK_VERSION.
 // As vendor snapshot is only for vendor, such modules won't be used at all.
-func vendorSnapshotLoadHook(ctx android.LoadHookContext, p *baseSnapshotDecorator) {
-	if p.version() != ctx.DeviceConfig().VndkVersion() {
+func vendorSnapshotLoadHook(ctx android.LoadHookContext, p *BaseSnapshotDecorator) {
+	if p.Version() != ctx.DeviceConfig().VndkVersion() {
 		ctx.Module().Disable()
 		return
 	}
@@ -509,7 +536,7 @@ func vendorSnapshotLoadHook(ctx android.LoadHookContext, p *baseSnapshotDecorato
 // include directories, c flags, sanitize dependency information, etc.
 //
 // These modules are auto-generated by development/vendor_snapshot/update.py.
-type snapshotLibraryProperties struct {
+type SnapshotLibraryProperties struct {
 	// Prebuilt file for each arch.
 	Src *string `android:"arch_variant"`
 
@@ -535,14 +562,14 @@ type snapshotSanitizer interface {
 }
 
 type snapshotLibraryDecorator struct {
-	baseSnapshotDecorator
+	BaseSnapshotDecorator
 	*libraryDecorator
-	properties          snapshotLibraryProperties
+	properties          SnapshotLibraryProperties
 	sanitizerProperties struct {
 		CfiEnabled bool `blueprint:"mutated"`
 
 		// Library flags for cfi variant.
-		Cfi snapshotLibraryProperties `android:"arch_variant"`
+		Cfi SnapshotLibraryProperties `android:"arch_variant"`
 	}
 }
 
@@ -551,9 +578,9 @@ func (p *snapshotLibraryDecorator) linkerFlags(ctx ModuleContext, flags Flags) F
 	return p.libraryDecorator.linkerFlags(ctx, flags)
 }
 
-func (p *snapshotLibraryDecorator) matchesWithDevice(config android.DeviceConfig) bool {
+func (p *snapshotLibraryDecorator) MatchesWithDevice(config android.DeviceConfig) bool {
 	arches := config.Arches()
-	if len(arches) == 0 || arches[0].ArchType.String() != p.arch() {
+	if len(arches) == 0 || arches[0].ArchType.String() != p.Arch() {
 		return false
 	}
 	if !p.header() && p.properties.Src == nil {
@@ -566,7 +593,16 @@ func (p *snapshotLibraryDecorator) matchesWithDevice(config android.DeviceConfig
 // As snapshots are prebuilts, this just returns the prebuilt binary after doing things which are
 // done by normal library decorator, e.g. exporting flags.
 func (p *snapshotLibraryDecorator) link(ctx ModuleContext, flags Flags, deps PathDeps, objs Objects) android.Path {
-	p.setSnapshotAndroidMkSuffix(ctx)
+	var variant string
+	if p.shared() {
+		variant = SnapshotSharedSuffix
+	} else if p.static() {
+		variant = SnapshotStaticSuffix
+	} else {
+		variant = snapshotHeaderSuffix
+	}
+
+	p.SetSnapshotAndroidMkSuffix(ctx, variant)
 
 	if p.header() {
 		return p.libraryDecorator.link(ctx, flags, deps, objs)
@@ -576,7 +612,7 @@ func (p *snapshotLibraryDecorator) link(ctx ModuleContext, flags Flags, deps Pat
 		p.properties = p.sanitizerProperties.Cfi
 	}
 
-	if !p.matchesWithDevice(ctx.DeviceConfig()) {
+	if !p.MatchesWithDevice(ctx.DeviceConfig()) {
 		return nil
 	}
 
@@ -606,9 +642,8 @@ func (p *snapshotLibraryDecorator) link(ctx ModuleContext, flags Flags, deps Pat
 		transformSharedObjectToToc(ctx, in, tocFile, builderFlags)
 
 		ctx.SetProvider(SharedLibraryInfoProvider, SharedLibraryInfo{
-			SharedLibrary:           in,
-			UnstrippedSharedLibrary: p.unstrippedOutputFile,
-			Target:                  ctx.Target(),
+			SharedLibrary: in,
+			Target:        ctx.Target(),
 
 			TableOfContents: p.tocFile,
 		})
@@ -629,7 +664,7 @@ func (p *snapshotLibraryDecorator) link(ctx ModuleContext, flags Flags, deps Pat
 }
 
 func (p *snapshotLibraryDecorator) install(ctx ModuleContext, file android.Path) {
-	if p.matchesWithDevice(ctx.DeviceConfig()) && (p.shared() || p.static()) {
+	if p.MatchesWithDevice(ctx.DeviceConfig()) && (p.shared() || p.static()) {
 		p.baseInstaller.install(ctx, file)
 	}
 }
@@ -659,7 +694,7 @@ func (p *snapshotLibraryDecorator) setSanitizerVariation(t SanitizerType, enable
 	}
 }
 
-func snapshotLibraryFactory(image snapshotImage, moduleSuffix string) (*Module, *snapshotLibraryDecorator) {
+func snapshotLibraryFactory(image SnapshotImage, moduleSuffix string) (*Module, *snapshotLibraryDecorator) {
 	module, library := NewLibrary(android.DeviceSupported)
 
 	module.stl = nil
@@ -682,7 +717,7 @@ func snapshotLibraryFactory(image snapshotImage, moduleSuffix string) (*Module, 
 	module.linker = prebuilt
 	module.installer = prebuilt
 
-	prebuilt.init(module, image, moduleSuffix)
+	prebuilt.Init(module, image, moduleSuffix)
 	module.AddProperties(
 		&prebuilt.properties,
 		&prebuilt.sanitizerProperties,
@@ -696,7 +731,7 @@ func snapshotLibraryFactory(image snapshotImage, moduleSuffix string) (*Module, 
 // overrides the vendor variant of the cc shared library with the same name, if BOARD_VNDK_VERSION
 // is set.
 func VendorSnapshotSharedFactory() android.Module {
-	module, prebuilt := snapshotLibraryFactory(vendorSnapshotImageSingleton, snapshotSharedSuffix)
+	module, prebuilt := snapshotLibraryFactory(VendorSnapshotImageSingleton, SnapshotSharedSuffix)
 	prebuilt.libraryDecorator.BuildOnlyShared()
 	return module.Init()
 }
@@ -706,7 +741,7 @@ func VendorSnapshotSharedFactory() android.Module {
 // overrides the recovery variant of the cc shared library with the same name, if BOARD_VNDK_VERSION
 // is set.
 func RecoverySnapshotSharedFactory() android.Module {
-	module, prebuilt := snapshotLibraryFactory(recoverySnapshotImageSingleton, snapshotSharedSuffix)
+	module, prebuilt := snapshotLibraryFactory(recoverySnapshotImageSingleton, SnapshotSharedSuffix)
 	prebuilt.libraryDecorator.BuildOnlyShared()
 	return module.Init()
 }
@@ -716,7 +751,7 @@ func RecoverySnapshotSharedFactory() android.Module {
 // overrides the vendor variant of the cc static library with the same name, if BOARD_VNDK_VERSION
 // is set.
 func VendorSnapshotStaticFactory() android.Module {
-	module, prebuilt := snapshotLibraryFactory(vendorSnapshotImageSingleton, snapshotStaticSuffix)
+	module, prebuilt := snapshotLibraryFactory(VendorSnapshotImageSingleton, SnapshotStaticSuffix)
 	prebuilt.libraryDecorator.BuildOnlyStatic()
 	return module.Init()
 }
@@ -726,7 +761,7 @@ func VendorSnapshotStaticFactory() android.Module {
 // overrides the recovery variant of the cc static library with the same name, if BOARD_VNDK_VERSION
 // is set.
 func RecoverySnapshotStaticFactory() android.Module {
-	module, prebuilt := snapshotLibraryFactory(recoverySnapshotImageSingleton, snapshotStaticSuffix)
+	module, prebuilt := snapshotLibraryFactory(recoverySnapshotImageSingleton, SnapshotStaticSuffix)
 	prebuilt.libraryDecorator.BuildOnlyStatic()
 	return module.Init()
 }
@@ -736,7 +771,7 @@ func RecoverySnapshotStaticFactory() android.Module {
 // overrides the vendor variant of the cc header library with the same name, if BOARD_VNDK_VERSION
 // is set.
 func VendorSnapshotHeaderFactory() android.Module {
-	module, prebuilt := snapshotLibraryFactory(vendorSnapshotImageSingleton, snapshotHeaderSuffix)
+	module, prebuilt := snapshotLibraryFactory(VendorSnapshotImageSingleton, snapshotHeaderSuffix)
 	prebuilt.libraryDecorator.HeaderOnly()
 	return module.Init()
 }
@@ -766,13 +801,13 @@ type snapshotBinaryProperties struct {
 }
 
 type snapshotBinaryDecorator struct {
-	baseSnapshotDecorator
+	BaseSnapshotDecorator
 	*binaryDecorator
 	properties snapshotBinaryProperties
 }
 
-func (p *snapshotBinaryDecorator) matchesWithDevice(config android.DeviceConfig) bool {
-	if config.DeviceArch() != p.arch() {
+func (p *snapshotBinaryDecorator) MatchesWithDevice(config android.DeviceConfig) bool {
+	if config.DeviceArch() != p.Arch() {
 		return false
 	}
 	if p.properties.Src == nil {
@@ -784,9 +819,9 @@ func (p *snapshotBinaryDecorator) matchesWithDevice(config android.DeviceConfig)
 // cc modules' link functions are to link compiled objects into final binaries.
 // As snapshots are prebuilts, this just returns the prebuilt binary
 func (p *snapshotBinaryDecorator) link(ctx ModuleContext, flags Flags, deps PathDeps, objs Objects) android.Path {
-	p.setSnapshotAndroidMkSuffix(ctx)
+	p.SetSnapshotAndroidMkSuffix(ctx, snapshotBinarySuffix)
 
-	if !p.matchesWithDevice(ctx.DeviceConfig()) {
+	if !p.MatchesWithDevice(ctx.DeviceConfig()) {
 		return nil
 	}
 
@@ -814,7 +849,7 @@ func (p *snapshotBinaryDecorator) nativeCoverage() bool {
 // development/vendor_snapshot/update.py. As a part of vendor snapshot, vendor_snapshot_binary
 // overrides the vendor variant of the cc binary with the same name, if BOARD_VNDK_VERSION is set.
 func VendorSnapshotBinaryFactory() android.Module {
-	return snapshotBinaryFactory(vendorSnapshotImageSingleton, snapshotBinarySuffix)
+	return snapshotBinaryFactory(VendorSnapshotImageSingleton, snapshotBinarySuffix)
 }
 
 // recovery_snapshot_binary is a special prebuilt executable binary which is auto-generated by
@@ -824,7 +859,7 @@ func RecoverySnapshotBinaryFactory() android.Module {
 	return snapshotBinaryFactory(recoverySnapshotImageSingleton, snapshotBinarySuffix)
 }
 
-func snapshotBinaryFactory(image snapshotImage, moduleSuffix string) android.Module {
+func snapshotBinaryFactory(image SnapshotImage, moduleSuffix string) android.Module {
 	module, binary := NewBinary(android.DeviceSupported)
 	binary.baseLinker.Properties.No_libcrt = BoolPtr(true)
 	binary.baseLinker.Properties.Nocrt = BoolPtr(true)
@@ -843,7 +878,7 @@ func snapshotBinaryFactory(image snapshotImage, moduleSuffix string) android.Mod
 	module.stl = nil
 	module.linker = prebuilt
 
-	prebuilt.init(module, image, moduleSuffix)
+	prebuilt.Init(module, image, moduleSuffix)
 	module.AddProperties(&prebuilt.properties)
 	return module.Init()
 }
@@ -861,13 +896,13 @@ type vendorSnapshotObjectProperties struct {
 }
 
 type snapshotObjectLinker struct {
-	baseSnapshotDecorator
+	BaseSnapshotDecorator
 	objectLinker
 	properties vendorSnapshotObjectProperties
 }
 
-func (p *snapshotObjectLinker) matchesWithDevice(config android.DeviceConfig) bool {
-	if config.DeviceArch() != p.arch() {
+func (p *snapshotObjectLinker) MatchesWithDevice(config android.DeviceConfig) bool {
+	if config.DeviceArch() != p.Arch() {
 		return false
 	}
 	if p.properties.Src == nil {
@@ -879,9 +914,9 @@ func (p *snapshotObjectLinker) matchesWithDevice(config android.DeviceConfig) bo
 // cc modules' link functions are to link compiled objects into final binaries.
 // As snapshots are prebuilts, this just returns the prebuilt binary
 func (p *snapshotObjectLinker) link(ctx ModuleContext, flags Flags, deps PathDeps, objs Objects) android.Path {
-	p.setSnapshotAndroidMkSuffix(ctx)
+	p.SetSnapshotAndroidMkSuffix(ctx, snapshotObjectSuffix)
 
-	if !p.matchesWithDevice(ctx.DeviceConfig()) {
+	if !p.MatchesWithDevice(ctx.DeviceConfig()) {
 		return nil
 	}
 
@@ -905,7 +940,7 @@ func VendorSnapshotObjectFactory() android.Module {
 	}
 	module.linker = prebuilt
 
-	prebuilt.init(module, vendorSnapshotImageSingleton, snapshotObjectSuffix)
+	prebuilt.Init(module, VendorSnapshotImageSingleton, snapshotObjectSuffix)
 	module.AddProperties(&prebuilt.properties)
 	return module.Init()
 }
@@ -923,19 +958,19 @@ func RecoverySnapshotObjectFactory() android.Module {
 	}
 	module.linker = prebuilt
 
-	prebuilt.init(module, recoverySnapshotImageSingleton, snapshotObjectSuffix)
+	prebuilt.Init(module, recoverySnapshotImageSingleton, snapshotObjectSuffix)
 	module.AddProperties(&prebuilt.properties)
 	return module.Init()
 }
 
-type snapshotInterface interface {
-	matchesWithDevice(config android.DeviceConfig) bool
-	isSnapshotPrebuilt() bool
-	version() string
-	snapshotAndroidMkSuffix() string
+type SnapshotInterface interface {
+	MatchesWithDevice(config android.DeviceConfig) bool
+	IsSnapshotPrebuilt() bool
+	Version() string
+	SnapshotAndroidMkSuffix() string
 }
 
-var _ snapshotInterface = (*vndkPrebuiltLibraryDecorator)(nil)
-var _ snapshotInterface = (*snapshotLibraryDecorator)(nil)
-var _ snapshotInterface = (*snapshotBinaryDecorator)(nil)
-var _ snapshotInterface = (*snapshotObjectLinker)(nil)
+var _ SnapshotInterface = (*vndkPrebuiltLibraryDecorator)(nil)
+var _ SnapshotInterface = (*snapshotLibraryDecorator)(nil)
+var _ SnapshotInterface = (*snapshotBinaryDecorator)(nil)
+var _ SnapshotInterface = (*snapshotObjectLinker)(nil)

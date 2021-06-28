@@ -179,7 +179,6 @@ var (
 		//                                                       also depends on //system/libziparchive:libziparchive (http://b/186823656)
 		//                                                       also depends on //system/logging/liblog:liblog (http://b/186822772)
 		"libc_ndk",          // http://b/187013218, cc_library_static, depends on //bionic/libm:libm (http://b/183064661)
-		"libc",              // http://b/183064430, cc_library, depends on //external/jemalloc_new:libjemalloc5 (http://b/186828626)
 		"libc_malloc_hooks", // http://b/187016307, cc_library, ld.lld: error: undefined symbol: __malloc_hook
 		"libm",              // http://b/183064661, cc_library, math.h:25:16: error: unexpected token in argument list
 
@@ -219,10 +218,7 @@ var (
 
 	// Per-module denylist to opt modules out of mixed builds. Such modules will
 	// still be generated via bp2build.
-	mixedBuildsDisabledList = []string{
-		"libc_common_shared", // cparsons@ cc_library_static, breaks module `libc`.
-		"libc_nomalloc",      // cparsons@ cc_library_static, breaks module `linker`
-	}
+	mixedBuildsDisabledList = []string{}
 
 	// Used for quicker lookups
 	bp2buildModuleDoNotConvert  = map[string]bool{}

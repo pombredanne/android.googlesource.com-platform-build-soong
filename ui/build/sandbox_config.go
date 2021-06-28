@@ -1,4 +1,4 @@
-// Copyright 2018 Google Inc. All rights reserved.
+// Copyright 2021 Google Inc. All rights reserved.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,13 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
+package build
+
+type SandboxConfig struct {
+	srcDirIsRO        bool
+	srcDirRWAllowlist []string
 }
 
-blueprint_go_binary {
-    name: "host_bionic_inject",
-    deps: ["soong-symbol_inject"],
-    srcs: ["host_bionic_inject.go"],
-    testSrcs: ["host_bionic_inject_test.go"],
+func (sc *SandboxConfig) SetSrcDirIsRO(ro bool) {
+	sc.srcDirIsRO = ro
+}
+
+func (sc *SandboxConfig) SrcDirIsRO() bool {
+	return sc.srcDirIsRO
+}
+
+func (sc *SandboxConfig) SetSrcDirRWAllowlist(allowlist []string) {
+	sc.srcDirRWAllowlist = allowlist
+}
+
+func (sc *SandboxConfig) SrcDirRWAllowlist() []string {
+	return sc.srcDirRWAllowlist
 }

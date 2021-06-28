@@ -122,7 +122,7 @@ type BaseLinkerProperties struct {
 
 			// version script for vendor or product variant
 			Version_script *string `android:"arch_variant"`
-		}
+		} `android:"arch_variant"`
 		Recovery struct {
 			// list of shared libs that only should be used to build the recovery
 			// variant of the C/C++ module.
@@ -182,7 +182,7 @@ type BaseLinkerProperties struct {
 			// variant of the C/C++ module.
 			Exclude_static_libs []string
 		}
-	}
+	} `android:"arch_variant"`
 
 	// make android::build:GetBuildNumber() available containing the build ID.
 	Use_version_lib *bool `android:"arch_variant"`
@@ -198,6 +198,18 @@ type BaseLinkerProperties struct {
 
 	// list of shared libs that should not be used to build this module
 	Exclude_shared_libs []string `android:"arch_variant"`
+}
+
+func invertBoolPtr(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	ret := !(*value)
+	return &ret
+}
+
+func (blp *BaseLinkerProperties) libCrt() *bool {
+	return invertBoolPtr(blp.No_libcrt)
 }
 
 func NewBaseLinker(sanitize *sanitize) *baseLinker {
@@ -332,7 +344,7 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 			// Provide a default system_shared_libs if it is unspecified. Note: If an
 			// empty list [] is specified, it implies that the module declines the
 			// default system_shared_libs.
-			deps.SystemSharedLibs = []string{"libc", "libm", "libdl"}
+			deps.SystemSharedLibs = append(deps.SystemSharedLibs, ctx.toolchain().DefaultSharedLibraries()...)
 		}
 
 		if inList("libdl", deps.SharedLibs) {
@@ -353,9 +365,9 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 			indexList("libdl", deps.SystemSharedLibs) < indexList("libc", deps.SystemSharedLibs) {
 			ctx.PropertyErrorf("system_shared_libs", "libdl must be after libc")
 		}
-
-		deps.LateSharedLibs = append(deps.LateSharedLibs, deps.SystemSharedLibs...)
 	}
+
+	deps.LateSharedLibs = append(deps.LateSharedLibs, deps.SystemSharedLibs...)
 
 	if ctx.Fuchsia() {
 		if ctx.ModuleName() != "libbioniccompat" &&
@@ -593,29 +605,4 @@ func (linker *baseLinker) injectVersionSymbol(ctx ModuleContext, in android.Path
 			"buildNumberFile": buildNumberFile.String(),
 		},
 	})
-}
-
-// Rule to generate .bss symbol ordering file.
-
-var (
-	_                   = pctx.SourcePathVariable("genSortedBssSymbolsPath", "build/soong/scripts/gen_sorted_bss_symbols.sh")
-	genSortedBssSymbols = pctx.AndroidStaticRule("gen_sorted_bss_symbols",
-		blueprint.RuleParams{
-			Command:     "CLANG_BIN=${clangBin} $genSortedBssSymbolsPath ${in} ${out}",
-			CommandDeps: []string{"$genSortedBssSymbolsPath", "${clangBin}/llvm-nm"},
-		},
-		"clangBin")
-)
-
-func (linker *baseLinker) sortBssSymbolsBySize(ctx ModuleContext, in android.Path, symbolOrderingFile android.ModuleOutPath, flags builderFlags) string {
-	ctx.Build(pctx, android.BuildParams{
-		Rule:        genSortedBssSymbols,
-		Description: "generate bss symbol order " + symbolOrderingFile.Base(),
-		Output:      symbolOrderingFile,
-		Input:       in,
-		Args: map[string]string{
-			"clangBin": "${config.ClangBin}",
-		},
-	})
-	return "-Wl,--symbol-ordering-file," + symbolOrderingFile.String()
 }

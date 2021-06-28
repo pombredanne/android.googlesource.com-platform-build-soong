@@ -15,8 +15,6 @@
 package java
 
 import (
-	"fmt"
-	"strings"
 	"testing"
 
 	"android/soong/android"
@@ -150,116 +148,6 @@ func TestPlatformBootclasspath(t *testing.T) {
 			"platform:bar",
 		})
 	})
-}
-
-func TestPlatformBootclasspath_Fragments(t *testing.T) {
-	result := android.GroupFixturePreparers(
-		prepareForTestWithPlatformBootclasspath,
-		PrepareForTestWithJavaSdkLibraryFiles,
-		FixtureWithLastReleaseApis("foo"),
-		android.FixtureWithRootAndroidBp(`
-			platform_bootclasspath {
-				name: "platform-bootclasspath",
-				fragments: [
-					{module:"bar-fragment"},
-				],
-				hidden_api: {
-					unsupported: [
-							"unsupported.txt",
-					],
-					removed: [
-							"removed.txt",
-					],
-					max_target_r_low_priority: [
-							"max-target-r-low-priority.txt",
-					],
-					max_target_q: [
-							"max-target-q.txt",
-					],
-					max_target_p: [
-							"max-target-p.txt",
-					],
-					max_target_o_low_priority: [
-							"max-target-o-low-priority.txt",
-					],
-					blocked: [
-							"blocked.txt",
-					],
-					unsupported_packages: [
-							"unsupported-packages.txt",
-					],
-				},
-			}
-
-			bootclasspath_fragment {
-				name: "bar-fragment",
-				contents: ["bar"],
-				api: {
-					stub_libs: ["foo"],
-				},
-				hidden_api: {
-					unsupported: [
-							"bar-unsupported.txt",
-					],
-					removed: [
-							"bar-removed.txt",
-					],
-					max_target_r_low_priority: [
-							"bar-max-target-r-low-priority.txt",
-					],
-					max_target_q: [
-							"bar-max-target-q.txt",
-					],
-					max_target_p: [
-							"bar-max-target-p.txt",
-					],
-					max_target_o_low_priority: [
-							"bar-max-target-o-low-priority.txt",
-					],
-					blocked: [
-							"bar-blocked.txt",
-					],
-					unsupported_packages: [
-							"bar-unsupported-packages.txt",
-					],
-				},
-			}
-
-			java_library {
-				name: "bar",
-				srcs: ["a.java"],
-				system_modules: "none",
-				sdk_version: "none",
-				compile_dex: true,
-			}
-
-			java_sdk_library {
-				name: "foo",
-				srcs: ["a.java"],
-				public: {
-					enabled: true,
-				},
-				compile_dex: true,
-			}
-		`),
-	).RunTest(t)
-
-	pbcp := result.Module("platform-bootclasspath", "android_common")
-	info := result.ModuleProvider(pbcp, monolithicHiddenAPIInfoProvider).(MonolithicHiddenAPIInfo)
-
-	for _, category := range hiddenAPIFlagFileCategories {
-		name := category.propertyName
-		message := fmt.Sprintf("category %s", name)
-		filename := strings.ReplaceAll(name, "_", "-")
-		expected := []string{fmt.Sprintf("%s.txt", filename), fmt.Sprintf("bar-%s.txt", filename)}
-		android.AssertPathsRelativeToTopEquals(t, message, expected, info.FlagsFilesByCategory[category])
-	}
-
-	android.AssertPathsRelativeToTopEquals(t, "stub flags", []string{"out/soong/.intermediates/bar-fragment/android_common/modular-hiddenapi/stub-flags.csv"}, info.StubFlagsPaths)
-	android.AssertPathsRelativeToTopEquals(t, "annotation flags", []string{"out/soong/.intermediates/bar-fragment/android_common/modular-hiddenapi/annotation-flags.csv"}, info.AnnotationFlagsPaths)
-	android.AssertPathsRelativeToTopEquals(t, "metadata flags", []string{"out/soong/.intermediates/bar-fragment/android_common/modular-hiddenapi/metadata.csv"}, info.MetadataPaths)
-	android.AssertPathsRelativeToTopEquals(t, "index flags", []string{"out/soong/.intermediates/bar-fragment/android_common/modular-hiddenapi/index.csv"}, info.IndexPaths)
-	android.AssertPathsRelativeToTopEquals(t, "all flags", []string{"out/soong/.intermediates/bar-fragment/android_common/modular-hiddenapi/all-flags.csv"}, info.AllFlagsPaths)
 }
 
 func TestPlatformBootclasspathVariant(t *testing.T) {
@@ -430,11 +318,41 @@ func TestPlatformBootclasspath_HiddenAPIMonolithicFiles(t *testing.T) {
 	// Make sure that the foo-hiddenapi-annotations.jar is included in the inputs to the rules that
 	// creates the index.csv file.
 	platformBootclasspath := result.ModuleForTests("myplatform-bootclasspath", "android_common")
-	indexRule := platformBootclasspath.Rule("monolithic_hidden_API_index")
-	CheckHiddenAPIRuleInputs(t, `
-.intermediates/bar/android_common/javac/bar.jar
-.intermediates/foo-hiddenapi-annotations/android_common/javac/foo-hiddenapi-annotations.jar
-.intermediates/foo/android_common/javac/foo.jar
-`,
-		indexRule)
+
+	var rule android.TestingBuildParams
+
+	// All the intermediate rules use the same inputs.
+	expectedIntermediateInputs := `
+		out/soong/.intermediates/bar/android_common/javac/bar.jar
+		out/soong/.intermediates/foo-hiddenapi-annotations/android_common/javac/foo-hiddenapi-annotations.jar
+		out/soong/.intermediates/foo/android_common/javac/foo.jar
+	`
+
+	// Check flags output.
+	rule = platformBootclasspath.Output("hiddenapi-monolithic/annotation-flags-from-classes.csv")
+	CheckHiddenAPIRuleInputs(t, "intermediate flags", expectedIntermediateInputs, rule)
+
+	rule = platformBootclasspath.Output("out/soong/hiddenapi/hiddenapi-flags.csv")
+	CheckHiddenAPIRuleInputs(t, "monolithic flags", `
+		out/soong/.intermediates/myplatform-bootclasspath/android_common/hiddenapi-monolithic/annotation-flags-from-classes.csv
+		out/soong/hiddenapi/hiddenapi-stub-flags.txt
+	`, rule)
+
+	// Check metadata output.
+	rule = platformBootclasspath.Output("hiddenapi-monolithic/metadata-from-classes.csv")
+	CheckHiddenAPIRuleInputs(t, "intermediate metadata", expectedIntermediateInputs, rule)
+
+	rule = platformBootclasspath.Output("out/soong/hiddenapi/hiddenapi-unsupported.csv")
+	CheckHiddenAPIRuleInputs(t, "monolithic metadata", `
+		out/soong/.intermediates/myplatform-bootclasspath/android_common/hiddenapi-monolithic/metadata-from-classes.csv
+	`, rule)
+
+	// Check index output.
+	rule = platformBootclasspath.Output("hiddenapi-monolithic/index-from-classes.csv")
+	CheckHiddenAPIRuleInputs(t, "intermediate index", expectedIntermediateInputs, rule)
+
+	rule = platformBootclasspath.Output("out/soong/hiddenapi/hiddenapi-index.csv")
+	CheckHiddenAPIRuleInputs(t, "monolithic index", `
+		out/soong/.intermediates/myplatform-bootclasspath/android_common/hiddenapi-monolithic/index-from-classes.csv
+	`, rule)
 }

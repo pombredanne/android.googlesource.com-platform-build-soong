@@ -17,6 +17,7 @@ package java
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -362,6 +363,17 @@ func CheckPlatformBootclasspathModules(t *testing.T, result *android.TestResult,
 	android.AssertDeepEquals(t, fmt.Sprintf("%s modules", "platform-bootclasspath"), expected, pairs)
 }
 
+func CheckClasspathFragmentProtoContentInfoProvider(t *testing.T, result *android.TestResult, generated bool, contents, outputFilename, installDir string) {
+	t.Helper()
+	p := result.Module("platform-bootclasspath", "android_common").(*platformBootclasspathModule)
+	info := result.ModuleProvider(p, ClasspathFragmentProtoContentInfoProvider).(ClasspathFragmentProtoContentInfo)
+
+	android.AssertBoolEquals(t, "classpath proto generated", generated, info.ClasspathFragmentProtoGenerated)
+	android.AssertStringEquals(t, "classpath proto contents", contents, info.ClasspathFragmentProtoContents.String())
+	android.AssertStringEquals(t, "output filepath", outputFilename, info.ClasspathFragmentProtoOutput.Base())
+	android.AssertPathRelativeToTopEquals(t, "install filepath", installDir, info.ClasspathFragmentProtoInstallDir)
+}
+
 // ApexNamePairsFromModules returns the apex:module pair for the supplied modules.
 func ApexNamePairsFromModules(ctx *android.TestContext, modules []android.Module) []string {
 	pairs := []string{}
@@ -393,12 +405,20 @@ func CheckPlatformBootclasspathFragments(t *testing.T, result *android.TestResul
 	android.AssertDeepEquals(t, fmt.Sprintf("%s fragments", "platform-bootclasspath"), expected, pairs)
 }
 
-func CheckHiddenAPIRuleInputs(t *testing.T, expected string, hiddenAPIRule android.TestingBuildParams) {
+func CheckHiddenAPIRuleInputs(t *testing.T, message string, expected string, hiddenAPIRule android.TestingBuildParams) {
 	t.Helper()
-	actual := strings.TrimSpace(strings.Join(android.NormalizePathsForTesting(hiddenAPIRule.Implicits), "\n"))
-	expected = strings.TrimSpace(expected)
+	inputs := android.Paths{}
+	if hiddenAPIRule.Input != nil {
+		inputs = append(inputs, hiddenAPIRule.Input)
+	}
+	inputs = append(inputs, hiddenAPIRule.Inputs...)
+	inputs = append(inputs, hiddenAPIRule.Implicits...)
+	inputs = android.SortedUniquePaths(inputs)
+	actual := strings.TrimSpace(strings.Join(inputs.RelativeToTop().Strings(), "\n"))
+	re := regexp.MustCompile(`\n\s+`)
+	expected = strings.TrimSpace(re.ReplaceAllString(expected, "\n"))
 	if actual != expected {
-		t.Errorf("Expected hiddenapi rule inputs:\n%s\nactual inputs:\n%s", expected, actual)
+		t.Errorf("Expected hiddenapi rule inputs - %s:\n%s\nactual inputs:\n%s", message, expected, actual)
 	}
 }
 

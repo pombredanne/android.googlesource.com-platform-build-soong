@@ -360,7 +360,7 @@ func IsForVndkApex(mctx android.BottomUpMutatorContext, m *Module) bool {
 	// prebuilt vndk modules should match with device
 	// TODO(b/142675459): Use enabled: to select target device in vndk_prebuilt_shared
 	// When b/142675459 is landed, remove following check
-	if p, ok := m.linker.(*vndkPrebuiltLibraryDecorator); ok && !p.matchesWithDevice(mctx.DeviceConfig()) {
+	if p, ok := m.linker.(*vndkPrebuiltLibraryDecorator); ok && !p.MatchesWithDevice(mctx.DeviceConfig()) {
 		return false
 	}
 
@@ -371,7 +371,7 @@ func IsForVndkApex(mctx android.BottomUpMutatorContext, m *Module) bool {
 			if mctx.ModuleName() == "libz" {
 				return false
 			}
-			return m.ImageVariation().Variation == android.CoreVariation && lib.shared() && m.IsVndkSp()
+			return m.ImageVariation().Variation == android.CoreVariation && lib.shared() && m.IsVndkSp() && !m.IsVndkExt()
 		}
 
 		useCoreVariant := m.VndkVersion() == mctx.DeviceConfig().PlatformVndkVersion() &&

@@ -485,6 +485,11 @@ func (sanitize *sanitize) begin(ctx BaseModuleContext) {
 	if Bool(s.Hwaddress) {
 		s.Address = nil
 		s.Thread = nil
+		// Disable ubsan diagnosic as a workaround for a compiler bug.
+		// TODO(b/191808836): re-enable.
+		s.Diag.Undefined = nil
+		s.Diag.Integer_overflow = nil
+		s.Diag.Misc_undefined = nil
 	}
 
 	// TODO(b/131771163): CFI transiently depends on LTO, and thus Fuzzer is
@@ -854,7 +859,7 @@ func (m *Module) SanitizableDepTagChecker() SantizableDependencyTagChecker {
 // as vendor snapshot. Such modules must create both cfi and non-cfi variants,
 // except for ones which explicitly disable cfi.
 func needsCfiForVendorSnapshot(mctx android.TopDownMutatorContext) bool {
-	if isVendorProprietaryModule(mctx) {
+	if IsVendorProprietaryModule(mctx) {
 		return false
 	}
 
@@ -1192,7 +1197,7 @@ func sanitizerRuntimeMutator(mctx android.BottomUpMutatorContext) {
 				if c.Device() {
 					variations = append(variations, c.ImageVariation())
 				}
-				c.addSharedLibDependenciesWithVersions(mctx, variations, depTag, runtimeLibrary, "", true)
+				AddSharedLibDependenciesWithVersions(mctx, c, variations, depTag, runtimeLibrary, "", true)
 			}
 			// static lib does not have dependency to the runtime library. The
 			// dependency will be added to the executables or shared libs using

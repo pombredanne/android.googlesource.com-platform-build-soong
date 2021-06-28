@@ -643,7 +643,7 @@ func LibraryFactory() android.Module {
 
 	module.addHostAndDeviceProperties()
 
-	module.initModuleAndImport(&module.ModuleBase)
+	module.initModuleAndImport(module)
 
 	android.InitApexModule(module)
 	android.InitSdkAwareModule(module)
@@ -1309,7 +1309,7 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 			// Get the path of the dex implementation jar from the `deapexer` module.
 			di := ctx.OtherModuleProvider(deapexerModule, android.DeapexerProvider).(android.DeapexerInfo)
-			if dexOutputPath := di.PrebuiltExportPath(j.BaseModuleName(), ".dexjar"); dexOutputPath != nil {
+			if dexOutputPath := di.PrebuiltExportPath(apexRootRelativePathToJavaLib(j.BaseModuleName())); dexOutputPath != nil {
 				j.dexJarFile = dexOutputPath
 
 				// Initialize the hiddenapi structure.
@@ -1416,14 +1416,33 @@ func (j *Import) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
 	if sdkSpec.Kind == android.SdkCore {
 		return nil
 	}
-	ver, err := sdkSpec.EffectiveVersion(ctx)
-	if err != nil {
-		return err
-	}
-	if ver.GreaterThan(sdkVersion) {
-		return fmt.Errorf("newer SDK(%v)", ver)
+	if sdkSpec.ApiLevel.GreaterThan(sdkVersion) {
+		return fmt.Errorf("newer SDK(%v)", sdkSpec.ApiLevel)
 	}
 	return nil
+}
+
+// requiredFilesFromPrebuiltApexForImport returns information about the files that a java_import or
+// java_sdk_library_import with the specified base module name requires to be exported from a
+// prebuilt_apex/apex_set.
+func requiredFilesFromPrebuiltApexForImport(name string) []string {
+	// Add the dex implementation jar to the set of exported files.
+	return []string{
+		apexRootRelativePathToJavaLib(name),
+	}
+}
+
+// apexRootRelativePathToJavaLib returns the path, relative to the root of the apex's contents, for
+// the java library with the specified name.
+func apexRootRelativePathToJavaLib(name string) string {
+	return filepath.Join("javalib", name+".jar")
+}
+
+var _ android.RequiredFilesFromPrebuiltApex = (*Import)(nil)
+
+func (j *Import) RequiredFilesFromPrebuiltApex(_ android.BaseModuleContext) []string {
+	name := j.BaseModuleName()
+	return requiredFilesFromPrebuiltApexForImport(name)
 }
 
 // Add compile time check for interface implementation
@@ -1473,7 +1492,7 @@ func ImportFactory() android.Module {
 		&module.dexer.dexProperties,
 	)
 
-	module.initModuleAndImport(&module.ModuleBase)
+	module.initModuleAndImport(module)
 
 	module.dexProperties.Optimize.EnabledByDefault = false
 

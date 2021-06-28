@@ -165,6 +165,9 @@ type LinkableInterface interface {
 	// "product_specific: true" modules are included here.
 	UseVndk() bool
 
+	// Bootstrap tests if this module is allowed to use non-APEX version of libraries.
+	Bootstrap() bool
+
 	// IsVndkSp returns true if this is a VNDK-SP module.
 	IsVndkSp() bool
 
@@ -305,14 +308,13 @@ func HeaderDepTag() blueprint.DependencyTag {
 
 // SharedLibraryInfo is a provider to propagate information about a shared C++ library.
 type SharedLibraryInfo struct {
-	SharedLibrary           android.Path
-	UnstrippedSharedLibrary android.Path
-	Target                  android.Target
+	SharedLibrary android.Path
+	Target        android.Target
 
-	TableOfContents       android.OptionalPath
-	CoverageSharedLibrary android.OptionalPath
+	TableOfContents android.OptionalPath
 
-	StaticAnalogue *StaticLibraryInfo
+	// should be obtained from static analogue
+	TransitiveStaticLibrariesForOrdering *android.DepSet
 }
 
 var SharedLibraryInfoProvider = blueprint.NewProvider(SharedLibraryInfo{})
