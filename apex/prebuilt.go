@@ -17,14 +17,12 @@ package apex
 import (
 	"fmt"
 	"io"
-	"path/filepath"
 	"strconv"
 	"strings"
 
 	"android/soong/android"
 	"android/soong/java"
 	"github.com/google/blueprint"
-
 	"github.com/google/blueprint/proptools"
 )
 
@@ -76,6 +74,10 @@ type sanitizedPrebuilt interface {
 type PrebuiltCommonProperties struct {
 	SelectedApexProperties
 
+	// Canonical name of this APEX. Used to determine the path to the activated APEX on
+	// device (/apex/<apex_name>). If unspecified, follows the name property.
+	Apex_name *string
+
 	ForceDisable bool `blueprint:"mutated"`
 
 	// whether the extracted apex file is installable.
@@ -108,6 +110,10 @@ func (p *prebuiltCommon) initPrebuiltCommon(module android.Module, properties *P
 	p.prebuiltCommonProperties = properties
 	android.InitSingleSourcePrebuiltModule(module.(android.PrebuiltInterface), properties, "Selected_apex")
 	android.InitAndroidMultiTargetsArchModule(module, android.DeviceSupported, android.MultilibCommon)
+}
+
+func (p *prebuiltCommon) ApexVariationName() string {
+	return proptools.StringDefault(p.prebuiltCommonProperties.Apex_name, p.ModuleBase.BaseModuleName())
 }
 
 func (p *prebuiltCommon) Prebuilt() *android.Prebuilt {
@@ -216,50 +222,55 @@ func (p *prebuiltCommon) AndroidMkEntries() []android.AndroidMkEntries {
 	// apex specific variants of the exported java modules available for use from within make.
 	apexName := p.BaseModuleName()
 	for _, fi := range p.apexFilesForAndroidMk {
-		moduleName := fi.androidMkModuleName + "." + apexName
-		entries := android.AndroidMkEntries{
-			Class:        fi.class.nameInMake(),
-			OverrideName: moduleName,
-			OutputFile:   android.OptionalPathForPath(fi.builtFile),
-			Include:      "$(BUILD_SYSTEM)/soong_java_prebuilt.mk",
-			ExtraEntries: []android.AndroidMkExtraEntriesFunc{
-				func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-					entries.SetString("LOCAL_MODULE_PATH", p.installDir.ToMakePath().String())
-
-					// soong_java_prebuilt.mk sets LOCAL_MODULE_SUFFIX := .jar  Therefore
-					// we need to remove the suffix from LOCAL_MODULE_STEM, otherwise
-					// we will have foo.jar.jar
-					entries.SetString("LOCAL_MODULE_STEM", strings.TrimSuffix(fi.stem(), ".jar"))
-					var classesJar android.Path
-					var headerJar android.Path
-					if javaModule, ok := fi.module.(java.ApexDependency); ok {
-						classesJar = javaModule.ImplementationAndResourcesJars()[0]
-						headerJar = javaModule.HeaderJars()[0]
-					} else {
-						classesJar = fi.builtFile
-						headerJar = fi.builtFile
-					}
-					entries.SetString("LOCAL_SOONG_CLASSES_JAR", classesJar.String())
-					entries.SetString("LOCAL_SOONG_HEADER_JAR", headerJar.String())
-					entries.SetString("LOCAL_SOONG_DEX_JAR", fi.builtFile.String())
-					entries.SetString("LOCAL_DEX_PREOPT", "false")
-				},
-			},
-			ExtraFooters: []android.AndroidMkExtraFootersFunc{
-				func(w io.Writer, name, prefix, moduleDir string) {
-					// m <module_name> will build <module_name>.<apex_name> as well.
-					if fi.androidMkModuleName != moduleName {
-						fmt.Fprintf(w, ".PHONY: %s\n", fi.androidMkModuleName)
-						fmt.Fprintf(w, "%s: %s\n", fi.androidMkModuleName, moduleName)
-					}
-				},
-			},
-		}
-
+		entries := p.createEntriesForApexFile(fi, apexName)
 		entriesList = append(entriesList, entries)
 	}
 
 	return entriesList
+}
+
+// createEntriesForApexFile creates an AndroidMkEntries for the supplied apexFile
+func (p *prebuiltCommon) createEntriesForApexFile(fi apexFile, apexName string) android.AndroidMkEntries {
+	moduleName := fi.androidMkModuleName + "." + apexName
+	entries := android.AndroidMkEntries{
+		Class:        fi.class.nameInMake(),
+		OverrideName: moduleName,
+		OutputFile:   android.OptionalPathForPath(fi.builtFile),
+		Include:      "$(BUILD_SYSTEM)/soong_java_prebuilt.mk",
+		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
+			func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
+				entries.SetString("LOCAL_MODULE_PATH", p.installDir.ToMakePath().String())
+
+				// soong_java_prebuilt.mk sets LOCAL_MODULE_SUFFIX := .jar  Therefore
+				// we need to remove the suffix from LOCAL_MODULE_STEM, otherwise
+				// we will have foo.jar.jar
+				entries.SetString("LOCAL_MODULE_STEM", strings.TrimSuffix(fi.stem(), ".jar"))
+				var classesJar android.Path
+				var headerJar android.Path
+				if javaModule, ok := fi.module.(java.ApexDependency); ok {
+					classesJar = javaModule.ImplementationAndResourcesJars()[0]
+					headerJar = javaModule.HeaderJars()[0]
+				} else {
+					classesJar = fi.builtFile
+					headerJar = fi.builtFile
+				}
+				entries.SetString("LOCAL_SOONG_CLASSES_JAR", classesJar.String())
+				entries.SetString("LOCAL_SOONG_HEADER_JAR", headerJar.String())
+				entries.SetString("LOCAL_SOONG_DEX_JAR", fi.builtFile.String())
+				entries.SetString("LOCAL_DEX_PREOPT", "false")
+			},
+		},
+		ExtraFooters: []android.AndroidMkExtraFootersFunc{
+			func(w io.Writer, name, prefix, moduleDir string) {
+				// m <module_name> will build <module_name>.<apex_name> as well.
+				if fi.androidMkModuleName != moduleName {
+					fmt.Fprintf(w, ".PHONY: %s\n", fi.androidMkModuleName)
+					fmt.Fprintf(w, "%s: %s\n", fi.androidMkModuleName, moduleName)
+				}
+			},
+		},
+	}
+	return entries
 }
 
 // prebuiltApexModuleCreator defines the methods that need to be implemented by prebuilt_apex and
@@ -364,6 +375,12 @@ func (p *prebuiltCommon) apexInfoMutator(mctx android.TopDownMutatorContext) {
 			}
 		}
 
+		// Ignore any modules that do not implement ApexModule as they cannot have an APEX specific
+		// variant.
+		if _, ok := child.(android.ApexModule); !ok {
+			return false
+		}
+
 		// Strip off the prebuilt_ prefix if present before storing content to ensure consistent
 		// behavior whether there is a corresponding source module present or not.
 		depName = android.RemoveOptionalPrebuiltPrefix(depName)
@@ -385,11 +402,11 @@ func (p *prebuiltCommon) apexInfoMutator(mctx android.TopDownMutatorContext) {
 	})
 
 	// Create an ApexInfo for the prebuilt_apex.
-	apexVariationName := android.RemoveOptionalPrebuiltPrefix(mctx.ModuleName())
+	apexVariationName := p.ApexVariationName()
 	apexInfo := android.ApexInfo{
 		ApexVariationName: apexVariationName,
 		InApexVariants:    []string{apexVariationName},
-		InApexModules:     []string{apexVariationName},
+		InApexModules:     []string{p.ModuleBase.BaseModuleName()}, // BaseModuleName() to avoid the prebuilt_ prefix.
 		ApexContents:      []*android.ApexContents{apexContents},
 		ForPrebuiltApex:   true,
 	}
@@ -549,35 +566,24 @@ func createDeapexerModuleIfNeeded(ctx android.TopDownMutatorContext, deapexerNam
 
 	// Compute the deapexer properties from the transitive dependencies of this module.
 	commonModules := []string{}
-	exportedFilesByKey := map[string]string{}
-	requiringModulesByKey := map[string]android.Module{}
+	exportedFiles := []string{}
 	ctx.WalkDeps(func(child, parent android.Module) bool {
 		tag := ctx.OtherModuleDependencyTag(child)
 
+		// If the child is not in the same apex as the parent then ignore it and all its children.
+		if !android.IsDepInSameApex(ctx, parent, child) {
+			return false
+		}
+
 		name := android.RemoveOptionalPrebuiltPrefix(ctx.OtherModuleName(child))
-		if java.IsBootclasspathFragmentContentDepTag(tag) || tag == exportedJavaLibTag {
-			commonModules = append(commonModules, name)
-
-			// Add the dex implementation jar to the set of exported files. The path here must match the
-			// path of the file in the APEX created by apexFileForJavaModule(...).
-			exportedFilesByKey[name+"{.dexjar}"] = filepath.Join("javalib", name+".jar")
-
-		} else if tag == exportedBootclasspathFragmentTag {
+		if _, ok := tag.(android.RequiresFilesFromPrebuiltApexTag); ok {
 			commonModules = append(commonModules, name)
 
 			requiredFiles := child.(android.RequiredFilesFromPrebuiltApex).RequiredFilesFromPrebuiltApex(ctx)
-			for k, v := range requiredFiles {
-				if f, ok := exportedFilesByKey[k]; ok && f != v {
-					otherModule := requiringModulesByKey[k]
-					ctx.ModuleErrorf("inconsistent paths have been requested for key %q, %s requires path %s while %s requires path %s",
-						k, child, v, otherModule, f)
-					continue
-				}
-				exportedFilesByKey[k] = v
-				requiringModulesByKey[k] = child
-			}
+			exportedFiles = append(exportedFiles, requiredFiles...)
 
-			// Make sure to visit the children of the bootclasspath_fragment.
+			// Visit the dependencies of this module just in case they also require files from the
+			// prebuilt apex.
 			return true
 		}
 
@@ -592,12 +598,7 @@ func createDeapexerModuleIfNeeded(ctx android.TopDownMutatorContext, deapexerNam
 	}
 
 	// Populate the exported files property in a fixed order.
-	for _, tag := range android.SortedStringKeys(exportedFilesByKey) {
-		deapexerProperties.ExportedFiles = append(deapexerProperties.ExportedFiles, DeapexerExportedFile{
-			Tag:  tag,
-			Path: exportedFilesByKey[tag],
-		})
-	}
+	deapexerProperties.ExportedFiles = android.SortedUniqueStrings(exportedFiles)
 
 	props := struct {
 		Name          *string
@@ -653,6 +654,10 @@ type exportedDependencyTag struct {
 // That makes it highly unlikely that a prebuilt_apex would reference a restricted module
 // incorrectly.
 func (t exportedDependencyTag) ExcludeFromVisibilityEnforcement() {}
+
+func (t exportedDependencyTag) RequiresFilesFromPrebuiltApex() {}
+
+var _ android.RequiresFilesFromPrebuiltApexTag = exportedDependencyTag{}
 
 var (
 	exportedJavaLibTag               = exportedDependencyTag{name: "exported_java_libs"}
