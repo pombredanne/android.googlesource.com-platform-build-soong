@@ -81,6 +81,9 @@ func (b bootclasspathFragmentContentDependencyTag) ExportMember() bool {
 // they were listed in java_libs.
 func (b bootclasspathFragmentContentDependencyTag) CopyDirectlyInAnyApex() {}
 
+// Contents of bootclasspath fragments require files from prebuilt apex files.
+func (b bootclasspathFragmentContentDependencyTag) RequiresFilesFromPrebuiltApex() {}
+
 // The tag used for the dependency between the bootclasspath_fragment module and its contents.
 var bootclasspathFragmentContentDepTag = bootclasspathFragmentContentDependencyTag{}
 
@@ -88,6 +91,7 @@ var _ android.ExcludeFromVisibilityEnforcementTag = bootclasspathFragmentContent
 var _ android.ReplaceSourceWithPrebuilt = bootclasspathFragmentContentDepTag
 var _ android.SdkMemberTypeDependencyTag = bootclasspathFragmentContentDepTag
 var _ android.CopyDirectlyInAnyApexTag = bootclasspathFragmentContentDepTag
+var _ android.RequiresFilesFromPrebuiltApexTag = bootclasspathFragmentContentDepTag
 
 func IsBootclasspathFragmentContentDepTag(tag blueprint.DependencyTag) bool {
 	return tag == bootclasspathFragmentContentDepTag
@@ -117,7 +121,17 @@ type bootclasspathFragmentProperties struct {
 	BootclasspathFragmentCoverageAffectedProperties
 	Coverage BootclasspathFragmentCoverageAffectedProperties
 
+	// Hidden API related properties.
 	Hidden_api HiddenAPIFlagFileProperties
+
+	// The list of additional stub libraries which this fragment's contents use but which are not
+	// provided by another bootclasspath_fragment.
+	//
+	// Note, "android-non-updatable" is treated specially. While no such module exists it is treated
+	// as if it was a java_sdk_library. So, when public API stubs are needed then it will be replaced
+	// with "android-non-updatable.stubs", with "androidn-non-updatable.system.stubs" when the system
+	// stubs are needed and so on.
+	Additional_stubs []string
 
 	// Properties that allow a fragment to depend on other fragments. This is needed for hidden API
 	// processing as it needs access to all the classes used by a fragment including those provided
@@ -371,7 +385,16 @@ func (b *BootclasspathFragmentModule) ComponentDepsMutator(ctx android.BottomUpM
 func (b *BootclasspathFragmentModule) DepsMutator(ctx android.BottomUpMutatorContext) {
 	// Add dependencies onto all the modules that provide the API stubs for classes on this
 	// bootclasspath fragment.
-	hiddenAPIAddStubLibDependencies(ctx, b.properties.sdkKindToStubLibs())
+	hiddenAPIAddStubLibDependencies(ctx, b.properties.apiScopeToStubLibs())
+
+	for _, additionalStubModule := range b.properties.Additional_stubs {
+		for _, apiScope := range hiddenAPISdkLibrarySupportedScopes {
+			// Add a dependency onto a possibly scope specific stub library.
+			scopeSpecificDependency := apiScope.scopeSpecificStubModule(ctx, additionalStubModule)
+			tag := hiddenAPIStubsDependencyTag{apiScope: apiScope, fromAdditionalDependency: true}
+			ctx.AddVariationDependencies(nil, tag, scopeSpecificDependency)
+		}
+	}
 
 	if SkipDexpreoptBootJars(ctx) {
 		return
@@ -553,25 +576,9 @@ func (b *BootclasspathFragmentModule) generateHiddenAPIBuildActions(ctx android.
 	// Create hidden API input structure.
 	input := b.createHiddenAPIFlagInput(ctx, contents, fragments)
 
-	var output *HiddenAPIOutput
-
-	// Hidden API processing is conditional as a temporary workaround as not all
-	// bootclasspath_fragments provide the appropriate information needed for hidden API processing
-	// which leads to breakages of the build.
-	// TODO(b/179354495): Stop hidden API processing being conditional once all bootclasspath_fragment
-	//  modules have been updated to support it.
-	if input.canPerformHiddenAPIProcessing(ctx, b.properties) {
-		// Delegate the production of the hidden API all-flags.csv file to a module type specific method.
-		common := ctx.Module().(commonBootclasspathFragment)
-		output = common.produceHiddenAPIOutput(ctx, contents, input)
-	} else {
-		// As hidden API processing cannot be performed fall back to trying to retrieve the legacy
-		// encoded boot dex files, i.e. those files encoded by the individual libraries and returned
-		// from the DexJarBuildPath() method.
-		output = &HiddenAPIOutput{
-			EncodedBootDexFilesByModule: retrieveLegacyEncodedBootDexFiles(ctx, contents),
-		}
-	}
+	// Delegate the production of the hidden API all-flags.csv file to a module type specific method.
+	common := ctx.Module().(commonBootclasspathFragment)
+	output := common.produceHiddenAPIOutput(ctx, contents, input)
 
 	// Initialize a HiddenAPIInfo structure.
 	hiddenAPIInfo := HiddenAPIInfo{
@@ -584,7 +591,7 @@ func (b *BootclasspathFragmentModule) generateHiddenAPIBuildActions(ctx android.
 		// Other bootclasspath_fragments that depend on this need the transitive set of stub dex jars
 		// from this to resolve any references from their code to classes provided by this fragment
 		// and the fragments this depends upon.
-		TransitiveStubDexJarsByKind: input.transitiveStubDexJarsByKind(),
+		TransitiveStubDexJarsByScope: input.transitiveStubDexJarsByScope(),
 	}
 
 	// The monolithic hidden API processing also needs access to all the output files produced by
@@ -628,8 +635,8 @@ func (b *BootclasspathFragmentModule) createHiddenAPIFlagInput(ctx android.Modul
 	// Populate with flag file paths from the properties.
 	input.extractFlagFilesFromProperties(ctx, &b.properties.Hidden_api)
 
-	// Store the stub dex jars from this module's fragment dependencies.
-	input.DependencyStubDexJarsByKind = dependencyHiddenApiInfo.TransitiveStubDexJarsByKind
+	// Add the stub dex jars from this module's fragment dependencies.
+	input.DependencyStubDexJarsByScope.addStubDexJarsByModule(dependencyHiddenApiInfo.TransitiveStubDexJarsByScope)
 
 	return input
 }
@@ -926,13 +933,12 @@ func (module *prebuiltBootclasspathFragmentModule) produceBootImageFiles(ctx and
 	}
 
 	di := ctx.OtherModuleProvider(deapexerModule, android.DeapexerProvider).(android.DeapexerInfo)
-	name := module.BaseModuleName()
 	for _, variant := range imageConfig.apexVariants() {
 		arch := variant.target.Arch.ArchType
 		for _, toPath := range variant.imagesDeps {
+			apexRelativePath := apexRootRelativePathToBootImageFile(arch, toPath.Base())
 			// Get the path to the file that the deapexer extracted from the prebuilt apex file.
-			tag := createBootImageTag(arch, toPath.Base())
-			fromPath := di.PrebuiltExportPath(name, tag)
+			fromPath := di.PrebuiltExportPath(apexRelativePath)
 
 			// Copy the file to the predefined location.
 			ctx.Build(pctx, android.BuildParams{
@@ -963,24 +969,25 @@ func createBootImageTag(arch android.ArchType, baseName string) string {
 //
 // If there is no image config associated with this fragment then it returns nil. Otherwise, it
 // returns the files that are listed in the image config.
-func (module *prebuiltBootclasspathFragmentModule) RequiredFilesFromPrebuiltApex(ctx android.BaseModuleContext) map[string]string {
+func (module *prebuiltBootclasspathFragmentModule) RequiredFilesFromPrebuiltApex(ctx android.BaseModuleContext) []string {
 	imageConfig := module.getImageConfig(ctx)
 	if imageConfig != nil {
 		// Add the boot image files, e.g. .art, .oat and .vdex files.
-		files := map[string]string{}
-		name := module.BaseModuleName()
+		files := []string{}
 		for _, variant := range imageConfig.apexVariants() {
 			arch := variant.target.Arch.ArchType
 			for _, path := range variant.imagesDeps.Paths() {
 				base := path.Base()
-				tag := createBootImageTag(arch, base)
-				key := fmt.Sprintf("%s{%s}", name, tag)
-				files[key] = filepath.Join("javalib", arch.String(), base)
+				files = append(files, apexRootRelativePathToBootImageFile(arch, base))
 			}
 		}
 		return files
 	}
 	return nil
+}
+
+func apexRootRelativePathToBootImageFile(arch android.ArchType, base string) string {
+	return filepath.Join("javalib", arch.String(), base)
 }
 
 var _ android.RequiredFilesFromPrebuiltApex = (*prebuiltBootclasspathFragmentModule)(nil)
