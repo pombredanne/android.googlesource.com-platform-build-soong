@@ -27,6 +27,7 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
+	"android/soong/bazel"
 	"android/soong/bpf"
 	"android/soong/cc"
 	prebuilt_etc "android/soong/etc"
@@ -53,6 +54,8 @@ func registerApexBuildComponents(ctx android.RegistrationContext) {
 	ctx.PreArchMutators(registerPreArchMutators)
 	ctx.PreDepsMutators(RegisterPreDepsMutators)
 	ctx.PostDepsMutators(RegisterPostDepsMutators)
+
+	android.RegisterBp2BuildMutator("apex", ApexBundleBp2Build)
 }
 
 func registerPreArchMutators(ctx android.RegisterMutatorsContext) {
@@ -130,6 +133,10 @@ type apexBundleProperties struct {
 	// symlinking to the system libs. Default is true.
 	Updatable *bool
 
+	// Whether this APEX can use platform APIs or not. Can be set to true only when `updatable:
+	// false`. Default is false.
+	Platform_apis *bool
+
 	// Whether this APEX is installable to one of the partitions like system, vendor, etc.
 	// Default: true.
 	Installable *bool
@@ -181,6 +188,12 @@ type apexBundleProperties struct {
 	// Whenever apex should be compressed, regardless of product flag used. Should be only
 	// used in tests.
 	Test_only_force_compression *bool
+
+	// Canonical name of this APEX bundle. Used to determine the path to the
+	// activated APEX on device (i.e. /apex/<apexVariationName>), and used for the
+	// apex mutator variations. For override_apex modules, this is the name of the
+	// overridden base module.
+	ApexVariationName string `blueprint:"mutated"`
 
 	IsCoverageVariant bool `blueprint:"mutated"`
 
@@ -317,6 +330,7 @@ type apexBundle struct {
 	android.DefaultableModuleBase
 	android.OverridableModuleBase
 	android.SdkBase
+	android.BazelModuleBase
 
 	// Properties
 	properties            apexBundleProperties
@@ -824,6 +838,10 @@ var ApexBundleInfoProvider = blueprint.NewMutatorProvider(ApexBundleInfo{}, "ape
 
 var _ ApexInfoMutator = (*apexBundle)(nil)
 
+func (a *apexBundle) ApexVariationName() string {
+	return a.properties.ApexVariationName
+}
+
 // ApexInfoMutator is responsible for collecting modules that need to have apex variants. They are
 // identified by doing a graph walk starting from an apexBundle. Basically, all the (direct and
 // indirect) dependencies are collected. But a few types of modules that shouldn't be included in
@@ -912,15 +930,16 @@ func (a *apexBundle) ApexInfoMutator(mctx android.TopDownMutatorContext) {
 	// This is the main part of this mutator. Mark the collected dependencies that they need to
 	// be built for this apexBundle.
 
-	// Note that there are many different names.
-	// ApexVariationName: this is the name of the apex variation
+	apexVariationName := proptools.StringDefault(a.properties.Apex_name, mctx.ModuleName()) // could be com.android.foo
+	a.properties.ApexVariationName = apexVariationName
 	apexInfo := android.ApexInfo{
-		ApexVariationName: mctx.ModuleName(), // could be com.android.foo
+		ApexVariationName: apexVariationName,
 		MinSdkVersion:     minSdkVersion,
 		RequiredSdks:      a.RequiredSdks(),
 		Updatable:         a.Updatable(),
-		InApexVariants:    []string{mctx.ModuleName()}, // could be com.android.foo
-		InApexModules:     []string{a.Name()},          // could be com.mycompany.android.foo
+		UsePlatformApis:   a.UsePlatformApis(),
+		InApexVariants:    []string{apexVariationName},
+		InApexModules:     []string{a.Name()}, // could be com.mycompany.android.foo
 		ApexContents:      []*android.ApexContents{apexContents},
 	}
 	mctx.WalkDeps(func(child, parent android.Module) bool {
@@ -933,6 +952,10 @@ func (a *apexBundle) ApexInfoMutator(mctx android.TopDownMutatorContext) {
 }
 
 type ApexInfoMutator interface {
+	// ApexVariationName returns the name of the APEX variation to use in the apex
+	// mutator etc. It is the same name as ApexInfo.ApexVariationName.
+	ApexVariationName() string
+
 	// ApexInfoMutator implementations must call BuildForApex(ApexInfo) on any modules that are
 	// depended upon by an apex and which require an apex specific variant.
 	ApexInfoMutator(android.TopDownMutatorContext)
@@ -1058,10 +1081,8 @@ func apexMutator(mctx android.BottomUpMutatorContext) {
 	}
 
 	// apexBundle itself is mutated so that it and its dependencies have the same apex variant.
-	// TODO(jiyong): document the reason why the VNDK APEX is an exception here.
-	unprefixedModuleName := android.RemoveOptionalPrebuiltPrefix(mctx.ModuleName())
-	if apexModuleTypeRequiresVariant(mctx.Module()) {
-		apexBundleName := unprefixedModuleName
+	if ai, ok := mctx.Module().(ApexInfoMutator); ok && apexModuleTypeRequiresVariant(ai) {
+		apexBundleName := ai.ApexVariationName()
 		mctx.CreateVariations(apexBundleName)
 		if strings.HasPrefix(apexBundleName, "com.android.art") {
 			// Create an alias from the platform variant. This is done to make
@@ -1084,6 +1105,7 @@ func apexMutator(mctx android.BottomUpMutatorContext) {
 		// apex variant name. This name matches the name used to create the variations of modules for
 		// which apexModuleTypeRequiresVariant return true.
 		// TODO(b/191269918): Remove this workaround.
+		unprefixedModuleName := android.RemoveOptionalPrebuiltPrefix(mctx.ModuleName())
 		mctx.SetDefaultDependencyVariation(&unprefixedModuleName)
 		mctx.CreateVariations(apexBundleName)
 		if strings.HasPrefix(apexBundleName, "com.android.art") {
@@ -1095,18 +1117,13 @@ func apexMutator(mctx android.BottomUpMutatorContext) {
 
 // apexModuleTypeRequiresVariant determines whether the module supplied requires an apex specific
 // variant.
-func apexModuleTypeRequiresVariant(module android.Module) bool {
+func apexModuleTypeRequiresVariant(module ApexInfoMutator) bool {
 	if a, ok := module.(*apexBundle); ok {
+		// TODO(jiyong): document the reason why the VNDK APEX is an exception here.
 		return !a.vndkApex
 	}
 
-	// Match apex_set and prebuilt_apex. Would also match apexBundle but that is handled specially
-	// above.
-	if _, ok := module.(ApexInfoMutator); ok {
-		return true
-	}
-
-	return false
+	return true
 }
 
 // See android.UpdateDirectlyInAnyApex
@@ -1319,6 +1336,10 @@ var _ android.ApexBundleDepsInfoIntf = (*apexBundle)(nil)
 // Implements android.ApexBudleDepsInfoIntf
 func (a *apexBundle) Updatable() bool {
 	return proptools.BoolDefault(a.properties.Updatable, true)
+}
+
+func (a *apexBundle) UsePlatformApis() bool {
+	return proptools.BoolDefault(a.properties.Platform_apis, false)
 }
 
 // getCertString returns the name of the cert that should be used to sign this APEX. This is
@@ -2374,6 +2395,9 @@ func (a *apexBundle) checkUpdatable(ctx android.ModuleContext) {
 		if String(a.properties.Min_sdk_version) == "" {
 			ctx.PropertyErrorf("updatable", "updatable APEXes should set min_sdk_version as well")
 		}
+		if a.UsePlatformApis() {
+			ctx.PropertyErrorf("updatable", "updatable APEXes can't use platform APIs")
+		}
 		a.checkJavaStableSdkVersion(ctx)
 		a.checkClasspathFragments(ctx)
 	}
@@ -3158,3 +3182,63 @@ func rModulesPackages() map[string][]string {
 		},
 	}
 }
+
+// For Bazel / bp2build
+
+type bazelApexBundleAttributes struct {
+	Manifest bazel.LabelAttribute
+}
+
+type bazelApexBundle struct {
+	android.BazelTargetModuleBase
+	bazelApexBundleAttributes
+}
+
+func BazelApexBundleFactory() android.Module {
+	module := &bazelApexBundle{}
+	module.AddProperties(&module.bazelApexBundleAttributes)
+	android.InitBazelTargetModule(module)
+	return module
+}
+
+func ApexBundleBp2Build(ctx android.TopDownMutatorContext) {
+	module, ok := ctx.Module().(*apexBundle)
+	if !ok {
+		// Not an APEX bundle
+		return
+	}
+	if !module.ConvertWithBp2build(ctx) {
+		return
+	}
+	if ctx.ModuleType() != "apex" {
+		return
+	}
+
+	apexBundleBp2BuildInternal(ctx, module)
+}
+
+func apexBundleBp2BuildInternal(ctx android.TopDownMutatorContext, module *apexBundle) {
+	var manifestLabelAttribute bazel.LabelAttribute
+
+	manifestStringPtr := module.properties.Manifest
+	if module.properties.Manifest != nil {
+		manifestLabelAttribute.SetValue(android.BazelLabelForModuleSrcSingle(ctx, *manifestStringPtr))
+	}
+
+	attrs := &bazelApexBundleAttributes{
+		Manifest: manifestLabelAttribute,
+	}
+
+	props := bazel.BazelTargetModuleProperties{
+		Rule_class:        "apex",
+		Bzl_load_location: "//build/bazel/rules:apex.bzl",
+	}
+
+	ctx.CreateBazelTargetModule(BazelApexBundleFactory, module.Name(), props, attrs)
+}
+
+func (m *bazelApexBundle) Name() string {
+	return m.BaseModuleName()
+}
+
+func (m *bazelApexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {}

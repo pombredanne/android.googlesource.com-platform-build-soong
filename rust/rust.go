@@ -35,7 +35,7 @@ func init() {
 
 	android.AddNeverAllowRules(
 		android.NeverAllow().
-			NotIn(config.RustAllowedPaths...).
+			NotIn(append(config.RustAllowedPaths, config.DownstreamRustAllowedPaths...)...).
 			ModuleType(config.RustModuleTypes...))
 
 	android.RegisterModuleType("rust_defaults", defaultsFactory)
@@ -87,6 +87,7 @@ type BaseProperties struct {
 
 	// Used by vendor snapshot to record dependencies from snapshot modules.
 	SnapshotSharedLibs []string `blueprint:"mutated"`
+	SnapshotStaticLibs []string `blueprint:"mutated"`
 
 	// Make this module available when building for vendor ramdisk.
 	// On device without a dedicated recovery partition, the module is only
@@ -259,6 +260,13 @@ func (mod *Module) Binary() bool {
 	return false
 }
 
+func (mod *Module) StaticExecutable() bool {
+	if !mod.Binary() {
+		return false
+	}
+	return Bool(mod.compiler.(*binaryDecorator).Properties.Static_executable)
+}
+
 func (mod *Module) Object() bool {
 	// Rust has no modules which produce only object files.
 	return false
@@ -286,6 +294,10 @@ func (mod *Module) RelativeInstallPath() string {
 
 func (mod *Module) UseVndk() bool {
 	return mod.Properties.VndkVersion != ""
+}
+
+func (mod *Module) Bootstrap() bool {
+	return false
 }
 
 func (mod *Module) MustUseVendorVariant() bool {
@@ -952,7 +964,7 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 	directRlibDeps := []*Module{}
 	directDylibDeps := []*Module{}
 	directProcMacroDeps := []*Module{}
-	directSharedLibDeps := [](cc.LinkableInterface){}
+	directSharedLibDeps := []cc.SharedLibraryInfo{}
 	directStaticLibDeps := [](cc.LinkableInterface){}
 	directSrcProvidersDeps := []*Module{}
 	directSrcDeps := [](android.SourceFileProducer){}
@@ -1073,17 +1085,27 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 				directStaticLibDeps = append(directStaticLibDeps, ccDep)
 				mod.Properties.AndroidMkStaticLibs = append(mod.Properties.AndroidMkStaticLibs, makeLibName)
 			case cc.IsSharedDepTag(depTag):
+				// For the shared lib dependencies, we may link to the stub variant
+				// of the dependency depending on the context (e.g. if this
+				// dependency crosses the APEX boundaries).
+				sharedLibraryInfo, exportedInfo := cc.ChooseStubOrImpl(ctx, dep)
+
+				// Re-get linkObject as ChooseStubOrImpl actually tells us which
+				// object (either from stub or non-stub) to use.
+				linkObject = android.OptionalPathForPath(sharedLibraryInfo.SharedLibrary)
+				linkPath = linkPathFromFilePath(linkObject.Path())
+
 				depPaths.linkDirs = append(depPaths.linkDirs, linkPath)
 				depPaths.linkObjects = append(depPaths.linkObjects, linkObject.String())
-				exportedInfo := ctx.OtherModuleProvider(dep, cc.FlagExporterInfoProvider).(cc.FlagExporterInfo)
 				depPaths.depIncludePaths = append(depPaths.depIncludePaths, exportedInfo.IncludeDirs...)
 				depPaths.depSystemIncludePaths = append(depPaths.depSystemIncludePaths, exportedInfo.SystemIncludeDirs...)
 				depPaths.depClangFlags = append(depPaths.depClangFlags, exportedInfo.Flags...)
 				depPaths.depGeneratedHeaders = append(depPaths.depGeneratedHeaders, exportedInfo.GeneratedHeaders...)
-				directSharedLibDeps = append(directSharedLibDeps, ccDep)
+				directSharedLibDeps = append(directSharedLibDeps, sharedLibraryInfo)
 
 				// Record baseLibName for snapshots.
 				mod.Properties.SnapshotSharedLibs = append(mod.Properties.SnapshotSharedLibs, cc.BaseLibName(depName))
+				mod.Properties.SnapshotStaticLibs = append(mod.Properties.SnapshotStaticLibs, cc.BaseLibName(depName))
 
 				mod.Properties.AndroidMkSharedLibs = append(mod.Properties.AndroidMkSharedLibs, makeLibName)
 				exportDep = true
@@ -1135,11 +1157,11 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 	var sharedLibFiles android.Paths
 	var sharedLibDepFiles android.Paths
 	for _, dep := range directSharedLibDeps {
-		sharedLibFiles = append(sharedLibFiles, dep.OutputFile().Path())
-		if dep.Toc().Valid() {
-			sharedLibDepFiles = append(sharedLibDepFiles, dep.Toc().Path())
+		sharedLibFiles = append(sharedLibFiles, dep.SharedLibrary)
+		if dep.TableOfContents.Valid() {
+			sharedLibDepFiles = append(sharedLibDepFiles, dep.TableOfContents.Path())
 		} else {
-			sharedLibDepFiles = append(sharedLibDepFiles, dep.OutputFile().Path())
+			sharedLibDepFiles = append(sharedLibDepFiles, dep.SharedLibrary)
 		}
 	}
 

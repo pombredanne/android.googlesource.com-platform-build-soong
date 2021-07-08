@@ -870,6 +870,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	if aaptSrcJar != nil {
 		srcJars = append(srcJars, aaptSrcJar)
 	}
+	srcFiles = srcFiles.FilterOutByExt(".srcjar")
 
 	if j.properties.Jarjar_rules != nil {
 		j.expandJarjarRules = android.PathForModuleSrc(ctx, *j.properties.Jarjar_rules)
@@ -1292,6 +1293,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		j.linter.minSdkVersion = lintSDKVersionString(j.MinSdkVersion(ctx))
 		j.linter.targetSdkVersion = lintSDKVersionString(j.TargetSdkVersion(ctx))
 		j.linter.compileSdkVersion = lintSDKVersionString(j.SdkVersion(ctx))
+		j.linter.compileSdkKind = j.SdkVersion(ctx).Kind
 		j.linter.javaLanguageLevel = flags.javaVersion.String()
 		j.linter.kotlinLanguageLevel = "1.3"
 		if !apexInfo.IsForPlatform() && ctx.Config().UnbundledBuildApps() {
