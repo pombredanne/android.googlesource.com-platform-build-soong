@@ -87,6 +87,7 @@ type BaseProperties struct {
 
 	// Used by vendor snapshot to record dependencies from snapshot modules.
 	SnapshotSharedLibs []string `blueprint:"mutated"`
+	SnapshotStaticLibs []string `blueprint:"mutated"`
 
 	// Make this module available when building for vendor ramdisk.
 	// On device without a dedicated recovery partition, the module is only
@@ -171,13 +172,6 @@ func (mod *Module) SanitizePropDefined() bool {
 	return mod.sanitize != nil && mod.compiler != nil
 }
 
-func (mod *Module) IsDependencyRoot() bool {
-	if mod.compiler != nil {
-		return mod.compiler.isDependencyRoot()
-	}
-	panic("IsDependencyRoot called on a non-compiler Rust module")
-}
-
 func (mod *Module) IsPrebuilt() bool {
 	if _, ok := mod.compiler.(*prebuiltLibraryDecorator); ok {
 		return true
@@ -257,6 +251,13 @@ func (mod *Module) Binary() bool {
 		}
 	}
 	return false
+}
+
+func (mod *Module) StaticExecutable() bool {
+	if !mod.Binary() {
+		return false
+	}
+	return Bool(mod.compiler.(*binaryDecorator).Properties.Static_executable)
 }
 
 func (mod *Module) Object() bool {
@@ -441,7 +442,6 @@ type compiler interface {
 	SetDisabled()
 
 	stdLinkage(ctx *depsContext) RustLinkage
-	isDependencyRoot() bool
 
 	strippedOutputFilePath() android.OptionalPath
 }
@@ -990,7 +990,9 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 			case procMacroDepTag:
 				directProcMacroDeps = append(directProcMacroDeps, rustDep)
 				mod.Properties.AndroidMkProcMacroLibs = append(mod.Properties.AndroidMkProcMacroLibs, makeLibName)
-			case android.SourceDepTag:
+			}
+
+			if android.IsSourceDepTagWithOutputTag(depTag, "") {
 				// Since these deps are added in path_properties.go via AddDependencies, we need to ensure the correct
 				// OS/Arch variant is used.
 				var helper string
@@ -1097,6 +1099,7 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 
 				// Record baseLibName for snapshots.
 				mod.Properties.SnapshotSharedLibs = append(mod.Properties.SnapshotSharedLibs, cc.BaseLibName(depName))
+				mod.Properties.SnapshotStaticLibs = append(mod.Properties.SnapshotStaticLibs, cc.BaseLibName(depName))
 
 				mod.Properties.AndroidMkSharedLibs = append(mod.Properties.AndroidMkSharedLibs, makeLibName)
 				exportDep = true
@@ -1119,8 +1122,7 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 		}
 
 		if srcDep, ok := dep.(android.SourceFileProducer); ok {
-			switch depTag {
-			case android.SourceDepTag:
+			if android.IsSourceDepTagWithOutputTag(depTag, "") {
 				// These are usually genrules which don't have per-target variants.
 				directSrcDeps = append(directSrcDeps, srcDep)
 			}

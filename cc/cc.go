@@ -53,25 +53,9 @@ func RegisterCCBuildComponents(ctx android.RegistrationContext) {
 	})
 
 	ctx.PostDepsMutators(func(ctx android.RegisterMutatorsContext) {
-		ctx.TopDown("asan_deps", sanitizerDepsMutator(Asan))
-		ctx.BottomUp("asan", sanitizerMutator(Asan)).Parallel()
-
-		ctx.TopDown("hwasan_deps", sanitizerDepsMutator(Hwasan))
-		ctx.BottomUp("hwasan", sanitizerMutator(Hwasan)).Parallel()
-
-		ctx.TopDown("fuzzer_deps", sanitizerDepsMutator(Fuzzer))
-		ctx.BottomUp("fuzzer", sanitizerMutator(Fuzzer)).Parallel()
-
-		// cfi mutator shouldn't run before sanitizers that return true for
-		// incompatibleWithCfi()
-		ctx.TopDown("cfi_deps", sanitizerDepsMutator(cfi))
-		ctx.BottomUp("cfi", sanitizerMutator(cfi)).Parallel()
-
-		ctx.TopDown("scs_deps", sanitizerDepsMutator(scs))
-		ctx.BottomUp("scs", sanitizerMutator(scs)).Parallel()
-
-		ctx.TopDown("tsan_deps", sanitizerDepsMutator(tsan))
-		ctx.BottomUp("tsan", sanitizerMutator(tsan)).Parallel()
+		for _, san := range Sanitizers {
+			san.registerMutators(ctx)
+		}
 
 		ctx.TopDown("sanitize_runtime_deps", sanitizerRuntimeDepsMutator).Parallel()
 		ctx.BottomUp("sanitize_runtime", sanitizerRuntimeMutator).Parallel()
@@ -337,6 +321,7 @@ type BaseProperties struct {
 
 	// Used by vendor snapshot to record dependencies from snapshot modules.
 	SnapshotSharedLibs  []string `blueprint:"mutated"`
+	SnapshotStaticLibs  []string `blueprint:"mutated"`
 	SnapshotRuntimeLibs []string `blueprint:"mutated"`
 
 	Installable *bool
@@ -525,8 +510,6 @@ type DepsContext interface {
 // feature represents additional (optional) steps to building cc-related modules, such as invocation
 // of clang-tidy.
 type feature interface {
-	begin(ctx BaseModuleContext)
-	deps(ctx DepsContext, deps Deps) Deps
 	flags(ctx ModuleContext, flags Flags) Flags
 	props() []interface{}
 }
@@ -1118,17 +1101,6 @@ func (c *Module) Init() android.Module {
 	android.InitDefaultableModule(c)
 
 	return c
-}
-
-// Returns true for dependency roots (binaries)
-// TODO(ccross): also handle dlopenable libraries
-func (c *Module) IsDependencyRoot() bool {
-	if root, ok := c.linker.(interface {
-		isDependencyRoot() bool
-	}); ok {
-		return root.isDependencyRoot()
-	}
-	return false
 }
 
 func (c *Module) UseVndk() bool {
@@ -1898,20 +1870,11 @@ func (c *Module) begin(ctx BaseModuleContext) {
 	if c.coverage != nil {
 		c.coverage.begin(ctx)
 	}
-	if c.sabi != nil {
-		c.sabi.begin(ctx)
-	}
-	if c.vndkdep != nil {
-		c.vndkdep.begin(ctx)
-	}
 	if c.lto != nil {
 		c.lto.begin(ctx)
 	}
 	if c.pgo != nil {
 		c.pgo.begin(ctx)
-	}
-	for _, feature := range c.features {
-		feature.begin(ctx)
 	}
 	if ctx.useSdk() && c.IsSdkVariant() {
 		version, err := nativeApiLevelFromUser(ctx, ctx.sdkVersion())
@@ -1936,23 +1899,8 @@ func (c *Module) deps(ctx DepsContext) Deps {
 	if c.stl != nil {
 		deps = c.stl.deps(ctx, deps)
 	}
-	if c.sanitize != nil {
-		deps = c.sanitize.deps(ctx, deps)
-	}
 	if c.coverage != nil {
 		deps = c.coverage.deps(ctx, deps)
-	}
-	if c.sabi != nil {
-		deps = c.sabi.deps(ctx, deps)
-	}
-	if c.vndkdep != nil {
-		deps = c.vndkdep.deps(ctx, deps)
-	}
-	if c.lto != nil {
-		deps = c.lto.deps(ctx, deps)
-	}
-	for _, feature := range c.features {
-		deps = feature.deps(ctx, deps)
 	}
 
 	deps.WholeStaticLibs = android.LastUniqueStrings(deps.WholeStaticLibs)
@@ -2066,9 +2014,9 @@ func AddSharedLibDependenciesWithVersions(ctx android.BottomUpMutatorContext, mo
 }
 
 func GetSnapshot(c LinkableInterface, snapshotInfo **SnapshotInfo, actx android.BottomUpMutatorContext) SnapshotInfo {
-	// Only modules with BOARD_VNDK_VERSION uses snapshot.  Others use the zero value of
+	// Only device modules with BOARD_VNDK_VERSION uses snapshot.  Others use the zero value of
 	// SnapshotInfo, which provides no mappings.
-	if *snapshotInfo == nil {
+	if *snapshotInfo == nil && c.Device() {
 		// Only retrieve the snapshot on demand in order to avoid circular dependencies
 		// between the modules in the snapshot and the snapshot itself.
 		var snapshotModule []blueprint.Module
@@ -2077,16 +2025,16 @@ func GetSnapshot(c LinkableInterface, snapshotInfo **SnapshotInfo, actx android.
 		} else if recoverySnapshotVersion := actx.DeviceConfig().RecoverySnapshotVersion(); recoverySnapshotVersion != "current" && recoverySnapshotVersion != "" && c.InRecovery() {
 			snapshotModule = actx.AddVariationDependencies(nil, nil, "recovery_snapshot")
 		}
-		if len(snapshotModule) > 0 {
+		if len(snapshotModule) > 0 && snapshotModule[0] != nil {
 			snapshot := actx.OtherModuleProvider(snapshotModule[0], SnapshotInfoProvider).(SnapshotInfo)
 			*snapshotInfo = &snapshot
 			// republish the snapshot for use in later mutators on this module
 			actx.SetProvider(SnapshotInfoProvider, snapshot)
-		} else {
-			*snapshotInfo = &SnapshotInfo{}
 		}
 	}
-
+	if *snapshotInfo == nil {
+		*snapshotInfo = &SnapshotInfo{}
+	}
 	return **snapshotInfo
 }
 
@@ -2856,6 +2804,8 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 					c.Properties.AndroidMkStaticLibs = append(
 						c.Properties.AndroidMkStaticLibs, makeLibName)
 				}
+				// Record BaseLibName for snapshots.
+				c.Properties.SnapshotStaticLibs = append(c.Properties.SnapshotStaticLibs, BaseLibName(depName))
 			}
 		} else if !c.IsStubs() {
 			// Stubs lib doesn't link to the runtime lib, object, crt, etc. dependencies.
@@ -3175,6 +3125,13 @@ func (c *Module) Binary() bool {
 		binary() bool
 	}); ok {
 		return b.binary()
+	}
+	return false
+}
+
+func (c *Module) StaticExecutable() bool {
+	if b, ok := c.linker.(*binaryDecorator); ok {
+		return b.static()
 	}
 	return false
 }

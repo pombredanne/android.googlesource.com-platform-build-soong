@@ -14,11 +14,6 @@ type PlatformSanitizeable interface {
 	// SanitizePropDefined returns whether the Sanitizer properties struct for this module is defined.
 	SanitizePropDefined() bool
 
-	// IsDependencyRoot returns whether a module is of a type which cannot be a linkage dependency
-	// of another module. For example, cc_binary and rust_binary represent dependency roots as other
-	// modules cannot have linkage dependencies against these types.
-	IsDependencyRoot() bool
-
 	// IsSanitizerEnabled returns whether a sanitizer is enabled.
 	IsSanitizerEnabled(t SanitizerType) bool
 
@@ -88,11 +83,17 @@ type Snapshottable interface {
 	// SnapshotLibrary returns true if this module is a snapshot library.
 	IsSnapshotLibrary() bool
 
+	// EffectiveLicenseFiles returns the list of License files for this module.
+	EffectiveLicenseFiles() android.Paths
+
 	// SnapshotRuntimeLibs returns a list of libraries needed by this module at runtime but which aren't build dependencies.
 	SnapshotRuntimeLibs() []string
 
 	// SnapshotSharedLibs returns the list of shared library dependencies for this module.
 	SnapshotSharedLibs() []string
+
+	// SnapshotStaticLibs returns the list of static library dependencies for this module.
+	SnapshotStaticLibs() []string
 
 	// IsSnapshotPrebuilt returns true if this module is a snapshot prebuilt.
 	IsSnapshotPrebuilt() bool
@@ -124,6 +125,7 @@ type LinkableInterface interface {
 	IsPrebuilt() bool
 	Toc() android.OptionalPath
 
+	Device() bool
 	Host() bool
 
 	InRamdisk() bool
@@ -225,6 +227,9 @@ type LinkableInterface interface {
 
 	// Header returns true if this is a library headers module.
 	Header() bool
+
+	// StaticExecutable returns true if this is a binary module with "static_executable: true".
+	StaticExecutable() bool
 
 	// EverInstallable returns true if the module is ever installable
 	EverInstallable() bool
