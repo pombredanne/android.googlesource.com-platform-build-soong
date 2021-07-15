@@ -53,25 +53,9 @@ func RegisterCCBuildComponents(ctx android.RegistrationContext) {
 	})
 
 	ctx.PostDepsMutators(func(ctx android.RegisterMutatorsContext) {
-		ctx.TopDown("asan_deps", sanitizerDepsMutator(Asan))
-		ctx.BottomUp("asan", sanitizerMutator(Asan)).Parallel()
-
-		ctx.TopDown("hwasan_deps", sanitizerDepsMutator(Hwasan))
-		ctx.BottomUp("hwasan", sanitizerMutator(Hwasan)).Parallel()
-
-		ctx.TopDown("fuzzer_deps", sanitizerDepsMutator(Fuzzer))
-		ctx.BottomUp("fuzzer", sanitizerMutator(Fuzzer)).Parallel()
-
-		// cfi mutator shouldn't run before sanitizers that return true for
-		// incompatibleWithCfi()
-		ctx.TopDown("cfi_deps", sanitizerDepsMutator(cfi))
-		ctx.BottomUp("cfi", sanitizerMutator(cfi)).Parallel()
-
-		ctx.TopDown("scs_deps", sanitizerDepsMutator(scs))
-		ctx.BottomUp("scs", sanitizerMutator(scs)).Parallel()
-
-		ctx.TopDown("tsan_deps", sanitizerDepsMutator(tsan))
-		ctx.BottomUp("tsan", sanitizerMutator(tsan)).Parallel()
+		for _, san := range Sanitizers {
+			san.registerMutators(ctx)
+		}
 
 		ctx.TopDown("sanitize_runtime_deps", sanitizerRuntimeDepsMutator).Parallel()
 		ctx.BottomUp("sanitize_runtime", sanitizerRuntimeMutator).Parallel()
@@ -1119,17 +1103,6 @@ func (c *Module) Init() android.Module {
 	return c
 }
 
-// Returns true for dependency roots (binaries)
-// TODO(ccross): also handle dlopenable libraries
-func (c *Module) IsDependencyRoot() bool {
-	if root, ok := c.linker.(interface {
-		isDependencyRoot() bool
-	}); ok {
-		return root.isDependencyRoot()
-	}
-	return false
-}
-
 func (c *Module) UseVndk() bool {
 	return c.Properties.VndkVersion != ""
 }
@@ -2041,9 +2014,9 @@ func AddSharedLibDependenciesWithVersions(ctx android.BottomUpMutatorContext, mo
 }
 
 func GetSnapshot(c LinkableInterface, snapshotInfo **SnapshotInfo, actx android.BottomUpMutatorContext) SnapshotInfo {
-	// Only modules with BOARD_VNDK_VERSION uses snapshot.  Others use the zero value of
+	// Only device modules with BOARD_VNDK_VERSION uses snapshot.  Others use the zero value of
 	// SnapshotInfo, which provides no mappings.
-	if *snapshotInfo == nil {
+	if *snapshotInfo == nil && c.Device() {
 		// Only retrieve the snapshot on demand in order to avoid circular dependencies
 		// between the modules in the snapshot and the snapshot itself.
 		var snapshotModule []blueprint.Module
@@ -2052,16 +2025,16 @@ func GetSnapshot(c LinkableInterface, snapshotInfo **SnapshotInfo, actx android.
 		} else if recoverySnapshotVersion := actx.DeviceConfig().RecoverySnapshotVersion(); recoverySnapshotVersion != "current" && recoverySnapshotVersion != "" && c.InRecovery() {
 			snapshotModule = actx.AddVariationDependencies(nil, nil, "recovery_snapshot")
 		}
-		if len(snapshotModule) > 0 {
+		if len(snapshotModule) > 0 && snapshotModule[0] != nil {
 			snapshot := actx.OtherModuleProvider(snapshotModule[0], SnapshotInfoProvider).(SnapshotInfo)
 			*snapshotInfo = &snapshot
 			// republish the snapshot for use in later mutators on this module
 			actx.SetProvider(SnapshotInfoProvider, snapshot)
-		} else {
-			*snapshotInfo = &SnapshotInfo{}
 		}
 	}
-
+	if *snapshotInfo == nil {
+		*snapshotInfo = &SnapshotInfo{}
+	}
 	return **snapshotInfo
 }
 

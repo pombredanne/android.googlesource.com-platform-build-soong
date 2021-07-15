@@ -172,13 +172,6 @@ func (mod *Module) SanitizePropDefined() bool {
 	return mod.sanitize != nil && mod.compiler != nil
 }
 
-func (mod *Module) IsDependencyRoot() bool {
-	if mod.compiler != nil {
-		return mod.compiler.isDependencyRoot()
-	}
-	panic("IsDependencyRoot called on a non-compiler Rust module")
-}
-
 func (mod *Module) IsPrebuilt() bool {
 	if _, ok := mod.compiler.(*prebuiltLibraryDecorator); ok {
 		return true
@@ -449,7 +442,6 @@ type compiler interface {
 	SetDisabled()
 
 	stdLinkage(ctx *depsContext) RustLinkage
-	isDependencyRoot() bool
 
 	strippedOutputFilePath() android.OptionalPath
 }
@@ -998,7 +990,9 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 			case procMacroDepTag:
 				directProcMacroDeps = append(directProcMacroDeps, rustDep)
 				mod.Properties.AndroidMkProcMacroLibs = append(mod.Properties.AndroidMkProcMacroLibs, makeLibName)
-			case android.SourceDepTag:
+			}
+
+			if android.IsSourceDepTagWithOutputTag(depTag, "") {
 				// Since these deps are added in path_properties.go via AddDependencies, we need to ensure the correct
 				// OS/Arch variant is used.
 				var helper string
@@ -1128,8 +1122,7 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 		}
 
 		if srcDep, ok := dep.(android.SourceFileProducer); ok {
-			switch depTag {
-			case android.SourceDepTag:
+			if android.IsSourceDepTagWithOutputTag(depTag, "") {
 				// These are usually genrules which don't have per-target variants.
 				directSrcDeps = append(directSrcDeps, srcDep)
 			}
