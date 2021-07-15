@@ -46,11 +46,7 @@ func TestDumpRBEMetrics(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.description, func(t *testing.T) {
-			tmpDir, err := ioutil.TempDir("", "")
-			if err != nil {
-				t.Fatalf("failed to create a temp directory: %v", err)
-			}
-			defer os.RemoveAll(tmpDir)
+			tmpDir := t.TempDir()
 
 			rbeBootstrapCmd := filepath.Join(tmpDir, bootstrapCmd)
 			if err := ioutil.WriteFile(rbeBootstrapCmd, []byte(rbeBootstrapProgram), 0755); err != nil {
@@ -60,14 +56,7 @@ func TestDumpRBEMetrics(t *testing.T) {
 			env := Environment(tt.env)
 			env.Set("OUT_DIR", tmpDir)
 			env.Set("RBE_DIR", tmpDir)
-
-			tmpRBEDir, err := ioutil.TempDir("", "")
-			if err != nil {
-				t.Fatalf("failed to create a temp directory for RBE: %v", err)
-			}
-			defer os.RemoveAll(tmpRBEDir)
-			env.Set("RBE_output_dir", tmpRBEDir)
-
+			env.Set("RBE_output_dir", t.TempDir())
 			config := Config{&configImpl{
 				environ: &env,
 			}}
@@ -112,11 +101,7 @@ func TestDumpRBEMetricsErrors(t *testing.T) {
 				}
 			})
 
-			tmpDir, err := ioutil.TempDir("", "")
-			if err != nil {
-				t.Fatalf("failed to create a temp directory: %v", err)
-			}
-			defer os.RemoveAll(tmpDir)
+			tmpDir := t.TempDir()
 
 			rbeBootstrapCmd := filepath.Join(tmpDir, bootstrapCmd)
 			if err := ioutil.WriteFile(rbeBootstrapCmd, []byte(tt.bootstrapProgram), 0755); err != nil {
