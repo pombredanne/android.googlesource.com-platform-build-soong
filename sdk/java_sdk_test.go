@@ -175,6 +175,7 @@ func TestSnapshotWithJavaHeaderLibrary(t *testing.T) {
 			sdk_version: "none",
 			compile_dex: true,
 			host_supported: true,
+			permitted_packages: ["pkg.myjavalib"],
 		}
 	`)
 
@@ -188,6 +189,7 @@ java_import {
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     jars: ["java/myjavalib.jar"],
+    permitted_packages: ["pkg.myjavalib"],
 }
 `),
 		checkVersionedAndroidBpContents(`
@@ -199,6 +201,7 @@ java_import {
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     jars: ["java/myjavalib.jar"],
+    permitted_packages: ["pkg.myjavalib"],
 }
 
 sdk_snapshot {
@@ -437,6 +440,7 @@ func TestSnapshotWithJavaBootLibrary(t *testing.T) {
 			system_modules: "none",
 			sdk_version: "none",
 			compile_dex: true,
+			permitted_packages: ["pkg.myjavalib"],
 		}
 	`)
 
@@ -449,7 +453,8 @@ java_import {
     prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
+    jars: ["java_boot_libs/snapshot/jars/are/invalid/myjavalib.jar"],
+    permitted_packages: ["pkg.myjavalib"],
 }
 `),
 		checkVersionedAndroidBpContents(`
@@ -460,7 +465,8 @@ java_import {
     sdk_member_name: "myjavalib",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
+    jars: ["java_boot_libs/snapshot/jars/are/invalid/myjavalib.jar"],
+    permitted_packages: ["pkg.myjavalib"],
 }
 
 module_exports_snapshot {
@@ -468,9 +474,10 @@ module_exports_snapshot {
     visibility: ["//visibility:public"],
     java_boot_libs: ["myexports_myjavalib@current"],
 }
+
 `),
 		checkAllCopyRules(`
-.intermediates/myjavalib/android_common/withres/myjavalib.jar -> java/myjavalib.jar
+.intermediates/myexports/common_os/empty -> java_boot_libs/snapshot/jars/are/invalid/myjavalib.jar
 `),
 	)
 }
@@ -1045,6 +1052,7 @@ func TestSnapshotWithJavaSdkLibrary(t *testing.T) {
 			shared_library: false,
 			stubs_library_visibility: ["//other"],
 			stubs_source_visibility: ["//another"],
+			permitted_packages: ["pkg.myjavalib"],
 		}
 	`)
 
@@ -1058,6 +1066,7 @@ java_sdk_library_import {
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: false,
+    permitted_packages: ["pkg.myjavalib"],
     public: {
         jars: ["sdk_library/public/myjavalib-stubs.jar"],
         stub_srcs: ["sdk_library/public/myjavalib_stub_sources"],
@@ -1090,6 +1099,7 @@ java_sdk_library_import {
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:anyapex"],
     shared_library: false,
+    permitted_packages: ["pkg.myjavalib"],
     public: {
         jars: ["sdk_library/public/myjavalib-stubs.jar"],
         stub_srcs: ["sdk_library/public/myjavalib_stub_sources"],
