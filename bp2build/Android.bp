@@ -11,6 +11,7 @@ bootstrap_go_package {
         "build_conversion.go",
         "bzl_conversion.go",
         "configurability.go",
+        "compatibility.go",
         "constants.go",
         "conversion.go",
         "metrics.go",
@@ -18,6 +19,7 @@ bootstrap_go_package {
     ],
     deps: [
         "soong-android",
+        "soong-apex",
         "soong-bazel",
         "soong-cc",
         "soong-cc-config",
@@ -26,6 +28,7 @@ bootstrap_go_package {
         "soong-sh",
     ],
     testSrcs: [
+        "apex_conversion_test.go",
         "build_conversion_test.go",
         "bzl_conversion_test.go",
         "cc_library_conversion_test.go",

@@ -114,6 +114,7 @@ function create_mock_bazel() {
   symlink_directory prebuilts/jdk
 
   symlink_file WORKSPACE
+  symlink_file BUILD
   symlink_file tools/bazel
 }
 
@@ -123,6 +124,10 @@ run_bazel() {
 
 run_bp2build() {
   GENERATE_BAZEL_FILES=true build/soong/soong_ui.bash --make-mode --skip-ninja --skip-make --skip-soong-tests nothing
+}
+
+run_ninja() {
+  build/soong/soong_ui.bash --make-mode --skip-make --skip-soong-tests "$@"
 }
 
 info "Starting Soong integration test suite $(basename $0)"

@@ -19,7 +19,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -442,7 +441,7 @@ func TestBinary(t *testing.T) {
 		}
 	`)
 
-	buildOS := android.BuildOs.String()
+	buildOS := ctx.Config().BuildOS.String()
 
 	bar := ctx.ModuleForTests("bar", buildOS+"_common")
 	barJar := bar.Output("bar.jar").Output.String()
@@ -479,7 +478,7 @@ func TestTest(t *testing.T) {
 		}
 	`)
 
-	buildOS := android.BuildOs.String()
+	buildOS := ctx.Config().BuildOS.String()
 
 	foo := ctx.ModuleForTests("foo", buildOS+"_common").Module().(*TestHost)
 
@@ -524,7 +523,7 @@ func TestHostBinaryNoJavaDebugInfoOverride(t *testing.T) {
 	}
 
 	// check that -g is not overridden for host modules
-	buildOS := android.BuildOs.String()
+	buildOS := result.Config.BuildOS.String()
 	hostBinary := result.ModuleForTests("host_binary", buildOS+"_common")
 	hostJavaFlags := hostBinary.Module().VariablesForTests()["javacFlags"]
 	if strings.Contains(hostJavaFlags, "-g:source,lines") {
@@ -653,306 +652,6 @@ prebuilt_stubs_sources {
 			"stubs/sources/pkg/B.java",
 		})
 	})
-}
-
-func TestJavaSdkLibraryImport(t *testing.T) {
-	result := prepareForJavaTest.RunTestWithBp(t, `
-		java_library {
-			name: "foo",
-			srcs: ["a.java"],
-			libs: ["sdklib"],
-			sdk_version: "current",
-		}
-
-		java_library {
-			name: "foo.system",
-			srcs: ["a.java"],
-			libs: ["sdklib"],
-			sdk_version: "system_current",
-		}
-
-		java_library {
-			name: "foo.test",
-			srcs: ["a.java"],
-			libs: ["sdklib"],
-			sdk_version: "test_current",
-		}
-
-		java_sdk_library_import {
-			name: "sdklib",
-			public: {
-				jars: ["a.jar"],
-			},
-			system: {
-				jars: ["b.jar"],
-			},
-			test: {
-				jars: ["c.jar"],
-				stub_srcs: ["c.java"],
-			},
-		}
-		`)
-
-	for _, scope := range []string{"", ".system", ".test"} {
-		fooModule := result.ModuleForTests("foo"+scope, "android_common")
-		javac := fooModule.Rule("javac")
-
-		sdklibStubsJar := result.ModuleForTests("sdklib.stubs"+scope, "android_common").Rule("combineJar").Output
-		android.AssertStringDoesContain(t, "foo classpath", javac.Args["classpath"], sdklibStubsJar.String())
-	}
-
-	CheckModuleDependencies(t, result.TestContext, "sdklib", "android_common", []string{
-		`prebuilt_sdklib.stubs`,
-		`prebuilt_sdklib.stubs.source.test`,
-		`prebuilt_sdklib.stubs.system`,
-		`prebuilt_sdklib.stubs.test`,
-	})
-}
-
-func TestJavaSdkLibraryImport_WithSource(t *testing.T) {
-	result := android.GroupFixturePreparers(
-		prepareForJavaTest,
-		PrepareForTestWithJavaSdkLibraryFiles,
-		FixtureWithLastReleaseApis("sdklib"),
-	).RunTestWithBp(t, `
-		java_sdk_library {
-			name: "sdklib",
-			srcs: ["a.java"],
-			sdk_version: "none",
-			system_modules: "none",
-			public: {
-				enabled: true,
-			},
-		}
-
-		java_sdk_library_import {
-			name: "sdklib",
-			public: {
-				jars: ["a.jar"],
-			},
-		}
-		`)
-
-	CheckModuleDependencies(t, result.TestContext, "sdklib", "android_common", []string{
-		`dex2oatd`,
-		`prebuilt_sdklib`,
-		`sdklib.impl`,
-		`sdklib.stubs`,
-		`sdklib.stubs.source`,
-		`sdklib.xml`,
-	})
-
-	CheckModuleDependencies(t, result.TestContext, "prebuilt_sdklib", "android_common", []string{
-		`prebuilt_sdklib.stubs`,
-		`sdklib.impl`,
-		// This should be prebuilt_sdklib.stubs but is set to sdklib.stubs because the
-		// dependency is added after prebuilts may have been renamed and so has to use
-		// the renamed name.
-		`sdklib.xml`,
-	})
-}
-
-func TestJavaSdkLibraryImport_Preferred(t *testing.T) {
-	result := android.GroupFixturePreparers(
-		prepareForJavaTest,
-		PrepareForTestWithJavaSdkLibraryFiles,
-		FixtureWithLastReleaseApis("sdklib"),
-	).RunTestWithBp(t, `
-		java_sdk_library {
-			name: "sdklib",
-			srcs: ["a.java"],
-			sdk_version: "none",
-			system_modules: "none",
-			public: {
-				enabled: true,
-			},
-		}
-
-		java_sdk_library_import {
-			name: "sdklib",
-			prefer: true,
-			public: {
-				jars: ["a.jar"],
-			},
-		}
-		`)
-
-	CheckModuleDependencies(t, result.TestContext, "sdklib", "android_common", []string{
-		`dex2oatd`,
-		`prebuilt_sdklib`,
-		`sdklib.impl`,
-		`sdklib.stubs`,
-		`sdklib.stubs.source`,
-		`sdklib.xml`,
-	})
-
-	CheckModuleDependencies(t, result.TestContext, "prebuilt_sdklib", "android_common", []string{
-		`prebuilt_sdklib.stubs`,
-		`sdklib.impl`,
-		`sdklib.xml`,
-	})
-}
-
-func TestJavaSdkLibraryEnforce(t *testing.T) {
-	partitionToBpOption := func(partition string) string {
-		switch partition {
-		case "system":
-			return ""
-		case "vendor":
-			return "soc_specific: true,"
-		case "product":
-			return "product_specific: true,"
-		default:
-			panic("Invalid partition group name: " + partition)
-		}
-	}
-
-	type testConfigInfo struct {
-		libraryType                string
-		fromPartition              string
-		toPartition                string
-		enforceVendorInterface     bool
-		enforceProductInterface    bool
-		enforceJavaSdkLibraryCheck bool
-		allowList                  []string
-	}
-
-	createPreparer := func(info testConfigInfo) android.FixturePreparer {
-		bpFileTemplate := `
-			java_library {
-				name: "foo",
-				srcs: ["foo.java"],
-				libs: ["bar"],
-				sdk_version: "current",
-				%s
-			}
-
-			%s {
-				name: "bar",
-				srcs: ["bar.java"],
-				sdk_version: "current",
-				%s
-			}
-		`
-
-		bpFile := fmt.Sprintf(bpFileTemplate,
-			partitionToBpOption(info.fromPartition),
-			info.libraryType,
-			partitionToBpOption(info.toPartition))
-
-		return android.GroupFixturePreparers(
-			PrepareForTestWithJavaSdkLibraryFiles,
-			FixtureWithLastReleaseApis("bar"),
-			android.FixtureWithRootAndroidBp(bpFile),
-			android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-				variables.EnforceProductPartitionInterface = proptools.BoolPtr(info.enforceProductInterface)
-				if info.enforceVendorInterface {
-					variables.DeviceVndkVersion = proptools.StringPtr("current")
-				}
-				variables.EnforceInterPartitionJavaSdkLibrary = proptools.BoolPtr(info.enforceJavaSdkLibraryCheck)
-				variables.InterPartitionJavaLibraryAllowList = info.allowList
-			}),
-		)
-	}
-
-	runTest := func(t *testing.T, info testConfigInfo, expectedErrorPattern string) {
-		t.Run(fmt.Sprintf("%v", info), func(t *testing.T) {
-			errorHandler := android.FixtureExpectsNoErrors
-			if expectedErrorPattern != "" {
-				errorHandler = android.FixtureExpectsAtLeastOneErrorMatchingPattern(expectedErrorPattern)
-			}
-			android.GroupFixturePreparers(
-				prepareForJavaTest,
-				createPreparer(info),
-			).
-				ExtendWithErrorHandler(errorHandler).
-				RunTest(t)
-		})
-	}
-
-	errorMessage := "is not allowed across the partitions"
-
-	runTest(t, testConfigInfo{
-		libraryType:                "java_library",
-		fromPartition:              "product",
-		toPartition:                "system",
-		enforceVendorInterface:     true,
-		enforceProductInterface:    true,
-		enforceJavaSdkLibraryCheck: false,
-	}, "")
-
-	runTest(t, testConfigInfo{
-		libraryType:                "java_library",
-		fromPartition:              "product",
-		toPartition:                "system",
-		enforceVendorInterface:     true,
-		enforceProductInterface:    false,
-		enforceJavaSdkLibraryCheck: true,
-	}, "")
-
-	runTest(t, testConfigInfo{
-		libraryType:                "java_library",
-		fromPartition:              "product",
-		toPartition:                "system",
-		enforceVendorInterface:     true,
-		enforceProductInterface:    true,
-		enforceJavaSdkLibraryCheck: true,
-	}, errorMessage)
-
-	runTest(t, testConfigInfo{
-		libraryType:                "java_library",
-		fromPartition:              "vendor",
-		toPartition:                "system",
-		enforceVendorInterface:     true,
-		enforceProductInterface:    true,
-		enforceJavaSdkLibraryCheck: true,
-	}, errorMessage)
-
-	runTest(t, testConfigInfo{
-		libraryType:                "java_library",
-		fromPartition:              "vendor",
-		toPartition:                "system",
-		enforceVendorInterface:     true,
-		enforceProductInterface:    true,
-		enforceJavaSdkLibraryCheck: true,
-		allowList:                  []string{"bar"},
-	}, "")
-
-	runTest(t, testConfigInfo{
-		libraryType:                "java_library",
-		fromPartition:              "vendor",
-		toPartition:                "product",
-		enforceVendorInterface:     true,
-		enforceProductInterface:    true,
-		enforceJavaSdkLibraryCheck: true,
-	}, errorMessage)
-
-	runTest(t, testConfigInfo{
-		libraryType:                "java_sdk_library",
-		fromPartition:              "product",
-		toPartition:                "system",
-		enforceVendorInterface:     true,
-		enforceProductInterface:    true,
-		enforceJavaSdkLibraryCheck: true,
-	}, "")
-
-	runTest(t, testConfigInfo{
-		libraryType:                "java_sdk_library",
-		fromPartition:              "vendor",
-		toPartition:                "system",
-		enforceVendorInterface:     true,
-		enforceProductInterface:    true,
-		enforceJavaSdkLibraryCheck: true,
-	}, "")
-
-	runTest(t, testConfigInfo{
-		libraryType:                "java_sdk_library",
-		fromPartition:              "vendor",
-		toPartition:                "product",
-		enforceVendorInterface:     true,
-		enforceProductInterface:    true,
-		enforceJavaSdkLibraryCheck: true,
-	}, "")
 }
 
 func TestDefaults(t *testing.T) {
@@ -1411,521 +1110,6 @@ func TestJavaImport(t *testing.T) {
 	})
 }
 
-func TestJavaSdkLibrary(t *testing.T) {
-	result := android.GroupFixturePreparers(
-		prepareForJavaTest,
-		PrepareForTestWithJavaSdkLibraryFiles,
-		FixtureWithPrebuiltApis(map[string][]string{
-			"28": {"foo"},
-			"29": {"foo"},
-			"30": {"bar", "barney", "baz", "betty", "foo", "fred", "quuz", "wilma"},
-		}),
-	).RunTestWithBp(t, `
-		droiddoc_exported_dir {
-			name: "droiddoc-templates-sdk",
-			path: ".",
-		}
-		java_sdk_library {
-			name: "foo",
-			srcs: ["a.java", "b.java"],
-			api_packages: ["foo"],
-		}
-		java_sdk_library {
-			name: "bar",
-			srcs: ["a.java", "b.java"],
-			api_packages: ["bar"],
-		}
-		java_library {
-			name: "baz",
-			srcs: ["c.java"],
-			libs: ["foo", "bar.stubs"],
-			sdk_version: "system_current",
-		}
-		java_sdk_library {
-			name: "barney",
-			srcs: ["c.java"],
-			api_only: true,
-		}
-		java_sdk_library {
-			name: "betty",
-			srcs: ["c.java"],
-			shared_library: false,
-		}
-		java_sdk_library_import {
-		    name: "quuz",
-				public: {
-					jars: ["c.jar"],
-				},
-		}
-		java_sdk_library_import {
-		    name: "fred",
-				public: {
-					jars: ["b.jar"],
-				},
-		}
-		java_sdk_library_import {
-		    name: "wilma",
-				public: {
-					jars: ["b.jar"],
-				},
-				shared_library: false,
-		}
-		java_library {
-		    name: "qux",
-		    srcs: ["c.java"],
-		    libs: ["baz", "fred", "quuz.stubs", "wilma", "barney", "betty"],
-		    sdk_version: "system_current",
-		}
-		java_library {
-			name: "baz-test",
-			srcs: ["c.java"],
-			libs: ["foo"],
-			sdk_version: "test_current",
-		}
-		java_library {
-			name: "baz-29",
-			srcs: ["c.java"],
-			libs: ["foo"],
-			sdk_version: "system_29",
-		}
-		java_library {
-			name: "baz-module-30",
-			srcs: ["c.java"],
-			libs: ["foo"],
-			sdk_version: "module_30",
-		}
-		`)
-
-	// check the existence of the internal modules
-	result.ModuleForTests("foo", "android_common")
-	result.ModuleForTests(apiScopePublic.stubsLibraryModuleName("foo"), "android_common")
-	result.ModuleForTests(apiScopeSystem.stubsLibraryModuleName("foo"), "android_common")
-	result.ModuleForTests(apiScopeTest.stubsLibraryModuleName("foo"), "android_common")
-	result.ModuleForTests(apiScopePublic.stubsSourceModuleName("foo"), "android_common")
-	result.ModuleForTests(apiScopeSystem.stubsSourceModuleName("foo"), "android_common")
-	result.ModuleForTests(apiScopeTest.stubsSourceModuleName("foo"), "android_common")
-	result.ModuleForTests("foo"+sdkXmlFileSuffix, "android_common")
-	result.ModuleForTests("foo.api.public.28", "")
-	result.ModuleForTests("foo.api.system.28", "")
-	result.ModuleForTests("foo.api.test.28", "")
-
-	bazJavac := result.ModuleForTests("baz", "android_common").Rule("javac")
-	// tests if baz is actually linked to the stubs lib
-	android.AssertStringDoesContain(t, "baz javac classpath", bazJavac.Args["classpath"], "foo.stubs.system.jar")
-	// ... and not to the impl lib
-	android.AssertStringDoesNotContain(t, "baz javac classpath", bazJavac.Args["classpath"], "foo.jar")
-	// test if baz is not linked to the system variant of foo
-	android.AssertStringDoesNotContain(t, "baz javac classpath", bazJavac.Args["classpath"], "foo.stubs.jar")
-
-	bazTestJavac := result.ModuleForTests("baz-test", "android_common").Rule("javac")
-	// tests if baz-test is actually linked to the test stubs lib
-	android.AssertStringDoesContain(t, "baz-test javac classpath", bazTestJavac.Args["classpath"], "foo.stubs.test.jar")
-
-	baz29Javac := result.ModuleForTests("baz-29", "android_common").Rule("javac")
-	// tests if baz-29 is actually linked to the system 29 stubs lib
-	android.AssertStringDoesContain(t, "baz-29 javac classpath", baz29Javac.Args["classpath"], "prebuilts/sdk/29/system/foo.jar")
-
-	bazModule30Javac := result.ModuleForTests("baz-module-30", "android_common").Rule("javac")
-	// tests if "baz-module-30" is actually linked to the module 30 stubs lib
-	android.AssertStringDoesContain(t, "baz-module-30 javac classpath", bazModule30Javac.Args["classpath"], "prebuilts/sdk/30/module-lib/foo.jar")
-
-	// test if baz has exported SDK lib names foo and bar to qux
-	qux := result.ModuleForTests("qux", "android_common")
-	if quxLib, ok := qux.Module().(*Library); ok {
-		sdkLibs := quxLib.ClassLoaderContexts().UsesLibs()
-		android.AssertDeepEquals(t, "qux exports", []string{"foo", "bar", "fred", "quuz"}, sdkLibs)
-	}
-}
-
-func TestJavaSdkLibrary_StubOrImplOnlyLibs(t *testing.T) {
-	result := android.GroupFixturePreparers(
-		prepareForJavaTest,
-		PrepareForTestWithJavaSdkLibraryFiles,
-		FixtureWithLastReleaseApis("sdklib"),
-	).RunTestWithBp(t, `
-		java_sdk_library {
-			name: "sdklib",
-			srcs: ["a.java"],
-			libs: ["lib"],
-			static_libs: ["static-lib"],
-			impl_only_libs: ["impl-only-lib"],
-			stub_only_libs: ["stub-only-lib"],
-			stub_only_static_libs: ["stub-only-static-lib"],
-		}
-		java_defaults {
-			name: "defaults",
-			srcs: ["a.java"],
-			sdk_version: "current",
-		}
-		java_library { name: "lib", defaults: ["defaults"] }
-		java_library { name: "static-lib", defaults: ["defaults"] }
-		java_library { name: "impl-only-lib", defaults: ["defaults"] }
-		java_library { name: "stub-only-lib", defaults: ["defaults"] }
-		java_library { name: "stub-only-static-lib", defaults: ["defaults"] }
-		`)
-	var expectations = []struct {
-		lib               string
-		on_impl_classpath bool
-		on_stub_classpath bool
-		in_impl_combined  bool
-		in_stub_combined  bool
-	}{
-		{lib: "lib", on_impl_classpath: true},
-		{lib: "static-lib", in_impl_combined: true},
-		{lib: "impl-only-lib", on_impl_classpath: true},
-		{lib: "stub-only-lib", on_stub_classpath: true},
-		{lib: "stub-only-static-lib", in_stub_combined: true},
-	}
-	verify := func(sdklib, dep string, cp, combined bool) {
-		sdklibCp := result.ModuleForTests(sdklib, "android_common").Rule("javac").Args["classpath"]
-		expected := cp || combined // Every combined jar is also on the classpath.
-		android.AssertStringContainsEquals(t, "bad classpath for "+sdklib, sdklibCp, "/"+dep+".jar", expected)
-
-		combineJarInputs := result.ModuleForTests(sdklib, "android_common").Rule("combineJar").Inputs.Strings()
-		depPath := filepath.Join("out", "soong", ".intermediates", dep, "android_common", "turbine-combined", dep+".jar")
-		android.AssertStringListContainsEquals(t, "bad combined inputs for "+sdklib, combineJarInputs, depPath, combined)
-	}
-	for _, expectation := range expectations {
-		verify("sdklib", expectation.lib, expectation.on_impl_classpath, expectation.in_impl_combined)
-		verify("sdklib.impl", expectation.lib, expectation.on_impl_classpath, expectation.in_impl_combined)
-
-		stubName := apiScopePublic.stubsLibraryModuleName("sdklib")
-		verify(stubName, expectation.lib, expectation.on_stub_classpath, expectation.in_stub_combined)
-	}
-}
-
-func TestJavaSdkLibrary_DoNotAccessImplWhenItIsNotBuilt(t *testing.T) {
-	result := android.GroupFixturePreparers(
-		prepareForJavaTest,
-		PrepareForTestWithJavaSdkLibraryFiles,
-		FixtureWithLastReleaseApis("foo"),
-	).RunTestWithBp(t, `
-		java_sdk_library {
-			name: "foo",
-			srcs: ["a.java"],
-			api_only: true,
-			public: {
-				enabled: true,
-			},
-		}
-
-		java_library {
-			name: "bar",
-			srcs: ["b.java"],
-			libs: ["foo"],
-		}
-		`)
-
-	// The bar library should depend on the stubs jar.
-	barLibrary := result.ModuleForTests("bar", "android_common").Rule("javac")
-	if expected, actual := `^-classpath .*:out/soong/[^:]*/turbine-combined/foo\.stubs\.jar$`, barLibrary.Args["classpath"]; !regexp.MustCompile(expected).MatchString(actual) {
-		t.Errorf("expected %q, found %#q", expected, actual)
-	}
-}
-
-func TestJavaSdkLibrary_UseSourcesFromAnotherSdkLibrary(t *testing.T) {
-	android.GroupFixturePreparers(
-		prepareForJavaTest,
-		PrepareForTestWithJavaSdkLibraryFiles,
-		FixtureWithLastReleaseApis("foo"),
-	).RunTestWithBp(t, `
-		java_sdk_library {
-			name: "foo",
-			srcs: ["a.java"],
-			api_packages: ["foo"],
-			public: {
-				enabled: true,
-			},
-		}
-
-		java_library {
-			name: "bar",
-			srcs: ["b.java", ":foo{.public.stubs.source}"],
-		}
-		`)
-}
-
-func TestJavaSdkLibrary_AccessOutputFiles_MissingScope(t *testing.T) {
-	android.GroupFixturePreparers(
-		prepareForJavaTest,
-		PrepareForTestWithJavaSdkLibraryFiles,
-		FixtureWithLastReleaseApis("foo"),
-	).
-		ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(`"foo" does not provide api scope system`)).
-		RunTestWithBp(t, `
-		java_sdk_library {
-			name: "foo",
-			srcs: ["a.java"],
-			api_packages: ["foo"],
-			public: {
-				enabled: true,
-			},
-		}
-
-		java_library {
-			name: "bar",
-			srcs: ["b.java", ":foo{.system.stubs.source}"],
-		}
-		`)
-}
-
-func TestJavaSdkLibrary_Deps(t *testing.T) {
-	result := android.GroupFixturePreparers(
-		prepareForJavaTest,
-		PrepareForTestWithJavaSdkLibraryFiles,
-		FixtureWithLastReleaseApis("sdklib"),
-	).RunTestWithBp(t, `
-		java_sdk_library {
-			name: "sdklib",
-			srcs: ["a.java"],
-			sdk_version: "none",
-			system_modules: "none",
-			public: {
-				enabled: true,
-			},
-		}
-		`)
-
-	CheckModuleDependencies(t, result.TestContext, "sdklib", "android_common", []string{
-		`dex2oatd`,
-		`sdklib.impl`,
-		`sdklib.stubs`,
-		`sdklib.stubs.source`,
-		`sdklib.xml`,
-	})
-}
-
-func TestJavaSdkLibraryImport_AccessOutputFiles(t *testing.T) {
-	prepareForJavaTest.RunTestWithBp(t, `
-		java_sdk_library_import {
-			name: "foo",
-			public: {
-				jars: ["a.jar"],
-				stub_srcs: ["a.java"],
-				current_api: "api/current.txt",
-				removed_api: "api/removed.txt",
-			},
-		}
-
-		java_library {
-			name: "bar",
-			srcs: [":foo{.public.stubs.source}"],
-			java_resources: [
-				":foo{.public.api.txt}",
-				":foo{.public.removed-api.txt}",
-			],
-		}
-		`)
-}
-
-func TestJavaSdkLibraryImport_AccessOutputFiles_Invalid(t *testing.T) {
-	bp := `
-		java_sdk_library_import {
-			name: "foo",
-			public: {
-				jars: ["a.jar"],
-			},
-		}
-		`
-
-	t.Run("stubs.source", func(t *testing.T) {
-		prepareForJavaTest.
-			ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(`stubs.source not available for api scope public`)).
-			RunTestWithBp(t, bp+`
-				java_library {
-					name: "bar",
-					srcs: [":foo{.public.stubs.source}"],
-					java_resources: [
-						":foo{.public.api.txt}",
-						":foo{.public.removed-api.txt}",
-					],
-				}
-			`)
-	})
-
-	t.Run("api.txt", func(t *testing.T) {
-		prepareForJavaTest.
-			ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(`api.txt not available for api scope public`)).
-			RunTestWithBp(t, bp+`
-				java_library {
-					name: "bar",
-					srcs: ["a.java"],
-					java_resources: [
-						":foo{.public.api.txt}",
-					],
-				}
-			`)
-	})
-
-	t.Run("removed-api.txt", func(t *testing.T) {
-		prepareForJavaTest.
-			ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(`removed-api.txt not available for api scope public`)).
-			RunTestWithBp(t, bp+`
-				java_library {
-					name: "bar",
-					srcs: ["a.java"],
-					java_resources: [
-						":foo{.public.removed-api.txt}",
-					],
-				}
-			`)
-	})
-}
-
-func TestJavaSdkLibrary_InvalidScopes(t *testing.T) {
-	prepareForJavaTest.
-		ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(`module "foo": enabled api scope "system" depends on disabled scope "public"`)).
-		RunTestWithBp(t, `
-			java_sdk_library {
-				name: "foo",
-				srcs: ["a.java", "b.java"],
-				api_packages: ["foo"],
-				// Explicitly disable public to test the check that ensures the set of enabled
-				// scopes is consistent.
-				public: {
-					enabled: false,
-				},
-				system: {
-					enabled: true,
-				},
-			}
-		`)
-}
-
-func TestJavaSdkLibrary_SdkVersion_ForScope(t *testing.T) {
-	android.GroupFixturePreparers(
-		prepareForJavaTest,
-		PrepareForTestWithJavaSdkLibraryFiles,
-		FixtureWithLastReleaseApis("foo"),
-	).RunTestWithBp(t, `
-		java_sdk_library {
-			name: "foo",
-			srcs: ["a.java", "b.java"],
-			api_packages: ["foo"],
-			system: {
-				enabled: true,
-				sdk_version: "module_current",
-			},
-		}
-		`)
-}
-
-func TestJavaSdkLibrary_ModuleLib(t *testing.T) {
-	android.GroupFixturePreparers(
-		prepareForJavaTest,
-		PrepareForTestWithJavaSdkLibraryFiles,
-		FixtureWithLastReleaseApis("foo"),
-	).RunTestWithBp(t, `
-		java_sdk_library {
-			name: "foo",
-			srcs: ["a.java", "b.java"],
-			api_packages: ["foo"],
-			system: {
-				enabled: true,
-			},
-			module_lib: {
-				enabled: true,
-			},
-		}
-		`)
-}
-
-func TestJavaSdkLibrary_SystemServer(t *testing.T) {
-	android.GroupFixturePreparers(
-		prepareForJavaTest,
-		PrepareForTestWithJavaSdkLibraryFiles,
-		FixtureWithLastReleaseApis("foo"),
-	).RunTestWithBp(t, `
-		java_sdk_library {
-			name: "foo",
-			srcs: ["a.java", "b.java"],
-			api_packages: ["foo"],
-			system: {
-				enabled: true,
-			},
-			system_server: {
-				enabled: true,
-			},
-		}
-		`)
-}
-
-func TestJavaSdkLibrary_MissingScope(t *testing.T) {
-	prepareForJavaTest.
-		ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(`requires api scope module-lib from foo but it only has \[\] available`)).
-		RunTestWithBp(t, `
-			java_sdk_library {
-				name: "foo",
-				srcs: ["a.java"],
-				public: {
-					enabled: false,
-				},
-			}
-
-			java_library {
-				name: "baz",
-				srcs: ["a.java"],
-				libs: ["foo"],
-				sdk_version: "module_current",
-			}
-		`)
-}
-
-func TestJavaSdkLibrary_FallbackScope(t *testing.T) {
-	android.GroupFixturePreparers(
-		prepareForJavaTest,
-		PrepareForTestWithJavaSdkLibraryFiles,
-		FixtureWithLastReleaseApis("foo"),
-	).RunTestWithBp(t, `
-		java_sdk_library {
-			name: "foo",
-			srcs: ["a.java"],
-			system: {
-				enabled: true,
-			},
-		}
-
-		java_library {
-			name: "baz",
-			srcs: ["a.java"],
-			libs: ["foo"],
-			// foo does not have module-lib scope so it should fallback to system
-			sdk_version: "module_current",
-		}
-		`)
-}
-
-func TestJavaSdkLibrary_DefaultToStubs(t *testing.T) {
-	result := android.GroupFixturePreparers(
-		prepareForJavaTest,
-		PrepareForTestWithJavaSdkLibraryFiles,
-		FixtureWithLastReleaseApis("foo"),
-	).RunTestWithBp(t, `
-		java_sdk_library {
-			name: "foo",
-			srcs: ["a.java"],
-			system: {
-				enabled: true,
-			},
-			default_to_stubs: true,
-		}
-
-		java_library {
-			name: "baz",
-			srcs: ["a.java"],
-			libs: ["foo"],
-			// does not have sdk_version set, should fallback to module,
-			// which will then fallback to system because the module scope
-			// is not enabled.
-		}
-		`)
-	// The baz library should depend on the system stubs jar.
-	bazLibrary := result.ModuleForTests("baz", "android_common").Rule("javac")
-	if expected, actual := `^-classpath .*:out/soong/[^:]*/turbine-combined/foo\.stubs.system\.jar$`, bazLibrary.Args["classpath"]; !regexp.MustCompile(expected).MatchString(actual) {
-		t.Errorf("expected %q, found %#q", expected, actual)
-	}
-}
-
 var compilerFlagsTestCases = []struct {
 	in  string
 	out bool
@@ -2187,7 +1371,7 @@ func TestDataNativeBinaries(t *testing.T) {
 		}
 	`)
 
-	buildOS := android.BuildOs.String()
+	buildOS := ctx.Config().BuildOS.String()
 
 	test := ctx.ModuleForTests("foo", buildOS+"_common").Module().(*TestHost)
 	entries := android.AndroidMkEntriesForTest(t, ctx, test)[0]
@@ -2203,8 +1387,100 @@ func TestDefaultInstallable(t *testing.T) {
 		}
 	`)
 
-	buildOS := android.BuildOs.String()
+	buildOS := ctx.Config().BuildOS.String()
 	module := ctx.ModuleForTests("foo", buildOS+"_common").Module().(*TestHost)
 	assertDeepEquals(t, "Default installable value should be true.", proptools.BoolPtr(true),
 		module.properties.Installable)
+}
+
+func TestErrorproneEnabled(t *testing.T) {
+	ctx, _ := testJava(t, `
+		java_library {
+			name: "foo",
+			srcs: ["a.java"],
+			errorprone: {
+				enabled: true,
+			},
+		}
+	`)
+
+	javac := ctx.ModuleForTests("foo", "android_common").Description("javac")
+
+	// Test that the errorprone plugins are passed to javac
+	expectedSubstring := "-Xplugin:ErrorProne"
+	if !strings.Contains(javac.Args["javacFlags"], expectedSubstring) {
+		t.Errorf("expected javacFlags to contain %q, got %q", expectedSubstring, javac.Args["javacFlags"])
+	}
+
+	// Modules with errorprone { enabled: true } will include errorprone checks
+	// in the main javac build rule. Only when RUN_ERROR_PRONE is true will
+	// the explicit errorprone build rule be created.
+	errorprone := ctx.ModuleForTests("foo", "android_common").MaybeDescription("errorprone")
+	if errorprone.RuleParams.Description != "" {
+		t.Errorf("expected errorprone build rule to not exist, but it did")
+	}
+}
+
+func TestErrorproneDisabled(t *testing.T) {
+	bp := `
+		java_library {
+			name: "foo",
+			srcs: ["a.java"],
+			errorprone: {
+				enabled: false,
+			},
+		}
+	`
+	ctx := android.GroupFixturePreparers(
+		PrepareForTestWithJavaDefaultModules,
+		android.FixtureMergeEnv(map[string]string{
+			"RUN_ERROR_PRONE": "true",
+		}),
+	).RunTestWithBp(t, bp)
+
+	javac := ctx.ModuleForTests("foo", "android_common").Description("javac")
+
+	// Test that the errorprone plugins are not passed to javac, like they would
+	// be if enabled was true.
+	expectedSubstring := "-Xplugin:ErrorProne"
+	if strings.Contains(javac.Args["javacFlags"], expectedSubstring) {
+		t.Errorf("expected javacFlags to not contain %q, got %q", expectedSubstring, javac.Args["javacFlags"])
+	}
+
+	// Check that no errorprone build rule is created, like there would be
+	// if enabled was unset and RUN_ERROR_PRONE was true.
+	errorprone := ctx.ModuleForTests("foo", "android_common").MaybeDescription("errorprone")
+	if errorprone.RuleParams.Description != "" {
+		t.Errorf("expected errorprone build rule to not exist, but it did")
+	}
+}
+
+func TestErrorproneEnabledOnlyByEnvironmentVariable(t *testing.T) {
+	bp := `
+		java_library {
+			name: "foo",
+			srcs: ["a.java"],
+		}
+	`
+	ctx := android.GroupFixturePreparers(
+		PrepareForTestWithJavaDefaultModules,
+		android.FixtureMergeEnv(map[string]string{
+			"RUN_ERROR_PRONE": "true",
+		}),
+	).RunTestWithBp(t, bp)
+
+	javac := ctx.ModuleForTests("foo", "android_common").Description("javac")
+	errorprone := ctx.ModuleForTests("foo", "android_common").Description("errorprone")
+
+	// Check that the errorprone plugins are not passed to javac, because they
+	// will instead be passed to the separate errorprone compilation
+	expectedSubstring := "-Xplugin:ErrorProne"
+	if strings.Contains(javac.Args["javacFlags"], expectedSubstring) {
+		t.Errorf("expected javacFlags to not contain %q, got %q", expectedSubstring, javac.Args["javacFlags"])
+	}
+
+	// Check that the errorprone plugin is enabled
+	if !strings.Contains(errorprone.Args["javacFlags"], expectedSubstring) {
+		t.Errorf("expected errorprone to contain %q, got %q", expectedSubstring, javac.Args["javacFlags"])
+	}
 }

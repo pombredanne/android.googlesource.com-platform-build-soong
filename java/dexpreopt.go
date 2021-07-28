@@ -141,10 +141,9 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Wr
 		}
 	}
 
-	// If it is neither app nor test, make config files regardless of its dexpreopt setting.
+	// If it is test, make config files regardless of its dexpreopt setting.
 	// The config files are required for apps defined in make which depend on the lib.
-	// TODO(b/158843648): The config for apps should be generated as well regardless of setting.
-	if (d.isApp || d.isTest) && d.dexpreoptDisabled(ctx) {
+	if d.isTest && d.dexpreoptDisabled(ctx) {
 		return
 	}
 
@@ -184,7 +183,7 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Wr
 		imagesDeps = append(imagesDeps, variant.imagesDeps)
 	}
 	// The image locations for all Android variants are identical.
-	hostImageLocations := bootImage.getAnyAndroidVariant().imageLocations()
+	hostImageLocations, deviceImageLocations := bootImage.getAnyAndroidVariant().imageLocations()
 
 	var profileClassListing android.OptionalPath
 	var profileBootListing android.OptionalPath
@@ -224,9 +223,10 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Wr
 		ProvidesUsesLibrary:            providesUsesLib,
 		ClassLoaderContexts:            d.classLoaderContexts,
 
-		Archs:                         archs,
-		DexPreoptImagesDeps:           imagesDeps,
-		DexPreoptImageLocationsOnHost: hostImageLocations,
+		Archs:                           archs,
+		DexPreoptImagesDeps:             imagesDeps,
+		DexPreoptImageLocationsOnHost:   hostImageLocations,
+		DexPreoptImageLocationsOnDevice: deviceImageLocations,
 
 		PreoptBootClassPathDexFiles:     dexFiles.Paths(),
 		PreoptBootClassPathDexLocations: dexLocations,

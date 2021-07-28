@@ -183,9 +183,8 @@ func (p *prebuiltLibraryLinker) link(ctx ModuleContext,
 			})
 
 			ctx.SetProvider(SharedLibraryInfoProvider, SharedLibraryInfo{
-				SharedLibrary:           outputFile,
-				UnstrippedSharedLibrary: p.unstrippedOutputFile,
-				Target:                  ctx.Target(),
+				SharedLibrary: outputFile,
+				Target:        ctx.Target(),
 
 				TableOfContents: p.tocFile,
 			})
@@ -389,8 +388,8 @@ func (p *prebuiltObjectLinker) object() bool {
 	return true
 }
 
-func newPrebuiltObject() *Module {
-	module := newObject()
+func NewPrebuiltObject(hod android.HostOrDeviceSupported) *Module {
+	module := newObject(hod)
 	prebuilt := &prebuiltObjectLinker{
 		objectLinker: objectLinker{
 			baseLinker: NewBaseLinker(nil),
@@ -404,7 +403,7 @@ func newPrebuiltObject() *Module {
 }
 
 func prebuiltObjectFactory() android.Module {
-	module := newPrebuiltObject()
+	module := NewPrebuiltObject(android.HostAndDeviceSupported)
 	return module.Init()
 }
 

@@ -289,10 +289,6 @@ func (compiler *baseCompiler) CargoOutDir() android.OptionalPath {
 	return android.OptionalPathForPath(compiler.cargoOutDir)
 }
 
-func (compiler *baseCompiler) isDependencyRoot() bool {
-	return false
-}
-
 func (compiler *baseCompiler) strippedOutputFilePath() android.OptionalPath {
 	return compiler.strippedOutputFile
 }
@@ -309,7 +305,7 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	if !Bool(compiler.Properties.No_stdlibs) {
 		for _, stdlib := range config.Stdlibs {
 			// If we're building for the primary arch of the build host, use the compiler's stdlibs
-			if ctx.Target().Os == android.BuildOs {
+			if ctx.Target().Os == ctx.Config().BuildOS {
 				stdlib = stdlib + "_" + ctx.toolchain().RustTriple()
 			}
 			deps.Stdlibs = append(deps.Stdlibs, stdlib)

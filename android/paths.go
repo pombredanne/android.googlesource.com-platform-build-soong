@@ -88,7 +88,8 @@ func GlobFiles(ctx EarlyModulePathContext, globPattern string, excludes []string
 // the Path methods that rely on module dependencies having been resolved.
 type ModuleWithDepsPathContext interface {
 	EarlyModulePathContext
-	GetDirectDepWithTag(name string, tag blueprint.DependencyTag) blueprint.Module
+	VisitDirectDepsBlueprint(visit func(blueprint.Module))
+	OtherModuleDependencyTag(m blueprint.Module) blueprint.DependencyTag
 }
 
 // ModuleMissingDepsPathContext is a subset of *ModuleContext methods required by
@@ -446,7 +447,7 @@ func (p OutputPaths) Strings() []string {
 // If the dependency is not found, a missingErrorDependency is returned.
 // If the module dependency is not a SourceFileProducer or OutputFileProducer, appropriate errors will be returned.
 func getPathsFromModuleDep(ctx ModuleWithDepsPathContext, path, moduleName, tag string) (Paths, error) {
-	module := ctx.GetDirectDepWithTag(moduleName, sourceOrOutputDepTag(tag))
+	module := GetModuleFromPathDep(ctx, moduleName, tag)
 	if module == nil {
 		return nil, missingDependencyError{[]string{moduleName}}
 	}
@@ -472,6 +473,39 @@ func getPathsFromModuleDep(ctx ModuleWithDepsPathContext, path, moduleName, tag 
 	} else {
 		return nil, fmt.Errorf("path dependency %q is not a source file producing module", path)
 	}
+}
+
+// GetModuleFromPathDep will return the module that was added as a dependency automatically for
+// properties tagged with `android:"path"` or manually using ExtractSourceDeps or
+// ExtractSourcesDeps.
+//
+// The moduleName and tag supplied to this should be the values returned from SrcIsModuleWithTag.
+// Or, if no tag is expected then the moduleName should be the value returned by  SrcIsModule and
+// the tag must be "".
+//
+// If tag is "" then the returned module will be the dependency that was added for ":moduleName".
+// Otherwise, it is the dependency that was added for ":moduleName{tag}".
+func GetModuleFromPathDep(ctx ModuleWithDepsPathContext, moduleName, tag string) blueprint.Module {
+	var found blueprint.Module
+	// The sourceOrOutputDepTag uniquely identifies the module dependency as it contains both the
+	// module name and the tag. Dependencies added automatically for properties tagged with
+	// `android:"path"` are deduped so are guaranteed to be unique. It is possible for duplicate
+	// dependencies to be added manually using ExtractSourcesDeps or ExtractSourceDeps but even then
+	// it will always be the case that the dependencies will be identical, i.e. the same tag and same
+	// moduleName referring to the same dependency module.
+	//
+	// It does not matter whether the moduleName is a fully qualified name or if the module
+	// dependency is a prebuilt module. All that matters is the same information is supplied to
+	// create the tag here as was supplied to create the tag when the dependency was added so that
+	// this finds the matching dependency module.
+	expectedTag := sourceOrOutputDepTag(moduleName, tag)
+	ctx.VisitDirectDepsBlueprint(func(module blueprint.Module) {
+		depTag := ctx.OtherModuleDependencyTag(module)
+		if depTag == expectedTag {
+			found = module
+		}
+	})
+	return found
 }
 
 // PathsAndMissingDepsForModuleSrcExcludes returns a Paths{} containing the resolved references in
@@ -1252,10 +1286,11 @@ var _ resPathProvider = SourcePath{}
 // PathForModuleSrc returns a Path representing the paths... under the
 // module's local source directory.
 func PathForModuleSrc(ctx ModuleMissingDepsPathContext, pathComponents ...string) Path {
-	p, err := validatePath(pathComponents...)
-	if err != nil {
-		reportPathError(ctx, err)
-	}
+	// Just join the components textually just to make sure that it does not corrupt a fully qualified
+	// module reference, e.g. if the pathComponents is "://other:foo" then using filepath.Join() or
+	// validatePath() will corrupt it, e.g. replace "//" with "/". If the path is not a module
+	// reference then it will be validated by expandOneSrcPath anyway when it calls expandOneSrcPath.
+	p := strings.Join(pathComponents, string(filepath.Separator))
 	paths, err := expandOneSrcPath(ctx, p, nil)
 	if err != nil {
 		if depErr, ok := err.(missingDependencyError); ok {
@@ -1591,6 +1626,18 @@ func (p InstallPath) ToMakePath() InstallPath {
 // PathForModuleInstall returns a Path representing the install path for the
 // module appended with paths...
 func PathForModuleInstall(ctx ModuleInstallPathContext, pathComponents ...string) InstallPath {
+	os, arch := osAndArch(ctx)
+	partition := modulePartition(ctx, os)
+	return makePathForInstall(ctx, os, arch, partition, ctx.Debug(), pathComponents...)
+}
+
+// PathForModuleInPartitionInstall is similar to PathForModuleInstall but partition is provided by the caller
+func PathForModuleInPartitionInstall(ctx ModuleInstallPathContext, partition string, pathComponents ...string) InstallPath {
+	os, arch := osAndArch(ctx)
+	return makePathForInstall(ctx, os, arch, partition, ctx.Debug(), pathComponents...)
+}
+
+func osAndArch(ctx ModuleInstallPathContext) (OsType, ArchType) {
 	os := ctx.Os()
 	arch := ctx.Arch().ArchType
 	forceOS, forceArch := ctx.InstallForceOS()
@@ -1600,14 +1647,14 @@ func PathForModuleInstall(ctx ModuleInstallPathContext, pathComponents ...string
 	if forceArch != nil {
 		arch = *forceArch
 	}
-	partition := modulePartition(ctx, os)
+	return os, arch
+}
 
-	ret := pathForInstall(ctx, os, arch, partition, ctx.Debug(), pathComponents...)
-
+func makePathForInstall(ctx ModuleInstallPathContext, os OsType, arch ArchType, partition string, debug bool, pathComponents ...string) InstallPath {
+	ret := pathForInstall(ctx, os, arch, partition, debug, pathComponents...)
 	if ctx.InstallBypassMake() && ctx.Config().KatiEnabled() {
 		ret = ret.ToMakePath()
 	}
-
 	return ret
 }
 
@@ -1620,7 +1667,7 @@ func pathForInstall(ctx PathContext, os OsType, arch ArchType, partition string,
 		partionPaths = []string{"target", "product", ctx.Config().DeviceName(), partition}
 	} else {
 		osName := os.String()
-		if os == Linux {
+		if os == Linux || os == LinuxMusl {
 			// instead of linux_glibc
 			osName = "linux"
 		}
@@ -1990,6 +2037,10 @@ func RemoveAllOutputDir(path WritablePath) error {
 
 func CreateOutputDirIfNonexistent(path WritablePath, perm os.FileMode) error {
 	dir := absolutePath(path.String())
+	return createDirIfNonexistent(dir, perm)
+}
+
+func createDirIfNonexistent(dir string, perm os.FileMode) error {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return os.MkdirAll(dir, os.ModePerm)
 	} else {
@@ -1997,6 +2048,9 @@ func CreateOutputDirIfNonexistent(path WritablePath, perm os.FileMode) error {
 	}
 }
 
+// absolutePath is deliberately private so that Soong's Go plugins can't use it to find and
+// read arbitrary files without going through the methods in the current package that track
+// dependencies.
 func absolutePath(path string) string {
 	if filepath.IsAbs(path) {
 		return path

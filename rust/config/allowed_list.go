@@ -6,6 +6,7 @@ var (
 	// for an example.
 	// TODO(b/160223496): enable rustfmt globally.
 	RustAllowedPaths = []string{
+		"bionic/libc",
 		"device/google/cuttlefish",
 		"external/adhd",
 		"external/crosvm",
@@ -26,9 +27,19 @@ var (
 		"system/logging/rust",
 		"system/security",
 		"system/tools/aidl",
+		"tools/security/fuzzing/example_rust_fuzzer",
+		"vendor/",
+	}
+
+	DownstreamRustAllowedPaths = []string{
+		// Add downstream allowed Rust paths here.
 	}
 
 	RustModuleTypes = []string{
+		// Don't add rust_bindgen or rust_protobuf as these are code generation modules
+		// and can be expected to be in paths without Rust code.
+		"rust_benchmark",
+		"rust_benchmark_host",
 		"rust_binary",
 		"rust_binary_host",
 		"rust_library",
@@ -37,6 +48,7 @@ var (
 		"rust_ffi",
 		"rust_ffi_shared",
 		"rust_ffi_static",
+		"rust_fuzz",
 		"rust_library_host",
 		"rust_library_host_dylib",
 		"rust_library_host_rlib",

@@ -68,7 +68,6 @@ func RegisterGenruleBuildComponents(ctx android.RegistrationContext) {
 		ctx.BottomUp("genrule_tool_deps", toolDepsMutator).Parallel()
 	})
 
-	android.DepsBp2BuildMutators(RegisterGenruleBp2BuildDeps)
 	android.RegisterBp2BuildMutator("genrule", GenruleBp2Build)
 }
 
@@ -210,6 +209,22 @@ func (g *Module) GeneratedHeaderDirs() android.Paths {
 func (g *Module) GeneratedDeps() android.Paths {
 	return g.outputDeps
 }
+
+func (g *Module) OutputFiles(tag string) (android.Paths, error) {
+	if tag == "" {
+		return append(android.Paths{}, g.outputFiles...), nil
+	}
+	// otherwise, tag should match one of outputs
+	for _, outputFile := range g.outputFiles {
+		if outputFile.Rel() == tag {
+			return android.Paths{outputFile}, nil
+		}
+	}
+	return nil, fmt.Errorf("unsupported module reference tag %q", tag)
+}
+
+var _ android.SourceFileProducer = (*Module)(nil)
+var _ android.OutputFileProducer = (*Module)(nil)
 
 func toolDepsMutator(ctx android.BottomUpMutatorContext) {
 	if g, ok := ctx.Module().(*Module); ok {
