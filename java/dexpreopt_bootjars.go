@@ -167,10 +167,10 @@ import (
 // regardless which APEX goes into the product. See also android.ApexInfo.ApexVariationName and
 // apex.apexBundleProperties.Apex_name.
 //
-// A related variable PRODUCT_UPDATABLE_BOOT_JARS contains bootclasspath libraries that are in
-// APEXes. They are not included in the boot image. The only exception here is core-icu4j.jar that
-// has been historically part of the boot image and is now in a non updatable apex; it is treated
-// as being part of PRODUCT_BOOT_JARS and is in the boot image.
+// A related variable PRODUCT_APEX_BOOT_JARS contains bootclasspath libraries that are in APEXes.
+// They are not included in the boot image. The only exception here are ART jars and core-icu4j.jar
+// that have been historically part of the boot image and are now in apexes; they are in boot images
+// and core-icu4j.jar is generally treated as being part of PRODUCT_BOOT_JARS.
 //
 // One exception to the above rules are "coverage" builds (a special build flavor which requires
 // setting environment variable EMMA_INSTRUMENT_FRAMEWORK=true). In coverage builds the Java code in
@@ -523,14 +523,14 @@ func buildBootImageVariantsForAndroidOs(ctx android.ModuleContext, image *bootIm
 }
 
 // buildBootImageVariantsForBuildOs generates rules to build the boot image variants for the
-// android.BuildOs OsType, i.e. the type of OS on which the build is being running.
+// config.BuildOS OsType, i.e. the type of OS on which the build is being running.
 //
 // The files need to be generated into their predefined location because they are used from there
 // both within Soong and outside, e.g. for ART based host side testing and also for use by some
 // cloud based tools. However, they are not needed by callers of this function and so the paths do
 // not need to be returned from this func, unlike the buildBootImageVariantsForAndroidOs func.
 func buildBootImageVariantsForBuildOs(ctx android.ModuleContext, image *bootImageConfig, profile android.WritablePath) {
-	buildBootImageForOsType(ctx, image, profile, android.BuildOs)
+	buildBootImageForOsType(ctx, image, profile, ctx.Config().BuildOS)
 }
 
 // buildBootImageForOsType takes a bootImageConfig, a profile file and an android.OsType
@@ -810,10 +810,10 @@ func bootFrameworkProfileRule(ctx android.ModuleContext, image *bootImageConfig)
 
 // generateUpdatableBcpPackagesRule generates the rule to create the updatable-bcp-packages.txt file
 // and returns a path to the generated file.
-func generateUpdatableBcpPackagesRule(ctx android.ModuleContext, image *bootImageConfig, updatableModules []android.Module) android.WritablePath {
+func generateUpdatableBcpPackagesRule(ctx android.ModuleContext, image *bootImageConfig, apexModules []android.Module) android.WritablePath {
 	// Collect `permitted_packages` for updatable boot jars.
 	var updatablePackages []string
-	for _, module := range updatableModules {
+	for _, module := range apexModules {
 		if j, ok := module.(PermittedPackagesForUpdatableBootJars); ok {
 			pp := j.PermittedPackagesForUpdatableBootJars()
 			if len(pp) > 0 {

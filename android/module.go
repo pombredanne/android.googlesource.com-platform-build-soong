@@ -223,6 +223,8 @@ type BaseModuleContext interface {
 	// the first DependencyTag.
 	GetDirectDep(name string) (blueprint.Module, blueprint.DependencyTag)
 
+	ModuleFromName(name string) (blueprint.Module, bool)
+
 	// VisitDirectDepsBlueprint calls visit for each direct dependency.  If there are multiple
 	// direct dependencies on the same module visit will be called multiple times on that module
 	// and OtherModuleDependencyTag will return a different tag for each.
@@ -325,7 +327,6 @@ type BaseModuleContext interface {
 	Host() bool
 	Device() bool
 	Darwin() bool
-	Fuchsia() bool
 	Windows() bool
 	Debug() bool
 	PrimaryArch() bool
@@ -413,6 +414,7 @@ type ModuleContext interface {
 	InstallInDebugRamdisk() bool
 	InstallInRecovery() bool
 	InstallInRoot() bool
+	InstallInVendor() bool
 	InstallBypassMake() bool
 	InstallForceOS() (*OsType, *ArchType)
 
@@ -471,6 +473,7 @@ type Module interface {
 	InstallInDebugRamdisk() bool
 	InstallInRecovery() bool
 	InstallInRoot() bool
+	InstallInVendor() bool
 	InstallBypassMake() bool
 	InstallForceOS() (*OsType, *ArchType)
 	HideFromMake()
@@ -1526,7 +1529,7 @@ func (m *ModuleBase) computeInstallDeps(ctx ModuleContext) ([]*installPathsDepSe
 	var installDeps []*installPathsDepSet
 	var packagingSpecs []*packagingSpecsDepSet
 	ctx.VisitDirectDeps(func(dep Module) {
-		if IsInstallDepNeeded(ctx.OtherModuleDependencyTag(dep)) && !dep.IsHideFromMake() {
+		if IsInstallDepNeeded(ctx.OtherModuleDependencyTag(dep)) && !dep.IsHideFromMake() && !dep.IsSkipInstall() {
 			installDeps = append(installDeps, dep.base().installFilesDepSet)
 			packagingSpecs = append(packagingSpecs, dep.base().packagingSpecsDepSet)
 		}
@@ -1577,6 +1580,10 @@ func (m *ModuleBase) InstallInDebugRamdisk() bool {
 
 func (m *ModuleBase) InstallInRecovery() bool {
 	return Bool(m.commonProperties.Recovery)
+}
+
+func (m *ModuleBase) InstallInVendor() bool {
+	return Bool(m.commonProperties.Vendor)
 }
 
 func (m *ModuleBase) InstallInRoot() bool {
@@ -2032,8 +2039,13 @@ type baseModuleContext struct {
 	tagPath  []blueprint.DependencyTag
 
 	strictVisitDeps bool // If true, enforce that all dependencies are enabled
+
+	bazelConversionMode bool
 }
 
+func (b *baseModuleContext) BazelConversionMode() bool {
+	return b.bazelConversionMode
+}
 func (b *baseModuleContext) OtherModuleName(m blueprint.Module) string {
 	return b.bp.OtherModuleName(m)
 }
@@ -2373,6 +2385,17 @@ func (b *baseModuleContext) GetDirectDep(name string) (blueprint.Module, bluepri
 	return b.getDirectDepFirstTag(name)
 }
 
+func (b *baseModuleContext) ModuleFromName(name string) (blueprint.Module, bool) {
+	if !b.BazelConversionMode() {
+		panic("cannot call ModuleFromName if not in bazel conversion mode")
+	}
+	if moduleName, _ := SrcIsModuleWithTag(name); moduleName != "" {
+		return b.bp.ModuleFromName(moduleName)
+	} else {
+		return b.bp.ModuleFromName(name)
+	}
+}
+
 func (b *baseModuleContext) VisitDirectDepsBlueprint(visit func(blueprint.Module)) {
 	b.bp.VisitDirectDeps(visit)
 }
@@ -2563,10 +2586,6 @@ func (b *baseModuleContext) Darwin() bool {
 	return b.os == Darwin
 }
 
-func (b *baseModuleContext) Fuchsia() bool {
-	return b.os == Fuchsia
-}
-
 func (b *baseModuleContext) Windows() bool {
 	return b.os == Windows
 }
@@ -2643,6 +2662,10 @@ func (m *moduleContext) InstallBypassMake() bool {
 
 func (m *moduleContext) InstallForceOS() (*OsType, *ArchType) {
 	return m.module.InstallForceOS()
+}
+
+func (m *moduleContext) InstallInVendor() bool {
+	return m.module.InstallInVendor()
 }
 
 func (m *moduleContext) skipInstall() bool {

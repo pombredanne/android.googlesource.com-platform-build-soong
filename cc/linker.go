@@ -15,9 +15,10 @@
 package cc
 
 import (
+	"fmt"
+
 	"android/soong/android"
 	"android/soong/cc/config"
-	"fmt"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
@@ -45,17 +46,10 @@ type BaseLinkerProperties struct {
 	// list of module-specific flags that will be used for all link steps
 	Ldflags []string `android:"arch_variant"`
 
-	// list of system libraries that will be dynamically linked to shared library and executable
-	// modules that build against bionic (device or Linux bionic modules).  If unset, generally
-	// defaults to libc, libm, and libdl.  Set to [] to prevent linking against the defaults.
-	// Equivalent to default_shared_libs for modules that build against bionic, and ignored on
-	// modules that do not build against bionic.
+	// list of system libraries that will be dynamically linked to
+	// shared library and executable modules.  If unset, generally defaults to libc,
+	// libm, and libdl.  Set to [] to prevent linking against the defaults.
 	System_shared_libs []string `android:"arch_variant"`
-
-	// list of system libraries that will be dynamically linked to shared library and executable
-	// modules.  If unset, generally defaults to libc, libm, and libdl.  Set to [] to prevent
-	// linking against the defaults.  Equivalent to system_shared_libs, but applies to all modules.
-	Default_shared_libs []string `android:"arch_variant"`
 
 	// allow the module to contain undefined symbols.  By default,
 	// modules cannot contain undefined symbols that are not satisified by their immediate
@@ -110,6 +104,10 @@ type BaseLinkerProperties struct {
 			// list of static libs that only should be used to build vendor or
 			// product variant of the C/C++ module.
 			Static_libs []string
+
+			// list of ehader libs that only should be used to build vendor or product
+			// variant of the C/C++ module.
+			Header_libs []string
 
 			// list of shared libs that should not be used to build vendor or
 			// product variant of the C/C++ module.
@@ -179,6 +177,14 @@ type BaseLinkerProperties struct {
 			// in most cases the same libraries are available for the SDK and platform
 			// variants.
 			Shared_libs []string
+
+			// list of ehader libs that only should be used to build platform variant of
+			// the C/C++ module.
+			Header_libs []string
+
+			// list of shared libs that should not be used to build the platform variant
+			// of the C/C++ module.
+			Exclude_shared_libs []string
 		}
 		Apex struct {
 			// list of shared libs that should not be used to build the apex variant of
@@ -199,6 +205,9 @@ type BaseLinkerProperties struct {
 
 	// local file name to pass to the linker as --version_script
 	Version_script *string `android:"path,arch_variant"`
+
+	// local file name to pass to the linker as --dynamic-list
+	Dynamic_list *string `android:"path,arch_variant"`
 
 	// list of static libs that should not be used to build this module
 	Exclude_static_libs []string `android:"arch_variant"`
@@ -236,19 +245,6 @@ type baseLinker struct {
 
 func (linker *baseLinker) appendLdflags(flags []string) {
 	linker.Properties.Ldflags = append(linker.Properties.Ldflags, flags...)
-}
-
-// overrideDefaultSharedLibraries returns the contents of the default_shared_libs or
-// system_shared_libs properties, and records an error if both are set.
-func (linker *baseLinker) overrideDefaultSharedLibraries(ctx BaseModuleContext) []string {
-	if linker.Properties.System_shared_libs != nil && linker.Properties.Default_shared_libs != nil {
-		ctx.PropertyErrorf("system_shared_libs", "cannot be specified if default_shared_libs is also specified")
-	}
-	if ctx.toolchain().Bionic() && linker.Properties.System_shared_libs != nil {
-		// system_shared_libs is only honored when building against bionic.
-		return linker.Properties.System_shared_libs
-	}
-	return linker.Properties.Default_shared_libs
 }
 
 // linkerInit initializes dynamic properties of the linker (such as runpath).
@@ -300,6 +296,7 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		deps.ReexportSharedLibHeaders = removeListFromList(deps.ReexportSharedLibHeaders, linker.Properties.Target.Vendor.Exclude_shared_libs)
 		deps.StaticLibs = append(deps.StaticLibs, linker.Properties.Target.Vendor.Static_libs...)
 		deps.StaticLibs = removeListFromList(deps.StaticLibs, linker.Properties.Target.Vendor.Exclude_static_libs)
+		deps.HeaderLibs = append(deps.HeaderLibs, linker.Properties.Target.Vendor.Header_libs...)
 		deps.HeaderLibs = removeListFromList(deps.HeaderLibs, linker.Properties.Target.Vendor.Exclude_header_libs)
 		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, linker.Properties.Target.Vendor.Exclude_static_libs)
 		deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, linker.Properties.Target.Vendor.Exclude_static_libs)
@@ -349,15 +346,17 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 
 	if !ctx.useSdk() {
 		deps.SharedLibs = append(deps.SharedLibs, linker.Properties.Target.Platform.Shared_libs...)
+		deps.SharedLibs = removeListFromList(deps.SharedLibs, linker.Properties.Target.Platform.Exclude_shared_libs)
+		deps.HeaderLibs = append(deps.HeaderLibs, linker.Properties.Target.Platform.Header_libs...)
 	}
 
-	deps.SystemSharedLibs = linker.overrideDefaultSharedLibraries(ctx)
+	deps.SystemSharedLibs = linker.Properties.System_shared_libs
 	// In Bazel conversion mode, variations have not been specified, so SystemSharedLibs may
 	// inaccuarately appear unset, which can cause issues with circular dependencies.
 	if deps.SystemSharedLibs == nil && !ctx.BazelConversionMode() {
-		// Provide a default set of shared libraries if default_shared_libs and system_shared_libs
-		// are unspecified.  Note: If an empty list [] is specified, it implies that the module
-		// declines the default shared libraries.
+		// Provide a default system_shared_libs if it is unspecified. Note: If an
+		// empty list [] is specified, it implies that the module declines the
+		// default system_shared_libs.
 		deps.SystemSharedLibs = append(deps.SystemSharedLibs, ctx.toolchain().DefaultSharedLibraries()...)
 	}
 
@@ -385,21 +384,13 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 			indexList("libdl", deps.SystemSharedLibs) < indexList("libc", deps.SystemSharedLibs) {
 			ctx.PropertyErrorf("system_shared_libs", "libdl must be after libc")
 		}
+	} else if ctx.toolchain().Musl() {
+		if !Bool(linker.Properties.No_libcrt) && !ctx.header() {
+			deps.LateStaticLibs = append(deps.LateStaticLibs, config.BuiltinsRuntimeLibrary(ctx.toolchain()))
+		}
 	}
 
 	deps.LateSharedLibs = append(deps.LateSharedLibs, deps.SystemSharedLibs...)
-
-	if ctx.Fuchsia() {
-		if ctx.ModuleName() != "libbioniccompat" &&
-			ctx.ModuleName() != "libcompiler_rt-extras" &&
-			ctx.ModuleName() != "libcompiler_rt" {
-			deps.StaticLibs = append(deps.StaticLibs, "libbioniccompat")
-		}
-		if ctx.ModuleName() != "libcompiler_rt" && ctx.ModuleName() != "libcompiler_rt-extras" {
-			deps.LateStaticLibs = append(deps.LateStaticLibs, "libcompiler_rt")
-		}
-
-	}
 
 	if ctx.Windows() {
 		deps.LateStaticLibs = append(deps.LateStaticLibs, "libwinpthread")
@@ -484,7 +475,7 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 		flags.Global.LdFlags = append(flags.Global.LdFlags, toolchain.Ldflags())
 	}
 
-	if !ctx.toolchain().Bionic() && !ctx.Fuchsia() {
+	if !ctx.toolchain().Bionic() && ctx.Os() != android.LinuxMusl {
 		CheckBadHostLdlibs(ctx, "host_ldlibs", linker.Properties.Host_ldlibs)
 
 		flags.Local.LdFlags = append(flags.Local.LdFlags, linker.Properties.Host_ldlibs...)
@@ -501,10 +492,6 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 				flags.Global.LdFlags = append(flags.Global.LdFlags, "-lrt")
 			}
 		}
-	}
-
-	if ctx.Fuchsia() {
-		flags.Global.LdFlags = append(flags.Global.LdFlags, "-lfdio", "-lzircon")
 	}
 
 	if ctx.toolchain().LibclangRuntimeLibraryArch() != "" {
@@ -573,6 +560,17 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 				}
 			}
 		}
+
+		dynamicList := android.OptionalPathForModuleSrc(ctx, linker.Properties.Dynamic_list)
+		if dynamicList.Valid() {
+			if ctx.Darwin() {
+				ctx.PropertyErrorf("dynamic_list", "Not supported on Darwin")
+			} else {
+				flags.Local.LdFlags = append(flags.Local.LdFlags,
+					"-Wl,--dynamic-list,"+dynamicList.String())
+				flags.LdFlagsDeps = append(flags.LdFlagsDeps, dynamicList.Path())
+			}
+		}
 	}
 
 	return flags
@@ -592,11 +590,6 @@ func (linker *baseLinker) linkerSpecifiedDeps(specifiedDeps specifiedDeps) speci
 		specifiedDeps.systemSharedLibs = linker.Properties.System_shared_libs
 	} else {
 		specifiedDeps.systemSharedLibs = append(specifiedDeps.systemSharedLibs, linker.Properties.System_shared_libs...)
-	}
-	if specifiedDeps.defaultSharedLibs == nil {
-		specifiedDeps.defaultSharedLibs = linker.Properties.Default_shared_libs
-	} else {
-		specifiedDeps.defaultSharedLibs = append(specifiedDeps.defaultSharedLibs, linker.Properties.Default_shared_libs...)
 	}
 
 	return specifiedDeps

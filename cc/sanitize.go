@@ -25,6 +25,7 @@ import (
 
 	"android/soong/android"
 	"android/soong/cc/config"
+	"android/soong/snapshot"
 )
 
 var (
@@ -265,7 +266,6 @@ type SanitizeUserProps struct {
 }
 
 type SanitizeProperties struct {
-	// Sanitizers are not supported for Fuchsia.
 	Sanitize          SanitizeUserProps `android:"arch_variant"`
 	SanitizerEnabled  bool              `blueprint:"mutated"`
 	SanitizeDep       bool              `blueprint:"mutated"`
@@ -302,11 +302,6 @@ func (sanitize *sanitize) begin(ctx BaseModuleContext) {
 
 	// Don't apply sanitizers to NDK code.
 	if ctx.useSdk() {
-		s.Never = BoolPtr(true)
-	}
-
-	// Sanitizers do not work on Fuchsia yet.
-	if ctx.Fuchsia() {
 		s.Never = BoolPtr(true)
 	}
 
@@ -477,8 +472,8 @@ func (sanitize *sanitize) begin(ctx BaseModuleContext) {
 		s.Diag.Cfi = nil
 	}
 
-	// Disable sanitizers that depend on the UBSan runtime for windows/darwin builds.
-	if !ctx.Os().Linux() {
+	// Disable sanitizers that depend on the UBSan runtime for windows/darwin/musl builds.
+	if !ctx.Os().Linux() || ctx.Os() == android.LinuxMusl {
 		s.Cfi = nil
 		s.Diag.Cfi = nil
 		s.Misc_undefined = nil
@@ -907,7 +902,7 @@ func (m *Module) SanitizableDepTagChecker() SantizableDependencyTagChecker {
 // as vendor snapshot. Such modules must create both cfi and non-cfi variants,
 // except for ones which explicitly disable cfi.
 func needsCfiForVendorSnapshot(mctx android.TopDownMutatorContext) bool {
-	if IsVendorProprietaryModule(mctx) {
+	if snapshot.IsVendorProprietaryModule(mctx) {
 		return false
 	}
 
