@@ -240,22 +240,21 @@ func (eq *eqExpr) eval(valueMap map[string]starlarkExpr) (res starlarkExpr, same
 }
 
 func (eq *eqExpr) emit(gctx *generationContext) {
-	// Are we checking that a variable is empty?
-	var varRef *variableRefExpr
-	if s, ok := maybeString(eq.left); ok && s == "" {
-		varRef, ok = eq.right.(*variableRefExpr)
-	} else if s, ok := maybeString(eq.right); ok && s == "" {
-		varRef, ok = eq.left.(*variableRefExpr)
-	}
-	if varRef != nil {
-		// Yes.
+	emitSimple := func(expr starlarkExpr) {
 		if eq.isEq {
 			gctx.write("not ")
 		}
-		varRef.emit(gctx)
-		return
+		expr.emit(gctx)
 	}
+	// Are we checking that a variable is empty?
+	if isEmptyString(eq.left) {
+		emitSimple(eq.right)
+		return
+	} else if isEmptyString(eq.right) {
+		emitSimple(eq.left)
+		return
 
+	}
 	// General case
 	eq.left.emit(gctx)
 	if eq.isEq {
@@ -517,6 +516,7 @@ func (cx *callExpr) eval(valueMap map[string]starlarkExpr) (res starlarkExpr, sa
 }
 
 func (cx *callExpr) emit(gctx *generationContext) {
+	sep := ""
 	if cx.object != nil {
 		gctx.write("(")
 		cx.object.emit(gctx)
@@ -531,8 +531,14 @@ func (cx *callExpr) emit(gctx *generationContext) {
 			panic(fmt.Errorf("callExpr for %q should not be there", cx.name))
 		}
 		gctx.write(kf.runtimeName, "(")
+		if kf.hiddenArg == hiddenArgGlobal {
+			gctx.write("g")
+			sep = ", "
+		} else if kf.hiddenArg == hiddenArgConfig {
+			gctx.write("cfg")
+			sep = ", "
+		}
 	}
-	sep := ""
 	for _, arg := range cx.args {
 		gctx.write(sep)
 		arg.emit(gctx)
@@ -577,4 +583,9 @@ func maybeConvertToStringList(expr starlarkExpr) starlarkExpr {
 		return newStringListExpr(strings.Fields(xString.literal))
 	}
 	return expr
+}
+
+func isEmptyString(expr starlarkExpr) bool {
+	x, ok := expr.(*stringLiteralExpr)
+	return ok && x.literal == ""
 }

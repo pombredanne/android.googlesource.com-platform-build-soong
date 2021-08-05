@@ -151,6 +151,7 @@ var (
 
 		"prebuilts/sdk":/* recursive = */ false,
 		"prebuilts/sdk/tools":/* recursive = */ false,
+		"prebuilts/r8":/* recursive = */ false,
 		"packages/apps/Music":/* recursive = */ false,
 	}
 
@@ -163,6 +164,8 @@ var (
 		"system/core/property_service/libpropertyinfoparser": Bp2BuildDefaultTrueRecursively,
 		"system/libbase":                  Bp2BuildDefaultTrueRecursively,
 		"system/logging/liblog":           Bp2BuildDefaultTrueRecursively,
+		"system/timezone/apex":            Bp2BuildDefaultTrueRecursively,
+		"system/timezone/output_data":     Bp2BuildDefaultTrueRecursively,
 		"external/jemalloc_new":           Bp2BuildDefaultTrueRecursively,
 		"external/fmtlib":                 Bp2BuildDefaultTrueRecursively,
 		"external/arm-optimized-routines": Bp2BuildDefaultTrueRecursively,
