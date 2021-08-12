@@ -450,7 +450,7 @@ type Library struct {
 
 var _ android.ApexModule = (*Library)(nil)
 
-// Provides access to the list of permitted packages from updatable boot jars.
+// Provides access to the list of permitted packages from apex boot jars.
 type PermittedPackagesForUpdatableBootJars interface {
 	PermittedPackagesForUpdatableBootJars() []string
 }
@@ -581,6 +581,10 @@ type librarySdkMemberProperties struct {
 
 	JarToExport     android.Path `android:"arch_variant"`
 	AidlIncludeDirs android.Paths
+
+	// The list of permitted packages that need to be passed to the prebuilts as they are used to
+	// create the updatable-bcp-packages.txt file.
+	PermittedPackages []string
 }
 
 func (p *librarySdkMemberProperties) PopulateFromVariant(ctx android.SdkMemberContext, variant android.Module) {
@@ -589,6 +593,8 @@ func (p *librarySdkMemberProperties) PopulateFromVariant(ctx android.SdkMemberCo
 	p.JarToExport = ctx.MemberType().(*librarySdkMemberType).jarToExportGetter(ctx, j)
 
 	p.AidlIncludeDirs = j.AidlIncludeDirs()
+
+	p.PermittedPackages = j.PermittedPackagesForUpdatableBootJars()
 }
 
 func (p *librarySdkMemberProperties) AddToPropertySet(ctx android.SdkMemberContext, propertySet android.BpPropertySet) {
@@ -605,6 +611,10 @@ func (p *librarySdkMemberProperties) AddToPropertySet(ctx android.SdkMemberConte
 		builder.CopyToSnapshot(exportedJar, snapshotRelativeJavaLibPath)
 
 		propertySet.AddProperty("jars", []string{snapshotRelativeJavaLibPath})
+	}
+
+	if len(p.PermittedPackages) > 0 {
+		propertySet.AddProperty("permitted_packages", p.PermittedPackages)
 	}
 
 	// Do not copy anything else to the snapshot.
@@ -643,7 +653,7 @@ func LibraryFactory() android.Module {
 
 	module.addHostAndDeviceProperties()
 
-	module.initModuleAndImport(&module.ModuleBase)
+	module.initModuleAndImport(module)
 
 	android.InitApexModule(module)
 	android.InitSdkAwareModule(module)
@@ -1127,6 +1137,10 @@ type ImportProperties struct {
 
 	Installable *bool
 
+	// If not empty, classes are restricted to the specified packages and their sub-packages.
+	// This information is used to generate the updatable-bcp-packages.txt file.
+	Permitted_packages []string
+
 	// List of shared java libs that this module has dependencies to
 	Libs []string
 
@@ -1176,6 +1190,12 @@ type Import struct {
 
 	sdkVersion    android.SdkSpec
 	minSdkVersion android.SdkSpec
+}
+
+var _ PermittedPackagesForUpdatableBootJars = (*Import)(nil)
+
+func (j *Import) PermittedPackagesForUpdatableBootJars() []string {
+	return j.properties.Permitted_packages
 }
 
 func (j *Import) SdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
@@ -1283,6 +1303,10 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 		// Save away the `deapexer` module on which this depends, if any.
 		if tag == android.DeapexerTag {
+			if deapexerModule != nil {
+				ctx.ModuleErrorf("Ambiguous duplicate deapexer module dependencies %q and %q",
+					deapexerModule.Name(), module.Name())
+			}
 			deapexerModule = module
 		}
 	})
@@ -1496,7 +1520,7 @@ func ImportFactory() android.Module {
 		&module.dexer.dexProperties,
 	)
 
-	module.initModuleAndImport(&module.ModuleBase)
+	module.initModuleAndImport(module)
 
 	module.dexProperties.Optimize.EnabledByDefault = false
 

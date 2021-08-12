@@ -23,7 +23,6 @@ import (
 	"android/soong/android"
 	"android/soong/java"
 	"github.com/google/blueprint"
-
 	"github.com/google/blueprint/proptools"
 )
 
@@ -75,6 +74,10 @@ type sanitizedPrebuilt interface {
 type PrebuiltCommonProperties struct {
 	SelectedApexProperties
 
+	// Canonical name of this APEX. Used to determine the path to the activated APEX on
+	// device (/apex/<apex_name>). If unspecified, follows the name property.
+	Apex_name *string
+
 	ForceDisable bool `blueprint:"mutated"`
 
 	// whether the extracted apex file is installable.
@@ -109,6 +112,10 @@ func (p *prebuiltCommon) initPrebuiltCommon(module android.Module, properties *P
 	android.InitAndroidMultiTargetsArchModule(module, android.DeviceSupported, android.MultilibCommon)
 }
 
+func (p *prebuiltCommon) ApexVariationName() string {
+	return proptools.StringDefault(p.prebuiltCommonProperties.Apex_name, p.ModuleBase.BaseModuleName())
+}
+
 func (p *prebuiltCommon) Prebuilt() *android.Prebuilt {
 	return &p.prebuilt
 }
@@ -125,10 +132,6 @@ func (p *prebuiltCommon) checkForceDisable(ctx android.ModuleContext) bool {
 	// Force disable the prebuilts when we are doing unbundled build. We do unbundled build
 	// to build the prebuilts themselves.
 	forceDisable = forceDisable || ctx.Config().UnbundledBuild()
-
-	// Force disable the prebuilts when coverage is enabled.
-	forceDisable = forceDisable || ctx.DeviceConfig().NativeCoverageEnabled()
-	forceDisable = forceDisable || ctx.Config().IsEnvTrue("EMMA_INSTRUMENT")
 
 	// b/137216042 don't use prebuilts when address sanitizer is on, unless the prebuilt has a sanitized source
 	sanitized := ctx.Module().(sanitizedPrebuilt)
@@ -368,6 +371,12 @@ func (p *prebuiltCommon) apexInfoMutator(mctx android.TopDownMutatorContext) {
 			}
 		}
 
+		// Ignore any modules that do not implement ApexModule as they cannot have an APEX specific
+		// variant.
+		if _, ok := child.(android.ApexModule); !ok {
+			return false
+		}
+
 		// Strip off the prebuilt_ prefix if present before storing content to ensure consistent
 		// behavior whether there is a corresponding source module present or not.
 		depName = android.RemoveOptionalPrebuiltPrefix(depName)
@@ -389,11 +398,11 @@ func (p *prebuiltCommon) apexInfoMutator(mctx android.TopDownMutatorContext) {
 	})
 
 	// Create an ApexInfo for the prebuilt_apex.
-	apexVariationName := android.RemoveOptionalPrebuiltPrefix(mctx.ModuleName())
+	apexVariationName := p.ApexVariationName()
 	apexInfo := android.ApexInfo{
 		ApexVariationName: apexVariationName,
 		InApexVariants:    []string{apexVariationName},
-		InApexModules:     []string{apexVariationName},
+		InApexModules:     []string{p.ModuleBase.BaseModuleName()}, // BaseModuleName() to avoid the prebuilt_ prefix.
 		ApexContents:      []*android.ApexContents{apexContents},
 		ForPrebuiltApex:   true,
 	}
