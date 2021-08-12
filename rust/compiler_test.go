@@ -98,6 +98,30 @@ func TestEnforceSingleSourceFile(t *testing.T) {
 		}`)
 }
 
+// Test environment vars for Cargo compat are set.
+func TestCargoCompat(t *testing.T) {
+	ctx := testRust(t, `
+		rust_binary {
+			name: "fizz",
+			srcs: ["foo.rs"],
+			crate_name: "foo",
+			cargo_env_compat: true,
+			cargo_pkg_version: "1.0.0"
+		}`)
+
+	fizz := ctx.ModuleForTests("fizz", "android_arm64_armv8-a").Rule("rustc")
+
+	if !strings.Contains(fizz.Args["envVars"], "CARGO_BIN_NAME=fizz") {
+		t.Fatalf("expected 'CARGO_BIN_NAME=fizz' in envVars, actual envVars: %#v", fizz.Args["envVars"])
+	}
+	if !strings.Contains(fizz.Args["envVars"], "CARGO_CRATE_NAME=foo") {
+		t.Fatalf("expected 'CARGO_CRATE_NAME=foo' in envVars, actual envVars: %#v", fizz.Args["envVars"])
+	}
+	if !strings.Contains(fizz.Args["envVars"], "CARGO_PKG_VERSION=1.0.0") {
+		t.Fatalf("expected 'CARGO_PKG_VERSION=1.0.0' in envVars, actual envVars: %#v", fizz.Args["envVars"])
+	}
+}
+
 func TestInstallDir(t *testing.T) {
 	ctx := testRust(t, `
 		rust_library_dylib {
@@ -207,4 +231,74 @@ func TestStdDeviceLinkage(t *testing.T) {
 	if !android.InList("libstd", fooDylib.Properties.AndroidMkDylibs) {
 		t.Errorf("libstd is not linked dynamically for dylibs")
 	}
+}
+
+// Ensure that manual link flags are disallowed.
+func TestManualLinkageRejection(t *testing.T) {
+	// rustc flags
+	testRustError(t, ".* cannot be manually specified", `
+		rust_binary {
+			name: "foo",
+			srcs: [
+				"foo.rs",
+			],
+			flags: ["-lbar"],
+		}
+	`)
+	testRustError(t, ".* cannot be manually specified", `
+		rust_binary {
+			name: "foo",
+			srcs: [
+				"foo.rs",
+			],
+			flags: ["--extern=foo"],
+		}
+	`)
+	testRustError(t, ".* cannot be manually specified", `
+		rust_binary {
+			name: "foo",
+			srcs: [
+				"foo.rs",
+			],
+			flags: ["-Clink-args=foo"],
+		}
+	`)
+	testRustError(t, ".* cannot be manually specified", `
+		rust_binary {
+			name: "foo",
+			srcs: [
+				"foo.rs",
+			],
+			flags: ["-C link-args=foo"],
+		}
+	`)
+	testRustError(t, ".* cannot be manually specified", `
+		rust_binary {
+			name: "foo",
+			srcs: [
+				"foo.rs",
+			],
+			flags: ["-L foo/"],
+		}
+	`)
+
+	// lld flags
+	testRustError(t, ".* cannot be manually specified", `
+		rust_binary {
+			name: "foo",
+			srcs: [
+				"foo.rs",
+			],
+			ld_flags: ["-Wl,-L bar/"],
+		}
+	`)
+	testRustError(t, ".* cannot be manually specified", `
+		rust_binary {
+			name: "foo",
+			srcs: [
+				"foo.rs",
+			],
+			ld_flags: ["-Wl,-lbar"],
+		}
+	`)
 }

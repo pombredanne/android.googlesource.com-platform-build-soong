@@ -374,7 +374,6 @@ func TestBasicApex(t *testing.T) {
 			symlinks: ["foo_link_"],
 			symlink_preferred_arch: true,
 			system_shared_libs: [],
-			static_executable: true,
 			stl: "none",
 			apex_available: [ "myapex", "com.android.gki.*" ],
 		}
@@ -2494,7 +2493,6 @@ func TestFilesInSubDir(t *testing.T) {
 			srcs: ["mylib.cpp"],
 			relative_install_path: "foo/bar",
 			system_shared_libs: [],
-			static_executable: true,
 			stl: "none",
 			apex_available: [ "myapex" ],
 		}
@@ -2554,7 +2552,6 @@ func TestFilesInSubDirWhenNativeBridgeEnabled(t *testing.T) {
 			name: "mybin",
 			relative_install_path: "foo/bar",
 			system_shared_libs: [],
-			static_executable: true,
 			stl: "none",
 			apex_available: [ "myapex" ],
 			native_bridge_supported: true,
@@ -4666,6 +4663,7 @@ func TestPrebuiltApexNameWithPlatformBootclasspath(t *testing.T) {
 
 			prebuilt_bootclasspath_fragment {
 				name: "art-bootclasspath-fragment",
+				image_name: "art",
 				contents: ["core-oj"],
 				hidden_api: {
 					annotation_flags: "my-bootclasspath-fragment/annotation-flags.csv",
@@ -4874,7 +4872,7 @@ func TestPrebuiltExportDexImplementationJars(t *testing.T) {
 
 func TestBootDexJarsFromSourcesAndPrebuilts(t *testing.T) {
 	preparer := android.GroupFixturePreparers(
-		java.FixtureConfigureBootJars("myapex:libfoo", "myapex:libbar"),
+		java.FixtureConfigureApexBootJars("myapex:libfoo", "myapex:libbar"),
 		// Make sure that the frameworks/base/Android.bp file exists as otherwise hidden API encoding
 		// is disabled.
 		android.FixtureAddTextFile("frameworks/base/Android.bp", ""),
@@ -4952,6 +4950,7 @@ func TestBootDexJarsFromSourcesAndPrebuilts(t *testing.T) {
 			name: "libfoo",
 			jars: ["libfoo.jar"],
 			apex_available: ["myapex"],
+			permitted_packages: ["foo"],
 		}
 
 		java_sdk_library_import {
@@ -4961,6 +4960,7 @@ func TestBootDexJarsFromSourcesAndPrebuilts(t *testing.T) {
 			},
 			apex_available: ["myapex"],
 			shared_library: false,
+			permitted_packages: ["bar"],
 		}
 	`
 
@@ -5001,6 +5001,7 @@ func TestBootDexJarsFromSourcesAndPrebuilts(t *testing.T) {
 			name: "libfoo",
 			jars: ["libfoo.jar"],
 			apex_available: ["myapex"],
+			permitted_packages: ["foo"],
 		}
 
 		java_sdk_library_import {
@@ -5010,6 +5011,7 @@ func TestBootDexJarsFromSourcesAndPrebuilts(t *testing.T) {
 			},
 			apex_available: ["myapex"],
 			shared_library: false,
+			permitted_packages: ["bar"],
 		}
 	`
 
@@ -5123,6 +5125,7 @@ func TestBootDexJarsFromSourcesAndPrebuilts(t *testing.T) {
 			prefer: true,
 			jars: ["libfoo.jar"],
 			apex_available: ["myapex"],
+			permitted_packages: ["foo"],
 		}
 
 		java_library {
@@ -5139,6 +5142,7 @@ func TestBootDexJarsFromSourcesAndPrebuilts(t *testing.T) {
 			},
 			apex_available: ["myapex"],
 			shared_library: false,
+			permitted_packages: ["bar"],
 		}
 
 		java_sdk_library {
@@ -5212,6 +5216,7 @@ func TestBootDexJarsFromSourcesAndPrebuilts(t *testing.T) {
 			name: "libfoo",
 			srcs: ["foo/bar/MyClass.java"],
 			apex_available: ["myapex"],
+			permitted_packages: ["foo"],
 		}
 
 		java_sdk_library_import {
@@ -5228,6 +5233,7 @@ func TestBootDexJarsFromSourcesAndPrebuilts(t *testing.T) {
 			srcs: ["foo/bar/MyClass.java"],
 			unsafe_ignore_missing_latest_api: true,
 			apex_available: ["myapex"],
+			permitted_packages: ["bar"],
 		}
 	`
 
@@ -5289,6 +5295,7 @@ func TestBootDexJarsFromSourcesAndPrebuilts(t *testing.T) {
 			prefer: true,
 			jars: ["libfoo.jar"],
 			apex_available: ["myapex"],
+			permitted_packages: ["foo"],
 		}
 
 		java_library {
@@ -5305,6 +5312,7 @@ func TestBootDexJarsFromSourcesAndPrebuilts(t *testing.T) {
 			},
 			apex_available: ["myapex"],
 			shared_library: false,
+			permitted_packages: ["bar"],
 		}
 
 		java_sdk_library {
@@ -6902,6 +6910,7 @@ func testNoUpdatableJarsInBootImage(t *testing.T, errmsg string, preparer androi
 			apex_available: [
 				"some-updatable-apex",
 			],
+			permitted_packages: ["some.updatable.apex.lib"],
 		}
 
 		java_library {
@@ -6911,6 +6920,7 @@ func testNoUpdatableJarsInBootImage(t *testing.T, errmsg string, preparer androi
 				"some-non-updatable-apex",
 			],
 			compile_dex: true,
+			permitted_packages: ["some.non.updatable.apex.lib"],
 		}
 
 		bootclasspath_fragment {
@@ -7121,7 +7131,9 @@ func TestUpdatable_should_not_set_generate_classpaths_proto(t *testing.T) {
 				"myapex",
 			],
 		}
-	`)
+	`,
+		dexpreopt.FixtureSetApexSystemServerJars("myapex:foo"),
+	)
 }
 
 func TestNoUpdatableJarsInBootImage(t *testing.T) {
@@ -7151,18 +7163,30 @@ func TestNoUpdatableJarsInBootImage(t *testing.T) {
 	}
 
 	t.Run("updatable jar from ART apex in the ART boot image => ok", func(t *testing.T) {
-		preparer := java.FixtureConfigureBootJars("com.android.art.debug:some-art-lib")
-		fragment := java.ApexVariantReference{
-			Apex:   proptools.StringPtr("com.android.art.debug"),
-			Module: proptools.StringPtr("art-bootclasspath-fragment"),
+		preparer := android.GroupFixturePreparers(
+			java.FixtureConfigureBootJars("com.android.art.debug:some-art-lib"),
+			java.FixtureConfigureApexBootJars("some-non-updatable-apex:some-non-updatable-apex-lib"),
+		)
+		fragments := []java.ApexVariantReference{
+			{
+				Apex:   proptools.StringPtr("com.android.art.debug"),
+				Module: proptools.StringPtr("art-bootclasspath-fragment"),
+			},
+			{
+				Apex:   proptools.StringPtr("some-non-updatable-apex"),
+				Module: proptools.StringPtr("some-non-updatable-fragment"),
+			},
 		}
-		testNoUpdatableJarsInBootImage(t, "", preparer, fragment)
+		testNoUpdatableJarsInBootImage(t, "", preparer, fragments...)
 	})
 
 	t.Run("updatable jar from ART apex in the framework boot image => error", func(t *testing.T) {
 		err := `module "some-art-lib" from updatable apexes \["com.android.art.debug"\] is not allowed in the framework boot image`
 		// Update the dexpreopt BootJars directly.
-		preparer := prepareSetBootJars("com.android.art.debug:some-art-lib")
+		preparer := android.GroupFixturePreparers(
+			prepareSetBootJars("com.android.art.debug:some-art-lib"),
+			java.FixtureConfigureApexBootJars("some-non-updatable-apex:some-non-updatable-apex-lib"),
+		)
 		testNoUpdatableJarsInBootImage(t, err, preparer)
 	})
 
@@ -7182,12 +7206,15 @@ func TestNoUpdatableJarsInBootImage(t *testing.T) {
 
 	t.Run("updatable jar from some other apex in the framework boot image => error", func(t *testing.T) {
 		err := `module "some-updatable-apex-lib" from updatable apexes \["some-updatable-apex"\] is not allowed in the framework boot image`
-		preparer := java.FixtureConfigureBootJars("some-updatable-apex:some-updatable-apex-lib")
+		preparer := android.GroupFixturePreparers(
+			java.FixtureConfigureBootJars("some-updatable-apex:some-updatable-apex-lib"),
+			java.FixtureConfigureApexBootJars("some-non-updatable-apex:some-non-updatable-apex-lib"),
+		)
 		testNoUpdatableJarsInBootImage(t, err, preparer)
 	})
 
 	t.Run("non-updatable jar from some other apex in the framework boot image => ok", func(t *testing.T) {
-		preparer := java.FixtureConfigureBootJars("some-non-updatable-apex:some-non-updatable-apex-lib")
+		preparer := java.FixtureConfigureApexBootJars("some-non-updatable-apex:some-non-updatable-apex-lib")
 		fragment := java.ApexVariantReference{
 			Apex:   proptools.StringPtr("some-non-updatable-apex"),
 			Module: proptools.StringPtr("some-non-updatable-fragment"),
@@ -7215,13 +7242,22 @@ func TestNoUpdatableJarsInBootImage(t *testing.T) {
 	})
 
 	t.Run("platform jar in the framework boot image => ok", func(t *testing.T) {
-		preparer := java.FixtureConfigureBootJars("platform:some-platform-lib")
-		testNoUpdatableJarsInBootImage(t, "", preparer)
+		preparer := android.GroupFixturePreparers(
+			java.FixtureConfigureBootJars("platform:some-platform-lib"),
+			java.FixtureConfigureApexBootJars("some-non-updatable-apex:some-non-updatable-apex-lib"),
+		)
+		fragments := []java.ApexVariantReference{
+			{
+				Apex:   proptools.StringPtr("some-non-updatable-apex"),
+				Module: proptools.StringPtr("some-non-updatable-fragment"),
+			},
+		}
+		testNoUpdatableJarsInBootImage(t, "", preparer, fragments...)
 	})
 }
 
 func TestDexpreoptAccessDexFilesFromPrebuiltApex(t *testing.T) {
-	preparer := java.FixtureConfigureBootJars("myapex:libfoo")
+	preparer := java.FixtureConfigureApexBootJars("myapex:libfoo")
 	t.Run("prebuilt no source", func(t *testing.T) {
 		fragment := java.ApexVariantReference{
 			Apex:   proptools.StringPtr("myapex"),
@@ -7259,6 +7295,7 @@ func TestDexpreoptAccessDexFilesFromPrebuiltApex(t *testing.T) {
 				name: "libfoo",
 				jars: ["libfoo.jar"],
 				apex_available: ["myapex"],
+				permitted_packages: ["libfoo"],
 			}
 		`, "", preparer, fragment)
 	})
@@ -8171,6 +8208,8 @@ func TestApexJavaCoverage(t *testing.T) {
 		java.PrepareForTestWithJavaDefaultModules,
 		android.PrepareForTestWithAndroidBuildComponents,
 		android.FixtureWithRootAndroidBp(bp),
+		dexpreopt.FixtureSetApexBootJars("myapex:mybootclasspathlib"),
+		dexpreopt.FixtureSetApexSystemServerJars("myapex:mysystemserverclasspathlib"),
 		android.FixtureMergeEnv(map[string]string{
 			"EMMA_INSTRUMENT": "true",
 		}),
@@ -8186,6 +8225,57 @@ func TestApexJavaCoverage(t *testing.T) {
 	if result.ModuleForTests("mysystemserverclasspathlib", "android_common_apex10000").MaybeRule("jacoco").Rule == nil {
 		t.Errorf("Failed to find jacoco rule for mysystemserverclasspathlib")
 	}
+}
+
+func TestProhibitStaticExecutable(t *testing.T) {
+	testApexError(t, `executable mybin is static`, `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			binaries: ["mybin"],
+			min_sdk_version: "29",
+		}
+
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+		}
+
+		cc_binary {
+			name: "mybin",
+			srcs: ["mylib.cpp"],
+			relative_install_path: "foo/bar",
+			static_executable: true,
+			system_shared_libs: [],
+			stl: "none",
+			apex_available: [ "myapex" ],
+			min_sdk_version: "29",
+		}
+	`)
+
+	testApexError(t, `executable mybin.rust is static`, `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			binaries: ["mybin.rust"],
+			min_sdk_version: "29",
+		}
+
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+		}
+
+		rust_binary {
+			name: "mybin.rust",
+			srcs: ["foo.rs"],
+			static_executable: true,
+			apex_available: ["myapex"],
+			min_sdk_version: "29",
+		}
+	`)
 }
 
 func TestMain(m *testing.M) {

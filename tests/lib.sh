@@ -86,6 +86,7 @@ function create_mock_soong {
 
   symlink_directory prebuilts/go
   symlink_directory prebuilts/build-tools
+  symlink_directory external/go-cmp
   symlink_directory external/golang-protobuf
 
   touch "$MOCK_TOP/Android.bp"
@@ -112,6 +113,7 @@ function create_mock_bazel() {
 
   symlink_directory prebuilts/bazel
   symlink_directory prebuilts/jdk
+  symlink_directory external/bazel-skylib
 
   symlink_file WORKSPACE
   symlink_file BUILD

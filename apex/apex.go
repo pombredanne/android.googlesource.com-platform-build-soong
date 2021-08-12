@@ -1587,6 +1587,7 @@ type androidApp interface {
 	JacocoReportClassesFile() android.Path
 	Certificate() java.Certificate
 	BaseModuleName() string
+	LintDepSets() java.LintDepSets
 }
 
 var _ androidApp = (*java.AndroidApp)(nil)
@@ -1601,6 +1602,7 @@ func apexFileForAndroidApp(ctx android.BaseModuleContext, aapp androidApp) apexF
 	fileToCopy := aapp.OutputFile()
 	af := newApexFile(ctx, fileToCopy, aapp.BaseModuleName(), dirInApex, app, aapp)
 	af.jacocoReportClassesFile = aapp.JacocoReportClassesFile()
+	af.lintDepSets = aapp.LintDepSets()
 	af.certificate = aapp.Certificate()
 
 	if app, ok := aapp.(interface {
@@ -1696,6 +1698,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	a.checkUpdatable(ctx)
 	a.checkMinSdkVersion(ctx)
 	a.checkStaticLinkingToStubLibraries(ctx)
+	a.checkStaticExecutables(ctx)
 	if len(a.properties.Tests) > 0 && !a.testApex {
 		ctx.PropertyErrorf("tests", "property allowed only in apex_test module type")
 		return
@@ -2487,6 +2490,41 @@ func (a *apexBundle) checkApexAvailability(ctx android.ModuleContext) {
 	})
 }
 
+// checkStaticExecutable ensures that executables in an APEX are not static.
+func (a *apexBundle) checkStaticExecutables(ctx android.ModuleContext) {
+	// No need to run this for host APEXes
+	if ctx.Host() {
+		return
+	}
+
+	ctx.VisitDirectDepsBlueprint(func(module blueprint.Module) {
+		if ctx.OtherModuleDependencyTag(module) != executableTag {
+			return
+		}
+
+		if l, ok := module.(cc.LinkableInterface); ok && l.StaticExecutable() {
+			apex := a.ApexVariationName()
+			exec := ctx.OtherModuleName(module)
+			if isStaticExecutableAllowed(apex, exec) {
+				return
+			}
+			ctx.ModuleErrorf("executable %s is static", ctx.OtherModuleName(module))
+		}
+	})
+}
+
+// A small list of exceptions where static executables are allowed in APEXes.
+func isStaticExecutableAllowed(apex string, exec string) bool {
+	m := map[string][]string{
+		"com.android.runtime": []string{
+			"linker",
+			"linkerconfig",
+		},
+	}
+	execNames, ok := m[apex]
+	return ok && android.InList(exec, execNames)
+}
+
 // Collect information for opening IDE project files in java/jdeps.go.
 func (a *apexBundle) IDEInfo(dpInfo *android.IdeInfo) {
 	dpInfo.Deps = append(dpInfo.Deps, a.properties.Java_libs...)
@@ -3197,6 +3235,7 @@ type bazelApexBundleAttributes struct {
 	Installable        bazel.BoolAttribute
 	Native_shared_libs bazel.LabelListAttribute
 	Binaries           bazel.StringListAttribute
+	Prebuilts          bazel.LabelListAttribute
 }
 
 type bazelApexBundle struct {
@@ -3262,6 +3301,10 @@ func apexBundleBp2BuildInternal(ctx android.TopDownMutatorContext, module *apexB
 	nativeSharedLibsLabelList := android.BazelLabelForModuleDeps(ctx, nativeSharedLibs)
 	nativeSharedLibsLabelListAttribute := bazel.MakeLabelListAttribute(nativeSharedLibsLabelList)
 
+	prebuilts := module.properties.Prebuilts
+	prebuiltsLabelList := android.BazelLabelForModuleDeps(ctx, prebuilts)
+	prebuiltsLabelListAttribute := bazel.MakeLabelListAttribute(prebuiltsLabelList)
+
 	binaries := module.properties.ApexNativeDependencies.Binaries
 	binariesStringListAttribute := bazel.MakeStringListAttribute(binaries)
 
@@ -3286,6 +3329,7 @@ func apexBundleBp2BuildInternal(ctx android.TopDownMutatorContext, module *apexB
 		Installable:        installableAttribute,
 		Native_shared_libs: nativeSharedLibsLabelListAttribute,
 		Binaries:           binariesStringListAttribute,
+		Prebuilts:          prebuiltsLabelListAttribute,
 	}
 
 	props := bazel.BazelTargetModuleProperties{

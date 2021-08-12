@@ -57,6 +57,17 @@ type cqueryKey struct {
 	archType    ArchType
 }
 
+// bazelHandler is the interface for a helper object related to deferring to Bazel for
+// processing a module (during Bazel mixed builds). Individual module types should define
+// their own bazel handler if they support deferring to Bazel.
+type BazelHandler interface {
+	// Issue query to Bazel to retrieve information about Bazel's view of the current module.
+	// If Bazel returns this information, set module properties on the current module to reflect
+	// the returned information.
+	// Returns true if information was available from Bazel, false if bazel invocation still needs to occur.
+	GenerateBazelBuildActions(ctx ModuleContext, label string) bool
+}
+
 type BazelContext interface {
 	// The below methods involve queuing cquery requests to be later invoked
 	// by bazel. If any of these methods return (_, false), then the request
@@ -333,7 +344,7 @@ func (r *builtinBazelRunner) issueBazelCommand(paths *bazelPaths, runName bazel.
 	// The actual platform values here may be overridden by configuration
 	// transitions from the buildroot.
 	cmdFlags = append(cmdFlags,
-		fmt.Sprintf("--platforms=%s", "//build/bazel/platforms:android_arm"))
+		fmt.Sprintf("--platforms=%s", "//build/bazel/platforms:android_target"))
 	cmdFlags = append(cmdFlags,
 		fmt.Sprintf("--extra_toolchains=%s", "//prebuilts/clang/host/linux-x86:all"))
 	// This should be parameterized on the host OS, but let's restrict to linux
