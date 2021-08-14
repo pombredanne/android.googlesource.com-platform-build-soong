@@ -6666,6 +6666,47 @@ func TestUpdatableDefault_should_set_min_sdk_version(t *testing.T) {
 	`)
 }
 
+func TestUpdatable_should_not_set_generate_classpaths_proto(t *testing.T) {
+	testApexError(t, `"mysystemserverclasspathfragment" .* it must not set generate_classpaths_proto to false`, `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			systemserverclasspath_fragments: [
+				"mysystemserverclasspathfragment",
+			],
+			min_sdk_version: "29",
+			updatable: true,
+		}
+
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+		}
+
+		java_library {
+			name: "foo",
+			srcs: ["b.java"],
+			min_sdk_version: "29",
+			installable: true,
+			apex_available: [
+				"myapex",
+			],
+		}
+
+		systemserverclasspath_fragment {
+			name: "mysystemserverclasspathfragment",
+			generate_classpaths_proto: false,
+			contents: [
+				"foo",
+			],
+			apex_available: [
+				"myapex",
+			],
+		}
+	`)
+}
+
 func TestNoUpdatableJarsInBootImage(t *testing.T) {
 	// Set the BootJars in dexpreopt.GlobalConfig and productVariables to the same value. This can
 	// result in an invalid configuration as it does not set the ArtApexJars and allows art apex
@@ -6799,7 +6840,7 @@ func TestDexpreoptAccessDexFilesFromPrebuiltApex(t *testing.T) {
 	})
 }
 
-func testApexPermittedPackagesRules(t *testing.T, errmsg, bp string, apexBootJars []string, rules []android.Rule) {
+func testApexPermittedPackagesRules(t *testing.T, errmsg, bp string, bootJars []string, rules []android.Rule) {
 	t.Helper()
 	bp += `
 	apex_key {
@@ -6824,11 +6865,11 @@ func testApexPermittedPackagesRules(t *testing.T, errmsg, bp string, apexBootJar
 		PrepareForTestWithApexBuildComponents,
 		android.PrepareForTestWithNeverallowRules(rules),
 		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-			updatableBootJars := make([]string, 0, len(apexBootJars))
-			for _, apexBootJar := range apexBootJars {
-				updatableBootJars = append(updatableBootJars, "myapex:"+apexBootJar)
+			apexBootJars := make([]string, 0, len(bootJars))
+			for _, apexBootJar := range bootJars {
+				apexBootJars = append(apexBootJars, "myapex:"+apexBootJar)
 			}
-			variables.UpdatableBootJars = android.CreateTestConfiguredJarList(updatableBootJars)
+			variables.ApexBootJars = android.CreateTestConfiguredJarList(apexBootJars)
 		}),
 		fs.AddToFixture(),
 	).
