@@ -29,6 +29,7 @@ import (
 
 	"android/soong/android"
 	"android/soong/cc/config"
+	"android/soong/fuzz"
 	"android/soong/genrule"
 )
 
@@ -354,6 +355,24 @@ type BaseProperties struct {
 	// can depend on libraries that are not exported by the APEXes and use private symbols
 	// from the exported libraries.
 	Test_for []string `android:"arch_variant"`
+
+	Target struct {
+		Platform struct {
+			// List of modules required by the core variant.
+			Required []string `android:"arch_variant"`
+
+			// List of modules not required by the core variant.
+			Exclude_required []string `android:"arch_variant"`
+		} `android:"arch_variant"`
+
+		Recovery struct {
+			// List of modules required by the recovery variant.
+			Required []string `android:"arch_variant"`
+
+			// List of modules not required by the recovery variant.
+			Exclude_required []string `android:"arch_variant"`
+		} `android:"arch_variant"`
+	} `android:"arch_variant"`
 }
 
 type VendorProperties struct {
@@ -554,8 +573,7 @@ type specifiedDeps struct {
 	sharedLibs []string
 	// Note nil and [] are semantically distinct. [] prevents linking against the defaults (usually
 	// libc, libm, etc.)
-	systemSharedLibs  []string
-	defaultSharedLibs []string
+	systemSharedLibs []string
 }
 
 // installer is the interface for an installer helper object. This helper is responsible for
@@ -570,17 +588,6 @@ type installer interface {
 	relativeInstallPath() string
 	makeUninstallable(mod *Module)
 	installInRoot() bool
-}
-
-// bazelHandler is the interface for a helper object related to deferring to Bazel for
-// processing a module (during Bazel mixed builds). Individual module types should define
-// their own bazel handler if they support deferring to Bazel.
-type bazelHandler interface {
-	// Issue query to Bazel to retrieve information about Bazel's view of the current module.
-	// If Bazel returns this information, set module properties on the current module to reflect
-	// the returned information.
-	// Returns true if information was available from Bazel, false if bazel invocation still needs to occur.
-	generateBazelBuildActions(ctx android.ModuleContext, label string) bool
 }
 
 type xref interface {
@@ -756,14 +763,13 @@ func IsTestPerSrcDepTag(depTag blueprint.DependencyTag) bool {
 // members of the cc.Module to this decorator. Thus, a cc_binary module has custom linker and
 // installer logic.
 type Module struct {
-	android.ModuleBase
-	android.DefaultableModuleBase
-	android.ApexModuleBase
+	fuzz.FuzzModule
+
 	android.SdkBase
 	android.BazelModuleBase
 
-	Properties       BaseProperties
 	VendorProperties VendorProperties
+	Properties       BaseProperties
 
 	// initialize before calling Init
 	hod      android.HostOrDeviceSupported
@@ -780,7 +786,7 @@ type Module struct {
 	compiler     compiler
 	linker       linker
 	installer    installer
-	bazelHandler bazelHandler
+	bazelHandler android.BazelHandler
 
 	features []feature
 	stl      *stl
@@ -865,6 +871,18 @@ func (c *Module) SetHideFromMake() {
 
 func (c *Module) HiddenFromMake() bool {
 	return c.Properties.HideFromMake
+}
+
+func (c *Module) RequiredModuleNames() []string {
+	required := android.CopyOf(c.ModuleBase.RequiredModuleNames())
+	if c.ImageVariation().Variation == android.CoreVariation {
+		required = append(required, c.Properties.Target.Platform.Required...)
+		required = removeListFromList(required, c.Properties.Target.Platform.Exclude_required)
+	} else if c.InRecovery() {
+		required = append(required, c.Properties.Target.Recovery.Required...)
+		required = removeListFromList(required, c.Properties.Target.Recovery.Exclude_required)
+	}
+	return android.FirstUniqueStrings(required)
 }
 
 func (c *Module) Toc() android.OptionalPath {
@@ -1668,7 +1686,7 @@ func (c *Module) maybeGenerateBazelActions(actx android.ModuleContext) bool {
 	bazelModuleLabel := c.GetBazelLabel(actx, c)
 	bazelActionsUsed := false
 	if c.MixedBuildsEnabled(actx) && c.bazelHandler != nil {
-		bazelActionsUsed = c.bazelHandler.generateBazelBuildActions(actx, bazelModuleLabel)
+		bazelActionsUsed = c.bazelHandler.GenerateBazelBuildActions(actx, bazelModuleLabel)
 	}
 	return bazelActionsUsed
 }
@@ -2284,7 +2302,7 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 			actx.AddVariationDependencies([]blueprint.Variation{
 				c.ImageVariation(),
 				{Mutator: "link", Variation: "shared"},
-			}, vndkExtDepTag, vndkdep.getVndkExtendsModuleName())
+			}, vndkExtDepTag, RewriteSnapshotLib(vndkdep.getVndkExtendsModuleName(), GetSnapshot(c, &snapshotInfo, actx).SharedLibs))
 		}
 	}
 }
@@ -3398,7 +3416,7 @@ func DefaultsFactory(props ...interface{}) android.Module {
 		&TestProperties{},
 		&TestBinaryProperties{},
 		&BenchmarkProperties{},
-		&FuzzProperties{},
+		&fuzz.FuzzProperties{},
 		&StlProperties{},
 		&SanitizeProperties{},
 		&StripProperties{},

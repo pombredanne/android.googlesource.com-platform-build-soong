@@ -20,6 +20,7 @@ import (
 
 	"android/soong/android"
 	"android/soong/genrule"
+	"android/soong/snapshot"
 )
 
 func RegisterRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
@@ -44,9 +45,6 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 
 	supportLinuxBionic := false
 	for _, os := range oses {
-		if os == android.Fuchsia {
-			ret += withFuchsiaModules()
-		}
 		if os == android.Windows {
 			ret += withWindowsModules()
 		}
@@ -367,7 +365,7 @@ func commonDefaultModules() string {
 			stl: "none",
 			min_sdk_version: "16",
 			crt: true,
-			default_shared_libs: [],
+			system_shared_libs: [],
 			apex_available: [
 				"//apex_available:platform",
 				"//apex_available:anyapex",
@@ -452,6 +450,15 @@ func commonDefaultModules() string {
 		cc_library_static {
 			name: "note_memtag_heap_sync",
 		}
+
+		cc_library {
+			name: "libc_musl",
+			host_supported: true,
+			no_libcrt: true,
+			nocrt: true,
+			system_shared_libs: [],
+			stl: "none",
+		}
 	`
 }
 
@@ -467,19 +474,6 @@ func withWindowsModules() string {
 				},
 			},
 			src: "",
-		}
-		`
-}
-
-func withFuchsiaModules() string {
-	return `
-		cc_library {
-			name: "libbioniccompat",
-			stl: "none",
-		}
-		cc_library {
-			name: "libcompiler_rt",
-			stl: "none",
 		}
 		`
 }
@@ -625,21 +619,15 @@ var PrepareForTestOnLinuxBionic = android.GroupFixturePreparers(
 	android.FixtureOverrideTextFile(linuxBionicDefaultsPath, withLinuxBionic()),
 )
 
-// The preparer to include if running a cc related test for fuchsia.
-var PrepareForTestOnFuchsia = android.GroupFixturePreparers(
-	// Place the default cc test modules for fuschia in a location that will not conflict with default
-	// test modules defined by other packages.
-	android.FixtureAddTextFile("defaults/cc/fuschia/Android.bp", withFuchsiaModules()),
-	android.PrepareForTestSetDeviceToFuchsia,
-)
-
 // This adds some additional modules and singletons which might negatively impact the performance
 // of tests so they are not included in the PrepareForIntegrationTestWithCc.
 var PrepareForTestWithCcIncludeVndk = android.GroupFixturePreparers(
 	PrepareForIntegrationTestWithCc,
 	android.FixtureRegisterWithContext(func(ctx android.RegistrationContext) {
-		VendorSnapshotImageSingleton.Init(ctx)
-		recoverySnapshotImageSingleton.init(ctx)
+		snapshot.VendorSnapshotImageSingleton.Init(ctx)
+		snapshot.RecoverySnapshotImageSingleton.Init(ctx)
+		RegisterVendorSnapshotModules(ctx)
+		RegisterRecoverySnapshotModules(ctx)
 		ctx.RegisterSingletonType("vndk-snapshot", VndkSnapshotSingleton)
 	}),
 )
@@ -663,14 +651,7 @@ func TestConfig(buildDir string, os android.OsType, env map[string]string,
 		mockFS[k] = v
 	}
 
-	var config android.Config
-	if os == android.Fuchsia {
-		panic("Fuchsia not supported use test fixture instead")
-	} else {
-		config = android.TestArchConfig(buildDir, env, bp, mockFS)
-	}
-
-	return config
+	return android.TestArchConfig(buildDir, env, bp, mockFS)
 }
 
 // CreateTestContext is the legacy way of creating a TestContext for testing cc modules.
@@ -687,8 +668,10 @@ func CreateTestContext(config android.Config) *android.TestContext {
 	ctx.RegisterModuleType("filegroup", android.FileGroupFactory)
 	ctx.RegisterModuleType("vndk_prebuilt_shared", VndkPrebuiltSharedFactory)
 
-	VendorSnapshotImageSingleton.Init(ctx)
-	recoverySnapshotImageSingleton.init(ctx)
+	snapshot.VendorSnapshotImageSingleton.Init(ctx)
+	snapshot.RecoverySnapshotImageSingleton.Init(ctx)
+	RegisterVendorSnapshotModules(ctx)
+	RegisterRecoverySnapshotModules(ctx)
 	ctx.RegisterSingletonType("vndk-snapshot", VndkSnapshotSingleton)
 	RegisterVndkLibraryTxtTypes(ctx)
 

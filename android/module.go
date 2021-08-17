@@ -223,6 +223,8 @@ type BaseModuleContext interface {
 	// the first DependencyTag.
 	GetDirectDep(name string) (blueprint.Module, blueprint.DependencyTag)
 
+	ModuleFromName(name string) (blueprint.Module, bool)
+
 	// VisitDirectDepsBlueprint calls visit for each direct dependency.  If there are multiple
 	// direct dependencies on the same module visit will be called multiple times on that module
 	// and OtherModuleDependencyTag will return a different tag for each.
@@ -233,8 +235,8 @@ type BaseModuleContext interface {
 
 	// VisitDirectDeps calls visit for each direct dependency.  If there are multiple
 	// direct dependencies on the same module visit will be called multiple times on that module
-	// and OtherModuleDependencyTag will return a different tag for each.  It skips any
-	// dependencies that are not an android.Module.
+	// and OtherModuleDependencyTag will return a different tag for each.  It raises an error if any of the
+	// dependencies are not an android.Module.
 	//
 	// The Module passed to the visit function should not be retained outside of the visit
 	// function, it may be invalidated by future mutators.
@@ -325,7 +327,6 @@ type BaseModuleContext interface {
 	Host() bool
 	Device() bool
 	Darwin() bool
-	Fuchsia() bool
 	Windows() bool
 	Debug() bool
 	PrimaryArch() bool
@@ -413,6 +414,7 @@ type ModuleContext interface {
 	InstallInDebugRamdisk() bool
 	InstallInRecovery() bool
 	InstallInRoot() bool
+	InstallInVendor() bool
 	InstallBypassMake() bool
 	InstallForceOS() (*OsType, *ArchType)
 
@@ -471,6 +473,7 @@ type Module interface {
 	InstallInDebugRamdisk() bool
 	InstallInRecovery() bool
 	InstallInRoot() bool
+	InstallInVendor() bool
 	InstallBypassMake() bool
 	InstallForceOS() (*OsType, *ArchType)
 	HideFromMake()
@@ -1526,7 +1529,7 @@ func (m *ModuleBase) computeInstallDeps(ctx ModuleContext) ([]*installPathsDepSe
 	var installDeps []*installPathsDepSet
 	var packagingSpecs []*packagingSpecsDepSet
 	ctx.VisitDirectDeps(func(dep Module) {
-		if IsInstallDepNeeded(ctx.OtherModuleDependencyTag(dep)) && !dep.IsHideFromMake() {
+		if IsInstallDepNeeded(ctx.OtherModuleDependencyTag(dep)) && !dep.IsHideFromMake() && !dep.IsSkipInstall() {
 			installDeps = append(installDeps, dep.base().installFilesDepSet)
 			packagingSpecs = append(packagingSpecs, dep.base().packagingSpecsDepSet)
 		}
@@ -1577,6 +1580,10 @@ func (m *ModuleBase) InstallInDebugRamdisk() bool {
 
 func (m *ModuleBase) InstallInRecovery() bool {
 	return Bool(m.commonProperties.Recovery)
+}
+
+func (m *ModuleBase) InstallInVendor() bool {
+	return Bool(m.commonProperties.Vendor)
 }
 
 func (m *ModuleBase) InstallInRoot() bool {
@@ -2032,8 +2039,13 @@ type baseModuleContext struct {
 	tagPath  []blueprint.DependencyTag
 
 	strictVisitDeps bool // If true, enforce that all dependencies are enabled
+
+	bazelConversionMode bool
 }
 
+func (b *baseModuleContext) BazelConversionMode() bool {
+	return b.bazelConversionMode
+}
 func (b *baseModuleContext) OtherModuleName(m blueprint.Module) string {
 	return b.bp.OtherModuleName(m)
 }
@@ -2373,6 +2385,17 @@ func (b *baseModuleContext) GetDirectDep(name string) (blueprint.Module, bluepri
 	return b.getDirectDepFirstTag(name)
 }
 
+func (b *baseModuleContext) ModuleFromName(name string) (blueprint.Module, bool) {
+	if !b.BazelConversionMode() {
+		panic("cannot call ModuleFromName if not in bazel conversion mode")
+	}
+	if moduleName, _ := SrcIsModuleWithTag(name); moduleName != "" {
+		return b.bp.ModuleFromName(moduleName)
+	} else {
+		return b.bp.ModuleFromName(name)
+	}
+}
+
 func (b *baseModuleContext) VisitDirectDepsBlueprint(visit func(blueprint.Module)) {
 	b.bp.VisitDirectDeps(visit)
 }
@@ -2563,10 +2586,6 @@ func (b *baseModuleContext) Darwin() bool {
 	return b.os == Darwin
 }
 
-func (b *baseModuleContext) Fuchsia() bool {
-	return b.os == Fuchsia
-}
-
 func (b *baseModuleContext) Windows() bool {
 	return b.os == Windows
 }
@@ -2643,6 +2662,10 @@ func (m *moduleContext) InstallBypassMake() bool {
 
 func (m *moduleContext) InstallForceOS() (*OsType, *ArchType) {
 	return m.module.InstallForceOS()
+}
+
+func (m *moduleContext) InstallInVendor() bool {
+	return m.module.InstallInVendor()
 }
 
 func (m *moduleContext) skipInstall() bool {
@@ -2829,9 +2852,10 @@ func SrcIsModule(s string) (module string) {
 	return module
 }
 
-// SrcIsModule decodes module references in the format ":unqualified-name{.tag}" or
-// "//namespace:name{.tag}" into the module name and an empty string for the tag, or empty strings
-// if the input was not a module reference.
+// SrcIsModuleWithTag decodes module references in the format ":unqualified-name{.tag}" or
+// "//namespace:name{.tag}" into the module name and tag, ":unqualified-name" or "//namespace:name"
+// into the module name and an empty string for the tag, or empty strings if the input was not a
+// module reference.
 func SrcIsModuleWithTag(s string) (module, tag string) {
 	if len(s) > 1 {
 		if s[0] == ':' {
@@ -2865,17 +2889,30 @@ func isUnqualifiedModuleName(module string) bool {
 	return strings.IndexByte(module, '/') == -1
 }
 
+// sourceOrOutputDependencyTag is the dependency tag added automatically by pathDepsMutator for any
+// module reference in a property annotated with `android:"path"` or passed to ExtractSourceDeps
+// or ExtractSourcesDeps.
+//
+// If uniquely identifies the dependency that was added as it contains both the module name used to
+// add the dependency as well as the tag. That makes it very simple to find the matching dependency
+// in GetModuleFromPathDep as all it needs to do is find the dependency whose tag matches the tag
+// used to add it. It does not need to check that the module name as returned by one of
+// Module.Name(), BaseModuleContext.OtherModuleName() or ModuleBase.BaseModuleName() matches the
+// name supplied in the tag. That means it does not need to handle differences in module names
+// caused by prebuilt_ prefix, or fully qualified module names.
 type sourceOrOutputDependencyTag struct {
 	blueprint.BaseDependencyTag
+
+	// The name of the module.
+	moduleName string
+
+	// The tag that will be passed to the module's OutputFileProducer.OutputFiles(tag) method.
 	tag string
 }
 
-func sourceOrOutputDepTag(tag string) blueprint.DependencyTag {
-	return sourceOrOutputDependencyTag{tag: tag}
+func sourceOrOutputDepTag(moduleName, tag string) blueprint.DependencyTag {
+	return sourceOrOutputDependencyTag{moduleName: moduleName, tag: tag}
 }
-
-// Deprecated, use IsSourceDepTagWithOutputTag(tag, "") instead.
-var SourceDepTag = sourceOrOutputDepTag("")
 
 // IsSourceDepTag returns true if the supplied blueprint.DependencyTag is one that was used to add
 // dependencies by either ExtractSourceDeps, ExtractSourcesDeps or automatically for properties
@@ -2907,7 +2944,7 @@ func ExtractSourcesDeps(ctx BottomUpMutatorContext, srcFiles []string) {
 				ctx.ModuleErrorf("found source dependency duplicate: %q!", s)
 			} else {
 				set[s] = true
-				ctx.AddDependency(ctx.Module(), sourceOrOutputDepTag(t), m)
+				ctx.AddDependency(ctx.Module(), sourceOrOutputDepTag(m, t), m)
 			}
 		}
 	}
@@ -2920,7 +2957,7 @@ func ExtractSourcesDeps(ctx BottomUpMutatorContext, srcFiles []string) {
 func ExtractSourceDeps(ctx BottomUpMutatorContext, s *string) {
 	if s != nil {
 		if m, t := SrcIsModuleWithTag(*s); m != "" {
-			ctx.AddDependency(ctx.Module(), sourceOrOutputDepTag(t), m)
+			ctx.AddDependency(ctx.Module(), sourceOrOutputDepTag(m, t), m)
 		}
 	}
 }

@@ -18,12 +18,27 @@ package mk2rbc
 type starlarkType int
 
 const (
+	// Variable types. Initially we only know the types of the  product
+	// configuration variables that are lists, and the types of some
+	// hardwired variables. The remaining variables are first entered as
+	// having an unknown type and treated as strings, but sometimes we
+	//  can infer variable's type from the value assigned to it.
 	starlarkTypeUnknown starlarkType = iota
 	starlarkTypeList    starlarkType = iota
 	starlarkTypeString  starlarkType = iota
 	starlarkTypeInt     starlarkType = iota
 	starlarkTypeBool    starlarkType = iota
 	starlarkTypeVoid    starlarkType = iota
+)
+
+type hiddenArgType int
+
+const (
+	// Some functions have an implicitly emitted first argument, which may be
+	// a global ('g') or configuration ('cfg') variable.
+	hiddenArgNone   hiddenArgType = iota
+	hiddenArgGlobal hiddenArgType = iota
+	hiddenArgConfig hiddenArgType = iota
 )
 
 type varClass int
@@ -52,4 +67,9 @@ func (s ScopeBase) Call(_ string, _ []string) []string {
 
 func (s ScopeBase) SetFunc(_ string, _ func([]string) []string) {
 	panic("implement me")
+}
+
+// Used to find all makefiles in the source tree
+type MakefileFinder interface {
+	Find(root string) []string
 }

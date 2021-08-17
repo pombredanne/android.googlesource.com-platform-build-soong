@@ -69,6 +69,23 @@ type LabelList struct {
 	Excludes []Label
 }
 
+func (ll *LabelList) Equals(other LabelList) bool {
+	if len(ll.Includes) != len(other.Includes) || len(ll.Excludes) != len(other.Excludes) {
+		return false
+	}
+	for i, _ := range ll.Includes {
+		if ll.Includes[i] != other.Includes[i] {
+			return false
+		}
+	}
+	for i, _ := range ll.Excludes {
+		if ll.Excludes[i] != other.Excludes[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func (ll *LabelList) IsNil() bool {
 	return ll.Includes == nil && ll.Excludes == nil
 }
@@ -321,7 +338,7 @@ func (la *LabelAttribute) SetSelectValue(axis ConfigurationAxis, config string, 
 	switch axis.configurationType {
 	case noConfig:
 		la.Value = &value
-	case arch, os, osArch, productVariables:
+	case arch, os, osArch, bionic, productVariables:
 		if la.ConfigurableValues == nil {
 			la.ConfigurableValues = make(configurableLabels)
 		}
@@ -337,7 +354,7 @@ func (la *LabelAttribute) SelectValue(axis ConfigurationAxis, config string) Lab
 	switch axis.configurationType {
 	case noConfig:
 		return *la.Value
-	case arch, os, osArch, productVariables:
+	case arch, os, osArch, bionic, productVariables:
 		return *la.ConfigurableValues[axis][config]
 	default:
 		panic(fmt.Errorf("Unrecognized ConfigurationAxis %s", axis))
@@ -394,7 +411,7 @@ func (ba *BoolAttribute) SetSelectValue(axis ConfigurationAxis, config string, v
 	switch axis.configurationType {
 	case noConfig:
 		ba.Value = value
-	case arch, os, osArch, productVariables:
+	case arch, os, osArch, bionic, productVariables:
 		if ba.ConfigurableValues == nil {
 			ba.ConfigurableValues = make(configurableBools)
 		}
@@ -410,7 +427,7 @@ func (ba BoolAttribute) SelectValue(axis ConfigurationAxis, config string) *bool
 	switch axis.configurationType {
 	case noConfig:
 		return ba.Value
-	case arch, os, osArch, productVariables:
+	case arch, os, osArch, bionic, productVariables:
 		if v, ok := ba.ConfigurableValues[axis][config]; ok {
 			return &v
 		} else {
@@ -446,7 +463,7 @@ func (ll labelListSelectValues) appendSelects(other labelListSelectValues) {
 // HasConfigurableValues returns whether there are configurable values within this set of selects.
 func (ll labelListSelectValues) HasConfigurableValues() bool {
 	for _, v := range ll {
-		if len(v.Includes) > 0 {
+		if v.Includes != nil {
 			return true
 		}
 	}
@@ -462,6 +479,13 @@ type LabelListAttribute struct {
 	// The configured attribute label list Values. Optional
 	// a map of independent configurability axes
 	ConfigurableValues configurableLabelLists
+
+	// If true, differentiate between "nil" and "empty" list. nil means that
+	// this attribute should not be specified at all, and "empty" means that
+	// the attribute should be explicitly specified as an empty list.
+	// This mode facilitates use of attribute defaults: an empty list should
+	// override the default.
+	ForceSpecifyEmptyList bool
 }
 
 type configurableLabelLists map[ConfigurationAxis]labelListSelectValues
@@ -509,7 +533,7 @@ func (lla *LabelListAttribute) SetSelectValue(axis ConfigurationAxis, config str
 	switch axis.configurationType {
 	case noConfig:
 		lla.Value = list
-	case arch, os, osArch, productVariables:
+	case arch, os, osArch, bionic, productVariables:
 		if lla.ConfigurableValues == nil {
 			lla.ConfigurableValues = make(configurableLabelLists)
 		}
@@ -525,7 +549,7 @@ func (lla *LabelListAttribute) SelectValue(axis ConfigurationAxis, config string
 	switch axis.configurationType {
 	case noConfig:
 		return lla.Value
-	case arch, os, osArch, productVariables:
+	case arch, os, osArch, bionic, productVariables:
 		return lla.ConfigurableValues[axis][config]
 	default:
 		panic(fmt.Errorf("Unrecognized ConfigurationAxis %s", axis))
@@ -546,6 +570,9 @@ func (lla *LabelListAttribute) SortedConfigurationAxes() []ConfigurationAxis {
 // Append all values, including os and arch specific ones, from another
 // LabelListAttribute to this LabelListAttribute.
 func (lla *LabelListAttribute) Append(other LabelListAttribute) {
+	if lla.ForceSpecifyEmptyList && !other.Value.IsNil() {
+		lla.Value.Includes = []Label{}
+	}
 	lla.Value.Append(other.Value)
 	if lla.ConfigurableValues == nil {
 		lla.ConfigurableValues = make(configurableLabelLists)
@@ -595,7 +622,7 @@ func (lla *LabelListAttribute) ResolveExcludes() {
 
 		// Now that the Value list is finalized for this axis, compare it with the original
 		// list, and put the difference into the default condition for the axis.
-		lla.ConfigurableValues[axis][conditionsDefault] = SubtractBazelLabelList(baseLabels, lla.Value)
+		lla.ConfigurableValues[axis][ConditionsDefaultConfigKey] = SubtractBazelLabelList(baseLabels, lla.Value)
 
 		// if everything ends up without includes, just delete the axis
 		if !lla.ConfigurableValues[axis].HasConfigurableValues() {
@@ -682,7 +709,7 @@ func (sla *StringListAttribute) SetSelectValue(axis ConfigurationAxis, config st
 	switch axis.configurationType {
 	case noConfig:
 		sla.Value = list
-	case arch, os, osArch, productVariables:
+	case arch, os, osArch, bionic, productVariables:
 		if sla.ConfigurableValues == nil {
 			sla.ConfigurableValues = make(configurableStringLists)
 		}
@@ -698,7 +725,7 @@ func (sla *StringListAttribute) SelectValue(axis ConfigurationAxis, config strin
 	switch axis.configurationType {
 	case noConfig:
 		return sla.Value
-	case arch, os, osArch, productVariables:
+	case arch, os, osArch, bionic, productVariables:
 		return sla.ConfigurableValues[axis][config]
 	default:
 		panic(fmt.Errorf("Unrecognized ConfigurationAxis %s", axis))

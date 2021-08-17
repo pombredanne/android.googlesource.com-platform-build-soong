@@ -73,6 +73,7 @@ type BazelConversionPathContext interface {
 	EarlyModulePathContext
 
 	GetDirectDep(name string) (blueprint.Module, blueprint.DependencyTag)
+	ModuleFromName(name string) (blueprint.Module, bool)
 	Module() Module
 	ModuleType() string
 	OtherModuleName(m blueprint.Module) string
@@ -114,6 +115,11 @@ func BazelLabelForModuleWholeDepsExcludes(ctx BazelConversionPathContext, module
 
 func bazelLabelForModuleDeps(ctx BazelConversionPathContext, modules []string, isWholeLibs bool) bazel.LabelList {
 	var labels bazel.LabelList
+	// In some cases, a nil string list is different than an explicitly empty list.
+	if len(modules) == 0 && modules != nil {
+		labels.Includes = []bazel.Label{}
+		return labels
+	}
 	for _, module := range modules {
 		bpText := module
 		if m := SrcIsModule(module); m == "" {
@@ -144,6 +150,10 @@ func bazelLabelForModuleDepsExcludes(ctx BazelConversionPathContext, modules, ex
 
 func BazelLabelForModuleSrcSingle(ctx BazelConversionPathContext, path string) bazel.Label {
 	return BazelLabelForModuleSrcExcludes(ctx, []string{path}, []string(nil)).Includes[0]
+}
+
+func BazelLabelForModuleDepSingle(ctx BazelConversionPathContext, path string) bazel.Label {
+	return BazelLabelForModuleDepsExcludes(ctx, []string{path}, []string(nil)).Includes[0]
 }
 
 // BazelLabelForModuleSrc expects a list of path (relative to local module directory) and module
@@ -331,11 +341,9 @@ func expandSrcsForBazel(ctx BazelConversionPathContext, paths, expandedExcludes 
 // module. The label will be relative to the current directory if appropriate. The dependency must
 // already be resolved by either deps mutator or path deps mutator.
 func getOtherModuleLabel(ctx BazelConversionPathContext, dep, tag string, isWholeLibs bool) bazel.Label {
-	m, _ := ctx.GetDirectDep(dep)
+	m, _ := ctx.ModuleFromName(dep)
 	if m == nil {
-		panic(fmt.Errorf(`Cannot get direct dep %q of %q.
-		This is likely because it was not added via AddDependency().
-		This may be due a mutator skipped during bp2build.`, dep, ctx.Module().Name()))
+		panic(fmt.Errorf("No module named %q found, but was a direct dep of %q", dep, ctx.Module().Name()))
 	}
 	otherLabel := bazelModuleLabel(ctx, m, tag)
 	label := bazelModuleLabel(ctx, ctx.Module(), "")

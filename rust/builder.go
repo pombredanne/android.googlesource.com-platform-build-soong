@@ -220,6 +220,15 @@ func transformSrctoCrate(ctx ModuleContext, main android.Path, deps PathDeps, fl
 	linkFlags = append(linkFlags, flags.GlobalLinkFlags...)
 	linkFlags = append(linkFlags, flags.LinkFlags...)
 
+	// Check if this module needs to use the bootstrap linker
+	if ctx.RustModule().Bootstrap() && !ctx.RustModule().InRecovery() && !ctx.RustModule().InRamdisk() && !ctx.RustModule().InVendorRamdisk() {
+		dynamicLinker := "-Wl,-dynamic-linker,/system/bin/bootstrap/linker"
+		if ctx.toolchain().Is64Bit() {
+			dynamicLinker += "64"
+		}
+		linkFlags = append(linkFlags, dynamicLinker)
+	}
+
 	libFlags := makeLibFlags(deps)
 
 	// Collect dependencies
@@ -259,6 +268,17 @@ func transformSrctoCrate(ctx ModuleContext, main android.Path, deps PathDeps, fl
 	}
 
 	envVars = append(envVars, "ANDROID_RUST_VERSION="+config.RustDefaultVersion)
+
+	if ctx.RustModule().compiler.CargoEnvCompat() {
+		if _, ok := ctx.RustModule().compiler.(*binaryDecorator); ok {
+			envVars = append(envVars, "CARGO_BIN_NAME="+strings.TrimSuffix(outputFile.Base(), outputFile.Ext()))
+		}
+		envVars = append(envVars, "CARGO_CRATE_NAME="+ctx.RustModule().CrateName())
+		pkgVersion := ctx.RustModule().compiler.CargoPkgVersion()
+		if pkgVersion != "" {
+			envVars = append(envVars, "CARGO_PKG_VERSION="+pkgVersion)
+		}
+	}
 
 	if flags.Clippy {
 		clippyFile := android.PathForModuleOut(ctx, outputFile.Base()+".clippy")
@@ -322,6 +342,12 @@ func Rustdoc(ctx ModuleContext, main android.Path, deps PathDeps,
 
 	rustdocFlags = append(rustdocFlags, makeLibFlags(deps)...)
 	docTimestampFile := android.PathForModuleOut(ctx, "rustdoc.timestamp")
+
+	// Silence warnings about renamed lints for third-party crates
+	modulePath := android.PathForModuleSrc(ctx).String()
+	if android.IsThirdPartyPath(modulePath) {
+		rustdocFlags = append(rustdocFlags, " -A renamed_and_removed_lints")
+	}
 
 	// Yes, the same out directory is used simultaneously by all rustdoc builds.
 	// This is what cargo does. The docs for individual crates get generated to

@@ -12,6 +12,7 @@ var (
 		"external/libchromeos-rs",
 		"external/minijail",
 		"external/rust",
+		"external/selinux/libselinux",
 		"external/vm_tools/p9",
 		"frameworks/native/libs/binder/rust",
 		"frameworks/proto_logging/stats",
@@ -23,10 +24,12 @@ var (
 		"system/extras/profcollectd",
 		"system/extras/simpleperf",
 		"system/hardware/interfaces/keystore2",
+		"system/librustutils",
 		"system/logging/rust",
 		"system/security",
 		"system/tools/aidl",
 		"tools/security/fuzzing/example_rust_fuzzer",
+		"vendor/",
 	}
 
 	DownstreamRustAllowedPaths = []string{

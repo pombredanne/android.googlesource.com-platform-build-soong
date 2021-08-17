@@ -25,6 +25,7 @@ import (
 	"android/soong/bloaty"
 	"android/soong/cc"
 	cc_config "android/soong/cc/config"
+	"android/soong/fuzz"
 	"android/soong/rust/config"
 )
 
@@ -85,6 +86,10 @@ type BaseProperties struct {
 	VendorRamdiskVariantNeeded bool     `blueprint:"mutated"`
 	ExtraVariants              []string `blueprint:"mutated"`
 
+	// Allows this module to use non-APEX version of libraries. Useful
+	// for building binaries that are started before APEXes are activated.
+	Bootstrap *bool
+
 	// Used by vendor snapshot to record dependencies from snapshot modules.
 	SnapshotSharedLibs []string `blueprint:"mutated"`
 	SnapshotStaticLibs []string `blueprint:"mutated"`
@@ -119,9 +124,7 @@ type BaseProperties struct {
 }
 
 type Module struct {
-	android.ModuleBase
-	android.DefaultableModuleBase
-	android.ApexModuleBase
+	fuzz.FuzzModule
 
 	VendorProperties cc.VendorProperties
 
@@ -290,7 +293,7 @@ func (mod *Module) UseVndk() bool {
 }
 
 func (mod *Module) Bootstrap() bool {
-	return false
+	return Bool(mod.Properties.Bootstrap)
 }
 
 func (mod *Module) MustUseVendorVariant() bool {
@@ -430,6 +433,12 @@ type compiler interface {
 	// Output directory in which source-generated code from dependencies is
 	// copied. This is equivalent to Cargo's OUT_DIR variable.
 	CargoOutDir() android.OptionalPath
+
+	// CargoPkgVersion returns the value of the Cargo_pkg_version property.
+	CargoPkgVersion() string
+
+	// CargoEnvCompat returns whether Cargo environment variables should be used.
+	CargoEnvCompat() bool
 
 	inData() bool
 	install(ctx ModuleContext)
@@ -859,6 +868,8 @@ func (mod *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 		if mod.installable(apexInfo) {
 			mod.compiler.install(ctx)
 		}
+
+		ctx.Phony("rust", ctx.RustModule().OutputFile().Path())
 	}
 }
 

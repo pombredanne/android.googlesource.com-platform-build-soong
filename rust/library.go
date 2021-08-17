@@ -21,6 +21,7 @@ import (
 
 	"android/soong/android"
 	"android/soong/cc"
+	"android/soong/snapshot"
 )
 
 var (
@@ -431,6 +432,12 @@ func (library *libraryDecorator) sharedLibFilename(ctx ModuleContext) string {
 
 func (library *libraryDecorator) compilerFlags(ctx ModuleContext, flags Flags) Flags {
 	flags.RustFlags = append(flags.RustFlags, "-C metadata="+ctx.ModuleName())
+	if library.dylib() {
+		// We need to add a dependency on std in order to link crates as dylibs.
+		// The hack to add this dependency is guarded by the following cfg so
+		// that we don't force a dependency when it isn't needed.
+		library.baseCompiler.Properties.Cfgs = append(library.baseCompiler.Properties.Cfgs, "android_dylib")
+	}
 	flags = library.baseCompiler.compilerFlags(ctx, flags)
 	if library.shared() || library.static() {
 		library.includeDirs = append(library.includeDirs, android.PathsForModuleSrc(ctx, library.Properties.Include_dirs)...)
@@ -639,7 +646,7 @@ func LibraryMutator(mctx android.BottomUpMutatorContext) {
 			variation := v.(*Module).ModuleBase.ImageVariation().Variation
 			if strings.HasPrefix(variation, cc.VendorVariationPrefix) &&
 				m.HasVendorVariant() &&
-				!cc.IsVendorProprietaryModule(mctx) &&
+				!snapshot.IsVendorProprietaryModule(mctx) &&
 				strings.TrimPrefix(variation, cc.VendorVariationPrefix) == mctx.DeviceConfig().VndkVersion() {
 
 				// cc.MutateImage runs before LibraryMutator, so vendor variations which are meant for rlibs only are

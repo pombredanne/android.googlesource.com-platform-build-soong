@@ -29,8 +29,8 @@ const (
 	// OsType names in arch.go
 	osAndroid     = "android"
 	osDarwin      = "darwin"
-	osFuchsia     = "fuchsia"
 	osLinux       = "linux_glibc"
+	osLinuxMusl   = "linux_musl"
 	osLinuxBionic = "linux_bionic"
 	osWindows     = "windows"
 
@@ -40,10 +40,10 @@ const (
 	osArchAndroidX86        = "android_x86"
 	osArchAndroidX86_64     = "android_x86_64"
 	osArchDarwinX86_64      = "darwin_x86_64"
-	osArchFuchsiaArm64      = "fuchsia_arm64"
-	osArchFuchsiaX86_64     = "fuchsia_x86_64"
 	osArchLinuxX86          = "linux_glibc_x86"
 	osArchLinuxX86_64       = "linux_glibc_x86_64"
+	osArchLinuxMuslX86      = "linux_musl_x86"
+	osArchLinuxMuslX86_64   = "linux_musl_x86_64"
 	osArchLinuxBionicArm64  = "linux_bionic_arm64"
 	osArchLinuxBionicX86_64 = "linux_bionic_x86_64"
 	osArchWindowsX86        = "windows_x86"
@@ -56,7 +56,7 @@ const (
 	// This is consistently named "conditions_default" to mirror the Soong
 	// config variable default key in an Android.bp file, although there's no
 	// integration with Soong config variables (yet).
-	conditionsDefault = "conditions_default"
+	ConditionsDefaultConfigKey = "conditions_default"
 
 	ConditionsDefaultSelectKey = "//conditions:default"
 
@@ -72,40 +72,45 @@ var (
 	// A map of architectures to the Bazel label of the constraint_value
 	// for the @platforms//cpu:cpu constraint_setting
 	platformArchMap = map[string]string{
-		archArm:           "//build/bazel/platforms/arch:arm",
-		archArm64:         "//build/bazel/platforms/arch:arm64",
-		archX86:           "//build/bazel/platforms/arch:x86",
-		archX86_64:        "//build/bazel/platforms/arch:x86_64",
-		conditionsDefault: ConditionsDefaultSelectKey, // The default condition of as arch select map.
+		archArm:                    "//build/bazel/platforms/arch:arm",
+		archArm64:                  "//build/bazel/platforms/arch:arm64",
+		archX86:                    "//build/bazel/platforms/arch:x86",
+		archX86_64:                 "//build/bazel/platforms/arch:x86_64",
+		ConditionsDefaultConfigKey: ConditionsDefaultSelectKey, // The default condition of as arch select map.
 	}
 
 	// A map of target operating systems to the Bazel label of the
 	// constraint_value for the @platforms//os:os constraint_setting
 	platformOsMap = map[string]string{
-		osAndroid:         "//build/bazel/platforms/os:android",
-		osDarwin:          "//build/bazel/platforms/os:darwin",
-		osFuchsia:         "//build/bazel/platforms/os:fuchsia",
-		osLinux:           "//build/bazel/platforms/os:linux",
-		osLinuxBionic:     "//build/bazel/platforms/os:linux_bionic",
-		osWindows:         "//build/bazel/platforms/os:windows",
-		conditionsDefault: ConditionsDefaultSelectKey, // The default condition of an os select map.
+		osAndroid:                  "//build/bazel/platforms/os:android",
+		osDarwin:                   "//build/bazel/platforms/os:darwin",
+		osLinux:                    "//build/bazel/platforms/os:linux",
+		osLinuxMusl:                "//build/bazel/platforms/os:linux_musl",
+		osLinuxBionic:              "//build/bazel/platforms/os:linux_bionic",
+		osWindows:                  "//build/bazel/platforms/os:windows",
+		ConditionsDefaultConfigKey: ConditionsDefaultSelectKey, // The default condition of an os select map.
+	}
+
+	platformBionicMap = map[string]string{
+		"bionic":                   "//build/bazel/platforms/os:bionic",
+		ConditionsDefaultConfigKey: ConditionsDefaultSelectKey, // The default condition of an os select map.
 	}
 
 	platformOsArchMap = map[string]string{
-		osArchAndroidArm:        "//build/bazel/platforms/os_arch:android_arm",
-		osArchAndroidArm64:      "//build/bazel/platforms/os_arch:android_arm64",
-		osArchAndroidX86:        "//build/bazel/platforms/os_arch:android_x86",
-		osArchAndroidX86_64:     "//build/bazel/platforms/os_arch:android_x86_64",
-		osArchDarwinX86_64:      "//build/bazel/platforms/os_arch:darwin_x86_64",
-		osArchFuchsiaArm64:      "//build/bazel/platforms/os_arch:fuchsia_arm64",
-		osArchFuchsiaX86_64:     "//build/bazel/platforms/os_arch:fuchsia_x86_64",
-		osArchLinuxX86:          "//build/bazel/platforms/os_arch:linux_glibc_x86",
-		osArchLinuxX86_64:       "//build/bazel/platforms/os_arch:linux_glibc_x86_64",
-		osArchLinuxBionicArm64:  "//build/bazel/platforms/os_arch:linux_bionic_arm64",
-		osArchLinuxBionicX86_64: "//build/bazel/platforms/os_arch:linux_bionic_x86_64",
-		osArchWindowsX86:        "//build/bazel/platforms/os_arch:windows_x86",
-		osArchWindowsX86_64:     "//build/bazel/platforms/os_arch:windows_x86_64",
-		conditionsDefault:       ConditionsDefaultSelectKey, // The default condition of an os select map.
+		osArchAndroidArm:           "//build/bazel/platforms/os_arch:android_arm",
+		osArchAndroidArm64:         "//build/bazel/platforms/os_arch:android_arm64",
+		osArchAndroidX86:           "//build/bazel/platforms/os_arch:android_x86",
+		osArchAndroidX86_64:        "//build/bazel/platforms/os_arch:android_x86_64",
+		osArchDarwinX86_64:         "//build/bazel/platforms/os_arch:darwin_x86_64",
+		osArchLinuxX86:             "//build/bazel/platforms/os_arch:linux_glibc_x86",
+		osArchLinuxX86_64:          "//build/bazel/platforms/os_arch:linux_glibc_x86_64",
+		osArchLinuxMuslX86:         "//build/bazel/platforms/os_arch:linux_musl_x86",
+		osArchLinuxMuslX86_64:      "//build/bazel/platforms/os_arch:linux_musl_x86_64",
+		osArchLinuxBionicArm64:     "//build/bazel/platforms/os_arch:linux_bionic_arm64",
+		osArchLinuxBionicX86_64:    "//build/bazel/platforms/os_arch:linux_bionic_x86_64",
+		osArchWindowsX86:           "//build/bazel/platforms/os_arch:windows_x86",
+		osArchWindowsX86_64:        "//build/bazel/platforms/os_arch:windows_x86_64",
+		ConditionsDefaultConfigKey: ConditionsDefaultSelectKey, // The default condition of an os select map.
 	}
 )
 
@@ -117,6 +122,7 @@ const (
 	arch
 	os
 	osArch
+	bionic
 	productVariables
 )
 
@@ -126,6 +132,7 @@ func (ct configurationType) String() string {
 		arch:             "arch",
 		os:               "os",
 		osArch:           "arch_os",
+		bionic:           "bionic",
 		productVariables: "product_variables",
 	}[ct]
 }
@@ -148,6 +155,10 @@ func (ct configurationType) validateConfig(config string) {
 		if _, ok := platformOsArchMap[config]; !ok {
 			panic(fmt.Errorf("Unknown os+arch: %s", config))
 		}
+	case bionic:
+		if _, ok := platformBionicMap[config]; !ok {
+			panic(fmt.Errorf("Unknown for %s: %s", ct.String(), config))
+		}
 	case productVariables:
 		// do nothing
 	default:
@@ -167,8 +178,10 @@ func (ct configurationType) SelectKey(config string) string {
 		return platformOsMap[config]
 	case osArch:
 		return platformOsArchMap[config]
+	case bionic:
+		return platformBionicMap[config]
 	case productVariables:
-		if config == conditionsDefault {
+		if config == ConditionsDefaultConfigKey {
 			return ConditionsDefaultSelectKey
 		}
 		return fmt.Sprintf("%s:%s", productVariableBazelPackage, strings.ToLower(config))
@@ -186,6 +199,8 @@ var (
 	OsConfigurationAxis = ConfigurationAxis{configurationType: os}
 	// An axis for arch+os-specific configurations
 	OsArchConfigurationAxis = ConfigurationAxis{configurationType: osArch}
+	// An axis for bionic os-specific configurations
+	BionicConfigurationAxis = ConfigurationAxis{configurationType: bionic}
 )
 
 // ProductVariableConfigurationAxis returns an axis for the given product variable

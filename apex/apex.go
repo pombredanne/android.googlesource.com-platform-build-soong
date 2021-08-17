@@ -1587,6 +1587,7 @@ type androidApp interface {
 	JacocoReportClassesFile() android.Path
 	Certificate() java.Certificate
 	BaseModuleName() string
+	LintDepSets() java.LintDepSets
 }
 
 var _ androidApp = (*java.AndroidApp)(nil)
@@ -1601,6 +1602,7 @@ func apexFileForAndroidApp(ctx android.BaseModuleContext, aapp androidApp) apexF
 	fileToCopy := aapp.OutputFile()
 	af := newApexFile(ctx, fileToCopy, aapp.BaseModuleName(), dirInApex, app, aapp)
 	af.jacocoReportClassesFile = aapp.JacocoReportClassesFile()
+	af.lintDepSets = aapp.LintDepSets()
 	af.certificate = aapp.Certificate()
 
 	if app, ok := aapp.(interface {
@@ -1696,6 +1698,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	a.checkUpdatable(ctx)
 	a.checkMinSdkVersion(ctx)
 	a.checkStaticLinkingToStubLibraries(ctx)
+	a.checkStaticExecutables(ctx)
 	if len(a.properties.Tests) > 0 && !a.testApex {
 		ctx.PropertyErrorf("tests", "property allowed only in apex_test module type")
 		return
@@ -2240,6 +2243,7 @@ func newApexBundle() *apexBundle {
 	android.InitDefaultableModule(module)
 	android.InitSdkAwareModule(module)
 	android.InitOverridableModule(module, &module.overridableProperties.Overrides)
+	android.InitBazelModule(module)
 	return module
 }
 
@@ -2484,6 +2488,41 @@ func (a *apexBundle) checkApexAvailability(ctx android.ModuleContext) {
 		// Visit this module's dependencies to check and report any issues with their availability.
 		return true
 	})
+}
+
+// checkStaticExecutable ensures that executables in an APEX are not static.
+func (a *apexBundle) checkStaticExecutables(ctx android.ModuleContext) {
+	// No need to run this for host APEXes
+	if ctx.Host() {
+		return
+	}
+
+	ctx.VisitDirectDepsBlueprint(func(module blueprint.Module) {
+		if ctx.OtherModuleDependencyTag(module) != executableTag {
+			return
+		}
+
+		if l, ok := module.(cc.LinkableInterface); ok && l.StaticExecutable() {
+			apex := a.ApexVariationName()
+			exec := ctx.OtherModuleName(module)
+			if isStaticExecutableAllowed(apex, exec) {
+				return
+			}
+			ctx.ModuleErrorf("executable %s is static", ctx.OtherModuleName(module))
+		}
+	})
+}
+
+// A small list of exceptions where static executables are allowed in APEXes.
+func isStaticExecutableAllowed(apex string, exec string) bool {
+	m := map[string][]string{
+		"com.android.runtime": []string{
+			"linker",
+			"linkerconfig",
+		},
+	}
+	execNames, ok := m[apex]
+	return ok && android.InList(exec, execNames)
 }
 
 // Collect information for opening IDE project files in java/jdeps.go.
@@ -3186,7 +3225,17 @@ func rModulesPackages() map[string][]string {
 // For Bazel / bp2build
 
 type bazelApexBundleAttributes struct {
-	Manifest bazel.LabelAttribute
+	Manifest           bazel.LabelAttribute
+	Android_manifest   bazel.LabelAttribute
+	File_contexts      bazel.LabelAttribute
+	Key                bazel.LabelAttribute
+	Certificate        bazel.LabelAttribute
+	Min_sdk_version    string
+	Updatable          bazel.BoolAttribute
+	Installable        bazel.BoolAttribute
+	Native_shared_libs bazel.LabelListAttribute
+	Binaries           bazel.StringListAttribute
+	Prebuilts          bazel.LabelListAttribute
 }
 
 type bazelApexBundle struct {
@@ -3219,14 +3268,68 @@ func ApexBundleBp2Build(ctx android.TopDownMutatorContext) {
 
 func apexBundleBp2BuildInternal(ctx android.TopDownMutatorContext, module *apexBundle) {
 	var manifestLabelAttribute bazel.LabelAttribute
-
-	manifestStringPtr := module.properties.Manifest
 	if module.properties.Manifest != nil {
-		manifestLabelAttribute.SetValue(android.BazelLabelForModuleSrcSingle(ctx, *manifestStringPtr))
+		manifestLabelAttribute.SetValue(android.BazelLabelForModuleSrcSingle(ctx, *module.properties.Manifest))
+	}
+
+	var androidManifestLabelAttribute bazel.LabelAttribute
+	if module.properties.AndroidManifest != nil {
+		androidManifestLabelAttribute.SetValue(android.BazelLabelForModuleSrcSingle(ctx, *module.properties.AndroidManifest))
+	}
+
+	var fileContextsLabelAttribute bazel.LabelAttribute
+	if module.properties.File_contexts != nil {
+		fileContextsLabelAttribute.SetValue(android.BazelLabelForModuleDepSingle(ctx, *module.properties.File_contexts))
+	}
+
+	var minSdkVersion string
+	if module.properties.Min_sdk_version != nil {
+		minSdkVersion = *module.properties.Min_sdk_version
+	}
+
+	var keyLabelAttribute bazel.LabelAttribute
+	if module.overridableProperties.Key != nil {
+		keyLabelAttribute.SetValue(android.BazelLabelForModuleDepSingle(ctx, *module.overridableProperties.Key))
+	}
+
+	var certificateLabelAttribute bazel.LabelAttribute
+	if module.overridableProperties.Certificate != nil {
+		certificateLabelAttribute.SetValue(android.BazelLabelForModuleDepSingle(ctx, *module.overridableProperties.Certificate))
+	}
+
+	nativeSharedLibs := module.properties.ApexNativeDependencies.Native_shared_libs
+	nativeSharedLibsLabelList := android.BazelLabelForModuleDeps(ctx, nativeSharedLibs)
+	nativeSharedLibsLabelListAttribute := bazel.MakeLabelListAttribute(nativeSharedLibsLabelList)
+
+	prebuilts := module.properties.Prebuilts
+	prebuiltsLabelList := android.BazelLabelForModuleDeps(ctx, prebuilts)
+	prebuiltsLabelListAttribute := bazel.MakeLabelListAttribute(prebuiltsLabelList)
+
+	binaries := module.properties.ApexNativeDependencies.Binaries
+	binariesStringListAttribute := bazel.MakeStringListAttribute(binaries)
+
+	var updatableAttribute bazel.BoolAttribute
+	if module.properties.Updatable != nil {
+		updatableAttribute.Value = module.properties.Updatable
+	}
+
+	var installableAttribute bazel.BoolAttribute
+	if module.properties.Installable != nil {
+		installableAttribute.Value = module.properties.Installable
 	}
 
 	attrs := &bazelApexBundleAttributes{
-		Manifest: manifestLabelAttribute,
+		Manifest:           manifestLabelAttribute,
+		Android_manifest:   androidManifestLabelAttribute,
+		File_contexts:      fileContextsLabelAttribute,
+		Min_sdk_version:    minSdkVersion,
+		Key:                keyLabelAttribute,
+		Certificate:        certificateLabelAttribute,
+		Updatable:          updatableAttribute,
+		Installable:        installableAttribute,
+		Native_shared_libs: nativeSharedLibsLabelListAttribute,
+		Binaries:           binariesStringListAttribute,
+		Prebuilts:          prebuiltsLabelListAttribute,
 	}
 
 	props := bazel.BazelTargetModuleProperties{

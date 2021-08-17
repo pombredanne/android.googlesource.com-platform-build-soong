@@ -163,6 +163,7 @@ var BannerVars = []string{
 	"AUX_OS_VARIANT_LIST",
 	"PRODUCT_SOONG_NAMESPACES",
 	"SOONG_SDK_SNAPSHOT_PREFER",
+	"SOONG_SDK_SNAPSHOT_USE_SOURCE_CONFIG_VAR",
 	"SOONG_SDK_SNAPSHOT_VERSION",
 }
 
@@ -259,6 +260,12 @@ func runMakeProductConfig(ctx Context, config Config) {
 		"BUILD_BROKEN_USES_BUILD_STATIC_JAVA_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_STATIC_LIBRARY",
 	}, exportEnvVars...), BannerVars...)
+
+	// We need Roboleaf converter and runner in the mixed mode
+	runMicrofactory(ctx, config, ".bootstrap/bin/mk2rbc", "android/soong/mk2rbc/cmd",
+		map[string]string{"android/soong": "build/soong"})
+	runMicrofactory(ctx, config, ".bootstrap/bin/rbcrun", "rbcrun/cmd",
+		map[string]string{"go.starlark.net": "external/starlark-go", "rbcrun": "build/make/tools/rbcrun"})
 
 	makeVars, err := dumpMakeVars(ctx, config, config.Arguments(), allVars, true, "")
 	if err != nil {

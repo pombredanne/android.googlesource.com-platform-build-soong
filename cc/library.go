@@ -23,13 +23,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/google/blueprint"
-	"github.com/google/blueprint/pathtools"
-
 	"android/soong/android"
 	"android/soong/bazel"
 	"android/soong/bazel/cquery"
 	"android/soong/cc/config"
+	"github.com/google/blueprint"
+	"github.com/google/blueprint/pathtools"
 )
 
 // LibraryProperties is a collection of properties shared by cc library rules.
@@ -147,12 +146,11 @@ type StaticOrSharedProperties struct {
 
 	Cflags []string `android:"arch_variant"`
 
-	Enabled             *bool    `android:"arch_variant"`
-	Whole_static_libs   []string `android:"arch_variant"`
-	Static_libs         []string `android:"arch_variant"`
-	Shared_libs         []string `android:"arch_variant"`
-	System_shared_libs  []string `android:"arch_variant"`
-	Default_shared_libs []string `android:"arch_variant"`
+	Enabled            *bool    `android:"arch_variant"`
+	Whole_static_libs  []string `android:"arch_variant"`
+	Static_libs        []string `android:"arch_variant"`
+	Shared_libs        []string `android:"arch_variant"`
+	System_shared_libs []string `android:"arch_variant"`
 
 	Export_shared_lib_headers []string `android:"arch_variant"`
 	Export_static_lib_headers []string `android:"arch_variant"`
@@ -234,9 +232,11 @@ type bazelCcLibraryAttributes struct {
 	Implementation_deps bazel.LabelListAttribute
 	Dynamic_deps        bazel.LabelListAttribute
 	Whole_archive_deps  bazel.LabelListAttribute
+	System_dynamic_deps bazel.LabelListAttribute
 	Includes            bazel.StringListAttribute
 	Linkopts            bazel.StringListAttribute
 	Use_libcrt          bazel.BoolAttribute
+	Rtti                bazel.BoolAttribute
 
 	// This is shared only.
 	Version_script bazel.LabelAttribute
@@ -320,9 +320,11 @@ func CcLibraryBp2Build(ctx android.TopDownMutatorContext) {
 		Deps:                linkerAttrs.exportedDeps,
 		Dynamic_deps:        linkerAttrs.dynamicDeps,
 		Whole_archive_deps:  linkerAttrs.wholeArchiveDeps,
+		System_dynamic_deps: linkerAttrs.systemDynamicDeps,
 		Includes:            exportedIncludes,
 		Linkopts:            linkerAttrs.linkopts,
 		Use_libcrt:          linkerAttrs.useLibcrt,
+		Rtti:                compilerAttrs.rtti,
 
 		Version_script: linkerAttrs.versionScript,
 
@@ -554,7 +556,7 @@ type libraryDecorator struct {
 }
 
 type ccLibraryBazelHandler struct {
-	bazelHandler
+	android.BazelHandler
 
 	module *Module
 }
@@ -640,7 +642,7 @@ func getTocFile(ctx android.ModuleContext, label string, outputFiles []string) a
 	return android.OptionalPathForPath(android.PathForBazelOut(ctx, tocFile))
 }
 
-func (handler *ccLibraryBazelHandler) generateBazelBuildActions(ctx android.ModuleContext, label string) bool {
+func (handler *ccLibraryBazelHandler) GenerateBazelBuildActions(ctx android.ModuleContext, label string) bool {
 	bazelCtx := ctx.Config().BazelContext
 	ccInfo, ok, err := bazelCtx.GetCcInfo(label, ctx.Arch().ArchType)
 	if err != nil {
@@ -1163,16 +1165,10 @@ func (library *libraryDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		if library.StaticProperties.Static.System_shared_libs != nil {
 			library.baseLinker.Properties.System_shared_libs = library.StaticProperties.Static.System_shared_libs
 		}
-		if library.StaticProperties.Static.Default_shared_libs != nil {
-			library.baseLinker.Properties.Default_shared_libs = library.StaticProperties.Static.Default_shared_libs
-		}
 	} else if library.shared() {
 		// Compare with nil because an empty list needs to be propagated.
 		if library.SharedProperties.Shared.System_shared_libs != nil {
 			library.baseLinker.Properties.System_shared_libs = library.SharedProperties.Shared.System_shared_libs
-		}
-		if library.SharedProperties.Shared.Default_shared_libs != nil {
-			library.baseLinker.Properties.Default_shared_libs = library.SharedProperties.Shared.Default_shared_libs
 		}
 	}
 
@@ -1255,22 +1251,12 @@ func (library *libraryDecorator) linkerSpecifiedDeps(specifiedDeps specifiedDeps
 	} else {
 		specifiedDeps.systemSharedLibs = append(specifiedDeps.systemSharedLibs, properties.System_shared_libs...)
 	}
-	if specifiedDeps.defaultSharedLibs == nil {
-		specifiedDeps.defaultSharedLibs = properties.Default_shared_libs
-	} else {
-		specifiedDeps.defaultSharedLibs = append(specifiedDeps.defaultSharedLibs, properties.Default_shared_libs...)
-	}
 
 	specifiedDeps.sharedLibs = android.FirstUniqueStrings(specifiedDeps.sharedLibs)
 	if len(specifiedDeps.systemSharedLibs) > 0 {
 		// Skip this if systemSharedLibs is either nil or [], to ensure they are
 		// retained.
 		specifiedDeps.systemSharedLibs = android.FirstUniqueStrings(specifiedDeps.systemSharedLibs)
-	}
-	if len(specifiedDeps.defaultSharedLibs) > 0 {
-		// Skip this if defaultSharedLibs is either nil or [], to ensure they are
-		// retained.
-		specifiedDeps.defaultSharedLibs = android.FirstUniqueStrings(specifiedDeps.defaultSharedLibs)
 	}
 	return specifiedDeps
 }
@@ -2346,9 +2332,12 @@ type bazelCcLibraryStaticAttributes struct {
 	Implementation_deps bazel.LabelListAttribute
 	Deps                bazel.LabelListAttribute
 	Whole_archive_deps  bazel.LabelListAttribute
+	Dynamic_deps        bazel.LabelListAttribute
+	System_dynamic_deps bazel.LabelListAttribute
 	Linkopts            bazel.StringListAttribute
 	Linkstatic          bool
 	Use_libcrt          bazel.BoolAttribute
+	Rtti                bazel.BoolAttribute
 	Includes            bazel.StringListAttribute
 	Hdrs                bazel.LabelListAttribute
 
@@ -2357,6 +2346,8 @@ type bazelCcLibraryStaticAttributes struct {
 	Conlyflags bazel.StringListAttribute
 	Srcs_as    bazel.LabelListAttribute
 	Asflags    bazel.StringListAttribute
+
+	Static staticOrSharedAttributes
 }
 
 type bazelCcLibraryStatic struct {
@@ -2382,16 +2373,33 @@ func ccLibraryStaticBp2BuildInternal(ctx android.TopDownMutatorContext, module *
 		asFlags = bazel.MakeStringListAttribute(nil)
 	}
 
+	// Append static{} stanza properties. These won't be specified on
+	// cc_library_static itself, but may be specified in cc_defaults that this module
+	// depends on.
+	staticAttrs := bp2BuildParseStaticProps(ctx, module)
+
+	compilerAttrs.srcs.Append(staticAttrs.Srcs)
+	compilerAttrs.cSrcs.Append(staticAttrs.Srcs_c)
+	compilerAttrs.asSrcs.Append(staticAttrs.Srcs_as)
+	compilerAttrs.copts.Append(staticAttrs.Copts)
+	linkerAttrs.exportedDeps.Append(staticAttrs.Static_deps)
+	linkerAttrs.dynamicDeps.Append(staticAttrs.Dynamic_deps)
+	linkerAttrs.wholeArchiveDeps.Append(staticAttrs.Whole_archive_deps)
+	linkerAttrs.systemDynamicDeps.Append(staticAttrs.System_dynamic_deps)
+
 	attrs := &bazelCcLibraryStaticAttributes{
 		Copts:               compilerAttrs.copts,
 		Srcs:                compilerAttrs.srcs,
 		Implementation_deps: linkerAttrs.deps,
 		Deps:                linkerAttrs.exportedDeps,
 		Whole_archive_deps:  linkerAttrs.wholeArchiveDeps,
+		Dynamic_deps:        linkerAttrs.dynamicDeps,
+		System_dynamic_deps: linkerAttrs.systemDynamicDeps,
 
 		Linkopts:   linkerAttrs.linkopts,
 		Linkstatic: true,
 		Use_libcrt: linkerAttrs.useLibcrt,
+		Rtti:       compilerAttrs.rtti,
 		Includes:   exportedIncludes,
 
 		Cppflags:   compilerAttrs.cppFlags,

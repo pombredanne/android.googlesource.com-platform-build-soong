@@ -152,71 +152,6 @@ func TestPrepareForTestWithCcDefaultModules(t *testing.T) {
 	).RunTest(t)
 }
 
-func TestFuchsiaDeps(t *testing.T) {
-	t.Helper()
-
-	bp := `
-		cc_library {
-			name: "libTest",
-			srcs: ["foo.c"],
-			target: {
-				fuchsia: {
-					srcs: ["bar.c"],
-				},
-			},
-		}`
-
-	result := android.GroupFixturePreparers(
-		prepareForCcTest,
-		PrepareForTestOnFuchsia,
-	).RunTestWithBp(t, bp)
-
-	rt := false
-	fb := false
-
-	ld := result.ModuleForTests("libTest", "fuchsia_arm64_shared").Rule("ld")
-	implicits := ld.Implicits
-	for _, lib := range implicits {
-		if strings.Contains(lib.Rel(), "libcompiler_rt") {
-			rt = true
-		}
-
-		if strings.Contains(lib.Rel(), "libbioniccompat") {
-			fb = true
-		}
-	}
-
-	if !rt || !fb {
-		t.Errorf("fuchsia libs must link libcompiler_rt and libbioniccompat")
-	}
-}
-
-func TestFuchsiaTargetDecl(t *testing.T) {
-	t.Helper()
-
-	bp := `
-		cc_library {
-			name: "libTest",
-			srcs: ["foo.c"],
-			target: {
-				fuchsia: {
-					srcs: ["bar.c"],
-				},
-			},
-		}`
-
-	result := android.GroupFixturePreparers(
-		prepareForCcTest,
-		PrepareForTestOnFuchsia,
-	).RunTestWithBp(t, bp)
-	ld := result.ModuleForTests("libTest", "fuchsia_arm64_shared").Rule("ld")
-	var objs []string
-	for _, o := range ld.Inputs {
-		objs = append(objs, o.Base())
-	}
-	android.AssertArrayString(t, "libTest inputs", []string{"foo.o", "bar.o"}, objs)
-}
-
 func TestVendorSrc(t *testing.T) {
 	ctx := testCc(t, `
 		cc_library {
@@ -4020,10 +3955,13 @@ func TestIncludeDirectoryOrdering(t *testing.T) {
 		`, lib, lib)
 	}
 
-	ctx := PrepareForIntegrationTestWithCc.RunTestWithBp(t, bp)
+	ctx := android.GroupFixturePreparers(
+		PrepareForIntegrationTestWithCc,
+		android.FixtureAddTextFile("external/foo/Android.bp", bp),
+	).RunTest(t)
 	// Use the arm variant instead of the arm64 variant so that it gets headers from
 	// ndk_libandroid_support to test LateStaticLibs.
-	cflags := ctx.ModuleForTests("libfoo", "android_arm_armv7-a-neon_sdk_static").Output("obj/foo.o").Args["cFlags"]
+	cflags := ctx.ModuleForTests("libfoo", "android_arm_armv7-a-neon_sdk_static").Output("obj/external/foo/foo.o").Args["cFlags"]
 
 	var includes []string
 	flags := strings.Split(cflags, " ")
@@ -4038,45 +3976,45 @@ func TestIncludeDirectoryOrdering(t *testing.T) {
 	}
 
 	want := []string{
-		"${config.ArmClangThumbCflags}",
-		"${config.ArmClangCflags}",
-		"${config.CommonClangGlobalCflags}",
-		"${config.DeviceClangGlobalCflags}",
-		"${config.ClangExternalCflags}",
-		"${config.ArmToolchainClangCflags}",
-		"${config.ArmClangArmv7ANeonCflags}",
-		"${config.ArmClangGenericCflags}",
-		"android_arm_export_include_dirs",
-		"lib32_export_include_dirs",
-		"arm_export_include_dirs",
-		"android_export_include_dirs",
-		"linux_export_include_dirs",
-		"export_include_dirs",
-		"android_arm_local_include_dirs",
-		"lib32_local_include_dirs",
-		"arm_local_include_dirs",
-		"android_local_include_dirs",
-		"linux_local_include_dirs",
-		"local_include_dirs",
-		".",
-		"libheader1",
-		"libheader2",
-		"libwhole1",
-		"libwhole2",
-		"libstatic1",
-		"libstatic2",
-		"libshared1",
-		"libshared2",
-		"liblinux",
-		"libandroid",
-		"libarm",
-		"lib32",
-		"libandroid_arm",
+		"${config.ArmThumbCflags}",
+		"${config.ArmCflags}",
+		"${config.CommonGlobalCflags}",
+		"${config.DeviceGlobalCflags}",
+		"${config.ExternalCflags}",
+		"${config.ArmToolchainCflags}",
+		"${config.ArmArmv7ANeonCflags}",
+		"${config.ArmGenericCflags}",
+		"external/foo/android_arm_export_include_dirs",
+		"external/foo/lib32_export_include_dirs",
+		"external/foo/arm_export_include_dirs",
+		"external/foo/android_export_include_dirs",
+		"external/foo/linux_export_include_dirs",
+		"external/foo/export_include_dirs",
+		"external/foo/android_arm_local_include_dirs",
+		"external/foo/lib32_local_include_dirs",
+		"external/foo/arm_local_include_dirs",
+		"external/foo/android_local_include_dirs",
+		"external/foo/linux_local_include_dirs",
+		"external/foo/local_include_dirs",
+		"external/foo",
+		"external/foo/libheader1",
+		"external/foo/libheader2",
+		"external/foo/libwhole1",
+		"external/foo/libwhole2",
+		"external/foo/libstatic1",
+		"external/foo/libstatic2",
+		"external/foo/libshared1",
+		"external/foo/libshared2",
+		"external/foo/liblinux",
+		"external/foo/libandroid",
+		"external/foo/libarm",
+		"external/foo/lib32",
+		"external/foo/libandroid_arm",
 		"defaults/cc/common/ndk_libc++_shared",
 		"defaults/cc/common/ndk_libandroid_support",
 		"out/soong/ndk/sysroot/usr/include",
 		"out/soong/ndk/sysroot/usr/include/arm-linux-androideabi",
-		"${config.NoOverrideClangGlobalCflags}",
+		"${config.NoOverrideGlobalCflags}",
 	}
 
 	android.AssertArrayString(t, "includes", want, includes)

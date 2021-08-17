@@ -44,13 +44,13 @@ func RegisterLibraryHeadersBuildComponents(ctx android.RegistrationContext) {
 }
 
 type libraryHeaderBazelHander struct {
-	bazelHandler
+	android.BazelHandler
 
 	module  *Module
 	library *libraryDecorator
 }
 
-func (h *libraryHeaderBazelHander) generateBazelBuildActions(ctx android.ModuleContext, label string) bool {
+func (h *libraryHeaderBazelHander) GenerateBazelBuildActions(ctx android.ModuleContext, label string) bool {
 	bazelCtx := ctx.Config().BazelContext
 	ccInfo, ok, err := bazelCtx.GetCcInfo(label, ctx.Arch().ArchType)
 	if err != nil {
@@ -108,6 +108,7 @@ type bazelCcLibraryHeadersAttributes struct {
 	Includes            bazel.StringListAttribute
 	Deps                bazel.LabelListAttribute
 	Implementation_deps bazel.LabelListAttribute
+	System_dynamic_deps bazel.LabelListAttribute
 }
 
 type bazelCcLibraryHeaders struct {
@@ -146,6 +147,7 @@ func CcLibraryHeadersBp2Build(ctx android.TopDownMutatorContext) {
 		Includes:            exportedIncludes,
 		Implementation_deps: linkerAttrs.deps,
 		Deps:                linkerAttrs.exportedDeps,
+		System_dynamic_deps: linkerAttrs.systemDynamicDeps,
 	}
 
 	props := bazel.BazelTargetModuleProperties{

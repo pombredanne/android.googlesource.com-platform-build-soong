@@ -79,10 +79,6 @@ func (c Config) DebugCompilation() bool {
 	return false // Never compile Go code in the main build for debugging
 }
 
-func (c Config) SrcDir() string {
-	return c.srcDir
-}
-
 // A DeviceConfig object represents the configuration for a particular device
 // being built. For now there will only be one of these, but in the future there
 // may be multiple devices being built.
@@ -108,6 +104,12 @@ type config struct {
 
 	ProductVariablesFileName string
 
+	// BuildOS stores the OsType for the OS that the build is running on.
+	BuildOS OsType
+
+	// BuildArch stores the ArchType for the CPU that the build is running on.
+	BuildArch ArchType
+
 	Targets                  map[OsType][]Target
 	BuildOSTarget            Target // the Target for tools run on the build machine
 	BuildOSCommonTarget      Target // the Target for common (java) tools run on the build machine
@@ -120,7 +122,6 @@ type config struct {
 
 	deviceConfig *deviceConfig
 
-	srcDir         string // the path of the root source directory
 	buildDir       string // the path of the build output directory
 	moduleListFile string // the path to the file which lists blueprint files to parse.
 
@@ -202,6 +203,20 @@ func loadFromConfigFile(configurable *productVariables, filename string) error {
 	configurable.Native_coverage = proptools.BoolPtr(
 		Bool(configurable.GcovCoverage) ||
 			Bool(configurable.ClangCoverage))
+
+	// when Platform_sdk_final is true (or PLATFORM_VERSION_CODENAME is REL), use Platform_sdk_version;
+	// if false (pre-released version, for example), use Platform_sdk_codename.
+	if Bool(configurable.Platform_sdk_final) {
+		if configurable.Platform_sdk_version != nil {
+			configurable.Platform_sdk_version_or_codename =
+				proptools.StringPtr(strconv.Itoa(*(configurable.Platform_sdk_version)))
+		} else {
+			return fmt.Errorf("Platform_sdk_version cannot be pointed by a NULL pointer")
+		}
+	} else {
+		configurable.Platform_sdk_version_or_codename =
+			proptools.StringPtr(String(configurable.Platform_sdk_codename))
+	}
 
 	return saveToBazelConfigFile(configurable, filepath.Dir(filename))
 }
@@ -326,47 +341,47 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 	return Config{config}
 }
 
-func fuchsiaTargets() map[OsType][]Target {
-	return map[OsType][]Target{
-		Fuchsia: {
-			{Fuchsia, Arch{ArchType: Arm64, ArchVariant: "", Abi: []string{"arm64-v8a"}}, NativeBridgeDisabled, "", "", false},
-		},
-		BuildOs: {
-			{BuildOs, Arch{ArchType: X86_64}, NativeBridgeDisabled, "", "", false},
-		},
-	}
-}
-
-var PrepareForTestSetDeviceToFuchsia = FixtureModifyConfig(func(config Config) {
-	config.Targets = fuchsiaTargets()
-})
-
 func modifyTestConfigToSupportArchMutator(testConfig Config) {
 	config := testConfig.config
+
+	determineBuildOS(config)
 
 	config.Targets = map[OsType][]Target{
 		Android: []Target{
 			{Android, Arch{ArchType: Arm64, ArchVariant: "armv8-a", Abi: []string{"arm64-v8a"}}, NativeBridgeDisabled, "", "", false},
 			{Android, Arch{ArchType: Arm, ArchVariant: "armv7-a-neon", Abi: []string{"armeabi-v7a"}}, NativeBridgeDisabled, "", "", false},
 		},
-		BuildOs: []Target{
-			{BuildOs, Arch{ArchType: X86_64}, NativeBridgeDisabled, "", "", false},
-			{BuildOs, Arch{ArchType: X86}, NativeBridgeDisabled, "", "", false},
+		config.BuildOS: []Target{
+			{config.BuildOS, Arch{ArchType: X86_64}, NativeBridgeDisabled, "", "", false},
+			{config.BuildOS, Arch{ArchType: X86}, NativeBridgeDisabled, "", "", false},
 		},
 	}
 
 	if runtime.GOOS == "darwin" {
-		config.Targets[BuildOs] = config.Targets[BuildOs][:1]
+		config.Targets[config.BuildOS] = config.Targets[config.BuildOS][:1]
 	}
 
-	config.BuildOSTarget = config.Targets[BuildOs][0]
-	config.BuildOSCommonTarget = getCommonTargets(config.Targets[BuildOs])[0]
+	config.BuildOSTarget = config.Targets[config.BuildOS][0]
+	config.BuildOSCommonTarget = getCommonTargets(config.Targets[config.BuildOS])[0]
 	config.AndroidCommonTarget = getCommonTargets(config.Targets[Android])[0]
 	config.AndroidFirstDeviceTarget = firstTarget(config.Targets[Android], "lib64", "lib32")[0]
 	config.TestProductVariables.DeviceArch = proptools.StringPtr("arm64")
 	config.TestProductVariables.DeviceArchVariant = proptools.StringPtr("armv8-a")
 	config.TestProductVariables.DeviceSecondaryArch = proptools.StringPtr("arm")
 	config.TestProductVariables.DeviceSecondaryArchVariant = proptools.StringPtr("armv7-a-neon")
+}
+
+func modifyTestConfigForMusl(config Config) {
+	delete(config.Targets, config.BuildOS)
+	config.productVariables.HostMusl = boolPtr(true)
+	determineBuildOS(config.config)
+	config.Targets[config.BuildOS] = []Target{
+		{config.BuildOS, Arch{ArchType: X86_64}, NativeBridgeDisabled, "", "", false},
+		{config.BuildOS, Arch{ArchType: X86}, NativeBridgeDisabled, "", "", false},
+	}
+
+	config.BuildOSTarget = config.Targets[config.BuildOS][0]
+	config.BuildOSCommonTarget = getCommonTargets(config.Targets[config.BuildOS])[0]
 }
 
 // TestArchConfig returns a Config object suitable for using for tests that
@@ -382,7 +397,7 @@ func TestArchConfig(buildDir string, env map[string]string, bp string, fs map[st
 // multiple runs in the same program execution is carried over (such as Bazel
 // context or environment deps).
 func ConfigForAdditionalRun(c Config) (Config, error) {
-	newConfig, err := NewConfig(c.srcDir, c.buildDir, c.moduleListFile, c.env)
+	newConfig, err := NewConfig(c.buildDir, c.moduleListFile, c.env)
 	if err != nil {
 		return Config{}, err
 	}
@@ -393,14 +408,13 @@ func ConfigForAdditionalRun(c Config) (Config, error) {
 
 // NewConfig creates a new Config object. The srcDir argument specifies the path
 // to the root source directory. It also loads the config file, if found.
-func NewConfig(srcDir, buildDir string, moduleListFile string, availableEnv map[string]string) (Config, error) {
+func NewConfig(buildDir string, moduleListFile string, availableEnv map[string]string) (Config, error) {
 	// Make a config with default options.
 	config := &config{
 		ProductVariablesFileName: filepath.Join(buildDir, productVariablesFileName),
 
 		env: availableEnv,
 
-		srcDir:            srcDir,
 		buildDir:          buildDir,
 		multilibConflicts: make(map[ArchType]bool),
 
@@ -419,7 +433,7 @@ func NewConfig(srcDir, buildDir string, moduleListFile string, availableEnv map[
 		return Config{}, err
 	}
 
-	absSrcDir, err := filepath.Abs(srcDir)
+	absSrcDir, err := filepath.Abs(".")
 	if err != nil {
 		return Config{}, err
 	}
@@ -438,6 +452,8 @@ func NewConfig(srcDir, buildDir string, moduleListFile string, availableEnv map[
 	if _, err := os.Stat(absolutePath(KatiEnabledMarkerFile)); err == nil {
 		config.katiEnabled = true
 	}
+
+	determineBuildOS(config)
 
 	// Sets up the map of target OSes to the finer grained compilation targets
 	// that are configured from the product variables.
@@ -476,8 +492,8 @@ func NewConfig(srcDir, buildDir string, moduleListFile string, availableEnv map[
 	config.Targets = targets
 
 	// Compilation targets for host tools.
-	config.BuildOSTarget = config.Targets[BuildOs][0]
-	config.BuildOSCommonTarget = getCommonTargets(config.Targets[BuildOs])[0]
+	config.BuildOSTarget = config.Targets[config.BuildOS][0]
+	config.BuildOSCommonTarget = getCommonTargets(config.Targets[config.BuildOS])[0]
 
 	// Compilation targets for Android.
 	if len(config.Targets[Android]) > 0 {
@@ -575,7 +591,7 @@ func (c *config) PrebuiltOS() string {
 
 // GoRoot returns the path to the root directory of the Go toolchain.
 func (c *config) GoRoot() string {
-	return fmt.Sprintf("%s/prebuilts/go/%s", c.srcDir, c.PrebuiltOS())
+	return fmt.Sprintf("prebuilts/go/%s", c.PrebuiltOS())
 }
 
 // PrebuiltBuildTool returns the path to a tool in the prebuilts directory containing
@@ -821,6 +837,12 @@ func (c *config) UnbundledBuildApps() bool {
 	return Bool(c.productVariables.Unbundled_build_apps)
 }
 
+// Returns true if building image that aren't bundled with the platform.
+// UnbundledBuild() is always true when this is true.
+func (c *config) UnbundledBuildImage() bool {
+	return Bool(c.productVariables.Unbundled_build_image)
+}
+
 // Returns true if building modules against prebuilt SDKs.
 func (c *config) AlwaysUsePrebuiltSdks() bool {
 	return Bool(c.productVariables.Always_use_prebuilt_sdks)
@@ -829,10 +851,6 @@ func (c *config) AlwaysUsePrebuiltSdks() bool {
 // Returns true if the boot jars check should be skipped.
 func (c *config) SkipBootJarsCheck() bool {
 	return Bool(c.productVariables.Skip_boot_jars_check)
-}
-
-func (c *config) Fuchsia() bool {
-	return Bool(c.productVariables.Fuchsia)
 }
 
 func (c *config) MinimizeJavaDebugInfo() bool {
@@ -1841,16 +1859,16 @@ var earlyBootJarsKey = NewOnceKey("earlyBootJars")
 func (c *config) BootJars() []string {
 	return c.Once(earlyBootJarsKey, func() interface{} {
 		list := c.productVariables.BootJars.CopyOfJars()
-		return append(list, c.productVariables.UpdatableBootJars.CopyOfJars()...)
+		return append(list, c.productVariables.ApexBootJars.CopyOfJars()...)
 	}).([]string)
 }
 
-func (c *config) NonUpdatableBootJars() ConfiguredJarList {
+func (c *config) NonApexBootJars() ConfiguredJarList {
 	return c.productVariables.BootJars
 }
 
-func (c *config) UpdatableBootJars() ConfiguredJarList {
-	return c.productVariables.UpdatableBootJars
+func (c *config) ApexBootJars() ConfiguredJarList {
+	return c.productVariables.ApexBootJars
 }
 
 func (c *config) RBEWrapper() string {

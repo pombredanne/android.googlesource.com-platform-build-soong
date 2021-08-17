@@ -215,7 +215,7 @@ func (binary *binaryDecorator) linkerInit(ctx BaseModuleContext) {
 			if binary.Properties.Static_executable == nil && ctx.Config().HostStaticBinaries() {
 				binary.Properties.Static_executable = BoolPtr(true)
 			}
-		} else if !ctx.Fuchsia() {
+		} else {
 			// Static executables are not supported on Darwin or Windows
 			binary.Properties.Static_executable = nil
 		}
@@ -335,7 +335,7 @@ func (binary *binaryDecorator) link(ctx ModuleContext,
 
 	if flags.DynamicLinker != "" {
 		flags.Local.LdFlags = append(flags.Local.LdFlags, "-Wl,-dynamic-linker,"+flags.DynamicLinker)
-	} else if ctx.toolchain().Bionic() && !binary.static() {
+	} else if (ctx.toolchain().Bionic() || ctx.toolchain().Musl()) && !binary.static() {
 		flags.Local.LdFlags = append(flags.Local.LdFlags, "-Wl,--no-dynamic-linker")
 	}
 

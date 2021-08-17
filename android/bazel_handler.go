@@ -28,8 +28,6 @@ import (
 
 	"android/soong/bazel/cquery"
 
-	"github.com/google/blueprint/bootstrap"
-
 	"android/soong/bazel"
 	"android/soong/shared"
 )
@@ -57,6 +55,17 @@ type cqueryKey struct {
 	archType    ArchType
 }
 
+// bazelHandler is the interface for a helper object related to deferring to Bazel for
+// processing a module (during Bazel mixed builds). Individual module types should define
+// their own bazel handler if they support deferring to Bazel.
+type BazelHandler interface {
+	// Issue query to Bazel to retrieve information about Bazel's view of the current module.
+	// If Bazel returns this information, set module properties on the current module to reflect
+	// the returned information.
+	// Returns true if information was available from Bazel, false if bazel invocation still needs to occur.
+	GenerateBazelBuildActions(ctx ModuleContext, label string) bool
+}
+
 type BazelContext interface {
 	// The below methods involve queuing cquery requests to be later invoked
 	// by bazel. If any of these methods return (_, false), then the request
@@ -68,6 +77,9 @@ type BazelContext interface {
 	// TODO(cparsons): Other cquery-related methods should be added here.
 	// Returns the results of GetOutputFiles and GetCcObjectFiles in a single query (in that order).
 	GetCcInfo(label string, archType ArchType) (cquery.CcInfo, bool, error)
+
+	// Returns the executable binary resultant from building together the python sources
+	GetPythonBinary(label string, archType ArchType) (string, bool)
 
 	// ** End cquery methods
 
@@ -123,8 +135,9 @@ var _ BazelContext = noopBazelContext{}
 type MockBazelContext struct {
 	OutputBaseDir string
 
-	LabelToOutputFiles map[string][]string
-	LabelToCcInfo      map[string]cquery.CcInfo
+	LabelToOutputFiles  map[string][]string
+	LabelToCcInfo       map[string]cquery.CcInfo
+	LabelToPythonBinary map[string]string
 }
 
 func (m MockBazelContext) GetOutputFiles(label string, archType ArchType) ([]string, bool) {
@@ -135,6 +148,11 @@ func (m MockBazelContext) GetOutputFiles(label string, archType ArchType) ([]str
 func (m MockBazelContext) GetCcInfo(label string, archType ArchType) (cquery.CcInfo, bool, error) {
 	result, ok := m.LabelToCcInfo[label]
 	return result, ok, nil
+}
+
+func (m MockBazelContext) GetPythonBinary(label string, archType ArchType) (string, bool) {
+	result, ok := m.LabelToPythonBinary[label]
+	return result, ok
 }
 
 func (m MockBazelContext) InvokeBazel() error {
@@ -174,11 +192,25 @@ func (bazelCtx *bazelContext) GetCcInfo(label string, archType ArchType) (cquery
 	return ret, ok, err
 }
 
+func (bazelCtx *bazelContext) GetPythonBinary(label string, archType ArchType) (string, bool) {
+	rawString, ok := bazelCtx.cquery(label, cquery.GetPythonBinary, archType)
+	var ret string
+	if ok {
+		bazelOutput := strings.TrimSpace(rawString)
+		ret = cquery.GetPythonBinary.ParseResult(bazelOutput)
+	}
+	return ret, ok
+}
+
 func (n noopBazelContext) GetOutputFiles(label string, archType ArchType) ([]string, bool) {
 	panic("unimplemented")
 }
 
 func (n noopBazelContext) GetCcInfo(label string, archType ArchType) (cquery.CcInfo, bool, error) {
+	panic("unimplemented")
+}
+
+func (n noopBazelContext) GetPythonBinary(label string, archType ArchType) (string, bool) {
 	panic("unimplemented")
 }
 
@@ -333,7 +365,7 @@ func (r *builtinBazelRunner) issueBazelCommand(paths *bazelPaths, runName bazel.
 	// The actual platform values here may be overridden by configuration
 	// transitions from the buildroot.
 	cmdFlags = append(cmdFlags,
-		fmt.Sprintf("--platforms=%s", "//build/bazel/platforms:android_arm"))
+		fmt.Sprintf("--platforms=%s", "//build/bazel/platforms:android_target"))
 	cmdFlags = append(cmdFlags,
 		fmt.Sprintf("--extra_toolchains=%s", "//prebuilts/clang/host/linux-x86:all"))
 	// This should be parameterized on the host OS, but let's restrict to linux
@@ -726,7 +758,7 @@ func (c *bazelSingleton) GenerateBuildActions(ctx SingletonContext) {
 
 	// Add ninja file dependencies for files which all bazel invocations require.
 	bazelBuildList := absolutePath(filepath.Join(
-		filepath.Dir(bootstrap.CmdlineArgs.ModuleListFile), "bazel.list"))
+		filepath.Dir(ctx.Config().moduleListFile), "bazel.list"))
 	ctx.AddNinjaFileDeps(bazelBuildList)
 
 	data, err := ioutil.ReadFile(bazelBuildList)

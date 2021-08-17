@@ -127,32 +127,50 @@ const (
 
 var (
 	// Keep any existing BUILD files (and do not generate new BUILD files) for these directories
+	// in the synthetic Bazel workspace.
 	bp2buildKeepExistingBuildFile = map[string]bool{
 		// This is actually build/bazel/build.BAZEL symlinked to ./BUILD
-		".":/*recrusive = */ false,
+		".":/*recursive = */ false,
 
-		"build/bazel":/* recursive = */ true,
+		// build/bazel/examples/apex/... BUILD files should be generated, so
+		// build/bazel is not recursive. Instead list each subdirectory under
+		// build/bazel explicitly.
+		"build/bazel":/* recursive = */ false,
+		"build/bazel/examples/android_app":/* recursive = */ true,
+		"build/bazel/bazel_skylib":/* recursive = */ true,
+		"build/bazel/rules":/* recursive = */ true,
+		"build/bazel/rules_cc":/* recursive = */ true,
+		"build/bazel/tests":/* recursive = */ true,
+		"build/bazel/platforms":/* recursive = */ true,
+		"build/bazel/product_variables":/* recursive = */ true,
 		"build/pesto":/* recursive = */ true,
 
 		// external/bazelbuild-rules_android/... is needed by mixed builds, otherwise mixed builds analysis fails
 		// e.g. ERROR: Analysis of target '@soong_injection//mixed_builds:buildroot' failed
 		"external/bazelbuild-rules_android":/* recursive = */ true,
+		"external/bazel-skylib":/* recursive = */ true,
 
 		"prebuilts/sdk":/* recursive = */ false,
 		"prebuilts/sdk/tools":/* recursive = */ false,
+		"prebuilts/r8":/* recursive = */ false,
+		"packages/apps/Music":/* recursive = */ true,
 	}
 
 	// Configure modules in these directories to enable bp2build_available: true or false by default.
 	bp2buildDefaultConfig = Bp2BuildConfig{
-		"bionic":                Bp2BuildDefaultTrueRecursively,
-		"external/gwp_asan":     Bp2BuildDefaultTrueRecursively,
-		"system/core/libcutils": Bp2BuildDefaultTrueRecursively,
+		"bionic":                            Bp2BuildDefaultTrueRecursively,
+		"build/bazel/examples/apex/minimal": Bp2BuildDefaultTrueRecursively,
+		"external/gwp_asan":                 Bp2BuildDefaultTrueRecursively,
+		"system/core/libcutils":             Bp2BuildDefaultTrueRecursively,
 		"system/core/property_service/libpropertyinfoparser": Bp2BuildDefaultTrueRecursively,
 		"system/libbase":                  Bp2BuildDefaultTrueRecursively,
 		"system/logging/liblog":           Bp2BuildDefaultTrueRecursively,
-		"external/jemalloc_new":           Bp2BuildDefaultTrueRecursively,
-		"external/fmtlib":                 Bp2BuildDefaultTrueRecursively,
+		"system/timezone/apex":            Bp2BuildDefaultTrueRecursively,
+		"system/timezone/output_data":     Bp2BuildDefaultTrueRecursively,
 		"external/arm-optimized-routines": Bp2BuildDefaultTrueRecursively,
+		"external/fmtlib":                 Bp2BuildDefaultTrueRecursively,
+		"external/jemalloc_new":           Bp2BuildDefaultTrueRecursively,
+		"external/libcxxabi":              Bp2BuildDefaultTrueRecursively,
 		"external/scudo":                  Bp2BuildDefaultTrueRecursively,
 		"prebuilts/clang/host/linux-x86":  Bp2BuildDefaultTrueRecursively,
 	}
@@ -188,16 +206,11 @@ var (
 		"libBionicBenchmarksUtils", // cc_library_static, fatal error: 'map' file not found, from libcxx
 		"fmtlib",                   // cc_library_static, fatal error: 'cassert' file not found, from libcxx
 		"fmtlib_ndk",               // cc_library_static, fatal error: 'cassert' file not found
+		"liblog",                   // http://b/186822772: cc_library, 'sys/cdefs.h' file not found
 		"libbase",                  // Requires liblog. http://b/186826479, cc_library, fatal error: 'memory' file not found, from libcxx.
+		// Also depends on fmtlib.
 
-		// http://b/186024507: Includes errors because of the system_shared_libs default value.
-		// Missing -isystem bionic/libc/include through the libc/libm/libdl
-		// default dependencies if system_shared_libs is unset.
-		"liblog",                 // http://b/186822772: cc_library, 'sys/cdefs.h' file not found
-		"libjemalloc5_jet",       // cc_library, 'sys/cdefs.h' file not found
-		"libseccomp_policy",      // http://b/186476753: cc_library, 'linux/filter.h' not found
-		"note_memtag_heap_async", // http://b/185127353: cc_library_static, error: feature.h not found
-		"note_memtag_heap_sync",  // http://b/185127353: cc_library_static, error: feature.h not found
+		"libseccomp_policy", // depends on libbase
 
 		"gwp_asan_crash_handler", // cc_library, ld.lld: error: undefined symbol: memset
 
@@ -206,6 +219,9 @@ var (
 		"libjemalloc5_integrationtest",
 		"libjemalloc5_stresstestlib",
 		"libjemalloc5_unittest",
+
+		// APEX support
+		"com.android.runtime", // http://b/194746715, apex, depends on 'libc_malloc_debug' and 'libc_malloc_hooks'
 	}
 
 	// Per-module denylist of cc_library modules to only generate the static
@@ -217,7 +233,10 @@ var (
 
 	// Per-module denylist to opt modules out of mixed builds. Such modules will
 	// still be generated via bp2build.
-	mixedBuildsDisabledList = []string{}
+	mixedBuildsDisabledList = []string{
+		"libc++abi",      // http://b/195970501, cc_library_static, duplicate symbols because it propagates libc objects.
+		"libc++demangle", // http://b/195970501, cc_library_static, duplicate symbols because it propagates libc objects.
+	}
 
 	// Used for quicker lookups
 	bp2buildModuleDoNotConvert  = map[string]bool{}
