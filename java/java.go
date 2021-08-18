@@ -450,7 +450,7 @@ type Library struct {
 
 var _ android.ApexModule = (*Library)(nil)
 
-// Provides access to the list of permitted packages from updatable boot jars.
+// Provides access to the list of permitted packages from apex boot jars.
 type PermittedPackagesForUpdatableBootJars interface {
 	PermittedPackagesForUpdatableBootJars() []string
 }
@@ -1190,6 +1190,12 @@ type Import struct {
 
 	sdkVersion    android.SdkSpec
 	minSdkVersion android.SdkSpec
+}
+
+var _ PermittedPackagesForUpdatableBootJars = (*Import)(nil)
+
+func (j *Import) PermittedPackagesForUpdatableBootJars() []string {
+	return j.properties.Permitted_packages
 }
 
 func (j *Import) SdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {

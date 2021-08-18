@@ -224,7 +224,7 @@ func TestSnapshotWithBootClasspathFragment_Contents(t *testing.T) {
 		java.PrepareForTestWithJavaDefaultModules,
 		java.PrepareForTestWithJavaSdkLibraryFiles,
 		java.FixtureWithLastReleaseApis("mysdklibrary", "myothersdklibrary", "mycoreplatform"),
-		java.FixtureConfigureUpdatableBootJars("myapex:mybootlib", "myapex:myothersdklibrary"),
+		java.FixtureConfigureApexBootJars("myapex:mybootlib", "myapex:myothersdklibrary"),
 		prepareForSdkTestWithApex,
 
 		// Add a platform_bootclasspath that depends on the fragment.
@@ -532,6 +532,12 @@ sdk_snapshot {
 				out/soong/.intermediates/frameworks/base/boot/platform-bootclasspath/android_common/hiddenapi-monolithic/index-from-classes.csv
         snapshot/hiddenapi/index.csv
 			`, rule)
+
+			// Make sure that the permitted packages from the prebuilts end up in the
+			// updatable-bcp-packages.txt file.
+			rule = module.Output("updatable-bcp-packages.txt")
+			expectedContents := `'mybootlib\nmyothersdklibrary\n'`
+			android.AssertStringEquals(t, "updatable-bcp-packages.txt", expectedContents, rule.Args["content"])
 		}),
 		snapshotTestPreparer(checkSnapshotWithSourcePreferred, preparerForSnapshot),
 		snapshotTestPreparer(checkSnapshotPreferredWithSource, preparerForSnapshot),
@@ -601,7 +607,7 @@ func TestSnapshotWithBootclasspathFragment_HiddenAPI(t *testing.T) {
 		java.PrepareForTestWithJavaDefaultModules,
 		java.PrepareForTestWithJavaSdkLibraryFiles,
 		java.FixtureWithLastReleaseApis("mysdklibrary"),
-		java.FixtureConfigureUpdatableBootJars("myapex:mybootlib"),
+		java.FixtureConfigureApexBootJars("myapex:mybootlib"),
 		prepareForSdkTestWithApex,
 
 		// Add a platform_bootclasspath that depends on the fragment.

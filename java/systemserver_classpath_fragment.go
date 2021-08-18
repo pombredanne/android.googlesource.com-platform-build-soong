@@ -48,13 +48,14 @@ func (p *platformSystemServerClasspathModule) AndroidMkEntries() (entries []andr
 }
 
 func (p *platformSystemServerClasspathModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {
-	classpathJars := configuredJarListToClasspathJars(ctx, p.ClasspathFragmentToConfiguredJarList(ctx), p.classpathType)
-	p.classpathFragmentBase().generateClasspathProtoBuildActions(ctx, classpathJars)
+	configuredJars := p.configuredJars(ctx)
+	classpathJars := configuredJarListToClasspathJars(ctx, configuredJars, p.classpathType)
+	p.classpathFragmentBase().generateClasspathProtoBuildActions(ctx, configuredJars, classpathJars)
 }
 
-func (p *platformSystemServerClasspathModule) ClasspathFragmentToConfiguredJarList(ctx android.ModuleContext) android.ConfiguredJarList {
-	global := dexpreopt.GetGlobalConfig(ctx)
-	return global.SystemServerJars
+func (p *platformSystemServerClasspathModule) configuredJars(ctx android.ModuleContext) android.ConfiguredJarList {
+	// TODO(satayev): include any apex jars that don't populate their classpath proto config.
+	return dexpreopt.GetGlobalConfig(ctx).SystemServerJars
 }
 
 type SystemServerClasspathModule struct {
@@ -91,19 +92,16 @@ func (s *SystemServerClasspathModule) GenerateAndroidBuildActions(ctx android.Mo
 		ctx.PropertyErrorf("contents", "empty contents are not allowed")
 	}
 
-	classpathJars := configuredJarListToClasspathJars(ctx, s.ClasspathFragmentToConfiguredJarList(ctx), s.classpathType)
-	s.classpathFragmentBase().generateClasspathProtoBuildActions(ctx, classpathJars)
+	configuredJars := s.configuredJars(ctx)
+	classpathJars := configuredJarListToClasspathJars(ctx, configuredJars, s.classpathType)
+	s.classpathFragmentBase().generateClasspathProtoBuildActions(ctx, configuredJars, classpathJars)
 }
 
-func (s *SystemServerClasspathModule) ClasspathFragmentToConfiguredJarList(ctx android.ModuleContext) android.ConfiguredJarList {
+func (s *SystemServerClasspathModule) configuredJars(ctx android.ModuleContext) android.ConfiguredJarList {
 	global := dexpreopt.GetGlobalConfig(ctx)
 
-	possibleUpdatableModules := gatherPossibleUpdatableModuleNamesAndStems(ctx, s.properties.Contents, systemServerClasspathFragmentContentDepTag)
-
-	// Only create configs for updatable boot jars. Non-updatable system server jars must be part of the
-	// platform_systemserverclasspath's classpath proto config to guarantee that they come before any
-	// updatable jars at runtime.
-	return global.UpdatableSystemServerJars.Filter(possibleUpdatableModules)
+	possibleUpdatableModules := gatherPossibleApexModuleNamesAndStems(ctx, s.properties.Contents, systemServerClasspathFragmentContentDepTag)
+	return global.ApexSystemServerJars.Filter(possibleUpdatableModules)
 }
 
 type systemServerClasspathFragmentContentDependencyTag struct {
