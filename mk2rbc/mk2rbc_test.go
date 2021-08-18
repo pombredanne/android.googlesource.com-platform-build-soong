@@ -259,7 +259,7 @@ def init(g, handle):
 ifdef PRODUCT_NAME
 # Comment
 else
-  TARGET_COPY_OUT_VENDOR := foo
+  TARGET_COPY_OUT_RECOVERY := foo
 endif
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
@@ -270,7 +270,7 @@ def init(g, handle):
     # Comment
     pass
   else:
-    # MK2RBC TRANSLATION ERROR: cannot set predefined variable TARGET_COPY_OUT_VENDOR to "foo", its value should be "||VENDOR-PATH-PH||"
+    # MK2RBC TRANSLATION ERROR: cannot set predefined variable TARGET_COPY_OUT_RECOVERY to "foo", its value should be "recovery"
     pass
   rblf.warning("product.mk", "partially successful conversion")
 `,
@@ -669,6 +669,7 @@ $(info $(notdir foo/bar))
 $(call add_soong_config_namespace,snsconfig)
 $(call add_soong_config_var_value,snsconfig,imagetype,odm_image)
 PRODUCT_COPY_FILES := $(call copy-files,$(wildcard foo*.mk),etc)
+PRODUCT_COPY_FILES := $(call product-copy-files-by-pattern,from/%,to/%,a b c)
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
@@ -689,6 +690,7 @@ def init(g, handle):
   rblf.add_soong_config_namespace(g, "snsconfig")
   rblf.add_soong_config_var_value(g, "snsconfig", "imagetype", "odm_image")
   cfg["PRODUCT_COPY_FILES"] = rblf.copy_files(rblf.expand_wildcard("foo*.mk"), "etc")
+  cfg["PRODUCT_COPY_FILES"] = rblf.product_copy_files_by_pattern("from/%", "to/%", "a b c")
 `,
 	},
 	{
