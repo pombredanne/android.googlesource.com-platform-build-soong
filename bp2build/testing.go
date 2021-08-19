@@ -33,7 +33,8 @@ type customProps struct {
 	Nested_props     nestedProps
 	Nested_props_ptr *nestedProps
 
-	Arch_paths []string `android:"path,arch_variant"`
+	Arch_paths         []string `android:"path,arch_variant"`
+	Arch_paths_exclude []string `android:"path,arch_variant"`
 }
 
 type customModule struct {
@@ -139,31 +140,23 @@ type customBazelModule struct {
 	customBazelModuleAttributes
 }
 
-func customBazelModuleFactory() android.Module {
-	module := &customBazelModule{}
-	module.AddProperties(&module.customBazelModuleAttributes)
-	android.InitBazelTargetModule(module)
-	return module
-}
-
-func (m *customBazelModule) Name() string                                          { return m.BaseModuleName() }
-func (m *customBazelModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {}
-
 func customBp2BuildMutator(ctx android.TopDownMutatorContext) {
 	if m, ok := ctx.Module().(*customModule); ok {
 		if !m.ConvertWithBp2build(ctx) {
 			return
 		}
 
-		paths := bazel.MakeLabelListAttribute(android.BazelLabelForModuleSrc(ctx, m.props.Arch_paths))
+		paths := bazel.MakeLabelListAttribute(android.BazelLabelForModuleSrcExcludes(ctx, m.props.Arch_paths, m.props.Arch_paths_exclude))
 
 		for axis, configToProps := range m.GetArchVariantProperties(ctx, &customProps{}) {
 			for config, props := range configToProps {
 				if archProps, ok := props.(*customProps); ok && archProps.Arch_paths != nil {
-					paths.SetSelectValue(axis, config, android.BazelLabelForModuleSrc(ctx, archProps.Arch_paths))
+					paths.SetSelectValue(axis, config, android.BazelLabelForModuleSrcExcludes(ctx, archProps.Arch_paths, archProps.Arch_paths_exclude))
 				}
 			}
 		}
+
+		paths.ResolveExcludes()
 
 		attrs := &customBazelModuleAttributes{
 			String_prop:      m.props.String_prop,
@@ -175,7 +168,7 @@ func customBp2BuildMutator(ctx android.TopDownMutatorContext) {
 			Rule_class: "custom",
 		}
 
-		ctx.CreateBazelTargetModule(customBazelModuleFactory, m.Name(), props, attrs)
+		ctx.CreateBazelTargetModule(m.Name(), props, attrs)
 	}
 }
 
@@ -194,19 +187,19 @@ func customBp2BuildMutatorFromStarlark(ctx android.TopDownMutatorContext) {
 			Rule_class:        "my_library",
 			Bzl_load_location: "//build/bazel/rules:rules.bzl",
 		}
-		ctx.CreateBazelTargetModule(customBazelModuleFactory, baseName, myLibraryProps, attrs)
+		ctx.CreateBazelTargetModule(baseName, myLibraryProps, attrs)
 
 		protoLibraryProps := bazel.BazelTargetModuleProperties{
 			Rule_class:        "proto_library",
 			Bzl_load_location: "//build/bazel/rules:proto.bzl",
 		}
-		ctx.CreateBazelTargetModule(customBazelModuleFactory, baseName+"_proto_library_deps", protoLibraryProps, attrs)
+		ctx.CreateBazelTargetModule(baseName+"_proto_library_deps", protoLibraryProps, attrs)
 
 		myProtoLibraryProps := bazel.BazelTargetModuleProperties{
 			Rule_class:        "my_proto_library",
 			Bzl_load_location: "//build/bazel/rules:proto.bzl",
 		}
-		ctx.CreateBazelTargetModule(customBazelModuleFactory, baseName+"_my_proto_library_deps", myProtoLibraryProps, attrs)
+		ctx.CreateBazelTargetModule(baseName+"_my_proto_library_deps", myProtoLibraryProps, attrs)
 	}
 }
 
@@ -215,4 +208,10 @@ func generateBazelTargetsForDir(codegenCtx *CodegenContext, dir string) BazelTar
 	// TODO: Set generateFilegroups to true and/or remove the generateFilegroups argument completely
 	buildFileToTargets, _, _ := GenerateBazelTargets(codegenCtx, false)
 	return buildFileToTargets[dir]
+}
+
+func registerCustomModuleForBp2buildConversion(ctx *android.TestContext) {
+	ctx.RegisterModuleType("custom", customModuleFactory)
+	ctx.RegisterBp2BuildMutator("custom", customBp2BuildMutator)
+	ctx.RegisterForBazelConversion()
 }

@@ -118,7 +118,7 @@ var knownFunctions = map[string]struct {
 	"notdir":                              {baseName + ".notdir", starlarkTypeString, hiddenArgNone},
 	"my-dir":                              {"!my-dir", starlarkTypeString, hiddenArgNone},
 	"patsubst":                            {baseName + ".mkpatsubst", starlarkTypeString, hiddenArgNone},
-	"produce_copy_files":                  {baseName + ".produce_copy_files", starlarkTypeList, hiddenArgNone},
+	"product-copy-files-by-pattern":       {baseName + ".product_copy_files_by_pattern", starlarkTypeList, hiddenArgNone},
 	"require-artifacts-in-path":           {baseName + ".require_artifacts_in_path", starlarkTypeVoid, hiddenArgNone},
 	"require-artifacts-in-path-relaxed":   {baseName + ".require_artifacts_in_path_relaxed", starlarkTypeVoid, hiddenArgNone},
 	// TODO(asmundak): remove it once all calls are removed from configuration makefiles. see b/183161002
@@ -419,14 +419,7 @@ func newParseContext(ss *StarlarkScript, nodes []mkparser.Node) *parseContext {
 		{"TARGET_COPY_OUT_TEST_HARNESS_RAMDISK", "test_harness_ramdisk"},
 		{"TARGET_COPY_OUT_ROOT", "root"},
 		{"TARGET_COPY_OUT_RECOVERY", "recovery"},
-		{"TARGET_COPY_OUT_VENDOR", "||VENDOR-PATH-PH||"},
 		{"TARGET_COPY_OUT_VENDOR_RAMDISK", "vendor_ramdisk"},
-		{"TARGET_COPY_OUT_PRODUCT", "||PRODUCT-PATH-PH||"},
-		{"TARGET_COPY_OUT_PRODUCT_SERVICES", "||PRODUCT-PATH-PH||"},
-		{"TARGET_COPY_OUT_SYSTEM_EXT", "||SYSTEM_EXT-PATH-PH||"},
-		{"TARGET_COPY_OUT_ODM", "||ODM-PATH-PH||"},
-		{"TARGET_COPY_OUT_VENDOR_DLKM", "||VENDOR_DLKM-PATH-PH||"},
-		{"TARGET_COPY_OUT_ODM_DLKM", "||ODM_DLKM-PATH-PH||"},
 		// TODO(asmundak): to process internal config files, we need the following variables:
 		//    BOARD_CONFIG_VENDOR_PATH
 		//    TARGET_VENDOR
