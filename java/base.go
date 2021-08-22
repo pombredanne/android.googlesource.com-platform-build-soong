@@ -155,6 +155,13 @@ type CommonProperties struct {
 
 		// List of java_plugin modules that provide extra errorprone checks.
 		Extra_check_modules []string
+
+		// This property can be in 3 states. When set to true, errorprone will
+		// be run during the regular build. When set to false, errorprone will
+		// never be run. When unset, errorprone will be run when the RUN_ERROR_PRONE
+		// environment variable is true. Setting this to false will improve build
+		// performance more than adding -XepDisableAllChecks in javacflags.
+		Enabled *bool
 	}
 
 	Proto struct {
@@ -229,12 +236,6 @@ type DeviceProperties struct {
 	// otherwise provides defaults libraries to add to the bootclasspath.
 	System_modules *string
 
-	// The name of the module as used in build configuration.
-	//
-	// Allows a library to separate its actual name from the name used in
-	// build configuration, e.g.ctx.Config().BootJars().
-	ConfigurationName *string `blueprint:"mutated"`
-
 	// set the name of the output
 	Stem *string
 
@@ -259,8 +260,8 @@ type embeddableInModuleAndImport struct {
 	EmbeddableSdkLibraryComponent
 }
 
-func (e *embeddableInModuleAndImport) initModuleAndImport(moduleBase *android.ModuleBase) {
-	e.initSdkLibraryComponent(moduleBase)
+func (e *embeddableInModuleAndImport) initModuleAndImport(module android.Module) {
+	e.initSdkLibraryComponent(module)
 }
 
 // Module/Import's DepIsInSameApex(...) delegates to this method.
@@ -604,7 +605,12 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 		if dep != nil {
 			if component, ok := dep.(SdkLibraryComponentDependency); ok {
 				if lib := component.OptionalSdkLibraryImplementation(); lib != nil {
-					ctx.AddVariationDependencies(nil, usesLibTag, *lib)
+					// Add library as optional if it's one of the optional compatibility libs.
+					tag := usesLibReqTag
+					if android.InList(*lib, dexpreopt.OptionalCompatUsesLibs) {
+						tag = usesLibOptTag
+					}
+					ctx.AddVariationDependencies(nil, tag, *lib)
 				}
 			}
 		}
@@ -707,7 +713,8 @@ func (j *Module) collectBuilderFlags(ctx android.ModuleContext, deps deps) javaB
 	// javaVersion flag.
 	flags.javaVersion = getJavaVersion(ctx, String(j.properties.Java_version), android.SdkContext(j))
 
-	if ctx.Config().RunErrorProne() {
+	epEnabled := j.properties.Errorprone.Enabled
+	if (ctx.Config().RunErrorProne() && epEnabled == nil) || Bool(epEnabled) {
 		if config.ErrorProneClasspath == nil && ctx.Config().TestProductVariables == nil {
 			ctx.ModuleErrorf("cannot build with Error Prone, missing external/error_prone?")
 		}
@@ -868,6 +875,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	if aaptSrcJar != nil {
 		srcJars = append(srcJars, aaptSrcJar)
 	}
+	srcFiles = srcFiles.FilterOutByExt(".srcjar")
 
 	if j.properties.Jarjar_rules != nil {
 		j.expandJarjarRules = android.PathForModuleSrc(ctx, *j.properties.Jarjar_rules)
@@ -895,8 +903,8 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		kotlincFlags := j.properties.Kotlincflags
 		CheckKotlincFlags(ctx, kotlincFlags)
 
-		// Dogfood the JVM_IR backend.
-		kotlincFlags = append(kotlincFlags, "-Xuse-ir")
+		// Workaround for KT-46512
+		kotlincFlags = append(kotlincFlags, "-Xsam-conversions=class")
 
 		// If there are kotlin files, compile them first but pass all the kotlin and java files
 		// kotlinc will use the java files to resolve types referenced by the kotlin files, but
@@ -978,14 +986,23 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	}
 	if len(uniqueSrcFiles) > 0 || len(srcJars) > 0 {
 		var extraJarDeps android.Paths
-		if ctx.Config().RunErrorProne() {
-			// If error-prone is enabled, add an additional rule to compile the java files into
-			// a separate set of classes (so that they don't overwrite the normal ones and require
-			// a rebuild when error-prone is turned off).
-			// TODO(ccross): Once we always compile with javac9 we may be able to conditionally
-			//    enable error-prone without affecting the output class files.
+		if Bool(j.properties.Errorprone.Enabled) {
+			// If error-prone is enabled, enable errorprone flags on the regular
+			// build.
+			flags = enableErrorproneFlags(flags)
+		} else if ctx.Config().RunErrorProne() && j.properties.Errorprone.Enabled == nil {
+			// Otherwise, if the RUN_ERROR_PRONE environment variable is set, create
+			// a new jar file just for compiling with the errorprone compiler to.
+			// This is because we don't want to cause the java files to get completely
+			// rebuilt every time the state of the RUN_ERROR_PRONE variable changes.
+			// We also don't want to run this if errorprone is enabled by default for
+			// this module, or else we could have duplicated errorprone messages.
+			errorproneFlags := enableErrorproneFlags(flags)
 			errorprone := android.PathForModuleOut(ctx, "errorprone", jarName)
-			RunErrorProne(ctx, errorprone, uniqueSrcFiles, srcJars, flags)
+
+			transformJavaToClasses(ctx, errorprone, -1, uniqueSrcFiles, srcJars, errorproneFlags, nil,
+				"errorprone", "errorprone")
+
 			extraJarDeps = append(extraJarDeps, errorprone)
 		}
 
@@ -1218,14 +1235,10 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 			}
 			// Dex compilation
 			var dexOutputFile android.OutputPath
-			dexOutputFile = j.dexer.compileDex(ctx, flags, j.MinSdkVersion(ctx), outputFile, jarName)
+			dexOutputFile = j.dexer.compileDex(ctx, flags, j.MinSdkVersion(ctx), implementationAndResourcesJar, jarName)
 			if ctx.Failed() {
 				return
 			}
-
-			// Hidden API CSV generation and dex encoding
-			dexOutputFile = j.hiddenAPIExtractAndEncode(ctx, dexOutputFile, j.implementationJarFile,
-				proptools.Bool(j.dexProperties.Uncompress_dex))
 
 			// merge dex jar with resources if necessary
 			if j.resourceJar != nil {
@@ -1241,6 +1254,12 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 					dexOutputFile = combinedJar
 				}
 			}
+
+			// Initialize the hiddenapi structure.
+			j.initHiddenAPI(ctx, dexOutputFile, j.implementationJarFile, j.dexProperties.Uncompress_dex)
+
+			// Encode hidden API flags in dex file, if needed.
+			dexOutputFile = j.hiddenAPIEncodeDex(ctx, dexOutputFile)
 
 			j.dexJarFile = dexOutputFile
 
@@ -1279,6 +1298,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		j.linter.minSdkVersion = lintSDKVersionString(j.MinSdkVersion(ctx))
 		j.linter.targetSdkVersion = lintSDKVersionString(j.TargetSdkVersion(ctx))
 		j.linter.compileSdkVersion = lintSDKVersionString(j.SdkVersion(ctx))
+		j.linter.compileSdkKind = j.SdkVersion(ctx).Kind
 		j.linter.javaLanguageLevel = flags.javaVersion.String()
 		j.linter.kotlinLanguageLevel = "1.3"
 		if !apexInfo.IsForPlatform() && ctx.Config().UnbundledBuildApps() {
@@ -1305,6 +1325,21 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 
 	// Save the output file with no relative path so that it doesn't end up in a subdirectory when used as a resource
 	j.outputFile = outputFile.WithoutRel()
+}
+
+// Returns a copy of the supplied flags, but with all the errorprone-related
+// fields copied to the regular build's fields.
+func enableErrorproneFlags(flags javaBuilderFlags) javaBuilderFlags {
+	flags.processorPath = append(flags.errorProneProcessorPath, flags.processorPath...)
+
+	if len(flags.errorProneExtraJavacFlags) > 0 {
+		if len(flags.javacFlags) > 0 {
+			flags.javacFlags += " " + flags.errorProneExtraJavacFlags
+		} else {
+			flags.javacFlags = flags.errorProneExtraJavacFlags
+		}
+	}
+	return flags
 }
 
 func (j *Module) compileJavaClasses(ctx android.ModuleContext, jarName string, idx int,
@@ -1485,27 +1520,14 @@ func (j *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
 	if sdkSpec.Kind == android.SdkCore {
 		return nil
 	}
-	ver, err := sdkSpec.EffectiveVersion(ctx)
-	if err != nil {
-		return err
-	}
-	if ver.GreaterThan(sdkVersion) {
-		return fmt.Errorf("newer SDK(%v)", ver)
+	if sdkSpec.ApiLevel.GreaterThan(sdkVersion) {
+		return fmt.Errorf("newer SDK(%v)", sdkSpec.ApiLevel)
 	}
 	return nil
 }
 
 func (j *Module) Stem() string {
 	return proptools.StringDefault(j.deviceProperties.Stem, j.Name())
-}
-
-// ConfigurationName returns the name of the module as used in build configuration.
-//
-// This is usually the same as BaseModuleName() except for the <x>.impl libraries created by
-// java_sdk_library in which case this is the BaseModuleName() without the ".impl" suffix,
-// i.e. just <x>.
-func (j *Module) ConfigurationName() string {
-	return proptools.StringDefault(j.deviceProperties.ConfigurationName, j.BaseModuleName())
 }
 
 func (j *Module) JacocoReportClassesFile() android.Path {
@@ -1791,3 +1813,9 @@ type ProvidesUsesLib interface {
 func (j *Module) ProvidesUsesLib() *string {
 	return j.usesLibraryProperties.Provides_uses_lib
 }
+
+type ModuleWithStem interface {
+	Stem() string
+}
+
+var _ ModuleWithStem = (*Module)(nil)

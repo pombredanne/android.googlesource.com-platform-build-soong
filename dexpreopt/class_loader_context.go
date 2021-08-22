@@ -15,6 +15,7 @@
 package dexpreopt
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -192,6 +193,9 @@ type ClassLoaderContext struct {
 	// The name of the library.
 	Name string
 
+	// If the library is optional or required.
+	Optional bool
+
 	// On-host build path to the library dex file (used in dex2oat argument --class-loader-context).
 	Host android.Path
 
@@ -255,7 +259,10 @@ const AnySdkVersion int = android.FutureApiLevelInt
 
 // Add class loader context for the given library to the map entry for the given SDK version.
 func (clcMap ClassLoaderContextMap) addContext(ctx android.ModuleInstallPathContext, sdkVer int, lib string,
-	hostPath, installPath android.Path, nestedClcMap ClassLoaderContextMap) error {
+	optional bool, hostPath, installPath android.Path, nestedClcMap ClassLoaderContextMap) error {
+
+	// For prebuilts, library should have the same name as the source module.
+	lib = android.RemoveOptionalPrebuiltPrefix(lib)
 
 	devicePath := UnknownInstallLibraryPath
 	if installPath == nil {
@@ -282,16 +289,25 @@ func (clcMap ClassLoaderContextMap) addContext(ctx android.ModuleInstallPathCont
 	}
 	subcontexts := nestedClcMap[AnySdkVersion]
 
-	// If the library with this name is already present as one of the unconditional top-level
-	// components, do not re-add it.
+	// Check if the library with this name is already present in unconditional top-level CLC.
 	for _, clc := range clcMap[sdkVer] {
-		if clc.Name == lib {
+		if clc.Name != lib {
+			// Ok, a different library.
+		} else if clc.Host == hostPath && clc.Device == devicePath {
+			// Ok, the same library with the same paths. Don't re-add it, but don't raise an error
+			// either, as the same library may be reachable via different transitional dependencies.
 			return nil
+		} else {
+			// Fail, as someone is trying to add the same library with different paths. This likely
+			// indicates an error somewhere else, like trying to add a stub library.
+			return fmt.Errorf("a <uses-library> named %q is already in class loader context,"+
+				"but the library paths are different:\t\n", lib)
 		}
 	}
 
 	clcMap[sdkVer] = append(clcMap[sdkVer], &ClassLoaderContext{
 		Name:        lib,
+		Optional:    optional,
 		Host:        hostPath,
 		Device:      devicePath,
 		Subcontexts: subcontexts,
@@ -304,9 +320,9 @@ func (clcMap ClassLoaderContextMap) addContext(ctx android.ModuleInstallPathCont
 // about paths). For the subset of libraries that are used in dexpreopt, their build/install paths
 // are validated later before CLC is used (in validateClassLoaderContext).
 func (clcMap ClassLoaderContextMap) AddContext(ctx android.ModuleInstallPathContext, sdkVer int,
-	lib string, hostPath, installPath android.Path, nestedClcMap ClassLoaderContextMap) {
+	lib string, optional bool, hostPath, installPath android.Path, nestedClcMap ClassLoaderContextMap) {
 
-	err := clcMap.addContext(ctx, sdkVer, lib, hostPath, installPath, nestedClcMap)
+	err := clcMap.addContext(ctx, sdkVer, lib, optional, hostPath, installPath, nestedClcMap)
 	if err != nil {
 		ctx.ModuleErrorf(err.Error())
 	}
@@ -349,15 +365,30 @@ func (clcMap ClassLoaderContextMap) AddContextMap(otherClcMap ClassLoaderContext
 // Returns top-level libraries in the CLC (conditional CLC, i.e. compatibility libraries are not
 // included). This is the list of libraries that should be in the <uses-library> tags in the
 // manifest. Some of them may be present in the source manifest, others are added by manifest_fixer.
-func (clcMap ClassLoaderContextMap) UsesLibs() (ulibs []string) {
+// Required and optional libraries are in separate lists.
+func (clcMap ClassLoaderContextMap) UsesLibs() (required []string, optional []string) {
 	if clcMap != nil {
 		clcs := clcMap[AnySdkVersion]
-		ulibs = make([]string, 0, len(clcs))
+		required = make([]string, 0, len(clcs))
+		optional = make([]string, 0, len(clcs))
 		for _, clc := range clcs {
-			ulibs = append(ulibs, clc.Name)
+			if clc.Optional {
+				optional = append(optional, clc.Name)
+			} else {
+				required = append(required, clc.Name)
+			}
 		}
 	}
-	return ulibs
+	return required, optional
+}
+
+func (clcMap ClassLoaderContextMap) Dump() string {
+	jsonCLC := toJsonClassLoaderContext(clcMap)
+	bytes, err := json.MarshalIndent(jsonCLC, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+	return string(bytes)
 }
 
 // Now that the full unconditional context is known, reconstruct conditional context.
@@ -367,7 +398,8 @@ func (clcMap ClassLoaderContextMap) UsesLibs() (ulibs []string) {
 // TODO(b/132357300): remove "android.hidl.manager" and "android.hidl.base" for non-system apps.
 //
 func fixClassLoaderContext(clcMap ClassLoaderContextMap) {
-	usesLibs := clcMap.UsesLibs()
+	required, optional := clcMap.UsesLibs()
+	usesLibs := append(required, optional...)
 
 	for sdkVer, clcs := range clcMap {
 		if sdkVer == AnySdkVersion {

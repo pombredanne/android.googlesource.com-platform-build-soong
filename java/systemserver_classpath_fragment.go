@@ -17,6 +17,8 @@ package java
 import (
 	"android/soong/android"
 	"android/soong/dexpreopt"
+
+	"github.com/google/blueprint"
 )
 
 func init() {
@@ -24,8 +26,8 @@ func init() {
 }
 
 func registerSystemserverClasspathBuildComponents(ctx android.RegistrationContext) {
-	// TODO(satayev): add systemserver_classpath_fragment module
 	ctx.RegisterModuleType("platform_systemserverclasspath", platformSystemServerClasspathFactory)
+	ctx.RegisterModuleType("systemserverclasspath_fragment", systemServerClasspathFactory)
 }
 
 type platformSystemServerClasspathModule struct {
@@ -41,27 +43,100 @@ func platformSystemServerClasspathFactory() android.Module {
 	return m
 }
 
-func (b *platformSystemServerClasspathModule) AndroidMkEntries() (entries []android.AndroidMkEntries) {
-	return b.classpathFragmentBase().androidMkEntries()
+func (p *platformSystemServerClasspathModule) AndroidMkEntries() (entries []android.AndroidMkEntries) {
+	return p.classpathFragmentBase().androidMkEntries()
 }
 
-func (b *platformSystemServerClasspathModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {
-	configuredJars := configuredJarListToClasspathJars(ctx, b.ClasspathFragmentToConfiguredJarList(ctx), b.classpathType)
-	b.classpathFragmentBase().generateClasspathProtoBuildActions(ctx, configuredJars)
+func (p *platformSystemServerClasspathModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+	configuredJars := p.configuredJars(ctx)
+	classpathJars := configuredJarListToClasspathJars(ctx, configuredJars, p.classpathType)
+	p.classpathFragmentBase().generateClasspathProtoBuildActions(ctx, configuredJars, classpathJars)
 }
 
-var platformSystemServerClasspathKey = android.NewOnceKey("platform_systemserverclasspath")
+func (p *platformSystemServerClasspathModule) configuredJars(ctx android.ModuleContext) android.ConfiguredJarList {
+	// TODO(satayev): include any apex jars that don't populate their classpath proto config.
+	return dexpreopt.GetGlobalConfig(ctx).SystemServerJars
+}
 
-func (b *platformSystemServerClasspathModule) ClasspathFragmentToConfiguredJarList(ctx android.ModuleContext) android.ConfiguredJarList {
-	return ctx.Config().Once(platformSystemServerClasspathKey, func() interface{} {
-		global := dexpreopt.GetGlobalConfig(ctx)
+type SystemServerClasspathModule struct {
+	android.ModuleBase
+	android.ApexModuleBase
 
-		jars := global.SystemServerJars
+	ClasspathFragmentBase
 
-		// TODO(satayev): split apex jars into separate configs.
-		for i := 0; i < global.UpdatableSystemServerJars.Len(); i++ {
-			jars = jars.Append(global.UpdatableSystemServerJars.Apex(i), global.UpdatableSystemServerJars.Jar(i))
-		}
-		return jars
-	}).(android.ConfiguredJarList)
+	properties systemServerClasspathFragmentProperties
+
+	// Collect the module directory for IDE info in java/jdeps.go.
+	modulePaths []string
+}
+
+func (s *SystemServerClasspathModule) ShouldSupportSdkVersion(ctx android.BaseModuleContext, sdkVersion android.ApiLevel) error {
+	return nil
+}
+
+type systemServerClasspathFragmentProperties struct {
+	// The contents of this systemserverclasspath_fragment, could be either java_library, or java_sdk_library.
+	//
+	// The order of this list matters as it is the order that is used in the SYSTEMSERVERCLASSPATH.
+	Contents []string
+}
+
+func systemServerClasspathFactory() android.Module {
+	m := &SystemServerClasspathModule{}
+	m.AddProperties(&m.properties)
+	android.InitApexModule(m)
+	initClasspathFragment(m, SYSTEMSERVERCLASSPATH)
+	android.InitAndroidArchModule(m, android.DeviceSupported, android.MultilibCommon)
+	return m
+}
+
+func (s *SystemServerClasspathModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+	if len(s.properties.Contents) == 0 {
+		ctx.PropertyErrorf("contents", "empty contents are not allowed")
+	}
+
+	configuredJars := s.configuredJars(ctx)
+	classpathJars := configuredJarListToClasspathJars(ctx, configuredJars, s.classpathType)
+	s.classpathFragmentBase().generateClasspathProtoBuildActions(ctx, configuredJars, classpathJars)
+
+	// Collect the module directory for IDE info in java/jdeps.go.
+	s.modulePaths = append(s.modulePaths, ctx.ModuleDir())
+}
+
+func (s *SystemServerClasspathModule) configuredJars(ctx android.ModuleContext) android.ConfiguredJarList {
+	global := dexpreopt.GetGlobalConfig(ctx)
+
+	possibleUpdatableModules := gatherPossibleApexModuleNamesAndStems(ctx, s.properties.Contents, systemServerClasspathFragmentContentDepTag)
+	return global.ApexSystemServerJars.Filter(possibleUpdatableModules)
+}
+
+type systemServerClasspathFragmentContentDependencyTag struct {
+	blueprint.BaseDependencyTag
+}
+
+// Contents of system server fragments in an apex are considered to be directly in the apex, as if
+// they were listed in java_libs.
+func (systemServerClasspathFragmentContentDependencyTag) CopyDirectlyInAnyApex() {}
+
+var _ android.CopyDirectlyInAnyApexTag = systemServerClasspathFragmentContentDepTag
+
+// The tag used for the dependency between the systemserverclasspath_fragment module and its contents.
+var systemServerClasspathFragmentContentDepTag = systemServerClasspathFragmentContentDependencyTag{}
+
+func IsSystemServerClasspathFragmentContentDepTag(tag blueprint.DependencyTag) bool {
+	return tag == systemServerClasspathFragmentContentDepTag
+}
+
+func (s *SystemServerClasspathModule) ComponentDepsMutator(ctx android.BottomUpMutatorContext) {
+	module := ctx.Module()
+
+	for _, name := range s.properties.Contents {
+		ctx.AddDependency(module, systemServerClasspathFragmentContentDepTag, name)
+	}
+}
+
+// Collect information for opening IDE project files in java/jdeps.go.
+func (s *SystemServerClasspathModule) IDEInfo(dpInfo *android.IdeInfo) {
+	dpInfo.Deps = append(dpInfo.Deps, s.properties.Contents...)
+	dpInfo.Paths = append(dpInfo.Paths, s.modulePaths...)
 }

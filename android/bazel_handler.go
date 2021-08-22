@@ -28,8 +28,6 @@ import (
 
 	"android/soong/bazel/cquery"
 
-	"github.com/google/blueprint/bootstrap"
-
 	"android/soong/bazel"
 	"android/soong/shared"
 )
@@ -57,6 +55,17 @@ type cqueryKey struct {
 	archType    ArchType
 }
 
+// bazelHandler is the interface for a helper object related to deferring to Bazel for
+// processing a module (during Bazel mixed builds). Individual module types should define
+// their own bazel handler if they support deferring to Bazel.
+type BazelHandler interface {
+	// Issue query to Bazel to retrieve information about Bazel's view of the current module.
+	// If Bazel returns this information, set module properties on the current module to reflect
+	// the returned information.
+	// Returns true if information was available from Bazel, false if bazel invocation still needs to occur.
+	GenerateBazelBuildActions(ctx ModuleContext, label string) bool
+}
+
 type BazelContext interface {
 	// The below methods involve queuing cquery requests to be later invoked
 	// by bazel. If any of these methods return (_, false), then the request
@@ -68,6 +77,9 @@ type BazelContext interface {
 	// TODO(cparsons): Other cquery-related methods should be added here.
 	// Returns the results of GetOutputFiles and GetCcObjectFiles in a single query (in that order).
 	GetCcInfo(label string, archType ArchType) (cquery.CcInfo, bool, error)
+
+	// Returns the executable binary resultant from building together the python sources
+	GetPythonBinary(label string, archType ArchType) (string, bool)
 
 	// ** End cquery methods
 
@@ -123,8 +135,9 @@ var _ BazelContext = noopBazelContext{}
 type MockBazelContext struct {
 	OutputBaseDir string
 
-	LabelToOutputFiles map[string][]string
-	LabelToCcInfo      map[string]cquery.CcInfo
+	LabelToOutputFiles  map[string][]string
+	LabelToCcInfo       map[string]cquery.CcInfo
+	LabelToPythonBinary map[string]string
 }
 
 func (m MockBazelContext) GetOutputFiles(label string, archType ArchType) ([]string, bool) {
@@ -135,6 +148,11 @@ func (m MockBazelContext) GetOutputFiles(label string, archType ArchType) ([]str
 func (m MockBazelContext) GetCcInfo(label string, archType ArchType) (cquery.CcInfo, bool, error) {
 	result, ok := m.LabelToCcInfo[label]
 	return result, ok, nil
+}
+
+func (m MockBazelContext) GetPythonBinary(label string, archType ArchType) (string, bool) {
+	result, ok := m.LabelToPythonBinary[label]
+	return result, ok
 }
 
 func (m MockBazelContext) InvokeBazel() error {
@@ -174,11 +192,25 @@ func (bazelCtx *bazelContext) GetCcInfo(label string, archType ArchType) (cquery
 	return ret, ok, err
 }
 
+func (bazelCtx *bazelContext) GetPythonBinary(label string, archType ArchType) (string, bool) {
+	rawString, ok := bazelCtx.cquery(label, cquery.GetPythonBinary, archType)
+	var ret string
+	if ok {
+		bazelOutput := strings.TrimSpace(rawString)
+		ret = cquery.GetPythonBinary.ParseResult(bazelOutput)
+	}
+	return ret, ok
+}
+
 func (n noopBazelContext) GetOutputFiles(label string, archType ArchType) ([]string, bool) {
 	panic("unimplemented")
 }
 
 func (n noopBazelContext) GetCcInfo(label string, archType ArchType) (cquery.CcInfo, bool, error) {
+	panic("unimplemented")
+}
+
+func (n noopBazelContext) GetPythonBinary(label string, archType ArchType) (string, bool) {
 	panic("unimplemented")
 }
 
@@ -205,7 +237,7 @@ func (m noopBazelContext) BuildStatementsToRegister() []bazel.BuildStatement {
 func NewBazelContext(c *config) (BazelContext, error) {
 	// TODO(cparsons): Assess USE_BAZEL=1 instead once "mixed Soong/Bazel builds"
 	// are production ready.
-	if c.Getenv("USE_BAZEL_ANALYSIS") != "1" {
+	if !c.IsEnvTrue("USE_BAZEL_ANALYSIS") {
 		return noopBazelContext{}, nil
 	}
 
@@ -333,7 +365,7 @@ func (r *builtinBazelRunner) issueBazelCommand(paths *bazelPaths, runName bazel.
 	// The actual platform values here may be overridden by configuration
 	// transitions from the buildroot.
 	cmdFlags = append(cmdFlags,
-		fmt.Sprintf("--platforms=%s", "//build/bazel/platforms:android_x86_64"))
+		fmt.Sprintf("--platforms=%s", "//build/bazel/platforms:android_target"))
 	cmdFlags = append(cmdFlags,
 		fmt.Sprintf("--extra_toolchains=%s", "//prebuilts/clang/host/linux-x86:all"))
 	// This should be parameterized on the host OS, but let's restrict to linux
@@ -351,6 +383,9 @@ func (r *builtinBazelRunner) issueBazelCommand(paths *bazelPaths, runName bazel.
 		"HOME="+paths.homeDir,
 		pwdPrefix(),
 		"BUILD_DIR="+absolutePath(paths.buildDir),
+		// Make OUT_DIR absolute here so tools/bazel.sh uses the correct
+		// OUT_DIR at <root>/out, instead of <root>/out/soong/workspace/out.
+		"OUT_DIR="+absolutePath(paths.outDir()),
 		// Disables local host detection of gcc; toolchain information is defined
 		// explicitly in BUILD files.
 		"BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1")
@@ -539,10 +574,13 @@ def get_arch(target):
   platform_name = build_options(target)["//command_line_option:platforms"][0].name
   if platform_name == "host":
     return "HOST"
-  elif not platform_name.startswith("android_"):
-    fail("expected platform name of the form 'android_<arch>', but was " + str(platforms))
+  elif platform_name.startswith("android_"):
+    return platform_name[len("android_"):]
+  elif platform_name.startswith("linux_"):
+    return platform_name[len("linux_"):]
+  else:
+    fail("expected platform name of the form 'android_<arch>' or 'linux_<arch>', but was " + str(platforms))
     return "UNKNOWN"
-  return platform_name[len("android_"):]
 
 def format(target):
   id_string = str(target.label) + "|" + get_arch(target)
@@ -567,13 +605,18 @@ func (p *bazelPaths) intermediatesDir() string {
 // Returns the path where the contents of the @soong_injection repository live.
 // It is used by Soong to tell Bazel things it cannot over the command line.
 func (p *bazelPaths) injectedFilesDir() string {
-	return filepath.Join(p.buildDir, "soong_injection")
+	return filepath.Join(p.buildDir, bazel.SoongInjectionDirName)
 }
 
 // Returns the path of the synthetic Bazel workspace that contains a symlink
 // forest composed the whole source tree and BUILD files generated by bp2build.
 func (p *bazelPaths) syntheticWorkspaceDir() string {
 	return filepath.Join(p.buildDir, "workspace")
+}
+
+// Returns the path to the top level out dir ($OUT_DIR).
+func (p *bazelPaths) outDir() string {
+	return filepath.Dir(p.buildDir)
 }
 
 // Issues commands to Bazel to receive results for all cquery requests
@@ -715,7 +758,7 @@ func (c *bazelSingleton) GenerateBuildActions(ctx SingletonContext) {
 
 	// Add ninja file dependencies for files which all bazel invocations require.
 	bazelBuildList := absolutePath(filepath.Join(
-		filepath.Dir(bootstrap.CmdlineArgs.ModuleListFile), "bazel.list"))
+		filepath.Dir(ctx.Config().moduleListFile), "bazel.list"))
 	ctx.AddNinjaFileDeps(bazelBuildList)
 
 	data, err := ioutil.ReadFile(bazelBuildList)
@@ -734,8 +777,17 @@ func (c *bazelSingleton) GenerateBuildActions(ctx SingletonContext) {
 		}
 		rule := NewRuleBuilder(pctx, ctx)
 		cmd := rule.Command()
-		cmd.Text(fmt.Sprintf("cd %s/execroot/__main__ && %s",
-			ctx.Config().BazelContext.OutputBase(), buildStatement.Command))
+
+		// cd into Bazel's execution root, which is the action cwd.
+		cmd.Text(fmt.Sprintf("cd %s/execroot/__main__ && ", ctx.Config().BazelContext.OutputBase()))
+
+		for _, pair := range buildStatement.Env {
+			// Set per-action env variables, if any.
+			cmd.Flag(pair.Key + "=" + pair.Value)
+		}
+
+		// The actual Bazel action.
+		cmd.Text(" " + buildStatement.Command)
 
 		for _, outputPath := range buildStatement.OutputPaths {
 			cmd.ImplicitOutput(PathForBazelOut(ctx, outputPath))
@@ -746,6 +798,10 @@ func (c *bazelSingleton) GenerateBuildActions(ctx SingletonContext) {
 
 		if depfile := buildStatement.Depfile; depfile != nil {
 			cmd.ImplicitDepFile(PathForBazelOut(ctx, *depfile))
+		}
+
+		for _, symlinkPath := range buildStatement.SymlinkPaths {
+			cmd.ImplicitSymlinkOutput(PathForBazelOut(ctx, symlinkPath))
 		}
 
 		// This is required to silence warnings pertaining to unexpected timestamps. Particularly,

@@ -27,6 +27,7 @@ import (
 	"android/soong/ui/build"
 	"android/soong/ui/logger"
 	"android/soong/ui/metrics"
+	"android/soong/ui/signal"
 	"android/soong/ui/status"
 	"android/soong/ui/terminal"
 	"android/soong/ui/tracer"
@@ -65,7 +66,7 @@ func (t *Test) Run(logsDir string) {
 	stat.AddOutput(output)
 	stat.AddOutput(trace.StatusTracer())
 
-	build.SetupSignals(log, cancel, func() {
+	signal.SetupSignals(log, cancel, func() {
 		trace.Close()
 		log.Cleanup()
 		stat.Finish()
@@ -115,7 +116,7 @@ func (t *Test) Run(logsDir string) {
 	defer f.Shutdown()
 	build.FindSources(buildCtx, config, f)
 
-	build.Build(buildCtx, config, build.BuildAll)
+	build.Build(buildCtx, config)
 
 	t.results.metrics = met
 }

@@ -17,6 +17,7 @@ package java
 import (
 	"fmt"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -24,6 +25,7 @@ import (
 	"android/soong/android"
 	"android/soong/cc"
 	"android/soong/dexpreopt"
+
 	"github.com/google/blueprint"
 )
 
@@ -55,8 +57,9 @@ var PrepareForTestWithJavaBuildComponents = android.GroupFixturePreparers(
 	}.AddToFixture(),
 )
 
-// Test fixture preparer that will define default java modules, e.g. standard prebuilt modules.
-var PrepareForTestWithJavaDefaultModules = android.GroupFixturePreparers(
+// Test fixture preparer that will define all default java modules except the
+// fake_tool_binary for dex2oatd.
+var PrepareForTestWithJavaDefaultModulesWithoutFakeDex2oatd = android.GroupFixturePreparers(
 	// Make sure that all the module types used in the defaults are registered.
 	PrepareForTestWithJavaBuildComponents,
 	// Additional files needed when test disallows non-existent source.
@@ -72,6 +75,11 @@ var PrepareForTestWithJavaDefaultModules = android.GroupFixturePreparers(
 	android.FixtureAddTextFile(defaultJavaDir+"/Android.bp", gatherRequiredDepsForTest()),
 	// Add dexpreopt compat libs (android.test.base, etc.) and a fake dex2oatd module.
 	dexpreopt.PrepareForTestWithDexpreoptCompatLibs,
+)
+
+// Test fixture preparer that will define default java modules, e.g. standard prebuilt modules.
+var PrepareForTestWithJavaDefaultModules = android.GroupFixturePreparers(
+	PrepareForTestWithJavaDefaultModulesWithoutFakeDex2oatd,
 	dexpreopt.PrepareForTestWithFakeDex2oatd,
 )
 
@@ -206,15 +214,15 @@ func FixtureConfigureBootJars(bootJars ...string) android.FixturePreparer {
 	)
 }
 
-// FixtureConfigureUpdatableBootJars configures the updatable boot jars in both the
+// FixtureConfigureApexBootJars configures the apex boot jars in both the
 // dexpreopt.GlobalConfig and Config.productVariables structs. As a side effect that enables
 // dexpreopt.
-func FixtureConfigureUpdatableBootJars(bootJars ...string) android.FixturePreparer {
+func FixtureConfigureApexBootJars(bootJars ...string) android.FixturePreparer {
 	return android.GroupFixturePreparers(
 		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-			variables.UpdatableBootJars = android.CreateTestConfiguredJarList(bootJars)
+			variables.ApexBootJars = android.CreateTestConfiguredJarList(bootJars)
 		}),
-		dexpreopt.FixtureSetUpdatableBootJars(bootJars...),
+		dexpreopt.FixtureSetApexBootJars(bootJars...),
 
 		// Add a fake dex2oatd module.
 		dexpreopt.PrepareForTestWithFakeDex2oatd,
@@ -304,6 +312,7 @@ func gatherRequiredDepsForTest() string {
 
 	systemModules := []string{
 		"core-current-stubs-system-modules",
+		"core-module-lib-stubs-system-modules",
 		"legacy-core-platform-api-stubs-system-modules",
 		"stable-core-platform-api-stubs-system-modules",
 	}
@@ -355,6 +364,17 @@ func CheckPlatformBootclasspathModules(t *testing.T, result *android.TestResult,
 	android.AssertDeepEquals(t, fmt.Sprintf("%s modules", "platform-bootclasspath"), expected, pairs)
 }
 
+func CheckClasspathFragmentProtoContentInfoProvider(t *testing.T, result *android.TestResult, generated bool, contents, outputFilename, installDir string) {
+	t.Helper()
+	p := result.Module("platform-bootclasspath", "android_common").(*platformBootclasspathModule)
+	info := result.ModuleProvider(p, ClasspathFragmentProtoContentInfoProvider).(ClasspathFragmentProtoContentInfo)
+
+	android.AssertBoolEquals(t, "classpath proto generated", generated, info.ClasspathFragmentProtoGenerated)
+	android.AssertStringEquals(t, "classpath proto contents", contents, info.ClasspathFragmentProtoContents.String())
+	android.AssertStringEquals(t, "output filepath", outputFilename, info.ClasspathFragmentProtoOutput.Base())
+	android.AssertPathRelativeToTopEquals(t, "install filepath", installDir, info.ClasspathFragmentProtoInstallDir)
+}
+
 // ApexNamePairsFromModules returns the apex:module pair for the supplied modules.
 func ApexNamePairsFromModules(ctx *android.TestContext, modules []android.Module) []string {
 	pairs := []string{}
@@ -371,7 +391,7 @@ func apexNamePairFromModule(ctx *android.TestContext, module android.Module) str
 	if apexInfo.IsForPlatform() {
 		apex = "platform"
 	} else {
-		apex = apexInfo.InApexes[0]
+		apex = apexInfo.InApexVariants[0]
 	}
 
 	return fmt.Sprintf("%s:%s", apex, name)
@@ -386,12 +406,20 @@ func CheckPlatformBootclasspathFragments(t *testing.T, result *android.TestResul
 	android.AssertDeepEquals(t, fmt.Sprintf("%s fragments", "platform-bootclasspath"), expected, pairs)
 }
 
-func CheckHiddenAPIRuleInputs(t *testing.T, expected string, hiddenAPIRule android.TestingBuildParams) {
+func CheckHiddenAPIRuleInputs(t *testing.T, message string, expected string, hiddenAPIRule android.TestingBuildParams) {
 	t.Helper()
-	actual := strings.TrimSpace(strings.Join(android.NormalizePathsForTesting(hiddenAPIRule.Implicits), "\n"))
-	expected = strings.TrimSpace(expected)
+	inputs := android.Paths{}
+	if hiddenAPIRule.Input != nil {
+		inputs = append(inputs, hiddenAPIRule.Input)
+	}
+	inputs = append(inputs, hiddenAPIRule.Inputs...)
+	inputs = append(inputs, hiddenAPIRule.Implicits...)
+	inputs = android.SortedUniquePaths(inputs)
+	actual := strings.TrimSpace(strings.Join(inputs.RelativeToTop().Strings(), "\n"))
+	re := regexp.MustCompile(`\n\s+`)
+	expected = strings.TrimSpace(re.ReplaceAllString(expected, "\n"))
 	if actual != expected {
-		t.Errorf("Expected hiddenapi rule inputs:\n%s\nactual inputs:\n%s", expected, actual)
+		t.Errorf("Expected hiddenapi rule inputs - %s:\n%s\nactual inputs:\n%s", message, expected, actual)
 	}
 }
 

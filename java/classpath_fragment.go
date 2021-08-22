@@ -18,6 +18,8 @@ package java
 
 import (
 	"fmt"
+	"github.com/google/blueprint"
+	"github.com/google/blueprint/proptools"
 	"strings"
 
 	"android/soong/android"
@@ -43,6 +45,11 @@ func (c classpathType) String() string {
 }
 
 type classpathFragmentProperties struct {
+	// Whether to generated classpaths.proto config instance for the fragment. If the config is not
+	// generated, then relevant boot jars are added to platform classpath, i.e. platform_bootclasspath
+	// or platform_systemserverclasspath. This is useful for non-updatable APEX boot jars, to keep
+	// them as part of dexopt on device. Defaults to true.
+	Generate_classpaths_proto *bool
 }
 
 // classpathFragment interface is implemented by a module that contributes jars to a *CLASSPATH
@@ -51,10 +58,6 @@ type classpathFragment interface {
 	android.Module
 
 	classpathFragmentBase() *ClasspathFragmentBase
-
-	// ClasspathFragmentToConfiguredJarList returns android.ConfiguredJarList representation of all
-	// the jars in this classpath fragment.
-	ClasspathFragmentToConfiguredJarList(ctx android.ModuleContext) android.ConfiguredJarList
 }
 
 // ClasspathFragmentBase is meant to be embedded in any module types that implement classpathFragment;
@@ -88,6 +91,29 @@ type classpathJar struct {
 	maxSdkVersion int32
 }
 
+// gatherPossibleApexModuleNamesAndStems returns a set of module and stem names from the
+// supplied contents that may be in the apex boot jars.
+//
+// The module names are included because sometimes the stem is set to just change the name of
+// the installed file and it expects the configuration to still use the actual module name.
+//
+// The stem names are included because sometimes the stem is set to change the effective name of the
+// module that is used in the configuration as well,e .g. when a test library is overriding an
+// actual boot jar
+func gatherPossibleApexModuleNamesAndStems(ctx android.ModuleContext, contents []string, tag blueprint.DependencyTag) []string {
+	set := map[string]struct{}{}
+	for _, name := range contents {
+		dep := ctx.GetDirectDepWithTag(name, tag)
+		set[name] = struct{}{}
+		if m, ok := dep.(ModuleWithStem); ok {
+			set[m.Stem()] = struct{}{}
+		} else {
+			ctx.PropertyErrorf("contents", "%v is not a ModuleWithStem", name)
+		}
+	}
+	return android.SortedStringKeys(set)
+}
+
 // Converts android.ConfiguredJarList into a list of classpathJars for each given classpathType.
 func configuredJarListToClasspathJars(ctx android.ModuleContext, configuredJars android.ConfiguredJarList, classpaths ...classpathType) []classpathJar {
 	paths := configuredJars.DevicePaths(ctx.Config(), android.Android)
@@ -103,23 +129,34 @@ func configuredJarListToClasspathJars(ctx android.ModuleContext, configuredJars 
 	return jars
 }
 
-func (c *ClasspathFragmentBase) generateClasspathProtoBuildActions(ctx android.ModuleContext, jars []classpathJar) {
-	outputFilename := ctx.ModuleName() + ".pb"
-	c.outputFilepath = android.PathForModuleOut(ctx, outputFilename).OutputPath
-	c.installDirPath = android.PathForModuleInstall(ctx, "etc", "classpaths")
+func (c *ClasspathFragmentBase) generateClasspathProtoBuildActions(ctx android.ModuleContext, configuredJars android.ConfiguredJarList, jars []classpathJar) {
+	generateProto := proptools.BoolDefault(c.properties.Generate_classpaths_proto, true)
+	if generateProto {
+		outputFilename := strings.ToLower(c.classpathType.String()) + ".pb"
+		c.outputFilepath = android.PathForModuleOut(ctx, outputFilename).OutputPath
+		c.installDirPath = android.PathForModuleInstall(ctx, "etc", "classpaths")
 
-	generatedJson := android.PathForModuleOut(ctx, outputFilename+".json")
-	writeClasspathsJson(ctx, generatedJson, jars)
+		generatedJson := android.PathForModuleOut(ctx, outputFilename+".json")
+		writeClasspathsJson(ctx, generatedJson, jars)
 
-	rule := android.NewRuleBuilder(pctx, ctx)
-	rule.Command().
-		BuiltTool("conv_classpaths_proto").
-		Flag("encode").
-		Flag("--format=json").
-		FlagWithInput("--input=", generatedJson).
-		FlagWithOutput("--output=", c.outputFilepath)
+		rule := android.NewRuleBuilder(pctx, ctx)
+		rule.Command().
+			BuiltTool("conv_classpaths_proto").
+			Flag("encode").
+			Flag("--format=json").
+			FlagWithInput("--input=", generatedJson).
+			FlagWithOutput("--output=", c.outputFilepath)
 
-	rule.Build("classpath_fragment", "Compiling "+c.outputFilepath.String())
+		rule.Build("classpath_fragment", "Compiling "+c.outputFilepath.String())
+	}
+
+	classpathProtoInfo := ClasspathFragmentProtoContentInfo{
+		ClasspathFragmentProtoGenerated:  generateProto,
+		ClasspathFragmentProtoContents:   configuredJars,
+		ClasspathFragmentProtoInstallDir: c.installDirPath,
+		ClasspathFragmentProtoOutput:     c.outputFilepath,
+	}
+	ctx.SetProvider(ClasspathFragmentProtoContentInfoProvider, classpathProtoInfo)
 }
 
 func writeClasspathsJson(ctx android.ModuleContext, output android.WritablePath, jars []classpathJar) {
@@ -129,7 +166,7 @@ func writeClasspathsJson(ctx android.ModuleContext, output android.WritablePath,
 	for idx, jar := range jars {
 		fmt.Fprintf(&content, "{\n")
 
-		fmt.Fprintf(&content, "\"relativePath\": \"%s\",\n", jar.path)
+		fmt.Fprintf(&content, "\"path\": \"%s\",\n", jar.path)
 		fmt.Fprintf(&content, "\"classpath\": \"%s\"\n", jar.classpath)
 
 		if idx < len(jars)-1 {
@@ -156,4 +193,30 @@ func (c *ClasspathFragmentBase) androidMkEntries() []android.AndroidMkEntries {
 			},
 		},
 	}}
+}
+
+var ClasspathFragmentProtoContentInfoProvider = blueprint.NewProvider(ClasspathFragmentProtoContentInfo{})
+
+type ClasspathFragmentProtoContentInfo struct {
+	// Whether the classpaths.proto config is generated for the fragment.
+	ClasspathFragmentProtoGenerated bool
+
+	// ClasspathFragmentProtoContents contains a list of jars that are part of this classpath fragment.
+	ClasspathFragmentProtoContents android.ConfiguredJarList
+
+	// ClasspathFragmentProtoOutput is an output path for the generated classpaths.proto config of this module.
+	//
+	// The file should be copied to a relevant place on device, see ClasspathFragmentProtoInstallDir
+	// for more details.
+	ClasspathFragmentProtoOutput android.OutputPath
+
+	// ClasspathFragmentProtoInstallDir contains information about on device location for the generated classpaths.proto file.
+	//
+	// The path encodes expected sub-location within partitions, i.e. etc/classpaths/<proto-file>,
+	// for ClasspathFragmentProtoOutput. To get sub-location, instead of the full output / make path
+	// use android.InstallPath#Rel().
+	//
+	// This is only relevant for APEX modules as they perform their own installation; while regular
+	// system files are installed via ClasspathFragmentBase#androidMkEntries().
+	ClasspathFragmentProtoInstallDir android.InstallPath
 }

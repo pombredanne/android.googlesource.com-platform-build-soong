@@ -44,15 +44,15 @@ type GlobalConfig struct {
 	DisableGenerateProfile bool   // don't generate profiles
 	ProfileDir             string // directory to find profiles in
 
-	BootJars          android.ConfiguredJarList // modules for jars that form the boot class path
-	UpdatableBootJars android.ConfiguredJarList // jars within apex that form the boot class path
+	BootJars     android.ConfiguredJarList // modules for jars that form the boot class path
+	ApexBootJars android.ConfiguredJarList // jars within apex that form the boot class path
 
 	ArtApexJars android.ConfiguredJarList // modules for jars that are in the ART APEX
 
-	SystemServerJars          android.ConfiguredJarList // jars that form the system server
-	SystemServerApps          []string                  // apps that are loaded into system server
-	UpdatableSystemServerJars android.ConfiguredJarList // jars within apex that are loaded into system server
-	SpeedApps                 []string                  // apps that should be speed optimized
+	SystemServerJars     android.ConfiguredJarList // jars that form the system server
+	SystemServerApps     []string                  // apps that are loaded into system server
+	ApexSystemServerJars android.ConfiguredJarList // jars within apex that are loaded into system server
+	SpeedApps            []string                  // apps that should be speed optimized
 
 	BrokenSuboptimalOrderOfSystemServerJars bool // if true, sub-optimal order does not cause a build error
 
@@ -130,9 +130,11 @@ type ModuleConfig struct {
 	ProvidesUsesLibrary            string       // library name (usually the same as module name)
 	ClassLoaderContexts            ClassLoaderContextMap
 
-	Archs                         []android.ArchType
-	DexPreoptImagesDeps           []android.OutputPaths
-	DexPreoptImageLocationsOnHost []string // boot image location on host (file path without the arch subdirectory)
+	Archs               []android.ArchType
+	DexPreoptImagesDeps []android.OutputPaths
+
+	DexPreoptImageLocationsOnHost   []string // boot image location on host (file path without the arch subdirectory)
+	DexPreoptImageLocationsOnDevice []string // boot image location on device (file path without the arch subdirectory)
 
 	PreoptBootClassPathDexFiles     android.Paths // file paths of boot class path files
 	PreoptBootClassPathDexLocations []string      // virtual locations of boot class path files
@@ -370,6 +372,15 @@ func (d dex2oatDependencyTag) ExcludeFromVisibilityEnforcement() {
 func (d dex2oatDependencyTag) ExcludeFromApexContents() {
 }
 
+func (d dex2oatDependencyTag) AllowDisabledModuleDependency(target android.Module) bool {
+	// RegisterToolDeps may run after the prebuilt mutators and hence register a
+	// dependency on the source module even when the prebuilt is to be used.
+	// dex2oatPathFromDep takes that into account when it retrieves the path to
+	// the binary, but we also need to disable the check for dependencies on
+	// disabled modules.
+	return target.IsReplacedByPrebuilt()
+}
+
 // Dex2oatDepTag represents the dependency onto the dex2oatd module. It is added to any module that
 // needs dexpreopting and so it makes no sense for it to be checked for visibility or included in
 // the apex.
@@ -377,6 +388,7 @@ var Dex2oatDepTag = dex2oatDependencyTag{}
 
 var _ android.ExcludeFromVisibilityEnforcementTag = Dex2oatDepTag
 var _ android.ExcludeFromApexContentsTag = Dex2oatDepTag
+var _ android.AllowDisabledModuleDependency = Dex2oatDepTag
 
 // RegisterToolDeps adds the necessary dependencies to binary modules for tools
 // that are required later when Get(Cached)GlobalSoongConfig is called. It
@@ -519,7 +531,7 @@ func ParseGlobalSoongConfig(ctx android.PathContext, data []byte) (*GlobalSoongC
 	return config, nil
 }
 
-// checkBootJarsConfigConsistency checks the consistency of BootJars and UpdatableBootJars fields in
+// checkBootJarsConfigConsistency checks the consistency of BootJars and ApexBootJars fields in
 // DexpreoptGlobalConfig and Config.productVariables.
 func checkBootJarsConfigConsistency(ctx android.SingletonContext, dexpreoptConfig *GlobalConfig, config android.Config) {
 	compareBootJars := func(property string, dexpreoptJars, variableJars android.ConfiguredJarList) {
@@ -533,8 +545,8 @@ func checkBootJarsConfigConsistency(ctx android.SingletonContext, dexpreoptConfi
 		}
 	}
 
-	compareBootJars("BootJars", dexpreoptConfig.BootJars, config.NonUpdatableBootJars())
-	compareBootJars("UpdatableBootJars", dexpreoptConfig.UpdatableBootJars, config.UpdatableBootJars())
+	compareBootJars("BootJars", dexpreoptConfig.BootJars, config.NonApexBootJars())
+	compareBootJars("ApexBootJars", dexpreoptConfig.ApexBootJars, config.ApexBootJars())
 }
 
 func (s *globalSoongConfigSingleton) GenerateBuildActions(ctx android.SingletonContext) {
@@ -602,11 +614,11 @@ func GlobalConfigForTests(ctx android.PathContext) *GlobalConfig {
 		DisableGenerateProfile:             false,
 		ProfileDir:                         "",
 		BootJars:                           android.EmptyConfiguredJarList(),
-		UpdatableBootJars:                  android.EmptyConfiguredJarList(),
+		ApexBootJars:                       android.EmptyConfiguredJarList(),
 		ArtApexJars:                        android.EmptyConfiguredJarList(),
 		SystemServerJars:                   android.EmptyConfiguredJarList(),
 		SystemServerApps:                   nil,
-		UpdatableSystemServerJars:          android.EmptyConfiguredJarList(),
+		ApexSystemServerJars:               android.EmptyConfiguredJarList(),
 		SpeedApps:                          nil,
 		PreoptFlags:                        nil,
 		DefaultCompilerFilter:              "",

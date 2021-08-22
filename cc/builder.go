@@ -237,7 +237,7 @@ var (
 	// -w has been added since header-abi-dumper does not need to produce any sort of diagnostic information.
 	sAbiDump, sAbiDumpRE = pctx.RemoteStaticRules("sAbiDump",
 		blueprint.RuleParams{
-			Command:     "rm -f $out && $reTemplate$sAbiDumper -o ${out} $in $exportDirs -- $cFlags -w -isystem prebuilts/clang-tools/${config.HostPrebuiltTag}/clang-headers",
+			Command:     "rm -f $out && $reTemplate$sAbiDumper --root-dir . --root-dir $$OUT_DIR:out -o ${out} $in $exportDirs -- $cFlags -w -isystem prebuilts/clang-tools/${config.HostPrebuiltTag}/clang-headers",
 			CommandDeps: []string{"$sAbiDumper"},
 		}, &remoteexec.REParams{
 			Labels:       map[string]string{"type": "abi-dump", "tool": "header-abi-dumper"},
@@ -255,7 +255,7 @@ var (
 	// sAbi dump file.
 	sAbiLink, sAbiLinkRE = pctx.RemoteStaticRules("sAbiLink",
 		blueprint.RuleParams{
-			Command:        "$reTemplate$sAbiLinker -o ${out} $symbolFilter -arch $arch  $exportedHeaderFlags @${out}.rsp ",
+			Command:        "$reTemplate$sAbiLinker --root-dir . --root-dir $$OUT_DIR:out -o ${out} $symbolFilter -arch $arch $exportedHeaderFlags @${out}.rsp",
 			CommandDeps:    []string{"$sAbiLinker"},
 			Rspfile:        "${out}.rsp",
 			RspfileContent: "${in}",
@@ -500,10 +500,10 @@ func transformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles and
 		sAbiDumpFiles = make(android.Paths, 0, len(srcFiles))
 	}
 
-	cflags += " ${config.NoOverrideClangGlobalCflags}"
-	toolingCflags += " ${config.NoOverrideClangGlobalCflags}"
-	cppflags += " ${config.NoOverrideClangGlobalCflags}"
-	toolingCppflags += " ${config.NoOverrideClangGlobalCflags}"
+	cflags += " ${config.NoOverrideGlobalCflags}"
+	toolingCflags += " ${config.NoOverrideGlobalCflags}"
+	cppflags += " ${config.NoOverrideGlobalCflags}"
+	toolingCppflags += " ${config.NoOverrideGlobalCflags}"
 
 	for i, srcFile := range srcFiles {
 		objFile := android.ObjPathWithExt(ctx, subdir, srcFile, "o")
@@ -534,7 +534,7 @@ func transformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles and
 				Implicits:   cFlagsDeps,
 				OrderOnly:   pathDeps,
 				Args: map[string]string{
-					"windresCmd": gccCmd(flags.toolchain, "windres"),
+					"windresCmd": mingwCmd(flags.toolchain, "windres"),
 					"flags":      flags.toolchain.WindresFlags(),
 				},
 			})
@@ -730,8 +730,9 @@ func transformObjToStaticLib(ctx android.ModuleContext,
 // Generate a rule for compiling multiple .o files, plus static libraries, whole static libraries,
 // and shared libraries, to a shared library (.so) or dynamic executable
 func transformObjToDynamicBinary(ctx android.ModuleContext,
-	objFiles, sharedLibs, staticLibs, lateStaticLibs, wholeStaticLibs, deps android.Paths,
-	crtBegin, crtEnd android.OptionalPath, groupLate bool, flags builderFlags, outputFile android.WritablePath, implicitOutputs android.WritablePaths) {
+	objFiles, sharedLibs, staticLibs, lateStaticLibs, wholeStaticLibs, deps, crtBegin, crtEnd android.Paths,
+	groupLate bool, flags builderFlags, outputFile android.WritablePath,
+	implicitOutputs android.WritablePaths, validations android.WritablePaths) {
 
 	ldCmd := "${config.ClangBin}/clang++"
 
@@ -778,18 +779,17 @@ func transformObjToDynamicBinary(ctx android.ModuleContext,
 	deps = append(deps, staticLibs...)
 	deps = append(deps, lateStaticLibs...)
 	deps = append(deps, wholeStaticLibs...)
-	if crtBegin.Valid() {
-		deps = append(deps, crtBegin.Path(), crtEnd.Path())
-	}
+	deps = append(deps, crtBegin...)
+	deps = append(deps, crtEnd...)
 
 	rule := ld
 	args := map[string]string{
 		"ldCmd":         ldCmd,
-		"crtBegin":      crtBegin.String(),
+		"crtBegin":      strings.Join(crtBegin.Strings(), " "),
 		"libFlags":      strings.Join(libFlagsList, " "),
 		"extraLibFlags": flags.extraLibFlags,
 		"ldFlags":       flags.globalLdFlags + " " + flags.localLdFlags,
-		"crtEnd":        crtEnd.String(),
+		"crtEnd":        strings.Join(crtEnd.Strings(), " "),
 	}
 	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_CXX_LINKS") {
 		rule = ldRE
@@ -805,6 +805,7 @@ func transformObjToDynamicBinary(ctx android.ModuleContext,
 		Inputs:          objFiles,
 		Implicits:       deps,
 		OrderOnly:       sharedLibs,
+		Validations:     validations.Paths(),
 		Args:            args,
 	})
 }
@@ -1069,6 +1070,6 @@ func transformArchiveRepack(ctx android.ModuleContext, inputFile android.Path,
 	})
 }
 
-func gccCmd(toolchain config.Toolchain, cmd string) string {
+func mingwCmd(toolchain config.Toolchain, cmd string) string {
 	return filepath.Join(toolchain.GccRoot(), "bin", toolchain.GccTriple()+"-"+cmd)
 }

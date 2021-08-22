@@ -15,8 +15,9 @@
 package android
 
 import (
-	"android/soong/bazel"
 	"strings"
+
+	"android/soong/bazel"
 )
 
 func init() {
@@ -33,24 +34,6 @@ type bazelFilegroupAttributes struct {
 	Srcs bazel.LabelListAttribute
 }
 
-type bazelFilegroup struct {
-	BazelTargetModuleBase
-	bazelFilegroupAttributes
-}
-
-func BazelFileGroupFactory() Module {
-	module := &bazelFilegroup{}
-	module.AddProperties(&module.bazelFilegroupAttributes)
-	InitBazelTargetModule(module)
-	return module
-}
-
-func (bfg *bazelFilegroup) Name() string {
-	return bfg.BaseModuleName()
-}
-
-func (bfg *bazelFilegroup) GenerateAndroidBuildActions(ctx ModuleContext) {}
-
 func FilegroupBp2Build(ctx TopDownMutatorContext) {
 	fg, ok := ctx.Module().(*fileGroup)
 	if !ok || !fg.ConvertWithBp2build(ctx) {
@@ -63,9 +46,12 @@ func FilegroupBp2Build(ctx TopDownMutatorContext) {
 		Srcs: srcs,
 	}
 
-	props := bazel.BazelTargetModuleProperties{Rule_class: "filegroup"}
+	props := bazel.BazelTargetModuleProperties{
+		Rule_class:        "filegroup",
+		Bzl_load_location: "//build/bazel/rules:filegroup.bzl",
+	}
 
-	ctx.CreateBazelTargetModule(BazelFileGroupFactory, fg.Name(), props, attrs)
+	ctx.CreateBazelTargetModule(fg.Name(), props, attrs)
 }
 
 type fileGroupProperties struct {
@@ -105,7 +91,7 @@ func FileGroupFactory() Module {
 	return module
 }
 
-func (fg *fileGroup) generateBazelBuildActions(ctx ModuleContext) bool {
+func (fg *fileGroup) GenerateBazelBuildActions(ctx ModuleContext) bool {
 	if !fg.MixedBuildsEnabled(ctx) {
 		return false
 	}
@@ -128,7 +114,7 @@ func (fg *fileGroup) generateBazelBuildActions(ctx ModuleContext) bool {
 }
 
 func (fg *fileGroup) GenerateAndroidBuildActions(ctx ModuleContext) {
-	if fg.generateBazelBuildActions(ctx) {
+	if fg.GenerateBazelBuildActions(ctx) {
 		return
 	}
 

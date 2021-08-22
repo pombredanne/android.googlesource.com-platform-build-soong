@@ -26,6 +26,7 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
+	"android/soong/bazel"
 	"android/soong/cc"
 	"android/soong/dexpreopt"
 	"android/soong/tradefed"
@@ -42,6 +43,8 @@ func RegisterAppBuildComponents(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("android_app_certificate", AndroidAppCertificateFactory)
 	ctx.RegisterModuleType("override_android_app", OverrideAndroidAppModuleFactory)
 	ctx.RegisterModuleType("override_android_test", OverrideAndroidTestModuleFactory)
+
+	android.RegisterBp2BuildMutator("android_app_certificate", AndroidAppCertificateBp2Build)
 }
 
 // AndroidManifest.xml merging
@@ -646,8 +649,12 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 	a.usesLibrary.freezeEnforceUsesLibraries()
 
 	// Add implicit SDK libraries to <uses-library> list.
-	for _, usesLib := range a.classLoaderContexts.UsesLibs() {
-		a.usesLibrary.addLib(usesLib, inList(usesLib, dexpreopt.OptionalCompatUsesLibs))
+	requiredUsesLibs, optionalUsesLibs := a.classLoaderContexts.UsesLibs()
+	for _, usesLib := range requiredUsesLibs {
+		a.usesLibrary.addLib(usesLib, false)
+	}
+	for _, usesLib := range optionalUsesLibs {
+		a.usesLibrary.addLib(usesLib, true)
 	}
 
 	// Check that the <uses-library> list is coherent with the manifest.
@@ -1104,6 +1111,8 @@ func AndroidTestHelperAppFactory() android.Module {
 
 type AndroidAppCertificate struct {
 	android.ModuleBase
+	android.BazelModuleBase
+
 	properties  AndroidAppCertificateProperties
 	Certificate Certificate
 }
@@ -1119,6 +1128,7 @@ func AndroidAppCertificateFactory() android.Module {
 	module := &AndroidAppCertificate{}
 	module.AddProperties(&module.properties)
 	android.InitAndroidModule(module)
+	android.InitBazelModule(module)
 	return module
 }
 
@@ -1213,18 +1223,18 @@ func (u *usesLibrary) addLib(lib string, optional bool) {
 }
 
 func (u *usesLibrary) deps(ctx android.BottomUpMutatorContext, hasFrameworkLibs bool) {
-	if !ctx.Config().UnbundledBuild() {
-		ctx.AddVariationDependencies(nil, usesLibTag, u.usesLibraryProperties.Uses_libs...)
-		ctx.AddVariationDependencies(nil, usesLibTag, u.presentOptionalUsesLibs(ctx)...)
+	if !ctx.Config().UnbundledBuild() || ctx.Config().UnbundledBuildImage() {
+		ctx.AddVariationDependencies(nil, usesLibReqTag, u.usesLibraryProperties.Uses_libs...)
+		ctx.AddVariationDependencies(nil, usesLibOptTag, u.presentOptionalUsesLibs(ctx)...)
 		// Only add these extra dependencies if the module depends on framework libs. This avoids
 		// creating a cyclic dependency:
 		//     e.g. framework-res -> org.apache.http.legacy -> ... -> framework-res.
 		if hasFrameworkLibs {
 			// Dexpreopt needs paths to the dex jars of these libraries in order to construct
 			// class loader context for dex2oat. Add them as a dependency with a special tag.
-			ctx.AddVariationDependencies(nil, usesLibCompat29Tag, dexpreopt.CompatUsesLibs29...)
-			ctx.AddVariationDependencies(nil, usesLibCompat28Tag, dexpreopt.OptionalCompatUsesLibs28...)
-			ctx.AddVariationDependencies(nil, usesLibCompat30Tag, dexpreopt.OptionalCompatUsesLibs30...)
+			ctx.AddVariationDependencies(nil, usesLibCompat29ReqTag, dexpreopt.CompatUsesLibs29...)
+			ctx.AddVariationDependencies(nil, usesLibCompat28OptTag, dexpreopt.OptionalCompatUsesLibs28...)
+			ctx.AddVariationDependencies(nil, usesLibCompat30OptTag, dexpreopt.OptionalCompatUsesLibs30...)
 		}
 	}
 }
@@ -1245,36 +1255,52 @@ func replaceInList(list []string, oldstr, newstr string) {
 	}
 }
 
-// Returns a map of module names of shared library dependencies to the paths
-// to their dex jars on host and on device.
+// Returns a map of module names of shared library dependencies to the paths to their dex jars on
+// host and on device.
 func (u *usesLibrary) classLoaderContextForUsesLibDeps(ctx android.ModuleContext) dexpreopt.ClassLoaderContextMap {
 	clcMap := make(dexpreopt.ClassLoaderContextMap)
 
-	if !ctx.Config().UnbundledBuild() {
-		ctx.VisitDirectDeps(func(m android.Module) {
-			if tag, ok := ctx.OtherModuleDependencyTag(m).(usesLibraryDependencyTag); ok {
-				dep := ctx.OtherModuleName(m)
-				if lib, ok := m.(UsesLibraryDependency); ok {
-					libName := dep
-					if ulib, ok := m.(ProvidesUsesLib); ok && ulib.ProvidesUsesLib() != nil {
-						libName = *ulib.ProvidesUsesLib()
-						// Replace module name with library name in `uses_libs`/`optional_uses_libs`
-						// in order to pass verify_uses_libraries check (which compares these
-						// properties against library names written in the manifest).
-						replaceInList(u.usesLibraryProperties.Uses_libs, dep, libName)
-						replaceInList(u.usesLibraryProperties.Optional_uses_libs, dep, libName)
-					}
-					clcMap.AddContext(ctx, tag.sdkVersion, libName,
-						lib.DexJarBuildPath(), lib.DexJarInstallPath(), lib.ClassLoaderContexts())
-				} else if ctx.Config().AllowMissingDependencies() {
-					ctx.AddMissingDependencies([]string{dep})
-				} else {
-					ctx.ModuleErrorf("module %q in uses_libs or optional_uses_libs must be a java library", dep)
-				}
-			}
-		})
+	// Skip when UnbundledBuild() is true, but UnbundledBuildImage() is false. With
+	// UnbundledBuildImage() it is necessary to generate dexpreopt.config for post-dexpreopting.
+	if ctx.Config().UnbundledBuild() && !ctx.Config().UnbundledBuildImage() {
+		return clcMap
 	}
 
+	ctx.VisitDirectDeps(func(m android.Module) {
+		tag, isUsesLibTag := ctx.OtherModuleDependencyTag(m).(usesLibraryDependencyTag)
+		if !isUsesLibTag {
+			return
+		}
+
+		dep := android.RemoveOptionalPrebuiltPrefix(ctx.OtherModuleName(m))
+
+		// Skip stub libraries. A dependency on the implementation library has been added earlier,
+		// so it will be added to CLC, but the stub shouldn't be. Stub libraries can be distingushed
+		// from implementation libraries by their name, which is different as it has a suffix.
+		if comp, ok := m.(SdkLibraryComponentDependency); ok {
+			if impl := comp.OptionalSdkLibraryImplementation(); impl != nil && *impl != dep {
+				return
+			}
+		}
+
+		if lib, ok := m.(UsesLibraryDependency); ok {
+			libName := dep
+			if ulib, ok := m.(ProvidesUsesLib); ok && ulib.ProvidesUsesLib() != nil {
+				libName = *ulib.ProvidesUsesLib()
+				// Replace module name with library name in `uses_libs`/`optional_uses_libs` in
+				// order to pass verify_uses_libraries check (which compares these properties
+				// against library names written in the manifest).
+				replaceInList(u.usesLibraryProperties.Uses_libs, dep, libName)
+				replaceInList(u.usesLibraryProperties.Optional_uses_libs, dep, libName)
+			}
+			clcMap.AddContext(ctx, tag.sdkVersion, libName, tag.optional,
+				lib.DexJarBuildPath(), lib.DexJarInstallPath(), lib.ClassLoaderContexts())
+		} else if ctx.Config().AllowMissingDependencies() {
+			ctx.AddMissingDependencies([]string{dep})
+		} else {
+			ctx.ModuleErrorf("module %q in uses_libs or optional_uses_libs must be a java library", dep)
+		}
+	})
 	return clcMap
 }
 
@@ -1351,4 +1377,44 @@ func (u *usesLibrary) verifyUsesLibrariesAPK(ctx android.ModuleContext, apk andr
 	u.verifyUsesLibraries(ctx, apk, nil) // for APKs manifest_check does not write output file
 	outputFile := android.PathForModuleOut(ctx, "verify_uses_libraries", apk.Base())
 	return outputFile
+}
+
+// For Bazel / bp2build
+
+type bazelAndroidAppCertificateAttributes struct {
+	Certificate string
+}
+
+func AndroidAppCertificateBp2Build(ctx android.TopDownMutatorContext) {
+	module, ok := ctx.Module().(*AndroidAppCertificate)
+	if !ok {
+		// Not an Android app certificate
+		return
+	}
+	if !module.ConvertWithBp2build(ctx) {
+		return
+	}
+	if ctx.ModuleType() != "android_app_certificate" {
+		return
+	}
+
+	androidAppCertificateBp2BuildInternal(ctx, module)
+}
+
+func androidAppCertificateBp2BuildInternal(ctx android.TopDownMutatorContext, module *AndroidAppCertificate) {
+	var certificate string
+	if module.properties.Certificate != nil {
+		certificate = *module.properties.Certificate
+	}
+
+	attrs := &bazelAndroidAppCertificateAttributes{
+		Certificate: certificate,
+	}
+
+	props := bazel.BazelTargetModuleProperties{
+		Rule_class:        "android_app_certificate",
+		Bzl_load_location: "//build/bazel/rules:android_app_certificate.bzl",
+	}
+
+	ctx.CreateBazelTargetModule(module.Name(), props, attrs)
 }

@@ -114,7 +114,8 @@ func (library *Library) AndroidMkEntries() []android.AndroidMkEntries {
 						entries.SetPath("LOCAL_SOONG_JACOCO_REPORT_CLASSES_JAR", library.jacocoReportClassesFile)
 					}
 
-					entries.AddStrings("LOCAL_EXPORT_SDK_LIBRARIES", library.classLoaderContexts.UsesLibs()...)
+					requiredUsesLibs, optionalUsesLibs := library.classLoaderContexts.UsesLibs()
+					entries.AddStrings("LOCAL_EXPORT_SDK_LIBRARIES", append(requiredUsesLibs, optionalUsesLibs...)...)
 
 					if len(library.additionalCheckedModules) != 0 {
 						entries.AddStrings("LOCAL_ADDITIONAL_CHECKED_MODULE", library.additionalCheckedModules.Strings()...)
@@ -460,6 +461,8 @@ func (a *AndroidTestHelperApp) AndroidMkEntries() []android.AndroidMkEntries {
 	entries := &entriesList[0]
 	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
 		testSuiteComponent(entries, a.appTestHelperAppProperties.Test_suites)
+		// introduce a flag variable to control the generation of the .config file
+		entries.SetString("LOCAL_DISABLE_TEST_CONFIG", "true")
 	})
 
 	return entriesList

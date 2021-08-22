@@ -6,6 +6,48 @@ set -o pipefail
 
 source "$(dirname "$0")/lib.sh"
 
+readonly GENERATED_BUILD_FILE_NAME="BUILD.bazel"
+
+function test_bp2build_null_build() {
+  setup
+  run_bp2build
+  local output_mtime1=$(stat -c "%y" out/soong/.bootstrap/bp2build_workspace_marker)
+
+  run_bp2build
+  local output_mtime2=$(stat -c "%y" out/soong/.bootstrap/bp2build_workspace_marker)
+
+  if [[ "$output_mtime1" != "$output_mtime2" ]]; then
+    fail "Output bp2build marker file changed on null build"
+  fi
+}
+
+test_bp2build_null_build
+
+function test_bp2build_null_build_with_globs() {
+  setup
+
+  mkdir -p foo/bar
+  cat > foo/bar/Android.bp <<'EOF'
+filegroup {
+    name: "globs",
+    srcs: ["*.txt"],
+  }
+EOF
+  touch foo/bar/a.txt foo/bar/b.txt
+
+  run_bp2build
+  local output_mtime1=$(stat -c "%y" out/soong/.bootstrap/bp2build_workspace_marker)
+
+  run_bp2build
+  local output_mtime2=$(stat -c "%y" out/soong/.bootstrap/bp2build_workspace_marker)
+
+  if [[ "$output_mtime1" != "$output_mtime2" ]]; then
+    fail "Output bp2build marker file changed on null build"
+  fi
+}
+
+test_bp2build_null_build_with_globs
+
 function test_bp2build_generates_all_buildfiles {
   setup
   create_mock_bazel
@@ -40,24 +82,24 @@ EOF
 
   run_bp2build
 
-  if [[ ! -f "./out/soong/workspace/foo/convertible_soong_module/BUILD" ]]; then
-    fail "./out/soong/workspace/foo/convertible_soong_module/BUILD was not generated"
+  if [[ ! -f "./out/soong/workspace/foo/convertible_soong_module/${GENERATED_BUILD_FILE_NAME}" ]]; then
+    fail "./out/soong/workspace/foo/convertible_soong_module/${GENERATED_BUILD_FILE_NAME} was not generated"
   fi
 
-  if [[ ! -f "./out/soong/workspace/foo/unconvertible_soong_module/BUILD" ]]; then
-    fail "./out/soong/workspace/foo/unconvertible_soong_module/BUILD was not generated"
+  if [[ ! -f "./out/soong/workspace/foo/unconvertible_soong_module/${GENERATED_BUILD_FILE_NAME}" ]]; then
+    fail "./out/soong/workspace/foo/unconvertible_soong_module/${GENERATED_BUILD_FILE_NAME} was not generated"
   fi
 
-  if ! grep "the_answer" "./out/soong/workspace/foo/convertible_soong_module/BUILD"; then
-    fail "missing BUILD target the_answer in convertible_soong_module/BUILD"
+  if ! grep "the_answer" "./out/soong/workspace/foo/convertible_soong_module/${GENERATED_BUILD_FILE_NAME}"; then
+    fail "missing BUILD target the_answer in convertible_soong_module/${GENERATED_BUILD_FILE_NAME}"
   fi
 
-  if grep "not_the_answer" "./out/soong/workspace/foo/unconvertible_soong_module/BUILD"; then
-    fail "found unexpected BUILD target not_the_answer in unconvertible_soong_module/BUILD"
+  if grep "not_the_answer" "./out/soong/workspace/foo/unconvertible_soong_module/${GENERATED_BUILD_FILE_NAME}"; then
+    fail "found unexpected BUILD target not_the_answer in unconvertible_soong_module/${GENERATED_BUILD_FILE_NAME}"
   fi
 
-  if ! grep "filegroup" "./out/soong/workspace/foo/unconvertible_soong_module/BUILD"; then
-    fail "missing filegroup in unconvertible_soong_module/BUILD"
+  if ! grep "filegroup" "./out/soong/workspace/foo/unconvertible_soong_module/${GENERATED_BUILD_FILE_NAME}"; then
+    fail "missing filegroup in unconvertible_soong_module/${GENERATED_BUILD_FILE_NAME}"
   fi
 
   # NOTE: We don't actually use the extra BUILD file for anything here

@@ -6,8 +6,9 @@ import (
 )
 
 var (
-	GetOutputFiles = &getOutputFilesRequestType{}
-	GetCcInfo      = &getCcInfoType{}
+	GetOutputFiles  = &getOutputFilesRequestType{}
+	GetPythonBinary = &getPythonBinaryRequestType{}
+	GetCcInfo       = &getCcInfoType{}
 )
 
 type CcInfo struct {
@@ -16,9 +17,19 @@ type CcInfo struct {
 	CcStaticLibraryFiles []string
 	Includes             []string
 	SystemIncludes       []string
+	// Archives owned by the current target (not by its dependencies). These will
+	// be a subset of OutputFiles. (or static libraries, this will be equal to OutputFiles,
+	// but general cc_library will also have dynamic libraries in output files).
+	RootStaticArchives []string
+	// Dynamic libraries (.so files) created by the current target. These will
+	// be a subset of OutputFiles. (or shared libraries, this will be equal to OutputFiles,
+	// but general cc_library will also have dynamic libraries in output files).
+	RootDynamicLibraries []string
 }
 
 type getOutputFilesRequestType struct{}
+
+type getPythonBinaryRequestType struct{}
 
 // Name returns a string name for this request type. Such request type names must be unique,
 // and must only consist of alphanumeric characters.
@@ -43,6 +54,31 @@ func (g getOutputFilesRequestType) StarlarkFunctionBody() string {
 // Starlark given in StarlarkFunctionBody.
 func (g getOutputFilesRequestType) ParseResult(rawString string) []string {
 	return splitOrEmpty(rawString, ", ")
+}
+
+// Name returns a string name for this request type. Such request type names must be unique,
+// and must only consist of alphanumeric characters.
+func (g getPythonBinaryRequestType) Name() string {
+	return "getPythonBinary"
+}
+
+// StarlarkFunctionBody returns a starlark function body to process this request type.
+// The returned string is the body of a Starlark function which obtains
+// all request-relevant information about a target and returns a string containing
+// this information.
+// The function should have the following properties:
+//   - `target` is the only parameter to this function (a configured target).
+//   - The return value must be a string.
+//   - The function body should not be indented outside of its own scope.
+func (g getPythonBinaryRequestType) StarlarkFunctionBody() string {
+	return "return providers(target)['FilesToRunProvider'].executable.path"
+}
+
+// ParseResult returns a value obtained by parsing the result of the request's Starlark function.
+// The given rawString must correspond to the string output which was created by evaluating the
+// Starlark given in StarlarkFunctionBody.
+func (g getPythonBinaryRequestType) ParseResult(rawString string) string {
+	return rawString
 }
 
 type getCcInfoType struct{}
@@ -70,6 +106,7 @@ system_includes = providers(target)["CcInfo"].compilation_context.system_include
 
 ccObjectFiles = []
 staticLibraries = []
+rootStaticArchives = []
 linker_inputs = providers(target)["CcInfo"].linking_context.linker_inputs.to_list()
 
 for linker_input in linker_inputs:
@@ -78,6 +115,15 @@ for linker_input in linker_inputs:
       ccObjectFiles += [object.path]
     if library.static_library:
       staticLibraries.append(library.static_library.path)
+      if linker_input.owner == target.label:
+        rootStaticArchives.append(library.static_library.path)
+
+rootDynamicLibraries = []
+
+if "@rules_cc//examples:experimental_cc_shared_library.bzl%CcSharedLibraryInfo" in providers(target):
+  shared_info = providers(target)["@rules_cc//examples:experimental_cc_shared_library.bzl%CcSharedLibraryInfo"]
+  for lib in shared_info.linker_input.libraries:
+    rootDynamicLibraries += [lib.dynamic_library.path]
 
 returns = [
   outputFiles,
@@ -85,6 +131,8 @@ returns = [
   ccObjectFiles,
   includes,
   system_includes,
+  rootStaticArchives,
+  rootDynamicLibraries
 ]
 
 return "|".join([", ".join(r) for r in returns])`
@@ -98,7 +146,7 @@ func (g getCcInfoType) ParseResult(rawString string) (CcInfo, error) {
 	var ccObjects []string
 
 	splitString := strings.Split(rawString, "|")
-	if expectedLen := 5; len(splitString) != expectedLen {
+	if expectedLen := 7; len(splitString) != expectedLen {
 		return CcInfo{}, fmt.Errorf("Expected %d items, got %q", expectedLen, splitString)
 	}
 	outputFilesString := splitString[0]
@@ -109,12 +157,16 @@ func (g getCcInfoType) ParseResult(rawString string) (CcInfo, error) {
 	ccObjects = splitOrEmpty(ccObjectsString, ", ")
 	includes := splitOrEmpty(splitString[3], ", ")
 	systemIncludes := splitOrEmpty(splitString[4], ", ")
+	rootStaticArchives := splitOrEmpty(splitString[5], ", ")
+	rootDynamicLibraries := splitOrEmpty(splitString[6], ", ")
 	return CcInfo{
 		OutputFiles:          outputFiles,
 		CcObjectFiles:        ccObjects,
 		CcStaticLibraryFiles: ccStaticLibraries,
 		Includes:             includes,
 		SystemIncludes:       systemIncludes,
+		RootStaticArchives:   rootStaticArchives,
+		RootDynamicLibraries: rootDynamicLibraries,
 	}, nil
 }
 

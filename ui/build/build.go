@@ -28,16 +28,20 @@ import (
 func SetupOutDir(ctx Context, config Config) {
 	ensureEmptyFileExists(ctx, filepath.Join(config.OutDir(), "Android.mk"))
 	ensureEmptyFileExists(ctx, filepath.Join(config.OutDir(), "CleanSpec.mk"))
-	if !config.SkipKati() {
-		// Run soong_build with Kati for a hybrid build, e.g. running the
-		// AndroidMk singleton and postinstall commands. Communicate this to
-		// soong_build by writing an empty .soong.kati_enabled marker file in the
-		// soong_build output directory for the soong_build primary builder to
-		// know if the user wants to run Kati after.
-		//
-		// This does not preclude running Kati for *product configuration purposes*.
-		ensureEmptyFileExists(ctx, filepath.Join(config.SoongOutDir(), ".soong.kati_enabled"))
+
+	// Potentially write a marker file for whether kati is enabled. This is used by soong_build to
+	// potentially run the AndroidMk singleton and postinstall commands.
+	// Note that the absence of the  file does not not preclude running Kati for product
+	// configuration purposes.
+	katiEnabledMarker := filepath.Join(config.SoongOutDir(), ".soong.kati_enabled")
+	if config.SkipKatiNinja() {
+		os.Remove(katiEnabledMarker)
+		// Note that we can not remove the file for SkipKati builds yet -- some continuous builds
+		// --skip-make builds rely on kati targets being defined.
+	} else if !config.SkipKati() {
+		ensureEmptyFileExists(ctx, katiEnabledMarker)
 	}
+
 	// The ninja_build file is used by our buildbots to understand that the output
 	// can be parsed as ninja output.
 	ensureEmptyFileExists(ctx, filepath.Join(config.OutDir(), "ninja_build"))
@@ -60,15 +64,15 @@ builddir = {{.OutDir}}
 {{end -}}
 pool highmem_pool
  depth = {{.HighmemParallel}}
-{{if .HasKatiSuffix}}subninja {{.KatiBuildNinjaFile}}
+{{if and (not .SkipKatiNinja) .HasKatiSuffix}}subninja {{.KatiBuildNinjaFile}}
 subninja {{.KatiPackageNinjaFile}}
 {{end -}}
 subninja {{.SoongNinjaFile}}
 `))
 
 func createCombinedBuildNinjaFile(ctx Context, config Config) {
-	// If we're in SkipKati mode, skip creating this file if it already exists
-	if config.SkipKati() {
+	// If we're in SkipKati mode but want to run kati ninja, skip creating this file if it already exists
+	if config.SkipKati() && !config.SkipKatiNinja() {
 		if _, err := os.Stat(config.CombinedNinjaFile()); err == nil || !os.IsNotExist(err) {
 			return
 		}
@@ -87,15 +91,22 @@ func createCombinedBuildNinjaFile(ctx Context, config Config) {
 
 // These are bitmasks which can be used to check whether various flags are set e.g. whether to use Bazel.
 const (
-	BuildNone          = iota
-	BuildProductConfig = 1 << iota
-	BuildSoong         = 1 << iota
-	BuildKati          = 1 << iota
-	BuildNinja         = 1 << iota
-	BuildBazel         = 1 << iota
-	RunBuildTests      = 1 << iota
-	BuildAll           = BuildProductConfig | BuildSoong | BuildKati | BuildNinja
-	BuildAllWithBazel  = BuildProductConfig | BuildSoong | BuildKati | BuildBazel
+	_ = iota
+	// Whether to run the kati config step.
+	RunProductConfig = 1 << iota
+	// Whether to run soong to generate a ninja file.
+	RunSoong = 1 << iota
+	// Whether to run kati to generate a ninja file.
+	RunKati = 1 << iota
+	// Whether to include the kati-generated ninja file in the combined ninja.
+	RunKatiNinja = 1 << iota
+	// Whether to run ninja on the combined ninja.
+	RunNinja = 1 << iota
+	// Whether to run bazel on the combined ninja.
+	RunBazel        = 1 << iota
+	RunBuildTests   = 1 << iota
+	RunAll          = RunProductConfig | RunSoong | RunKati | RunKatiNinja | RunNinja
+	RunAllWithBazel = RunProductConfig | RunSoong | RunKati | RunKatiNinja | RunBazel
 )
 
 // checkProblematicFiles fails the build if existing Android.mk or CleanSpec.mk files are found at the root of the tree.
@@ -173,7 +184,7 @@ func checkRAM(ctx Context, config Config) {
 
 // Build the tree. The 'what' argument can be used to chose which components of
 // the build to run, via checking various bitmasks.
-func Build(ctx Context, config Config, what int) {
+func Build(ctx Context, config Config) {
 	ctx.Verboseln("Starting build with args:", config.Arguments())
 	ctx.Verboseln("Environment:", config.Environment().Environ())
 
@@ -208,33 +219,44 @@ func Build(ctx Context, config Config, what int) {
 
 	SetupPath(ctx, config)
 
+	what := RunAll
+	if config.UseBazel() {
+		what = RunAllWithBazel
+	}
+	if config.Checkbuild() {
+		what |= RunBuildTests
+	}
 	if config.SkipConfig() {
 		ctx.Verboseln("Skipping Config as requested")
-		what = what &^ BuildProductConfig
+		what = what &^ RunProductConfig
 	}
-
 	if config.SkipKati() {
 		ctx.Verboseln("Skipping Kati as requested")
-		what = what &^ BuildKati
+		what = what &^ RunKati
+	}
+	if config.SkipKatiNinja() {
+		ctx.Verboseln("Skipping use of Kati ninja as requested")
+		what = what &^ RunKatiNinja
+	}
+	if config.SkipSoong() {
+		ctx.Verboseln("Skipping use of Soong as requested")
+		what = what &^ RunSoong
 	}
 
 	if config.SkipNinja() {
 		ctx.Verboseln("Skipping Ninja as requested")
-		what = what &^ BuildNinja
+		what = what &^ RunNinja
 	}
 
 	if config.StartGoma() {
-		// Ensure start Goma compiler_proxy
 		startGoma(ctx, config)
 	}
 
 	if config.StartRBE() {
-		// Ensure RBE proxy is started
 		startRBE(ctx, config)
 	}
 
-	if what&BuildProductConfig != 0 {
-		// Run make for product config
+	if what&RunProductConfig != 0 {
 		runMakeProductConfig(ctx, config)
 	}
 
@@ -254,25 +276,28 @@ func Build(ctx Context, config Config, what int) {
 		return
 	}
 
-	if what&BuildSoong != 0 {
-		// Run Soong
+	if what&RunSoong != 0 {
 		runSoong(ctx, config)
 
 		if config.bazelBuildMode() == generateBuildFiles {
 			// Return early, if we're using Soong as solely the generator of BUILD files.
 			return
 		}
+
+		if config.bazelBuildMode() == generateJsonModuleGraph {
+			// Return early, if we're using Soong as solely the generator of the JSON module graph
+			return
+		}
 	}
 
-	if what&BuildKati != 0 {
-		// Run ckati
+	if what&RunKati != 0 {
 		genKatiSuffix(ctx, config)
 		runKatiCleanSpec(ctx, config)
 		runKatiBuild(ctx, config)
 		runKatiPackage(ctx, config)
 
 		ioutil.WriteFile(config.LastKatiSuffixFile(), []byte(config.KatiSuffix()), 0666) // a+rw
-	} else {
+	} else if what&RunKatiNinja != 0 {
 		// Load last Kati Suffix if it exists
 		if katiSuffix, err := ioutil.ReadFile(config.LastKatiSuffixFile()); err == nil {
 			ctx.Verboseln("Loaded previous kati config:", string(katiSuffix))
@@ -289,17 +314,16 @@ func Build(ctx Context, config Config, what int) {
 		testForDanglingRules(ctx, config)
 	}
 
-	if what&BuildNinja != 0 {
-		if what&BuildKati != 0 {
+	if what&RunNinja != 0 {
+		if what&RunKati != 0 {
 			installCleanIfNecessary(ctx, config)
 		}
 
-		// Run ninja
 		runNinjaForBuild(ctx, config)
 	}
 
 	// Currently, using Bazel requires Kati and Soong to run first, so check whether to run Bazel last.
-	if what&BuildBazel != 0 {
+	if what&RunBazel != 0 {
 		runBazel(ctx, config)
 	}
 }
