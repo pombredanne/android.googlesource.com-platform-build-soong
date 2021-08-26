@@ -822,6 +822,16 @@ type Module struct {
 }
 
 func (c *Module) AddJSONData(d *map[string]interface{}) {
+	var hasAidl, hasLex, hasProto, hasRenderscript, hasSysprop, hasWinMsg, hasYacc bool
+	if b, ok := c.compiler.(*baseCompiler); ok {
+		hasAidl = b.hasSrcExt(".aidl")
+		hasLex = b.hasSrcExt(".l") || b.hasSrcExt(".ll")
+		hasProto = b.hasSrcExt(".proto")
+		hasRenderscript = b.hasSrcExt(".rscript") || b.hasSrcExt(".fs")
+		hasSysprop = b.hasSrcExt(".sysprop")
+		hasWinMsg = b.hasSrcExt(".mc")
+		hasYacc = b.hasSrcExt(".y") || b.hasSrcExt(".yy")
+	}
 	c.AndroidModuleBase().AddJSONData(d)
 	(*d)["Cc"] = map[string]interface{}{
 		"SdkVersion":             c.SdkVersion(),
@@ -858,6 +868,14 @@ func (c *Module) AddJSONData(d *map[string]interface{}) {
 		"IsVendorPublicLibrary":  c.IsVendorPublicLibrary(),
 		"ApexSdkVersion":         c.apexSdkVersion,
 		"TestFor":                c.TestFor(),
+		"AidlSrcs":               hasAidl,
+		"LexSrcs":                hasLex,
+		"ProtoSrcs":              hasProto,
+		"RenderscriptSrcs":       hasRenderscript,
+		"SyspropSrcs":            hasSysprop,
+		"WinMsgSrcs":             hasWinMsg,
+		"YaccSrsc":               hasYacc,
+		"OnlyCSrcs":              !(hasAidl || hasLex || hasProto || hasRenderscript || hasSysprop || hasWinMsg || hasYacc),
 	}
 }
 
@@ -957,14 +975,15 @@ func (c *Module) MinSdkVersion() string {
 	return String(c.Properties.Min_sdk_version)
 }
 
-func (c *Module) SplitPerApiLevel() bool {
-	if !c.canUseSdk() {
-		return false
-	}
+func (c *Module) isCrt() bool {
 	if linker, ok := c.linker.(*objectLinker); ok {
 		return linker.isCrt()
 	}
 	return false
+}
+
+func (c *Module) SplitPerApiLevel() bool {
+	return c.canUseSdk() && c.isCrt()
 }
 
 func (c *Module) AlwaysSdk() bool {
@@ -1428,12 +1447,20 @@ func (ctx *moduleContextImpl) minSdkVersion() string {
 	// create versioned variants for. For example, if min_sdk_version is 16, then sdk variant of
 	// the crt object has local variants of 16, 17, ..., up to the latest version. sdk_version
 	// and min_sdk_version properties of the variants are set to the corresponding version
-	// numbers. However, the platform (non-sdk) variant of the crt object is left untouched.
-	// min_sdk_version: 16 doesn't actually mean that the platform variant has to support such
-	// an old version. Since the variant is for the platform, it's preferred to target the
-	// latest version.
-	if ctx.mod.SplitPerApiLevel() && !ctx.isSdkVariant() {
-		ver = strconv.Itoa(android.FutureApiLevelInt)
+	// numbers. However, the non-sdk variant (for apex or platform) of the crt object is left
+	// untouched.  min_sdk_version: 16 doesn't actually mean that the non-sdk variant has to
+	// support such an old version. The version is set to the later version in case when the
+	// non-sdk variant is for the platform, or the min_sdk_version of the containing APEX if
+	// it's for an APEX.
+	if ctx.mod.isCrt() && !ctx.isSdkVariant() {
+		if ctx.isForPlatform() {
+			ver = strconv.Itoa(android.FutureApiLevelInt)
+		} else { // for apex
+			ver = ctx.apexSdkVersion().String()
+			if ver == "" { // in case when min_sdk_version was not set by the APEX
+				ver = ctx.sdkVersion()
+			}
+		}
 	}
 
 	// Also make sure that minSdkVersion is not greater than sdkVersion, if they are both numbers
@@ -1632,7 +1659,7 @@ func (c *Module) getNameSuffixWithVndkVersion(ctx android.ModuleContext) string 
 			return ""
 		}
 		vndkVersion = ctx.DeviceConfig().ProductVndkVersion()
-		nameSuffix = productSuffix
+		nameSuffix = ProductSuffix
 	} else {
 		vndkVersion = ctx.DeviceConfig().VndkVersion()
 		nameSuffix = VendorSuffix
@@ -1652,7 +1679,7 @@ func (c *Module) setSubnameProperty(actx android.ModuleContext) {
 	c.Properties.SubName = ""
 
 	if c.Target().NativeBridge == android.NativeBridgeEnabled {
-		c.Properties.SubName += nativeBridgeSuffix
+		c.Properties.SubName += NativeBridgeSuffix
 	}
 
 	llndk := c.IsLlndk()
@@ -1668,11 +1695,11 @@ func (c *Module) setSubnameProperty(actx android.ModuleContext) {
 		// such suffixes are already hard-coded in prebuilts/vndk/.../Android.bp.
 		c.Properties.SubName += VendorSuffix
 	} else if c.InRamdisk() && !c.OnlyInRamdisk() {
-		c.Properties.SubName += ramdiskSuffix
+		c.Properties.SubName += RamdiskSuffix
 	} else if c.InVendorRamdisk() && !c.OnlyInVendorRamdisk() {
 		c.Properties.SubName += VendorRamdiskSuffix
 	} else if c.InRecovery() && !c.OnlyInRecovery() {
-		c.Properties.SubName += recoverySuffix
+		c.Properties.SubName += RecoverySuffix
 	} else if c.IsSdkVariant() && (c.Properties.SdkAndPlatformVariantVisibleToMake || c.SplitPerApiLevel()) {
 		c.Properties.SubName += sdkSuffix
 		if c.SplitPerApiLevel() {
@@ -3029,13 +3056,13 @@ func MakeLibName(ctx android.ModuleContext, c LinkableInterface, ccDep LinkableI
 		// core module, so update the dependency name here accordingly.
 		return libName + ccDep.SubName()
 	} else if ccDep.InRamdisk() && !ccDep.OnlyInRamdisk() {
-		return libName + ramdiskSuffix
+		return libName + RamdiskSuffix
 	} else if ccDep.InVendorRamdisk() && !ccDep.OnlyInVendorRamdisk() {
 		return libName + VendorRamdiskSuffix
 	} else if ccDep.InRecovery() && !ccDep.OnlyInRecovery() {
-		return libName + recoverySuffix
+		return libName + RecoverySuffix
 	} else if ccDep.Target().NativeBridge == android.NativeBridgeEnabled {
-		return libName + nativeBridgeSuffix
+		return libName + NativeBridgeSuffix
 	} else {
 		return libName
 	}

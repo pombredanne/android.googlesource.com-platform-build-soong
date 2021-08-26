@@ -24,12 +24,12 @@ import (
 )
 
 var (
-	nativeBridgeSuffix  = ".native_bridge"
-	productSuffix       = ".product"
+	NativeBridgeSuffix  = ".native_bridge"
+	ProductSuffix       = ".product"
 	VendorSuffix        = ".vendor"
-	ramdiskSuffix       = ".ramdisk"
+	RamdiskSuffix       = ".ramdisk"
 	VendorRamdiskSuffix = ".vendor_ramdisk"
-	recoverySuffix      = ".recovery"
+	RecoverySuffix      = ".recovery"
 	sdkSuffix           = ".sdk"
 )
 
@@ -182,7 +182,7 @@ func makeOverrideModuleNames(ctx AndroidMkContext, overrides []string) []string 
 	if ctx.Target().NativeBridge == android.NativeBridgeEnabled {
 		var result []string
 		for _, override := range overrides {
-			result = append(result, override+nativeBridgeSuffix)
+			result = append(result, override+NativeBridgeSuffix)
 		}
 		return result
 	}
@@ -293,6 +293,9 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 			entries.SetBool("LOCAL_UNINSTALLABLE_MODULE", true)
 			if library.buildStubs() {
 				entries.SetBool("LOCAL_NO_NOTICE_FILE", true)
+			}
+			if library.apiListCoverageXmlPath.String() != "" {
+				entries.SetString("SOONG_CC_API_XML", "$(SOONG_CC_API_XML) "+library.apiListCoverageXmlPath.String())
 			}
 		})
 	}
