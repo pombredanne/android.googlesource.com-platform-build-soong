@@ -133,6 +133,13 @@ prebuilt_bootclasspath_fragment {
     apex_available: ["com.android.art"],
     image_name: "art",
     contents: ["mybootlib"],
+    hidden_api: {
+        stub_flags: "hiddenapi/stub-flags.csv",
+        annotation_flags: "hiddenapi/annotation-flags.csv",
+        metadata: "hiddenapi/metadata.csv",
+        index: "hiddenapi/index.csv",
+        all_flags: "hiddenapi/all-flags.csv",
+    },
 }
 
 java_import {
@@ -153,6 +160,13 @@ prebuilt_bootclasspath_fragment {
     apex_available: ["com.android.art"],
     image_name: "art",
     contents: ["mysdk_mybootlib@current"],
+    hidden_api: {
+        stub_flags: "hiddenapi/stub-flags.csv",
+        annotation_flags: "hiddenapi/annotation-flags.csv",
+        metadata: "hiddenapi/metadata.csv",
+        index: "hiddenapi/index.csv",
+        all_flags: "hiddenapi/all-flags.csv",
+    },
 }
 
 java_import {
@@ -171,8 +185,13 @@ sdk_snapshot {
 }
 `),
 		checkAllCopyRules(`
+.intermediates/mybootclasspathfragment/android_common/modular-hiddenapi/stub-flags.csv -> hiddenapi/stub-flags.csv
+.intermediates/mybootclasspathfragment/android_common/modular-hiddenapi/annotation-flags.csv -> hiddenapi/annotation-flags.csv
+.intermediates/mybootclasspathfragment/android_common/modular-hiddenapi/metadata.csv -> hiddenapi/metadata.csv
+.intermediates/mybootclasspathfragment/android_common/modular-hiddenapi/index.csv -> hiddenapi/index.csv
+.intermediates/mybootclasspathfragment/android_common/modular-hiddenapi/all-flags.csv -> hiddenapi/all-flags.csv
 .intermediates/mybootlib/android_common/javac/mybootlib.jar -> java/mybootlib.jar
-`),
+		`),
 		snapshotTestPreparer(checkSnapshotWithoutSource, preparerForSnapshot),
 
 		// Check the behavior of the snapshot without the source.
@@ -205,7 +224,7 @@ func TestSnapshotWithBootClasspathFragment_Contents(t *testing.T) {
 		java.PrepareForTestWithJavaDefaultModules,
 		java.PrepareForTestWithJavaSdkLibraryFiles,
 		java.FixtureWithLastReleaseApis("mysdklibrary", "myothersdklibrary", "mycoreplatform"),
-		java.FixtureConfigureUpdatableBootJars("myapex:mybootlib", "myapex:myothersdklibrary"),
+		java.FixtureConfigureApexBootJars("myapex:mybootlib", "myapex:myothersdklibrary"),
 		prepareForSdkTestWithApex,
 
 		// Add a platform_bootclasspath that depends on the fragment.
@@ -327,6 +346,7 @@ java_import {
     visibility: ["//visibility:public"],
     apex_available: ["myapex"],
     jars: ["java/mybootlib.jar"],
+    permitted_packages: ["mybootlib"],
 }
 
 java_sdk_library_import {
@@ -336,6 +356,7 @@ java_sdk_library_import {
     apex_available: ["myapex"],
     shared_library: true,
     compile_dex: true,
+    permitted_packages: ["myothersdklibrary"],
     public: {
         jars: ["sdk_library/public/myothersdklibrary-stubs.jar"],
         stub_srcs: ["sdk_library/public/myothersdklibrary_stub_sources"],
@@ -409,6 +430,7 @@ java_import {
     visibility: ["//visibility:public"],
     apex_available: ["myapex"],
     jars: ["java/mybootlib.jar"],
+    permitted_packages: ["mybootlib"],
 }
 
 java_sdk_library_import {
@@ -418,6 +440,7 @@ java_sdk_library_import {
     apex_available: ["myapex"],
     shared_library: true,
     compile_dex: true,
+    permitted_packages: ["myothersdklibrary"],
     public: {
         jars: ["sdk_library/public/myothersdklibrary-stubs.jar"],
         stub_srcs: ["sdk_library/public/myothersdklibrary_stub_sources"],
@@ -509,6 +532,12 @@ sdk_snapshot {
 				out/soong/.intermediates/frameworks/base/boot/platform-bootclasspath/android_common/hiddenapi-monolithic/index-from-classes.csv
         snapshot/hiddenapi/index.csv
 			`, rule)
+
+			// Make sure that the permitted packages from the prebuilts end up in the
+			// updatable-bcp-packages.txt file.
+			rule = module.Output("updatable-bcp-packages.txt")
+			expectedContents := `'mybootlib\nmyothersdklibrary\n'`
+			android.AssertStringEquals(t, "updatable-bcp-packages.txt", expectedContents, rule.Args["content"])
 		}),
 		snapshotTestPreparer(checkSnapshotWithSourcePreferred, preparerForSnapshot),
 		snapshotTestPreparer(checkSnapshotPreferredWithSource, preparerForSnapshot),
@@ -578,7 +607,7 @@ func TestSnapshotWithBootclasspathFragment_HiddenAPI(t *testing.T) {
 		java.PrepareForTestWithJavaDefaultModules,
 		java.PrepareForTestWithJavaSdkLibraryFiles,
 		java.FixtureWithLastReleaseApis("mysdklibrary"),
-		java.FixtureConfigureUpdatableBootJars("myapex:mybootlib"),
+		java.FixtureConfigureApexBootJars("myapex:mybootlib"),
 		prepareForSdkTestWithApex,
 
 		// Add a platform_bootclasspath that depends on the fragment.
@@ -658,6 +687,7 @@ func TestSnapshotWithBootclasspathFragment_HiddenAPI(t *testing.T) {
 				srcs: ["Test.java"],
 				compile_dex: true,
 				public: {enabled: true},
+				permitted_packages: ["mysdklibrary"],
 			}
 		`),
 	).RunTest(t)
@@ -701,6 +731,7 @@ java_import {
     visibility: ["//visibility:public"],
     apex_available: ["myapex"],
     jars: ["java/mybootlib.jar"],
+    permitted_packages: ["mybootlib"],
 }
 
 java_sdk_library_import {
@@ -710,6 +741,7 @@ java_sdk_library_import {
     apex_available: ["//apex_available:platform"],
     shared_library: true,
     compile_dex: true,
+    permitted_packages: ["mysdklibrary"],
     public: {
         jars: ["sdk_library/public/mysdklibrary-stubs.jar"],
         stub_srcs: ["sdk_library/public/mysdklibrary_stub_sources"],

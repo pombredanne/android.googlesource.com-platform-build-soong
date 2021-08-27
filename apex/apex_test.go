@@ -6568,6 +6568,73 @@ func testDexpreoptWithApexes(t *testing.T, bp, errmsg string, preparer android.F
 	return result.TestContext
 }
 
+func TestDuplicateDeapexeresFromPrebuiltApexes(t *testing.T) {
+	preparers := android.GroupFixturePreparers(
+		java.PrepareForTestWithJavaDefaultModules,
+		PrepareForTestWithApexBuildComponents,
+	).
+		ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(
+			`Ambiguous duplicate deapexer module dependencies "com.android.myapex.deapexer" and "com.mycompany.android.myapex.deapexer"`))
+
+	bpBase := `
+		apex_set {
+			name: "com.android.myapex",
+			exported_bootclasspath_fragments: ["my-bootclasspath-fragment"],
+			set: "myapex.apks",
+		}
+
+		apex_set {
+			name: "com.mycompany.android.myapex",
+			apex_name: "com.android.myapex",
+			exported_bootclasspath_fragments: ["my-bootclasspath-fragment"],
+			set: "company-myapex.apks",
+		}
+
+		prebuilt_bootclasspath_fragment {
+			name: "my-bootclasspath-fragment",
+			apex_available: ["com.android.myapex"],
+			%s
+		}
+	`
+
+	t.Run("java_import", func(t *testing.T) {
+		_ = preparers.RunTestWithBp(t, fmt.Sprintf(bpBase, `contents: ["libfoo"]`)+`
+			java_import {
+				name: "libfoo",
+				jars: ["libfoo.jar"],
+				apex_available: ["com.android.myapex"],
+			}
+		`)
+	})
+
+	t.Run("java_sdk_library_import", func(t *testing.T) {
+		_ = preparers.RunTestWithBp(t, fmt.Sprintf(bpBase, `contents: ["libfoo"]`)+`
+			java_sdk_library_import {
+				name: "libfoo",
+				public: {
+					jars: ["libbar.jar"],
+				},
+				apex_available: ["com.android.myapex"],
+			}
+		`)
+	})
+
+	t.Run("prebuilt_bootclasspath_fragment", func(t *testing.T) {
+		_ = preparers.RunTestWithBp(t, fmt.Sprintf(bpBase, `
+			image_name: "art",
+			contents: ["libfoo"],
+		`)+`
+			java_sdk_library_import {
+				name: "libfoo",
+				public: {
+					jars: ["libbar.jar"],
+				},
+				apex_available: ["com.android.myapex"],
+			}
+		`)
+	})
+}
+
 func TestUpdatable_should_set_min_sdk_version(t *testing.T) {
 	testApexError(t, `"myapex" .*: updatable: updatable APEXes should set min_sdk_version`, `
 		apex {
@@ -6595,6 +6662,47 @@ func TestUpdatableDefault_should_set_min_sdk_version(t *testing.T) {
 			name: "myapex.key",
 			public_key: "testkey.avbpubkey",
 			private_key: "testkey.pem",
+		}
+	`)
+}
+
+func TestUpdatable_should_not_set_generate_classpaths_proto(t *testing.T) {
+	testApexError(t, `"mysystemserverclasspathfragment" .* it must not set generate_classpaths_proto to false`, `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			systemserverclasspath_fragments: [
+				"mysystemserverclasspathfragment",
+			],
+			min_sdk_version: "29",
+			updatable: true,
+		}
+
+		apex_key {
+			name: "myapex.key",
+			public_key: "testkey.avbpubkey",
+			private_key: "testkey.pem",
+		}
+
+		java_library {
+			name: "foo",
+			srcs: ["b.java"],
+			min_sdk_version: "29",
+			installable: true,
+			apex_available: [
+				"myapex",
+			],
+		}
+
+		systemserverclasspath_fragment {
+			name: "mysystemserverclasspathfragment",
+			generate_classpaths_proto: false,
+			contents: [
+				"foo",
+			],
+			apex_available: [
+				"myapex",
+			],
 		}
 	`)
 }
@@ -6732,7 +6840,7 @@ func TestDexpreoptAccessDexFilesFromPrebuiltApex(t *testing.T) {
 	})
 }
 
-func testApexPermittedPackagesRules(t *testing.T, errmsg, bp string, apexBootJars []string, rules []android.Rule) {
+func testApexPermittedPackagesRules(t *testing.T, errmsg, bp string, bootJars []string, rules []android.Rule) {
 	t.Helper()
 	bp += `
 	apex_key {
@@ -6757,11 +6865,11 @@ func testApexPermittedPackagesRules(t *testing.T, errmsg, bp string, apexBootJar
 		PrepareForTestWithApexBuildComponents,
 		android.PrepareForTestWithNeverallowRules(rules),
 		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-			updatableBootJars := make([]string, 0, len(apexBootJars))
-			for _, apexBootJar := range apexBootJars {
-				updatableBootJars = append(updatableBootJars, "myapex:"+apexBootJar)
+			apexBootJars := make([]string, 0, len(bootJars))
+			for _, apexBootJar := range bootJars {
+				apexBootJars = append(apexBootJars, "myapex:"+apexBootJar)
 			}
-			variables.UpdatableBootJars = android.CreateTestConfiguredJarList(updatableBootJars)
+			variables.ApexBootJars = android.CreateTestConfiguredJarList(apexBootJars)
 		}),
 		fs.AddToFixture(),
 	).
