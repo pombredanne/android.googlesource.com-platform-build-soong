@@ -71,17 +71,17 @@ func writeEnvironmentFile(ctx Context, envFile string, envDeps map[string]string
 // A tiny struct used to tell Blueprint that it's in bootstrap mode. It would
 // probably be nicer to use a flag in bootstrap.Args instead.
 type BlueprintConfig struct {
-	buildDir         string
-	ninjaBuildDir    string
+	soongOutDir      string
+	outDir           string
 	debugCompilation bool
 }
 
-func (c BlueprintConfig) BuildDir() string {
-	return c.buildDir
+func (c BlueprintConfig) SoongOutDir() string {
+	return c.soongOutDir
 }
 
-func (c BlueprintConfig) NinjaBuildDir() string {
-	return c.ninjaBuildDir
+func (c BlueprintConfig) OutDir() string {
+	return c.outDir
 }
 
 func (c BlueprintConfig) DebugCompilation() bool {
@@ -117,6 +117,7 @@ func bootstrapBlueprint(ctx Context, config Config) {
 
 	bootstrapGlobFile := shared.JoinPath(config.SoongOutDir(), ".bootstrap/build-globs.ninja")
 	bp2buildGlobFile := shared.JoinPath(config.SoongOutDir(), ".bootstrap/build-globs.bp2build.ninja")
+	moduleGraphGlobFile := shared.JoinPath(config.SoongOutDir(), ".bootstrap/build-globs.modulegraph.ninja")
 
 	// The glob .ninja files are subninja'd. However, they are generated during
 	// the build itself so we write an empty file so that the subninja doesn't
@@ -181,16 +182,34 @@ func bootstrapBlueprint(ctx Context, config Config) {
 		Outputs: []string{config.Bp2BuildMarkerFile()},
 		Args:    bp2buildArgs,
 	}
+
+	moduleGraphArgs := []string{
+		"--module_graph_file", config.ModuleGraphFile(),
+		"--globListDir", "globs.modulegraph",
+		"--globFile", moduleGraphGlobFile,
+	}
+
+	moduleGraphArgs = append(moduleGraphArgs, commonArgs...)
+	moduleGraphArgs = append(moduleGraphArgs, environmentArgs(config, ".modulegraph")...)
+	moduleGraphArgs = append(moduleGraphArgs, "Android.bp")
+
+	moduleGraphInvocation := bootstrap.PrimaryBuilderInvocation{
+		Inputs:  []string{"Android.bp"},
+		Outputs: []string{config.ModuleGraphFile()},
+		Args:    moduleGraphArgs,
+	}
+
 	args.PrimaryBuilderInvocations = []bootstrap.PrimaryBuilderInvocation{
 		bp2buildInvocation,
 		mainSoongBuildInvocation,
+		moduleGraphInvocation,
 	}
 
 	blueprintCtx := blueprint.NewContext()
 	blueprintCtx.SetIgnoreUnknownModuleTypes(true)
 	blueprintConfig := BlueprintConfig{
-		buildDir:         config.SoongOutDir(),
-		ninjaBuildDir:    config.OutDir(),
+		soongOutDir:      config.SoongOutDir(),
+		outDir:           config.OutDir(),
 		debugCompilation: os.Getenv("SOONG_DELVE") != "",
 	}
 
@@ -307,6 +326,8 @@ func runSoong(ctx Context, config Config) {
 
 	if config.bazelBuildMode() == generateBuildFiles {
 		target = config.Bp2BuildMarkerFile()
+	} else if config.bazelBuildMode() == generateJsonModuleGraph {
+		target = config.ModuleGraphFile()
 	} else {
 		// This build generates <builddir>/build.ninja, which is used later by build/soong/ui/build/build.go#Build().
 		target = config.MainNinjaFile()
