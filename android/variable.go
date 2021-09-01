@@ -42,6 +42,10 @@ type variableProperties struct {
 			Cflags  []string
 		}
 
+		Platform_sdk_extension_version struct {
+			Cmd *string
+		}
+
 		// unbundled_build is a catch-all property to annotate modules that don't build in one or
 		// more unbundled branches, usually due to dependencies missing from the manifest.
 		Unbundled_build struct {
@@ -163,6 +167,7 @@ type productVariables struct {
 	Platform_sdk_version                      *int     `json:",omitempty"`
 	Platform_sdk_codename                     *string  `json:",omitempty"`
 	Platform_sdk_final                        *bool    `json:",omitempty"`
+	Platform_sdk_extension_version            *int     `json:",omitempty"`
 	Platform_version_active_codenames         []string `json:",omitempty"`
 	Platform_vndk_version                     *string  `json:",omitempty"`
 	Platform_systemsdk_versions               []string `json:",omitempty"`
@@ -249,8 +254,8 @@ type productVariables struct {
 	UncompressPrivAppDex             *bool    `json:",omitempty"`
 	ModulesLoadedByPrivilegedModules []string `json:",omitempty"`
 
-	BootJars          ConfiguredJarList `json:",omitempty"`
-	UpdatableBootJars ConfiguredJarList `json:",omitempty"`
+	BootJars     ConfiguredJarList `json:",omitempty"`
+	ApexBootJars ConfiguredJarList `json:",omitempty"`
 
 	IntegerOverflowExcludePaths []string `json:",omitempty"`
 
@@ -439,8 +444,8 @@ func (v *productVariables) SetDefaultConfig() {
 		Malloc_pattern_fill_contents: boolPtr(false),
 		Safestack:                    boolPtr(false),
 
-		BootJars:          ConfiguredJarList{apexes: []string{}, jars: []string{}},
-		UpdatableBootJars: ConfiguredJarList{apexes: []string{}, jars: []string{}},
+		BootJars:     ConfiguredJarList{apexes: []string{}, jars: []string{}},
+		ApexBootJars: ConfiguredJarList{apexes: []string{}, jars: []string{}},
 	}
 
 	if runtime.GOOS == "linux" {
