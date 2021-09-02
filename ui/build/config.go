@@ -739,12 +739,30 @@ func (c *configImpl) SoongOutDir() string {
 	return filepath.Join(c.OutDir(), "soong")
 }
 
+func (c *configImpl) PrebuiltOS() string {
+	switch runtime.GOOS {
+	case "linux":
+		return "linux-x86"
+	case "darwin":
+		return "darwin-x86"
+	default:
+		panic("Unknown GOOS")
+	}
+}
+func (c *configImpl) HostToolDir() string {
+	return filepath.Join(c.SoongOutDir(), "host", c.PrebuiltOS(), "bin")
+}
+
 func (c *configImpl) MainNinjaFile() string {
 	return shared.JoinPath(c.SoongOutDir(), "build.ninja")
 }
 
 func (c *configImpl) Bp2BuildMarkerFile() string {
 	return shared.JoinPath(c.SoongOutDir(), ".bootstrap/bp2build_workspace_marker")
+}
+
+func (c *configImpl) ModuleGraphFile() string {
+	return shared.JoinPath(c.SoongOutDir(), "module-graph.json")
 }
 
 func (c *configImpl) TempDir() string {
@@ -919,7 +937,7 @@ func (c *configImpl) bazelBuildMode() bazelBuildMode {
 		return mixedBuild
 	} else if c.Environment().IsEnvTrue("GENERATE_BAZEL_FILES") {
 		return generateBuildFiles
-	} else if v, ok := c.Environment().Get("SOONG_DUMP_JSON_MODULE_GRAPH"); ok && v != "" {
+	} else if c.Environment().IsEnvTrue("GENERATE_JSON_MODULE_GRAPH") {
 		return generateJsonModuleGraph
 	} else {
 		return noBazel

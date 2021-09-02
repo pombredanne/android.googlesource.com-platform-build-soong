@@ -137,12 +137,14 @@ var (
 		// build/bazel explicitly.
 		"build/bazel":/* recursive = */ false,
 		"build/bazel/examples/android_app":/* recursive = */ true,
+		"build/bazel/examples/java":/* recursive = */ true,
 		"build/bazel/bazel_skylib":/* recursive = */ true,
 		"build/bazel/rules":/* recursive = */ true,
 		"build/bazel/rules_cc":/* recursive = */ true,
 		"build/bazel/tests":/* recursive = */ true,
 		"build/bazel/platforms":/* recursive = */ true,
 		"build/bazel/product_variables":/* recursive = */ true,
+		"build/bazel_common_rules":/* recursive = */ true,
 		"build/pesto":/* recursive = */ true,
 
 		// external/bazelbuild-rules_android/... is needed by mixed builds, otherwise mixed builds analysis fails
@@ -160,6 +162,7 @@ var (
 	bp2buildDefaultConfig = Bp2BuildConfig{
 		"bionic":                            Bp2BuildDefaultTrueRecursively,
 		"build/bazel/examples/apex/minimal": Bp2BuildDefaultTrueRecursively,
+		"development/sdk":                   Bp2BuildDefaultTrueRecursively,
 		"external/gwp_asan":                 Bp2BuildDefaultTrueRecursively,
 		"system/core/libcutils":             Bp2BuildDefaultTrueRecursively,
 		"system/core/property_service/libpropertyinfoparser": Bp2BuildDefaultTrueRecursively,

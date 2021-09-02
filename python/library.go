@@ -26,6 +26,7 @@ import (
 
 func init() {
 	registerPythonLibraryComponents(android.InitRegistrationContext)
+	android.RegisterBp2BuildMutator("python_library_host", PythonLibraryHostBp2Build)
 	android.RegisterBp2BuildMutator("python_library", PythonLibraryBp2Build)
 }
 
@@ -37,23 +38,34 @@ func registerPythonLibraryComponents(ctx android.RegistrationContext) {
 func PythonLibraryHostFactory() android.Module {
 	module := newModule(android.HostSupported, android.MultilibFirst)
 
+	android.InitBazelModule(module)
+
 	return module.init()
 }
 
 type bazelPythonLibraryAttributes struct {
 	Srcs         bazel.LabelListAttribute
 	Data         bazel.LabelListAttribute
+	Deps         bazel.LabelListAttribute
 	Srcs_version string
 }
 
+func PythonLibraryHostBp2Build(ctx android.TopDownMutatorContext) {
+	pythonLibBp2Build(ctx, "python_library_host")
+}
+
 func PythonLibraryBp2Build(ctx android.TopDownMutatorContext) {
+	pythonLibBp2Build(ctx, "python_library")
+}
+
+func pythonLibBp2Build(ctx android.TopDownMutatorContext, modType string) {
 	m, ok := ctx.Module().(*Module)
 	if !ok || !m.ConvertWithBp2build(ctx) {
 		return
 	}
 
-	// a Module can be something other than a python_library
-	if ctx.ModuleType() != "python_library" {
+	// a Module can be something other than a `modType`
+	if ctx.ModuleType() != modType {
 		return
 	}
 
@@ -70,18 +82,20 @@ func PythonLibraryBp2Build(ctx android.TopDownMutatorContext) {
 		python_version = "PY3"
 	} else if !py2Enabled && !py3Enabled {
 		panic(fmt.Errorf(
-			"error for '%s' module: bp2build's python_library converter doesn't understand having "+
-				"neither py2 nor py3 enabled", m.Name()))
+			"error for '%s' module: bp2build's %s converter doesn't understand having "+
+				"neither py2 nor py3 enabled", m.Name(), modType))
 	} else {
 		// do nothing, since python_version defaults to PY2ANDPY3
 	}
 
 	srcs := android.BazelLabelForModuleSrcExcludes(ctx, m.properties.Srcs, m.properties.Exclude_srcs)
 	data := android.BazelLabelForModuleSrc(ctx, m.properties.Data)
+	deps := android.BazelLabelForModuleDeps(ctx, m.properties.Libs)
 
 	attrs := &bazelPythonLibraryAttributes{
 		Srcs:         bazel.MakeLabelListAttribute(srcs),
 		Data:         bazel.MakeLabelListAttribute(data),
+		Deps:         bazel.MakeLabelListAttribute(deps),
 		Srcs_version: python_version,
 	}
 

@@ -4930,7 +4930,7 @@ func TestBootDexJarsFromSourcesAndPrebuilts(t *testing.T) {
 			}
 		}
 		if !foundLibfooJar {
-			t.Errorf("Rule for libfoo.jar missing in dex_bootjars singleton outputs %q", android.StringPathsRelativeToTop(ctx.Config().BuildDir(), s.AllOutputs()))
+			t.Errorf("Rule for libfoo.jar missing in dex_bootjars singleton outputs %q", android.StringPathsRelativeToTop(ctx.Config().SoongOutDir(), s.AllOutputs()))
 		}
 	}
 
@@ -5129,6 +5129,12 @@ func TestBootDexJarsFromSourcesAndPrebuilts(t *testing.T) {
 		// find the dex boot jar in it. We either need to disable the source libfoo
 		// or make the prebuilt libfoo preferred.
 		testDexpreoptWithApexes(t, bp, "module libfoo does not provide a dex boot jar", preparer, fragment)
+		// dexbootjar check is skipped if AllowMissingDependencies is true
+		preparerAllowMissingDeps := android.GroupFixturePreparers(
+			preparer,
+			android.PrepareForTestWithAllowMissingDependencies,
+		)
+		testDexpreoptWithApexes(t, bp, "", preparerAllowMissingDeps, fragment)
 	})
 
 	t.Run("prebuilt library preferred with source", func(t *testing.T) {
@@ -6073,6 +6079,7 @@ func TestOverrideApex(t *testing.T) {
 			name: "myapex",
 			key: "myapex.key",
 			apps: ["app"],
+			bpfs: ["bpf"],
 			overrides: ["oldapex"],
 			updatable: false,
 		}
@@ -6081,6 +6088,7 @@ func TestOverrideApex(t *testing.T) {
 			name: "override_myapex",
 			base: "myapex",
 			apps: ["override_app"],
+			bpfs: ["override_bpf"],
 			overrides: ["unknownapex"],
 			logging_parent: "com.foo.bar",
 			package_name: "test.overridden.package",
@@ -6119,6 +6127,16 @@ func TestOverrideApex(t *testing.T) {
 			base: "app",
 			package_name: "bar",
 		}
+
+		bpf {
+			name: "bpf",
+			srcs: ["bpf.c"],
+		}
+
+		bpf {
+			name: "override_bpf",
+			srcs: ["override_bpf.c"],
+		}
 	`, withManifestPackageNameOverrides([]string{"myapex:com.android.myapex"}))
 
 	originalVariant := ctx.ModuleForTests("myapex", "android_common_myapex_image").Module().(android.OverridableModule)
@@ -6136,6 +6154,9 @@ func TestOverrideApex(t *testing.T) {
 
 	ensureNotContains(t, copyCmds, "image.apex/app/app/app.apk")
 	ensureContains(t, copyCmds, "image.apex/app/override_app/override_app.apk")
+
+	ensureNotContains(t, copyCmds, "image.apex/etc/bpf/bpf.o")
+	ensureContains(t, copyCmds, "image.apex/etc/bpf/override_bpf.o")
 
 	apexBundle := module.Module().(*apexBundle)
 	name := apexBundle.Name()
@@ -6159,10 +6180,12 @@ func TestOverrideApex(t *testing.T) {
 	data.Custom(&builder, name, "TARGET_", "", data)
 	androidMk := builder.String()
 	ensureContains(t, androidMk, "LOCAL_MODULE := override_app.override_myapex")
+	ensureContains(t, androidMk, "LOCAL_MODULE := override_bpf.o.override_myapex")
 	ensureContains(t, androidMk, "LOCAL_MODULE := apex_manifest.pb.override_myapex")
 	ensureContains(t, androidMk, "LOCAL_MODULE_STEM := override_myapex.apex")
 	ensureContains(t, androidMk, "LOCAL_OVERRIDES_MODULES := unknownapex myapex")
 	ensureNotContains(t, androidMk, "LOCAL_MODULE := app.myapex")
+	ensureNotContains(t, androidMk, "LOCAL_MODULE := bpf.myapex")
 	ensureNotContains(t, androidMk, "LOCAL_MODULE := override_app.myapex")
 	ensureNotContains(t, androidMk, "LOCAL_MODULE := apex_manifest.pb.myapex")
 	ensureNotContains(t, androidMk, "LOCAL_MODULE_STEM := myapex.apex")

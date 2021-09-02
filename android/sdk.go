@@ -401,26 +401,26 @@ type SdkMemberTypeDependencyTag interface {
 	ExportMember() bool
 }
 
-var _ SdkMemberTypeDependencyTag = (*sdkMemberDependencyTag)(nil)
-var _ ReplaceSourceWithPrebuilt = (*sdkMemberDependencyTag)(nil)
+var _ SdkMemberTypeDependencyTag = (*sdkMemberTypeDependencyTag)(nil)
+var _ ReplaceSourceWithPrebuilt = (*sdkMemberTypeDependencyTag)(nil)
 
-type sdkMemberDependencyTag struct {
+type sdkMemberTypeDependencyTag struct {
 	blueprint.BaseDependencyTag
 	memberType SdkMemberType
 	export     bool
 }
 
-func (t *sdkMemberDependencyTag) SdkMemberType(_ Module) SdkMemberType {
+func (t *sdkMemberTypeDependencyTag) SdkMemberType(_ Module) SdkMemberType {
 	return t.memberType
 }
 
-func (t *sdkMemberDependencyTag) ExportMember() bool {
+func (t *sdkMemberTypeDependencyTag) ExportMember() bool {
 	return t.export
 }
 
 // Prevent dependencies from the sdk/module_exports onto their members from being
 // replaced with a preferred prebuilt.
-func (t *sdkMemberDependencyTag) ReplaceSourceWithPrebuilt() bool {
+func (t *sdkMemberTypeDependencyTag) ReplaceSourceWithPrebuilt() bool {
 	return false
 }
 
@@ -428,7 +428,7 @@ func (t *sdkMemberDependencyTag) ReplaceSourceWithPrebuilt() bool {
 // dependencies added by the tag to be added to the sdk as the specified SdkMemberType and exported
 // (or not) as specified by the export parameter.
 func DependencyTagForSdkMemberType(memberType SdkMemberType, export bool) SdkMemberTypeDependencyTag {
-	return &sdkMemberDependencyTag{memberType: memberType, export: export}
+	return &sdkMemberTypeDependencyTag{memberType: memberType, export: export}
 }
 
 // Interface that must be implemented for every type that can be a member of an
@@ -475,7 +475,7 @@ type SdkMemberType interface {
 	// properties. The dependencies must be added with the supplied tag.
 	//
 	// The BottomUpMutatorContext provided is for the SDK module.
-	AddDependencies(mctx BottomUpMutatorContext, dependencyTag blueprint.DependencyTag, names []string)
+	AddDependencies(ctx SdkDependencyContext, dependencyTag blueprint.DependencyTag, names []string)
 
 	// Return true if the supplied module is an instance of this member type.
 	//
@@ -529,6 +529,12 @@ type SdkMemberType interface {
 	CreateVariantPropertiesStruct() SdkMemberProperties
 }
 
+// SdkDependencyContext provides access to information needed by the SdkMemberType.AddDependencies()
+// implementations.
+type SdkDependencyContext interface {
+	BottomUpMutatorContext
+}
+
 // Base type for SdkMemberType implementations.
 type SdkMemberTypeBase struct {
 	PropertyName string
@@ -570,9 +576,6 @@ func (b *SdkMemberTypeBase) UsesSourceModuleTypeInSnapshot() bool {
 type SdkMemberTypesRegistry struct {
 	// The list of types sorted by property name.
 	list []SdkMemberType
-
-	// The key that uniquely identifies this registry instance.
-	key OnceKey
 }
 
 func (r *SdkMemberTypesRegistry) copyAndAppend(memberType SdkMemberType) *SdkMemberTypesRegistry {
@@ -592,18 +595,9 @@ func (r *SdkMemberTypesRegistry) copyAndAppend(memberType SdkMemberType) *SdkMem
 		return t1.SdkPropertyName() < t2.SdkPropertyName()
 	})
 
-	// Generate a key that identifies the slice of SdkMemberTypes by joining the property names
-	// from all the SdkMemberType .
-	var properties []string
-	for _, t := range list {
-		properties = append(properties, t.SdkPropertyName())
-	}
-	key := NewOnceKey(strings.Join(properties, "|"))
-
 	// Create a new registry so the pointer uniquely identifies the set of registered types.
 	return &SdkMemberTypesRegistry{
 		list: list,
-		key:  key,
 	}
 }
 
@@ -616,8 +610,10 @@ func (r *SdkMemberTypesRegistry) UniqueOnceKey() OnceKey {
 	return NewCustomOnceKey(r)
 }
 
-// The set of registered SdkMemberTypes, one for sdk module and one for module_exports.
+// The set of registered SdkMemberTypes for module_exports modules.
 var ModuleExportsMemberTypes = &SdkMemberTypesRegistry{}
+
+// The set of registered SdkMemberTypes for sdk modules.
 var SdkMemberTypes = &SdkMemberTypesRegistry{}
 
 // Register an SdkMemberType object to allow them to be used in the sdk and sdk_snapshot module
