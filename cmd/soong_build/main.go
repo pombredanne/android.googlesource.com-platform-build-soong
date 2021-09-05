@@ -35,7 +35,7 @@ import (
 
 var (
 	topDir           string
-	outDir           string
+	soongOutDir      string
 	availableEnvFile string
 	usedEnvFile      string
 
@@ -55,33 +55,34 @@ var (
 func init() {
 	// Flags that make sense in every mode
 	flag.StringVar(&topDir, "top", "", "Top directory of the Android source tree")
-	flag.StringVar(&outDir, "out", "", "Soong output directory (usually $TOP/out/soong)")
+	flag.StringVar(&soongOutDir, "soong_out", "", "Soong output directory (usually $TOP/out/soong)")
 	flag.StringVar(&availableEnvFile, "available_env", "", "File containing available environment variables")
 	flag.StringVar(&usedEnvFile, "used_env", "", "File containing used environment variables")
+	flag.StringVar(&globFile, "globFile", "build-globs.ninja", "the Ninja file of globs to output")
+	flag.StringVar(&globListDir, "globListDir", "", "the directory containing the glob list files")
+	flag.StringVar(&cmdlineArgs.OutDir, "out", "", "the ninja builddir directory")
+	flag.StringVar(&cmdlineArgs.ModuleListFile, "l", "", "file that lists filepaths to parse")
 
 	// Debug flags
 	flag.StringVar(&delveListen, "delve_listen", "", "Delve port to listen on for debugging")
 	flag.StringVar(&delvePath, "delve_path", "", "Path to Delve. Only used if --delve_listen is set")
+	flag.StringVar(&cmdlineArgs.Cpuprofile, "cpuprofile", "", "write cpu profile to file")
+	flag.StringVar(&cmdlineArgs.TraceFile, "trace", "", "write trace to file")
+	flag.StringVar(&cmdlineArgs.Memprofile, "memprofile", "", "write memory profile to file")
+	flag.BoolVar(&cmdlineArgs.NoGC, "nogc", false, "turn off GC for debugging")
 
 	// Flags representing various modes soong_build can run in
 	flag.StringVar(&moduleGraphFile, "module_graph_file", "", "JSON module graph file to output")
 	flag.StringVar(&docFile, "soong_docs", "", "build documentation file to output")
 	flag.StringVar(&bazelQueryViewDir, "bazel_queryview_dir", "", "path to the bazel queryview directory relative to --top")
 	flag.StringVar(&bp2buildMarker, "bp2build_marker", "", "If set, run bp2build, touch the specified marker file then exit")
-
 	flag.StringVar(&cmdlineArgs.OutFile, "o", "build.ninja", "the Ninja file to output")
-	flag.StringVar(&globFile, "globFile", "build-globs.ninja", "the Ninja file of globs to output")
-	flag.StringVar(&globListDir, "globListDir", "", "the directory containing the glob list files")
-	flag.StringVar(&cmdlineArgs.BuildDir, "b", ".", "the build output directory")
-	flag.StringVar(&cmdlineArgs.NinjaBuildDir, "n", "", "the ninja builddir directory")
-	flag.StringVar(&cmdlineArgs.Cpuprofile, "cpuprofile", "", "write cpu profile to file")
-	flag.StringVar(&cmdlineArgs.TraceFile, "trace", "", "write trace to file")
-	flag.StringVar(&cmdlineArgs.Memprofile, "memprofile", "", "write memory profile to file")
-	flag.BoolVar(&cmdlineArgs.NoGC, "nogc", false, "turn off GC for debugging")
+	flag.BoolVar(&cmdlineArgs.EmptyNinjaFile, "empty-ninja-file", false, "write out a 0-byte ninja file")
+
+	// Flags that probably shouldn't be flags of soong_build but we haven't found
+	// the time to remove them yet
 	flag.BoolVar(&cmdlineArgs.RunGoTests, "t", false, "build and run go tests during bootstrap")
 	flag.BoolVar(&cmdlineArgs.UseValidations, "use-validations", false, "use validations to depend on go tests")
-	flag.StringVar(&cmdlineArgs.ModuleListFile, "l", "", "file that lists filepaths to parse")
-	flag.BoolVar(&cmdlineArgs.EmptyNinjaFile, "empty-ninja-file", false, "write out a 0-byte ninja file")
 }
 
 func newNameResolver(config android.Config) *android.NameResolver {
@@ -111,8 +112,8 @@ func newContext(configuration android.Config, prepareBuildActions bool) *android
 	return ctx
 }
 
-func newConfig(outDir string, availableEnv map[string]string) android.Config {
-	configuration, err := android.NewConfig(outDir, cmdlineArgs.ModuleListFile, availableEnv)
+func newConfig(cmdlineArgs bootstrap.Args, outDir string, availableEnv map[string]string) android.Config {
+	configuration, err := android.NewConfig(cmdlineArgs, outDir, availableEnv)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s", err)
 		os.Exit(1)
@@ -138,13 +139,13 @@ func runMixedModeBuild(configuration android.Config, firstCtx *android.Context, 
 		os.Exit(1)
 	}
 	// Second pass: Full analysis, using the bazel command results. Output ninja file.
-	secondConfig, err := android.ConfigForAdditionalRun(configuration)
+	secondArgs = cmdlineArgs
+	secondConfig, err := android.ConfigForAdditionalRun(secondArgs, configuration)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%s", err)
 		os.Exit(1)
 	}
 	secondCtx := newContext(secondConfig, true)
-	secondArgs = cmdlineArgs
 	ninjaDeps := bootstrap.RunBlueprint(secondArgs, secondCtx.Context, secondConfig)
 	ninjaDeps = append(ninjaDeps, extraNinjaDeps...)
 
@@ -296,7 +297,7 @@ func main() {
 
 	availableEnv := parseAvailableEnv()
 
-	configuration := newConfig(outDir, availableEnv)
+	configuration := newConfig(cmdlineArgs, soongOutDir, availableEnv)
 	extraNinjaDeps := []string{
 		configuration.ProductVariablesFileName,
 		usedEnvFile,
@@ -503,8 +504,8 @@ func runBp2Build(configuration android.Config, extraNinjaDeps []string) {
 		"bazel-" + filepath.Base(topDir),
 	}
 
-	if cmdlineArgs.NinjaBuildDir[0] != '/' {
-		excludes = append(excludes, cmdlineArgs.NinjaBuildDir)
+	if cmdlineArgs.OutDir[0] != '/' {
+		excludes = append(excludes, cmdlineArgs.OutDir)
 	}
 
 	existingBazelRelatedFiles, err := getExistingBazelRelatedFiles(topDir)

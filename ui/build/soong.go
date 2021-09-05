@@ -71,9 +71,18 @@ func writeEnvironmentFile(ctx Context, envFile string, envDeps map[string]string
 // A tiny struct used to tell Blueprint that it's in bootstrap mode. It would
 // probably be nicer to use a flag in bootstrap.Args instead.
 type BlueprintConfig struct {
-	soongOutDir      string
-	outDir           string
-	debugCompilation bool
+	toolDir                   string
+	soongOutDir               string
+	outDir                    string
+	runGoTests                bool
+	useValidations            bool
+	debugCompilation          bool
+	subninjas                 []string
+	primaryBuilderInvocations []bootstrap.PrimaryBuilderInvocation
+}
+
+func (c BlueprintConfig) HostToolDir() string {
+	return c.toolDir
 }
 
 func (c BlueprintConfig) SoongOutDir() string {
@@ -84,8 +93,24 @@ func (c BlueprintConfig) OutDir() string {
 	return c.outDir
 }
 
+func (c BlueprintConfig) RunGoTests() bool {
+	return c.runGoTests
+}
+
+func (c BlueprintConfig) UseValidationsForGoTests() bool {
+	return c.useValidations
+}
+
 func (c BlueprintConfig) DebugCompilation() bool {
 	return c.debugCompilation
+}
+
+func (c BlueprintConfig) Subninjas() []string {
+	return c.subninjas
+}
+
+func (c BlueprintConfig) PrimaryBuilderInvocations() []bootstrap.PrimaryBuilderInvocation {
+	return c.primaryBuilderInvocations
 }
 
 func environmentArgs(config Config, suffix string) []string {
@@ -128,16 +153,14 @@ func bootstrapBlueprint(ctx Context, config Config) {
 
 	args.RunGoTests = !config.skipSoongTests
 	args.UseValidations = true // Use validations to depend on tests
-	args.BuildDir = config.SoongOutDir()
-	args.NinjaBuildDir = config.OutDir()
-	args.TopFile = "Android.bp"
+	args.SoongOutDir = config.SoongOutDir()
+	args.OutDir = config.OutDir()
 	args.ModuleListFile = filepath.Join(config.FileListDir(), "Android.bp.list")
 	args.OutFile = shared.JoinPath(config.SoongOutDir(), ".bootstrap/build.ninja")
 	// The primary builder (aka soong_build) will use bootstrapGlobFile as the globFile to generate build.ninja(.d)
 	// Building soong_build does not require a glob file
 	// Using "" instead of "<soong_build_glob>.ninja" will ensure that an unused glob file is not written to out/soong/.bootstrap during StagePrimary
 	args.Subninjas = []string{bootstrapGlobFile, bp2buildGlobFile}
-	args.GeneratingPrimaryBuilder = true
 	args.EmptyNinjaFile = config.EmptyNinjaFile()
 
 	args.DelveListen = os.Getenv("SOONG_DELVE")
@@ -153,7 +176,7 @@ func bootstrapBlueprint(ctx Context, config Config) {
 	}
 
 	soongBuildArgs := []string{
-		"--globListDir", "globs",
+		"--globListDir", "build",
 		"--globFile", bootstrapGlobFile,
 	}
 
@@ -169,7 +192,7 @@ func bootstrapBlueprint(ctx Context, config Config) {
 
 	bp2buildArgs := []string{
 		"--bp2build_marker", config.Bp2BuildMarkerFile(),
-		"--globListDir", "globs.bp2build",
+		"--globListDir", "bp2build",
 		"--globFile", bp2buildGlobFile,
 	}
 
@@ -185,7 +208,7 @@ func bootstrapBlueprint(ctx Context, config Config) {
 
 	moduleGraphArgs := []string{
 		"--module_graph_file", config.ModuleGraphFile(),
-		"--globListDir", "globs.modulegraph",
+		"--globListDir", "modulegraph",
 		"--globFile", moduleGraphGlobFile,
 	}
 
@@ -208,11 +231,17 @@ func bootstrapBlueprint(ctx Context, config Config) {
 	blueprintCtx := blueprint.NewContext()
 	blueprintCtx.SetIgnoreUnknownModuleTypes(true)
 	blueprintConfig := BlueprintConfig{
-		soongOutDir:      config.SoongOutDir(),
-		outDir:           config.OutDir(),
-		debugCompilation: os.Getenv("SOONG_DELVE") != "",
+		soongOutDir:               config.SoongOutDir(),
+		toolDir:                   config.HostToolDir(),
+		outDir:                    config.OutDir(),
+		runGoTests:                !config.skipSoongTests,
+		useValidations:            true,
+		debugCompilation:          os.Getenv("SOONG_DELVE") != "",
+		subninjas:                 args.Subninjas,
+		primaryBuilderInvocations: args.PrimaryBuilderInvocations,
 	}
 
+	args.EmptyNinjaFile = false
 	bootstrapDeps := bootstrap.RunBlueprint(args, blueprintCtx, blueprintConfig)
 	err := deptools.WriteDepFile(bootstrapDepFile, args.OutFile, bootstrapDeps)
 	if err != nil {
@@ -283,7 +312,7 @@ func runSoong(ctx Context, config Config) {
 		}
 	}()
 
-	runMicrofactory(ctx, config, ".bootstrap/bpglob", "github.com/google/blueprint/bootstrap/bpglob",
+	runMicrofactory(ctx, config, filepath.Join(config.HostToolDir(), "bpglob"), "github.com/google/blueprint/bootstrap/bpglob",
 		map[string]string{"github.com/google/blueprint": "build/blueprint"})
 
 	ninja := func(name, ninjaFile string, targets ...string) {
