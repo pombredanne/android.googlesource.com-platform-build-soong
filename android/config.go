@@ -1531,6 +1531,10 @@ func (c *deviceConfig) RecoverySnapshotDirsIncludedMap() map[string]bool {
 		c.config.productVariables.RecoverySnapshotDirsIncluded)
 }
 
+func (c *deviceConfig) HostFakeSnapshotEnabled() bool {
+	return c.config.productVariables.HostFakeSnapshotEnabled
+}
+
 func (c *deviceConfig) ShippingApiLevel() ApiLevel {
 	if c.config.productVariables.ShippingApiLevel == nil {
 		return NoneApiLevel
@@ -1651,6 +1655,20 @@ func (l *ConfiguredJarList) Append(apex string, jar string) ConfiguredJarList {
 	// arrays that are mutated across instances.
 	apexes := copyAndAppend(l.apexes, apex)
 	jars := copyAndAppend(l.jars, jar)
+
+	return ConfiguredJarList{apexes, jars}
+}
+
+// Append a list of (apex, jar) pairs to the list.
+func (l *ConfiguredJarList) AppendList(other ConfiguredJarList) ConfiguredJarList {
+	apexes := make([]string, 0, l.Len()+other.Len())
+	jars := make([]string, 0, l.Len()+other.Len())
+
+	apexes = append(apexes, l.apexes...)
+	jars = append(jars, l.jars...)
+
+	apexes = append(apexes, other.apexes...)
+	jars = append(jars, other.jars...)
 
 	return ConfiguredJarList{apexes, jars}
 }

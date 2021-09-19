@@ -31,6 +31,7 @@ import (
 	"android/soong/cc/config"
 	"android/soong/fuzz"
 	"android/soong/genrule"
+	"android/soong/snapshot"
 )
 
 func init() {
@@ -1813,15 +1814,6 @@ func (c *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 
 	flags.AssemblerWithCpp = inList("-xassembler-with-cpp", flags.Local.AsFlags)
 
-	// Optimization to reduce size of build.ninja
-	// Replace the long list of flags for each file with a module-local variable
-	ctx.Variable(pctx, "cflags", strings.Join(flags.Local.CFlags, " "))
-	ctx.Variable(pctx, "cppflags", strings.Join(flags.Local.CppFlags, " "))
-	ctx.Variable(pctx, "asflags", strings.Join(flags.Local.AsFlags, " "))
-	flags.Local.CFlags = []string{"$cflags"}
-	flags.Local.CppFlags = []string{"$cppflags"}
-	flags.Local.AsFlags = []string{"$asflags"}
-
 	var objs Objects
 	if c.compiler != nil {
 		objs = c.compiler.compile(ctx, flags, deps)
@@ -3400,6 +3392,8 @@ func (c *Module) AlwaysRequiresPlatformApexVariant() bool {
 	// stub libraries and native bridge libraries are always available to platform
 	return c.IsStubs() || c.Target().NativeBridge == android.NativeBridgeEnabled
 }
+
+var _ snapshot.RelativeInstallPath = (*Module)(nil)
 
 //
 // Defaults
