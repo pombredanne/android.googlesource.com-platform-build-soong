@@ -218,7 +218,7 @@ func (b hiddenAPIStubsDependencyTag) ExcludeFromVisibilityEnforcement() {
 var _ android.ExcludeFromVisibilityEnforcementTag = hiddenAPIStubsDependencyTag{}
 var _ android.ReplaceSourceWithPrebuilt = hiddenAPIStubsDependencyTag{}
 var _ android.ExcludeFromApexContentsTag = hiddenAPIStubsDependencyTag{}
-var _ android.SdkMemberTypeDependencyTag = hiddenAPIStubsDependencyTag{}
+var _ android.SdkMemberDependencyTag = hiddenAPIStubsDependencyTag{}
 
 // hiddenAPIComputeMonolithicStubLibModules computes the set of module names that provide stubs
 // needed to produce the hidden API monolithic stub flags file.
@@ -1194,13 +1194,6 @@ func retrieveClassesJarsFromModule(module android.Module) android.Paths {
 // deferReportingMissingBootDexJar returns true if a missing boot dex jar should not be reported by
 // Soong but should instead only be reported in ninja if the file is actually built.
 func deferReportingMissingBootDexJar(ctx android.ModuleContext, module android.Module) bool {
-	// TODO(b/179354495): Remove this workaround when it is unnecessary.
-	// Prebuilt modules like framework-wifi do not yet provide dex implementation jars. So,
-	// create a fake one that will cause a build error only if it is used.
-	if ctx.Config().AlwaysUsePrebuiltSdks() {
-		return true
-	}
-
 	// Any missing dependency should be allowed.
 	if ctx.Config().AllowMissingDependencies() {
 		return true

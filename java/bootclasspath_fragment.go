@@ -89,7 +89,7 @@ var bootclasspathFragmentContentDepTag = bootclasspathFragmentContentDependencyT
 
 var _ android.ExcludeFromVisibilityEnforcementTag = bootclasspathFragmentContentDepTag
 var _ android.ReplaceSourceWithPrebuilt = bootclasspathFragmentContentDepTag
-var _ android.SdkMemberTypeDependencyTag = bootclasspathFragmentContentDepTag
+var _ android.SdkMemberDependencyTag = bootclasspathFragmentContentDepTag
 var _ android.CopyDirectlyInAnyApexTag = bootclasspathFragmentContentDepTag
 var _ android.RequiresFilesFromPrebuiltApexTag = bootclasspathFragmentContentDepTag
 
@@ -538,7 +538,7 @@ func (b *BootclasspathFragmentModule) configuredJars(ctx android.ModuleContext) 
 	global := dexpreopt.GetGlobalConfig(ctx)
 
 	possibleUpdatableModules := gatherPossibleApexModuleNamesAndStems(ctx, b.properties.Contents, bootclasspathFragmentContentDepTag)
-	jars := global.ApexBootJars.Filter(possibleUpdatableModules)
+	jars, unknown := global.ApexBootJars.Filter(possibleUpdatableModules)
 
 	// TODO(satayev): for apex_test we want to include all contents unconditionally to classpaths
 	// config. However, any test specific jars would not be present in ApexBootJars. Instead,
@@ -546,6 +546,12 @@ func (b *BootclasspathFragmentModule) configuredJars(ctx android.ModuleContext) 
 	// This is an exception to support end-to-end test for SdkExtensions, until such support exists.
 	if android.InList("test_framework-sdkextensions", possibleUpdatableModules) {
 		jars = jars.Append("com.android.sdkext", "test_framework-sdkextensions")
+	} else if global.ApexBootJars.Len() != 0 && !android.IsModuleInVersionedSdk(ctx.Module()) {
+		unknown = android.RemoveListFromList(unknown, b.properties.Coverage.Contents)
+		_, unknown = android.RemoveFromList("core-icu4j", unknown)
+		if len(unknown) > 0 {
+			ctx.ModuleErrorf("%s in contents must also be declared in PRODUCT_APEX_BOOT_JARS", unknown)
+		}
 	}
 	return jars
 }
@@ -712,8 +718,8 @@ type bootclasspathFragmentMemberType struct {
 	android.SdkMemberTypeBase
 }
 
-func (b *bootclasspathFragmentMemberType) AddDependencies(mctx android.BottomUpMutatorContext, dependencyTag blueprint.DependencyTag, names []string) {
-	mctx.AddVariationDependencies(nil, dependencyTag, names...)
+func (b *bootclasspathFragmentMemberType) AddDependencies(ctx android.SdkDependencyContext, dependencyTag blueprint.DependencyTag, names []string) {
+	ctx.AddVariationDependencies(nil, dependencyTag, names...)
 }
 
 func (b *bootclasspathFragmentMemberType) IsInstance(module android.Module) bool {

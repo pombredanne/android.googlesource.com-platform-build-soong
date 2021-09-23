@@ -111,14 +111,8 @@ type apexBundleProperties struct {
 	// List of java libraries that are embedded inside this APEX bundle.
 	Java_libs []string
 
-	// List of prebuilt files that are embedded inside this APEX bundle.
-	Prebuilts []string
-
 	// List of platform_compat_config files that are embedded inside this APEX bundle.
 	Compat_configs []string
-
-	// List of BPF programs inside this APEX bundle.
-	Bpfs []string
 
 	// List of filesystem images that are embedded inside this APEX bundle.
 	Filesystems []string
@@ -294,8 +288,14 @@ type overridableProperties struct {
 	// List of APKs that are embedded inside this APEX.
 	Apps []string
 
+	// List of prebuilt files that are embedded inside this APEX bundle.
+	Prebuilts []string
+
 	// List of runtime resource overlays (RROs) that are embedded inside this APEX.
 	Rros []string
+
+	// List of BPF programs inside this APEX bundle.
+	Bpfs []string
 
 	// Names of modules to be overridden. Listed modules can only be other binaries (in Make or
 	// Soong). This does not completely prevent installation of the overridden binaries, but if
@@ -684,7 +684,6 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 	// each target os/architectures, appropriate dependencies are selected by their
 	// target.<os>.multilib.<type> groups and are added as (direct) dependencies.
 	targets := ctx.MultiTargets()
-	config := ctx.DeviceConfig()
 	imageVariation := a.getImageVariation(ctx)
 
 	a.combineProperties(ctx)
@@ -758,29 +757,11 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 		}
 	}
 
-	if prebuilts := a.properties.Prebuilts; len(prebuilts) > 0 {
-		// For prebuilt_etc, use the first variant (64 on 64/32bit device, 32 on 32bit device)
-		// regardless of the TARGET_PREFER_* setting. See b/144532908
-		archForPrebuiltEtc := config.Arches()[0]
-		for _, arch := range config.Arches() {
-			// Prefer 64-bit arch if there is any
-			if arch.ArchType.Multilib == "lib64" {
-				archForPrebuiltEtc = arch
-				break
-			}
-		}
-		ctx.AddFarVariationDependencies([]blueprint.Variation{
-			{Mutator: "os", Variation: ctx.Os().String()},
-			{Mutator: "arch", Variation: archForPrebuiltEtc.String()},
-		}, prebuiltTag, prebuilts...)
-	}
-
 	// Common-arch dependencies come next
 	commonVariation := ctx.Config().AndroidCommonTarget.Variations()
 	ctx.AddFarVariationDependencies(commonVariation, bcpfTag, a.properties.Bootclasspath_fragments...)
 	ctx.AddFarVariationDependencies(commonVariation, sscpfTag, a.properties.Systemserverclasspath_fragments...)
 	ctx.AddFarVariationDependencies(commonVariation, javaLibTag, a.properties.Java_libs...)
-	ctx.AddFarVariationDependencies(commonVariation, bpfTag, a.properties.Bpfs...)
 	ctx.AddFarVariationDependencies(commonVariation, fsTag, a.properties.Filesystems...)
 	ctx.AddFarVariationDependencies(commonVariation, compatConfigTag, a.properties.Compat_configs...)
 
@@ -813,7 +794,27 @@ func (a *apexBundle) OverridablePropertiesDepsMutator(ctx android.BottomUpMutato
 
 	commonVariation := ctx.Config().AndroidCommonTarget.Variations()
 	ctx.AddFarVariationDependencies(commonVariation, androidAppTag, a.overridableProperties.Apps...)
+	ctx.AddFarVariationDependencies(commonVariation, bpfTag, a.overridableProperties.Bpfs...)
 	ctx.AddFarVariationDependencies(commonVariation, rroTag, a.overridableProperties.Rros...)
+	if prebuilts := a.overridableProperties.Prebuilts; len(prebuilts) > 0 {
+		// For prebuilt_etc, use the first variant (64 on 64/32bit device, 32 on 32bit device)
+		// regardless of the TARGET_PREFER_* setting. See b/144532908
+		arches := ctx.DeviceConfig().Arches()
+		if len(arches) != 0 {
+			archForPrebuiltEtc := arches[0]
+			for _, arch := range arches {
+				// Prefer 64-bit arch if there is any
+				if arch.ArchType.Multilib == "lib64" {
+					archForPrebuiltEtc = arch
+					break
+				}
+			}
+			ctx.AddFarVariationDependencies([]blueprint.Variation{
+				{Mutator: "os", Variation: ctx.Os().String()},
+				{Mutator: "arch", Variation: archForPrebuiltEtc.String()},
+			}, prebuiltTag, prebuilts...)
+		}
+	}
 
 	// Dependencies for signing
 	if String(a.overridableProperties.Key) == "" {
@@ -1151,9 +1152,10 @@ const (
 
 const (
 	// File extensions of an APEX for different packaging methods
-	imageApexSuffix = ".apex"
-	zipApexSuffix   = ".zipapex"
-	flattenedSuffix = ".flattened"
+	imageApexSuffix  = ".apex"
+	imageCapexSuffix = ".capex"
+	zipApexSuffix    = ".zipapex"
+	flattenedSuffix  = ".flattened"
 
 	// variant names each of which is for a packaging method
 	imageApexType     = "image"
@@ -1567,6 +1569,11 @@ func apexFileForJavaModuleWithFile(ctx android.BaseModuleContext, module javaMod
 	af.jacocoReportClassesFile = module.JacocoReportClassesFile()
 	af.lintDepSets = module.LintDepSets()
 	af.customStem = module.Stem() + ".jar"
+	if dexpreopter, ok := module.(java.DexpreopterInterface); ok {
+		for _, install := range dexpreopter.DexpreoptBuiltInstalledForApex() {
+			af.requiredModuleNames = append(af.requiredModuleNames, install.FullModuleName())
+		}
+	}
 	return af
 }
 
@@ -3282,7 +3289,7 @@ func apexBundleBp2BuildInternal(ctx android.TopDownMutatorContext, module *apexB
 	nativeSharedLibsLabelList := android.BazelLabelForModuleDeps(ctx, nativeSharedLibs)
 	nativeSharedLibsLabelListAttribute := bazel.MakeLabelListAttribute(nativeSharedLibsLabelList)
 
-	prebuilts := module.properties.Prebuilts
+	prebuilts := module.overridableProperties.Prebuilts
 	prebuiltsLabelList := android.BazelLabelForModuleDeps(ctx, prebuilts)
 	prebuiltsLabelListAttribute := bazel.MakeLabelListAttribute(prebuiltsLabelList)
 

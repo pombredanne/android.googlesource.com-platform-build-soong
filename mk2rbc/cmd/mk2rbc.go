@@ -81,6 +81,7 @@ var backupSuffix string
 var tracedVariables []string
 var errorLogger = errorsByType{data: make(map[string]datum)}
 var makefileFinder = &LinuxMakefileFinder{}
+var versionDefaultsMk = filepath.Join("build", "make", "core", "version_defaults.mk")
 
 func main() {
 	flag.Usage = func() {
@@ -165,13 +166,24 @@ func main() {
 			quit(fmt.Errorf("cannot generate configuration launcher for %s, it is not a known product",
 				product))
 		}
+		versionDefaults, err := generateVersionDefaults()
+		if err != nil {
+			quit(err)
+		}
 		ok = convertOne(path) && ok
-		err := writeGenerated(*launcher, mk2rbc.Launcher(outputFilePath(path), mk2rbc.MakePath2ModuleName(path)))
+		versionDefaultsPath := outputFilePath(versionDefaultsMk)
+		err = writeGenerated(versionDefaultsPath, versionDefaults)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s:%s", path, err)
 			ok = false
 		}
 
+		err = writeGenerated(*launcher, mk2rbc.Launcher(outputFilePath(path), versionDefaultsPath,
+			mk2rbc.MakePath2ModuleName(path)))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s:%s", path, err)
+			ok = false
+		}
 	} else {
 		files := flag.Args()
 		if *allInSource {
@@ -194,6 +206,15 @@ func main() {
 	}
 }
 
+func generateVersionDefaults() (string, error) {
+	versionSettings, err := mk2rbc.ParseVersionDefaults(filepath.Join(*rootDir, versionDefaultsMk))
+	if err != nil {
+		return "", err
+	}
+	return mk2rbc.VersionDefaults(versionSettings), nil
+
+}
+
 func quit(s interface{}) {
 	fmt.Fprintln(os.Stderr, s)
 	os.Exit(2)
@@ -202,8 +223,7 @@ func quit(s interface{}) {
 func buildProductConfigMap() map[string]string {
 	const androidProductsMk = "AndroidProducts.mk"
 	// Build the list of AndroidProducts.mk files: it's
-	// build/make/target/product/AndroidProducts.mk plus
-	// device/**/AndroidProducts.mk
+	// build/make/target/product/AndroidProducts.mk + device/**/AndroidProducts.mk plus + vendor/**/AndroidProducts.mk
 	targetAndroidProductsFile := filepath.Join(*rootDir, "build", "make", "target", "product", androidProductsMk)
 	if _, err := os.Stat(targetAndroidProductsFile); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %s\n(hint: %s is not a source tree root)\n",
@@ -213,17 +233,19 @@ func buildProductConfigMap() map[string]string {
 	if err := mk2rbc.UpdateProductConfigMap(productConfigMap, targetAndroidProductsFile); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: %s\n", targetAndroidProductsFile, err)
 	}
-	_ = filepath.Walk(filepath.Join(*rootDir, "device"),
-		func(path string, info os.FileInfo, err error) error {
-			if info.IsDir() || filepath.Base(path) != androidProductsMk {
+	for _, t := range []string{"device", "vendor"} {
+		_ = filepath.WalkDir(filepath.Join(*rootDir, t),
+			func(path string, d os.DirEntry, err error) error {
+				if err != nil || d.IsDir() || filepath.Base(path) != androidProductsMk {
+					return nil
+				}
+				if err2 := mk2rbc.UpdateProductConfigMap(productConfigMap, path); err2 != nil {
+					fmt.Fprintf(os.Stderr, "%s: %s\n", path, err)
+					// Keep going, we want to find all such errors in a single run
+				}
 				return nil
-			}
-			if err2 := mk2rbc.UpdateProductConfigMap(productConfigMap, path); err2 != nil {
-				fmt.Fprintf(os.Stderr, "%s: %s\n", path, err)
-				// Keep going, we want to find all such errors in a single run
-			}
-			return nil
-		})
+			})
+	}
 	return productConfigMap
 }
 

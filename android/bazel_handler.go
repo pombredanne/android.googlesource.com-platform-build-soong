@@ -27,9 +27,9 @@ import (
 	"sync"
 
 	"android/soong/bazel/cquery"
+	"android/soong/shared"
 
 	"android/soong/bazel"
-	"android/soong/shared"
 )
 
 type cqueryRequest interface {
@@ -106,7 +106,7 @@ type bazelPaths struct {
 	bazelPath    string
 	outputBase   string
 	workspaceDir string
-	buildDir     string
+	soongOutDir  string
 	metricsDir   string
 }
 
@@ -254,7 +254,7 @@ func NewBazelContext(c *config) (BazelContext, error) {
 
 func bazelPathsFromConfig(c *config) (*bazelPaths, error) {
 	p := bazelPaths{
-		buildDir: c.buildDir,
+		soongOutDir: c.soongOutDir,
 	}
 	missingEnvVars := []string{}
 	if len(c.Getenv("BAZEL_HOME")) > 1 {
@@ -353,7 +353,16 @@ type builtinBazelRunner struct{}
 // the invocation returned an error code.
 func (r *builtinBazelRunner) issueBazelCommand(paths *bazelPaths, runName bazel.RunName, command bazelCommand,
 	extraFlags ...string) (string, string, error) {
-	cmdFlags := []string{"--output_base=" + absolutePath(paths.outputBase), command.command}
+	cmdFlags := []string{
+		// --noautodetect_server_javabase has the practical consequence of preventing Bazel from
+		// attempting to download rules_java, which is incompatible with
+		// --experimental_repository_disable_download set further below.
+		// rules_java is also not needed until mixed builds start building java targets.
+		// TODO(b/197958133): Once rules_java is pulled into AOSP, remove this flag.
+		"--noautodetect_server_javabase",
+		"--output_base=" + absolutePath(paths.outputBase),
+		command.command,
+	}
 	cmdFlags = append(cmdFlags, command.expression)
 	cmdFlags = append(cmdFlags, "--profile="+shared.BazelMetricsFilename(paths, runName))
 
@@ -382,7 +391,7 @@ func (r *builtinBazelRunner) issueBazelCommand(paths *bazelPaths, runName bazel.
 	bazelCmd.Env = append(os.Environ(),
 		"HOME="+paths.homeDir,
 		pwdPrefix(),
-		"BUILD_DIR="+absolutePath(paths.buildDir),
+		"BUILD_DIR="+absolutePath(paths.soongOutDir),
 		// Make OUT_DIR absolute here so tools/bazel.sh uses the correct
 		// OUT_DIR at <root>/out, instead of <root>/out/soong/workspace/out.
 		"OUT_DIR="+absolutePath(paths.outDir()),
@@ -483,6 +492,12 @@ config_node(name = "%s",
 )
 `
 
+	commonArchFilegroupString := `
+filegroup(name = "common",
+    srcs = [%s],
+)
+`
+
 	configNodesSection := ""
 
 	labelsByArch := map[string][]string{}
@@ -492,14 +507,22 @@ config_node(name = "%s",
 		labelsByArch[archString] = append(labelsByArch[archString], labelString)
 	}
 
-	configNodeLabels := []string{}
+	allLabels := []string{}
 	for archString, labels := range labelsByArch {
-		configNodeLabels = append(configNodeLabels, fmt.Sprintf("\":%s\"", archString))
-		labelsString := strings.Join(labels, ",\n            ")
-		configNodesSection += fmt.Sprintf(configNodeFormatString, archString, archString, labelsString)
+		if archString == "common" {
+			// arch-less labels (e.g. filegroups) don't need a config_node
+			allLabels = append(allLabels, "\":common\"")
+			labelsString := strings.Join(labels, ",\n            ")
+			configNodesSection += fmt.Sprintf(commonArchFilegroupString, labelsString)
+		} else {
+			// Create a config_node, and add the config_node's label to allLabels
+			allLabels = append(allLabels, fmt.Sprintf("\":%s\"", archString))
+			labelsString := strings.Join(labels, ",\n            ")
+			configNodesSection += fmt.Sprintf(configNodeFormatString, archString, archString, labelsString)
+		}
 	}
 
-	return []byte(fmt.Sprintf(formatString, configNodesSection, strings.Join(configNodeLabels, ",\n            ")))
+	return []byte(fmt.Sprintf(formatString, configNodesSection, strings.Join(allLabels, ",\n            ")))
 }
 
 func indent(original string) string {
@@ -564,6 +587,12 @@ def %s(target):
 %s
 
 def get_arch(target):
+  # TODO(b/199363072): filegroups and file targets aren't associated with any
+  # specific platform architecture in mixed builds. This is consistent with how
+  # Soong treats filegroups, but it may not be the case with manually-written
+  # filegroup BUILD targets.
+  if target.kind in ["filegroup", ""]:
+    return "common"
   buildoptions = build_options(target)
   platforms = build_options(target)["//command_line_option:platforms"]
   if len(platforms) != 1:
@@ -599,24 +628,24 @@ def format(target):
 // Returns a path containing build-related metadata required for interfacing
 // with Bazel. Example: out/soong/bazel.
 func (p *bazelPaths) intermediatesDir() string {
-	return filepath.Join(p.buildDir, "bazel")
+	return filepath.Join(p.soongOutDir, "bazel")
 }
 
 // Returns the path where the contents of the @soong_injection repository live.
 // It is used by Soong to tell Bazel things it cannot over the command line.
 func (p *bazelPaths) injectedFilesDir() string {
-	return filepath.Join(p.buildDir, bazel.SoongInjectionDirName)
+	return filepath.Join(p.soongOutDir, bazel.SoongInjectionDirName)
 }
 
 // Returns the path of the synthetic Bazel workspace that contains a symlink
 // forest composed the whole source tree and BUILD files generated by bp2build.
 func (p *bazelPaths) syntheticWorkspaceDir() string {
-	return filepath.Join(p.buildDir, "workspace")
+	return filepath.Join(p.soongOutDir, "workspace")
 }
 
 // Returns the path to the top level out dir ($OUT_DIR).
 func (p *bazelPaths) outDir() string {
-	return filepath.Dir(p.buildDir)
+	return filepath.Dir(p.soongOutDir)
 }
 
 // Issues commands to Bazel to receive results for all cquery requests
@@ -662,11 +691,12 @@ func (context *bazelContext) InvokeBazel() error {
 	if err != nil {
 		return err
 	}
+
 	buildrootLabel := "@soong_injection//mixed_builds:buildroot"
 	cqueryOutput, cqueryErr, err = context.issueBazelCommand(
 		context.paths,
 		bazel.CqueryBuildRootRunName,
-		bazelCommand{"cquery", fmt.Sprintf("kind(rule, deps(%s))", buildrootLabel)},
+		bazelCommand{"cquery", fmt.Sprintf("deps(%s)", buildrootLabel)},
 		"--output=starlark",
 		"--starlark:file="+absolutePath(cqueryFileRelpath))
 	err = ioutil.WriteFile(filepath.Join(soongInjectionPath, "cquery.out"),

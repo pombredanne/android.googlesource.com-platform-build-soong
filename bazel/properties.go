@@ -19,7 +19,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strings"
 )
 
 // BazelTargetModuleProperties contain properties and metadata used for
@@ -30,12 +29,6 @@ type BazelTargetModuleProperties struct {
 
 	// The target label for the bzl file containing the definition of the rule class.
 	Bzl_load_location string `blueprint:"mutated"`
-}
-
-const BazelTargetModuleNamePrefix = "__bp2build__"
-
-func StripNamePrefix(moduleName string) string {
-	return strings.TrimPrefix(moduleName, BazelTargetModuleNamePrefix)
 }
 
 var productVariableSubstitutionPattern = regexp.MustCompile("%(d|s)")
@@ -741,6 +734,31 @@ func (sla *StringListAttribute) SortedConfigurationAxes() []ConfigurationAxis {
 
 	sort.Slice(keys, func(i, j int) bool { return keys[i].less(keys[j]) })
 	return keys
+}
+
+// DeduplicateAxesFromBase ensures no duplication of items between the no-configuration value and
+// configuration-specific values. For example, if we would convert this StringListAttribute as:
+// ["a", "b", "c"] + select({
+//    "//condition:one": ["a", "d"],
+//    "//conditions:default": [],
+// })
+// after this function, we would convert this StringListAttribute as:
+// ["a", "b", "c"] + select({
+//    "//condition:one": ["d"],
+//    "//conditions:default": [],
+// })
+func (sla *StringListAttribute) DeduplicateAxesFromBase() {
+	base := sla.Value
+	for axis, configToList := range sla.ConfigurableValues {
+		for config, list := range configToList {
+			remaining := SubtractStrings(list, base)
+			if len(remaining) == 0 {
+				delete(sla.ConfigurableValues[axis], config)
+			} else {
+				sla.ConfigurableValues[axis][config] = remaining
+			}
+		}
+	}
 }
 
 // TryVariableSubstitution, replace string substitution formatting within each string in slice with

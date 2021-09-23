@@ -31,6 +31,7 @@ import (
 	"android/soong/cc/config"
 	"android/soong/fuzz"
 	"android/soong/genrule"
+	"android/soong/snapshot"
 )
 
 func init() {
@@ -217,8 +218,6 @@ type Flags struct {
 
 	// True if .s files should be processed with the c preprocessor.
 	AssemblerWithCpp bool
-	// True if static libraries should be grouped (using `-Wl,--start-group` and `-Wl,--end-group`).
-	GroupStaticLibs bool
 
 	proto            android.ProtoFlags
 	protoC           bool // Whether to use C instead of C++
@@ -975,14 +974,15 @@ func (c *Module) MinSdkVersion() string {
 	return String(c.Properties.Min_sdk_version)
 }
 
-func (c *Module) SplitPerApiLevel() bool {
-	if !c.canUseSdk() {
-		return false
-	}
+func (c *Module) isCrt() bool {
 	if linker, ok := c.linker.(*objectLinker); ok {
 		return linker.isCrt()
 	}
 	return false
+}
+
+func (c *Module) SplitPerApiLevel() bool {
+	return c.canUseSdk() && c.isCrt()
 }
 
 func (c *Module) AlwaysSdk() bool {
@@ -1446,12 +1446,20 @@ func (ctx *moduleContextImpl) minSdkVersion() string {
 	// create versioned variants for. For example, if min_sdk_version is 16, then sdk variant of
 	// the crt object has local variants of 16, 17, ..., up to the latest version. sdk_version
 	// and min_sdk_version properties of the variants are set to the corresponding version
-	// numbers. However, the platform (non-sdk) variant of the crt object is left untouched.
-	// min_sdk_version: 16 doesn't actually mean that the platform variant has to support such
-	// an old version. Since the variant is for the platform, it's preferred to target the
-	// latest version.
-	if ctx.mod.SplitPerApiLevel() && !ctx.isSdkVariant() {
-		ver = strconv.Itoa(android.FutureApiLevelInt)
+	// numbers. However, the non-sdk variant (for apex or platform) of the crt object is left
+	// untouched.  min_sdk_version: 16 doesn't actually mean that the non-sdk variant has to
+	// support such an old version. The version is set to the later version in case when the
+	// non-sdk variant is for the platform, or the min_sdk_version of the containing APEX if
+	// it's for an APEX.
+	if ctx.mod.isCrt() && !ctx.isSdkVariant() {
+		if ctx.isForPlatform() {
+			ver = strconv.Itoa(android.FutureApiLevelInt)
+		} else { // for apex
+			ver = ctx.apexSdkVersion().String()
+			if ver == "" { // in case when min_sdk_version was not set by the APEX
+				ver = ctx.sdkVersion()
+			}
+		}
 	}
 
 	// Also make sure that minSdkVersion is not greater than sdkVersion, if they are both numbers
@@ -1703,7 +1711,9 @@ func (c *Module) setSubnameProperty(actx android.ModuleContext) {
 func (c *Module) maybeGenerateBazelActions(actx android.ModuleContext) bool {
 	bazelModuleLabel := c.GetBazelLabel(actx, c)
 	bazelActionsUsed := false
-	if c.MixedBuildsEnabled(actx) && c.bazelHandler != nil {
+	// Mixed builds mode is disabled for modules outside of device OS.
+	// TODO(b/200841190): Support non-device OS in mixed builds.
+	if c.MixedBuildsEnabled(actx) && c.bazelHandler != nil && actx.Os().Class == android.Device {
 		bazelActionsUsed = c.bazelHandler.GenerateBazelBuildActions(actx, bazelModuleLabel)
 	}
 	return bazelActionsUsed
@@ -1805,15 +1815,6 @@ func (c *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 	}
 
 	flags.AssemblerWithCpp = inList("-xassembler-with-cpp", flags.Local.AsFlags)
-
-	// Optimization to reduce size of build.ninja
-	// Replace the long list of flags for each file with a module-local variable
-	ctx.Variable(pctx, "cflags", strings.Join(flags.Local.CFlags, " "))
-	ctx.Variable(pctx, "cppflags", strings.Join(flags.Local.CppFlags, " "))
-	ctx.Variable(pctx, "asflags", strings.Join(flags.Local.AsFlags, " "))
-	flags.Local.CFlags = []string{"$cflags"}
-	flags.Local.CppFlags = []string{"$cppflags"}
-	flags.Local.AsFlags = []string{"$asflags"}
 
 	var objs Objects
 	if c.compiler != nil {
@@ -3393,6 +3394,8 @@ func (c *Module) AlwaysRequiresPlatformApexVariant() bool {
 	// stub libraries and native bridge libraries are always available to platform
 	return c.IsStubs() || c.Target().NativeBridge == android.NativeBridgeEnabled
 }
+
+var _ snapshot.RelativeInstallPath = (*Module)(nil)
 
 //
 // Defaults

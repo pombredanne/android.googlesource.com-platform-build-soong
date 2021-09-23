@@ -631,8 +631,7 @@ func archMutator(bpctx blueprint.BottomUpMutatorContext) {
 	image := base.commonProperties.ImageVariation
 	// Filter NativeBridge targets unless they are explicitly supported.
 	// Skip creating native bridge variants for non-core modules.
-	if os == Android &&
-		!(Bool(base.commonProperties.Native_bridge_supported) && image == CoreVariation) {
+	if os == Android && !(base.IsNativeBridgeSupported() && image == CoreVariation) {
 
 		var targets []Target
 		for _, t := range osTargets {
@@ -935,6 +934,8 @@ func filterArchStruct(field reflect.StructField, prefix string) (bool, reflect.S
 		if len(values) > 0 && values[0] != "path" {
 			panic(fmt.Errorf("unknown tags %q in field %q", values, prefix+field.Name))
 		} else if len(values) == 1 {
+			// FIXME(b/200678898): This assumes that the only tag type when there's
+			// `android:"arch_variant"` is `android` itself and thus clobbers others
 			field.Tag = reflect.StructTag(`android:"` + strings.Join(values, ",") + `"`)
 		} else {
 			field.Tag = ``

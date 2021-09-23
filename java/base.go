@@ -382,7 +382,7 @@ func (j *Module) CheckStableSdkVersion(ctx android.BaseModuleContext) error {
 		return nil
 	}
 	if sdkVersion.Kind == android.SdkCorePlatform {
-		if useLegacyCorePlatformApiByName(j.BaseModuleName()) {
+		if useLegacyCorePlatformApi(ctx, j.BaseModuleName()) {
 			return fmt.Errorf("non stable SDK %v - uses legacy core platform", sdkVersion)
 		} else {
 			// Treat stable core platform as stable.
@@ -606,10 +606,8 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 			if component, ok := dep.(SdkLibraryComponentDependency); ok {
 				if lib := component.OptionalSdkLibraryImplementation(); lib != nil {
 					// Add library as optional if it's one of the optional compatibility libs.
-					tag := usesLibReqTag
-					if android.InList(*lib, dexpreopt.OptionalCompatUsesLibs) {
-						tag = usesLibOptTag
-					}
+					optional := android.InList(*lib, dexpreopt.OptionalCompatUsesLibs)
+					tag := makeUsesLibraryDependencyTag(dexpreopt.AnySdkVersion, optional, true)
 					ctx.AddVariationDependencies(nil, tag, *lib)
 				}
 			}
@@ -644,6 +642,11 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 		}
 	} else if j.shouldInstrumentStatic(ctx) {
 		ctx.AddVariationDependencies(nil, staticLibTag, "jacocoagent")
+	}
+
+	if j.useCompose() {
+		ctx.AddVariationDependencies(ctx.Config().BuildOSCommonTarget.Variations(), kotlinPluginTag,
+			"androidx.compose.compiler_compiler-hosted")
 	}
 }
 
@@ -793,7 +796,7 @@ func (j *Module) collectJavacFlags(
 			// Manually specify build directory in case it is not under the repo root.
 			// (javac doesn't seem to expand into symbolic links when searching for patch-module targets, so
 			// just adding a symlink under the root doesn't help.)
-			patchPaths := []string{".", ctx.Config().BuildDir()}
+			patchPaths := []string{".", ctx.Config().SoongOutDir()}
 
 			// b/150878007
 			//
@@ -913,6 +916,12 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		if ctx.Device() {
 			kotlincFlags = append(kotlincFlags, "-no-jdk")
 		}
+
+		for _, plugin := range deps.kotlinPlugins {
+			kotlincFlags = append(kotlincFlags, "-Xplugin="+plugin.String())
+		}
+		flags.kotlincDeps = append(flags.kotlincDeps, deps.kotlinPlugins...)
+
 		if len(kotlincFlags) > 0 {
 			// optimization.
 			ctx.Variable(pctx, "kotlincFlags", strings.Join(kotlincFlags, " "))
@@ -1325,6 +1334,10 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 
 	// Save the output file with no relative path so that it doesn't end up in a subdirectory when used as a resource
 	j.outputFile = outputFile.WithoutRel()
+}
+
+func (j *Module) useCompose() bool {
+	return android.InList("androidx.compose.runtime_runtime", j.properties.Static_libs)
 }
 
 // Returns a copy of the supplied flags, but with all the errorprone-related
@@ -1757,6 +1770,8 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 				deps.kotlinStdlib = append(deps.kotlinStdlib, dep.HeaderJars...)
 			case kotlinAnnotationsTag:
 				deps.kotlinAnnotations = dep.HeaderJars
+			case kotlinPluginTag:
+				deps.kotlinPlugins = append(deps.kotlinPlugins, dep.ImplementationAndResourcesJars...)
 			case syspropPublicStubDepTag:
 				// This is a sysprop implementation library, forward the JavaInfoProvider from
 				// the corresponding sysprop public stub library as SyspropPublicStubInfoProvider.

@@ -248,15 +248,24 @@ type installDependencyTag struct {
 
 type usesLibraryDependencyTag struct {
 	dependencyTag
-	sdkVersion int  // SDK version in which the library appared as a standalone library.
-	optional   bool // If the dependency is optional or required.
+
+	// SDK version in which the library appared as a standalone library.
+	sdkVersion int
+
+	// If the dependency is optional or required.
+	optional bool
+
+	// Whether this is an implicit dependency inferred by Soong, or an explicit one added via
+	// `uses_libs`/`optional_uses_libs` properties.
+	implicit bool
 }
 
-func makeUsesLibraryDependencyTag(sdkVersion int, optional bool) usesLibraryDependencyTag {
+func makeUsesLibraryDependencyTag(sdkVersion int, optional bool, implicit bool) usesLibraryDependencyTag {
 	return usesLibraryDependencyTag{
 		dependencyTag: dependencyTag{name: fmt.Sprintf("uses-library-%d", sdkVersion)},
 		sdkVersion:    sdkVersion,
 		optional:      optional,
+		implicit:      implicit,
 	}
 }
 
@@ -277,6 +286,7 @@ var (
 	frameworkResTag         = dependencyTag{name: "framework-res"}
 	kotlinStdlibTag         = dependencyTag{name: "kotlin-stdlib"}
 	kotlinAnnotationsTag    = dependencyTag{name: "kotlin-annotations"}
+	kotlinPluginTag         = dependencyTag{name: "kotlin-plugin"}
 	proguardRaiseTag        = dependencyTag{name: "proguard-raise"}
 	certificateTag          = dependencyTag{name: "certificate"}
 	instrumentationForTag   = dependencyTag{name: "instrumentation_for"}
@@ -285,11 +295,6 @@ var (
 	syspropPublicStubDepTag = dependencyTag{name: "sysprop public stub"}
 	jniInstallTag           = installDependencyTag{name: "jni install"}
 	binaryInstallTag        = installDependencyTag{name: "binary install"}
-	usesLibReqTag           = makeUsesLibraryDependencyTag(dexpreopt.AnySdkVersion, false)
-	usesLibOptTag           = makeUsesLibraryDependencyTag(dexpreopt.AnySdkVersion, true)
-	usesLibCompat28OptTag   = makeUsesLibraryDependencyTag(28, true)
-	usesLibCompat29ReqTag   = makeUsesLibraryDependencyTag(29, false)
-	usesLibCompat30OptTag   = makeUsesLibraryDependencyTag(30, true)
 )
 
 func IsLibDepTag(depTag blueprint.DependencyTag) bool {
@@ -376,6 +381,7 @@ type deps struct {
 	aidlPreprocess          android.OptionalPath
 	kotlinStdlib            android.Paths
 	kotlinAnnotations       android.Paths
+	kotlinPlugins           android.Paths
 
 	disableTurbine bool
 }
@@ -483,7 +489,7 @@ func shouldUncompressDex(ctx android.ModuleContext, dexpreopter *dexpreopter) bo
 	}
 
 	// Store uncompressed dex files that are preopted on /system.
-	if !dexpreopter.dexpreoptDisabled(ctx) && (ctx.Host() || !odexOnSystemOther(ctx, dexpreopter.installPath)) {
+	if !dexpreopter.dexpreoptDisabled(ctx) && (ctx.Host() || !dexpreopter.odexOnSystemOther(ctx, dexpreopter.installPath)) {
 		return true
 	}
 	if ctx.Config().UncompressPrivAppDex() &&
@@ -504,7 +510,8 @@ func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 
 	j.checkSdkVersions(ctx)
-	j.dexpreopter.installPath = android.PathForModuleInstall(ctx, "framework", j.Stem()+".jar")
+	j.dexpreopter.installPath = j.dexpreopter.getInstallPath(
+		ctx, android.PathForModuleInstall(ctx, "framework", j.Stem()+".jar"))
 	j.dexpreopter.isSDKLibrary = j.deviceProperties.IsSDKLibrary
 	if j.dexProperties.Uncompress_dex == nil {
 		// If the value was not force-set by the user, use reasonable default based on the module.
@@ -525,6 +532,10 @@ func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		}
 		j.installFile = ctx.InstallFile(android.PathForModuleInstall(ctx, "framework"),
 			j.Stem()+".jar", j.outputFile, extraInstallDeps...)
+	}
+
+	if ctx.Windows() {
+		j.HideFromMake()
 	}
 }
 
@@ -570,8 +581,8 @@ const (
 	copyEverythingToSnapshot = false
 )
 
-func (mt *librarySdkMemberType) AddDependencies(mctx android.BottomUpMutatorContext, dependencyTag blueprint.DependencyTag, names []string) {
-	mctx.AddVariationDependencies(nil, dependencyTag, names...)
+func (mt *librarySdkMemberType) AddDependencies(ctx android.SdkDependencyContext, dependencyTag blueprint.DependencyTag, names []string) {
+	ctx.AddVariationDependencies(nil, dependencyTag, names...)
 }
 
 func (mt *librarySdkMemberType) IsInstance(module android.Module) bool {
@@ -871,8 +882,8 @@ type testSdkMemberType struct {
 	android.SdkMemberTypeBase
 }
 
-func (mt *testSdkMemberType) AddDependencies(mctx android.BottomUpMutatorContext, dependencyTag blueprint.DependencyTag, names []string) {
-	mctx.AddVariationDependencies(nil, dependencyTag, names...)
+func (mt *testSdkMemberType) AddDependencies(ctx android.SdkDependencyContext, dependencyTag blueprint.DependencyTag, names []string) {
+	ctx.AddVariationDependencies(nil, dependencyTag, names...)
 }
 
 func (mt *testSdkMemberType) IsInstance(module android.Module) bool {
@@ -1023,14 +1034,14 @@ func InitTestHost(th *TestHost, installable *bool, testSuites []string, autoGenC
 
 type binaryProperties struct {
 	// installable script to execute the resulting jar
-	Wrapper *string `android:"path"`
+	Wrapper *string `android:"path,arch_variant"`
 
 	// Name of the class containing main to be inserted into the manifest as Main-Class.
 	Main_class *string
 
 	// Names of modules containing JNI libraries that should be installed alongside the host
 	// variant of the binary.
-	Jni_libs []string
+	Jni_libs []string `android:"arch_variant"`
 }
 
 type Binary struct {
@@ -1068,14 +1079,27 @@ func (j *Binary) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		if j.binaryProperties.Wrapper != nil {
 			j.wrapperFile = android.PathForModuleSrc(ctx, *j.binaryProperties.Wrapper)
 		} else {
+			if ctx.Windows() {
+				ctx.PropertyErrorf("wrapper", "wrapper is required for Windows")
+			}
+
 			j.wrapperFile = android.PathForSource(ctx, "build/soong/scripts/jar-wrapper.sh")
+		}
+
+		ext := ""
+		if ctx.Windows() {
+			ext = ".bat"
 		}
 
 		// The host installation rules make the installed wrapper depend on all the dependencies
 		// of the wrapper variant, which will include the common variant's jar file and any JNI
 		// libraries.  This is verified by TestBinary.
 		j.binaryFile = ctx.InstallExecutable(android.PathForModuleInstall(ctx, "bin"),
-			ctx.ModuleName(), j.wrapperFile)
+			ctx.ModuleName()+ext, j.wrapperFile)
+	}
+
+	if ctx.Windows() {
+		j.HideFromMake()
 	}
 }
 
@@ -1276,6 +1300,10 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		j.hideApexVariantFromMake = true
 	}
 
+	if ctx.Windows() {
+		j.HideFromMake()
+	}
+
 	jars := android.PathsForModuleSrc(ctx, j.properties.Jars)
 
 	jarName := j.Stem() + ".jar"
@@ -1364,7 +1392,8 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 			// Dex compilation
 
-			j.dexpreopter.installPath = android.PathForModuleInstall(ctx, "framework", jarName)
+			j.dexpreopter.installPath = j.dexpreopter.getInstallPath(
+				ctx, android.PathForModuleInstall(ctx, "framework", jarName))
 			if j.dexProperties.Uncompress_dex == nil {
 				// If the value was not force-set by the user, use reasonable default based on the module.
 				j.dexProperties.Uncompress_dex = proptools.BoolPtr(shouldUncompressDex(ctx, &j.dexpreopter))
@@ -1505,7 +1534,7 @@ func (j *Import) IsInstallable() bool {
 	return Bool(j.properties.Installable)
 }
 
-var _ dexpreopterInterface = (*Import)(nil)
+var _ DexpreopterInterface = (*Import)(nil)
 
 // java_import imports one or more `.jar` files into the build graph as if they were built by a java_library module.
 //
@@ -1618,7 +1647,8 @@ func (j *DexImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		j.hideApexVariantFromMake = true
 	}
 
-	j.dexpreopter.installPath = android.PathForModuleInstall(ctx, "framework", j.Stem()+".jar")
+	j.dexpreopter.installPath = j.dexpreopter.getInstallPath(
+		ctx, android.PathForModuleInstall(ctx, "framework", j.Stem()+".jar"))
 	j.dexpreopter.uncompressedDex = shouldUncompressDex(ctx, &j.dexpreopter)
 
 	inputJar := ctx.ExpandSource(j.properties.Jars[0], "jars")
@@ -1813,8 +1843,10 @@ func addCLCFromDep(ctx android.ModuleContext, depModule android.Module,
 	depTag := ctx.OtherModuleDependencyTag(depModule)
 	if depTag == libTag {
 		// Ok, propagate <uses-library> through non-static library dependencies.
-	} else if tag, ok := depTag.(usesLibraryDependencyTag); ok && tag.sdkVersion == dexpreopt.AnySdkVersion {
-		// Ok, propagate <uses-library> through non-compatibility <uses-library> dependencies.
+	} else if tag, ok := depTag.(usesLibraryDependencyTag); ok &&
+		tag.sdkVersion == dexpreopt.AnySdkVersion && tag.implicit {
+		// Ok, propagate <uses-library> through non-compatibility implicit <uses-library>
+		// dependencies.
 	} else if depTag == staticLibTag {
 		// Propagate <uses-library> through static library dependencies, unless it is a component
 		// library (such as stubs). Component libraries have a dependency on their SDK library,
@@ -1832,7 +1864,7 @@ func addCLCFromDep(ctx android.ModuleContext, depModule android.Module,
 	// <uses_library> and should not be added to CLC, but the transitive <uses-library> dependencies
 	// from its CLC should be added to the current CLC.
 	if sdkLib != nil {
-		clcMap.AddContext(ctx, dexpreopt.AnySdkVersion, *sdkLib, false,
+		clcMap.AddContext(ctx, dexpreopt.AnySdkVersion, *sdkLib, false, true,
 			dep.DexJarBuildPath(), dep.DexJarInstallPath(), dep.ClassLoaderContexts())
 	} else {
 		clcMap.AddContextMap(dep.ClassLoaderContexts(), depName)

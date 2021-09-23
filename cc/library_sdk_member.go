@@ -74,30 +74,55 @@ type librarySdkMemberType struct {
 	linkTypes []string
 }
 
-func (mt *librarySdkMemberType) AddDependencies(mctx android.BottomUpMutatorContext, dependencyTag blueprint.DependencyTag, names []string) {
-	targets := mctx.MultiTargets()
+func (mt *librarySdkMemberType) AddDependencies(ctx android.SdkDependencyContext, dependencyTag blueprint.DependencyTag, names []string) {
+	// The base set of targets which does not include native bridge targets.
+	defaultTargets := ctx.MultiTargets()
+
+	// The lazily created list of native bridge targets.
+	var includeNativeBridgeTargets []android.Target
+
 	for _, lib := range names {
+		targets := defaultTargets
+
+		// If native bridge support is required in the sdk snapshot then add native bridge targets to
+		// the basic list of targets that are required.
+		nativeBridgeSupport := ctx.RequiresTrait(lib, nativeBridgeSdkTrait)
+		if nativeBridgeSupport && ctx.Device() {
+			// If not already computed then compute the list of native bridge targets.
+			if includeNativeBridgeTargets == nil {
+				includeNativeBridgeTargets = append([]android.Target{}, defaultTargets...)
+				allAndroidTargets := ctx.Config().Targets[android.Android]
+				for _, possibleNativeBridgeTarget := range allAndroidTargets {
+					if possibleNativeBridgeTarget.NativeBridge == android.NativeBridgeEnabled {
+						includeNativeBridgeTargets = append(includeNativeBridgeTargets, possibleNativeBridgeTarget)
+					}
+				}
+			}
+
+			// Include the native bridge targets as well.
+			targets = includeNativeBridgeTargets
+		}
 		for _, target := range targets {
 			name, version := StubsLibNameAndVersion(lib)
 			if version == "" {
 				version = "latest"
 			}
 			variations := target.Variations()
-			if mctx.Device() {
+			if ctx.Device() {
 				variations = append(variations,
 					blueprint.Variation{Mutator: "image", Variation: android.CoreVariation})
 			}
 			if mt.linkTypes == nil {
-				mctx.AddFarVariationDependencies(variations, dependencyTag, name)
+				ctx.AddFarVariationDependencies(variations, dependencyTag, name)
 			} else {
 				for _, linkType := range mt.linkTypes {
 					libVariations := append(variations,
 						blueprint.Variation{Mutator: "link", Variation: linkType})
-					if mctx.Device() && linkType == "shared" {
+					if ctx.Device() && linkType == "shared" {
 						libVariations = append(libVariations,
 							blueprint.Variation{Mutator: "version", Variation: version})
 					}
-					mctx.AddFarVariationDependencies(libVariations, dependencyTag, name)
+					ctx.AddFarVariationDependencies(libVariations, dependencyTag, name)
 				}
 			}
 		}
@@ -121,6 +146,10 @@ func (mt *librarySdkMemberType) AddPrebuiltModule(ctx android.SdkMemberContext, 
 	pbm := ctx.SnapshotBuilder().AddPrebuiltModule(member, mt.prebuiltModuleType)
 
 	ccModule := member.Variants()[0].(*Module)
+
+	if ctx.RequiresTrait(nativeBridgeSdkTrait) {
+		pbm.AddProperty("native_bridge_supported", true)
+	}
 
 	if proptools.Bool(ccModule.Properties.Recovery_available) {
 		pbm.AddProperty("recovery_available", true)
@@ -265,8 +294,8 @@ func addPossiblyArchSpecificProperties(sdkModuleContext android.ModuleContext, b
 	// values where necessary.
 	for _, propertyInfo := range includeDirProperties {
 		// Calculate the base directory in the snapshot into which the files will be copied.
-		// lib.archType is "" for common properties.
-		targetDir := filepath.Join(libInfo.OsPrefix(), libInfo.archType, propertyInfo.snapshotDir)
+		// lib.archSubDir is "" for common properties.
+		targetDir := filepath.Join(libInfo.OsPrefix(), libInfo.archSubDir, propertyInfo.snapshotDir)
 
 		propertyName := propertyInfo.propertyName
 
@@ -334,7 +363,7 @@ const (
 
 // path to the native library. Relative to <sdk_root>/<api_dir>
 func nativeLibraryPathFor(lib *nativeLibInfoProperties) string {
-	return filepath.Join(lib.OsPrefix(), lib.archType,
+	return filepath.Join(lib.OsPrefix(), lib.archSubDir,
 		nativeStubDir, lib.outputFile.Base())
 }
 
@@ -347,9 +376,12 @@ type nativeLibInfoProperties struct {
 
 	memberType *librarySdkMemberType
 
-	// archType is not exported as if set (to a non default value) it is always arch specific.
-	// This is "" for common properties.
-	archType string
+	// archSubDir is the subdirectory within the OS directory in the sdk snapshot into which arch
+	// specific files will be copied.
+	//
+	// It is not exported since any value other than "" is always going to be arch specific.
+	// This is "" for non-arch specific common properties.
+	archSubDir string
 
 	// The list of possibly common exported include dirs.
 	//
@@ -433,7 +465,11 @@ func (p *nativeLibInfoProperties) PopulateFromVariant(ctx android.SdkMemberConte
 	exportedIncludeDirs, exportedGeneratedIncludeDirs := android.FilterPathListPredicate(
 		exportedInfo.IncludeDirs, isGeneratedHeaderDirectory)
 
-	p.archType = ccModule.Target().Arch.ArchType.String()
+	target := ccModule.Target()
+	p.archSubDir = target.Arch.ArchType.String()
+	if target.NativeBridge == android.NativeBridgeEnabled {
+		p.archSubDir += "_native_bridge"
+	}
 
 	// Make sure that the include directories are unique.
 	p.ExportedIncludeDirs = android.FirstUniquePaths(exportedIncludeDirs)

@@ -107,17 +107,32 @@ func (s *SystemServerClasspathModule) configuredJars(ctx android.ModuleContext) 
 	global := dexpreopt.GetGlobalConfig(ctx)
 
 	possibleUpdatableModules := gatherPossibleApexModuleNamesAndStems(ctx, s.properties.Contents, systemServerClasspathFragmentContentDepTag)
-	return global.ApexSystemServerJars.Filter(possibleUpdatableModules)
+	jars, unknown := global.ApexSystemServerJars.Filter(possibleUpdatableModules)
+	// TODO(satayev): remove geotz ssc_fragment, since geotz is not part of SSCP anymore.
+	_, unknown = android.RemoveFromList("geotz", unknown)
+
+	// For non test apexes, make sure that all contents are actually declared in make.
+	if global.ApexSystemServerJars.Len() > 0 && len(unknown) > 0 {
+		ctx.ModuleErrorf("%s in contents must also be declared in PRODUCT_UPDATABLE_SYSTEM_SERVER_JARS", unknown)
+	}
+
+	return jars
 }
 
 type systemServerClasspathFragmentContentDependencyTag struct {
 	blueprint.BaseDependencyTag
 }
 
+// The systemserverclasspath_fragment contents must never depend on prebuilts.
+func (systemServerClasspathFragmentContentDependencyTag) ReplaceSourceWithPrebuilt() bool {
+	return false
+}
+
 // Contents of system server fragments in an apex are considered to be directly in the apex, as if
 // they were listed in java_libs.
 func (systemServerClasspathFragmentContentDependencyTag) CopyDirectlyInAnyApex() {}
 
+var _ android.ReplaceSourceWithPrebuilt = systemServerClasspathFragmentContentDepTag
 var _ android.CopyDirectlyInAnyApexTag = systemServerClasspathFragmentContentDepTag
 
 // The tag used for the dependency between the systemserverclasspath_fragment module and its contents.
