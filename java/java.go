@@ -286,6 +286,7 @@ var (
 	frameworkResTag         = dependencyTag{name: "framework-res"}
 	kotlinStdlibTag         = dependencyTag{name: "kotlin-stdlib"}
 	kotlinAnnotationsTag    = dependencyTag{name: "kotlin-annotations"}
+	kotlinPluginTag         = dependencyTag{name: "kotlin-plugin"}
 	proguardRaiseTag        = dependencyTag{name: "proguard-raise"}
 	certificateTag          = dependencyTag{name: "certificate"}
 	instrumentationForTag   = dependencyTag{name: "instrumentation_for"}
@@ -380,6 +381,7 @@ type deps struct {
 	aidlPreprocess          android.OptionalPath
 	kotlinStdlib            android.Paths
 	kotlinAnnotations       android.Paths
+	kotlinPlugins           android.Paths
 
 	disableTurbine bool
 }
@@ -487,7 +489,7 @@ func shouldUncompressDex(ctx android.ModuleContext, dexpreopter *dexpreopter) bo
 	}
 
 	// Store uncompressed dex files that are preopted on /system.
-	if !dexpreopter.dexpreoptDisabled(ctx) && (ctx.Host() || !odexOnSystemOther(ctx, dexpreopter.installPath)) {
+	if !dexpreopter.dexpreoptDisabled(ctx) && (ctx.Host() || !dexpreopter.odexOnSystemOther(ctx, dexpreopter.installPath)) {
 		return true
 	}
 	if ctx.Config().UncompressPrivAppDex() &&
@@ -508,7 +510,8 @@ func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 
 	j.checkSdkVersions(ctx)
-	j.dexpreopter.installPath = android.PathForModuleInstall(ctx, "framework", j.Stem()+".jar")
+	j.dexpreopter.installPath = j.dexpreopter.getInstallPath(
+		ctx, android.PathForModuleInstall(ctx, "framework", j.Stem()+".jar"))
 	j.dexpreopter.isSDKLibrary = j.deviceProperties.IsSDKLibrary
 	if j.dexProperties.Uncompress_dex == nil {
 		// If the value was not force-set by the user, use reasonable default based on the module.
@@ -529,6 +532,10 @@ func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		}
 		j.installFile = ctx.InstallFile(android.PathForModuleInstall(ctx, "framework"),
 			j.Stem()+".jar", j.outputFile, extraInstallDeps...)
+	}
+
+	if ctx.Windows() {
+		j.HideFromMake()
 	}
 }
 
@@ -1027,14 +1034,14 @@ func InitTestHost(th *TestHost, installable *bool, testSuites []string, autoGenC
 
 type binaryProperties struct {
 	// installable script to execute the resulting jar
-	Wrapper *string `android:"path"`
+	Wrapper *string `android:"path,arch_variant"`
 
 	// Name of the class containing main to be inserted into the manifest as Main-Class.
 	Main_class *string
 
 	// Names of modules containing JNI libraries that should be installed alongside the host
 	// variant of the binary.
-	Jni_libs []string
+	Jni_libs []string `android:"arch_variant"`
 }
 
 type Binary struct {
@@ -1072,14 +1079,27 @@ func (j *Binary) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		if j.binaryProperties.Wrapper != nil {
 			j.wrapperFile = android.PathForModuleSrc(ctx, *j.binaryProperties.Wrapper)
 		} else {
+			if ctx.Windows() {
+				ctx.PropertyErrorf("wrapper", "wrapper is required for Windows")
+			}
+
 			j.wrapperFile = android.PathForSource(ctx, "build/soong/scripts/jar-wrapper.sh")
+		}
+
+		ext := ""
+		if ctx.Windows() {
+			ext = ".bat"
 		}
 
 		// The host installation rules make the installed wrapper depend on all the dependencies
 		// of the wrapper variant, which will include the common variant's jar file and any JNI
 		// libraries.  This is verified by TestBinary.
 		j.binaryFile = ctx.InstallExecutable(android.PathForModuleInstall(ctx, "bin"),
-			ctx.ModuleName(), j.wrapperFile)
+			ctx.ModuleName()+ext, j.wrapperFile)
+	}
+
+	if ctx.Windows() {
+		j.HideFromMake()
 	}
 }
 
@@ -1280,6 +1300,10 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		j.hideApexVariantFromMake = true
 	}
 
+	if ctx.Windows() {
+		j.HideFromMake()
+	}
+
 	jars := android.PathsForModuleSrc(ctx, j.properties.Jars)
 
 	jarName := j.Stem() + ".jar"
@@ -1368,7 +1392,8 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 			// Dex compilation
 
-			j.dexpreopter.installPath = android.PathForModuleInstall(ctx, "framework", jarName)
+			j.dexpreopter.installPath = j.dexpreopter.getInstallPath(
+				ctx, android.PathForModuleInstall(ctx, "framework", jarName))
 			if j.dexProperties.Uncompress_dex == nil {
 				// If the value was not force-set by the user, use reasonable default based on the module.
 				j.dexProperties.Uncompress_dex = proptools.BoolPtr(shouldUncompressDex(ctx, &j.dexpreopter))
@@ -1509,7 +1534,7 @@ func (j *Import) IsInstallable() bool {
 	return Bool(j.properties.Installable)
 }
 
-var _ dexpreopterInterface = (*Import)(nil)
+var _ DexpreopterInterface = (*Import)(nil)
 
 // java_import imports one or more `.jar` files into the build graph as if they were built by a java_library module.
 //
@@ -1622,7 +1647,8 @@ func (j *DexImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		j.hideApexVariantFromMake = true
 	}
 
-	j.dexpreopter.installPath = android.PathForModuleInstall(ctx, "framework", j.Stem()+".jar")
+	j.dexpreopter.installPath = j.dexpreopter.getInstallPath(
+		ctx, android.PathForModuleInstall(ctx, "framework", j.Stem()+".jar"))
 	j.dexpreopter.uncompressedDex = shouldUncompressDex(ctx, &j.dexpreopter)
 
 	inputJar := ctx.ExpandSource(j.properties.Jars[0], "jars")

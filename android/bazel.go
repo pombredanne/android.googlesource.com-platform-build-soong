@@ -150,17 +150,23 @@ var (
 		"build/bazel/platforms":/* recursive = */ true,
 		"build/bazel/product_variables":/* recursive = */ true,
 		"build/bazel_common_rules":/* recursive = */ true,
+		"build/make/tools":/* recursive = */ true,
 		"build/pesto":/* recursive = */ true,
 
 		// external/bazelbuild-rules_android/... is needed by mixed builds, otherwise mixed builds analysis fails
 		// e.g. ERROR: Analysis of target '@soong_injection//mixed_builds:buildroot' failed
 		"external/bazelbuild-rules_android":/* recursive = */ true,
 		"external/bazel-skylib":/* recursive = */ true,
+		"external/guava":/* recursive = */ true,
+		"external/error_prone":/* recursive = */ true,
+		"external/jsr305":/* recursive = */ true,
+		"frameworks/ex/common":/* recursive = */ true,
 
 		"prebuilts/sdk":/* recursive = */ false,
 		"prebuilts/sdk/tools":/* recursive = */ false,
 		"prebuilts/r8":/* recursive = */ false,
 		"packages/apps/Music":/* recursive = */ true,
+		"packages/apps/QuickSearchBox":/* recursive = */ true,
 	}
 
 	// Configure modules in these directories to enable bp2build_available: true or false by default.
@@ -212,6 +218,13 @@ var (
 		"libc_ndk",          // http://b/187013218, cc_library_static, depends on //bionic/libm:libm (http://b/183064661)
 		"libc_malloc_hooks", // http://b/187016307, cc_library, ld.lld: error: undefined symbol: __malloc_hook
 
+		// There are unexported symbols that don't surface on a shared library build,
+		// from the source static archive
+		// e.g. _Unwind_{GetRegionStart,GetLanguageSpecificData,GetIP,Set{IP,GR},Resume,{Raise,Delete}Exception}, pthread_atfork
+		// ... from: cxa_{personality,exception}.o, system_error.o, wrappers_c_bionic.o
+		// cf. http://b/198403271
+		"libc++",
+
 		// http://b/186823769: Needs C++ STL support, includes from unconverted standard libraries in //external/libcxx
 		// c++_static
 		"libbase_ndk", // http://b/186826477, cc_library, no such target '//build/bazel/platforms/os:darwin' when --platforms //build/bazel/platforms:android_x86 is added
@@ -222,6 +235,8 @@ var (
 		"liblog",                   // http://b/186822772: cc_library, 'sys/cdefs.h' file not found
 		"libbase",                  // Requires liblog. http://b/186826479, cc_library, fatal error: 'memory' file not found, from libcxx.
 		// Also depends on fmtlib.
+
+		"libfdtrack", // depends on STL
 
 		"libseccomp_policy", // depends on libbase
 
@@ -250,7 +265,6 @@ var (
 	// Per-module denylist of cc_library modules to only generate the static
 	// variant if their shared variant isn't ready or buildable by Bazel.
 	bp2buildCcLibraryStaticOnlyList = []string{
-		"libstdc++",    // http://b/186822597, cc_library, ld.lld: error: undefined symbol: __errno
 		"libjemalloc5", // http://b/188503688, cc_library, `target: { android: { enabled: false } }` for android targets.
 	}
 
@@ -285,8 +299,8 @@ func init() {
 	}
 }
 
-func GenerateCcLibraryStaticOnly(ctx BazelConversionPathContext) bool {
-	return bp2buildCcLibraryStaticOnly[ctx.Module().Name()]
+func GenerateCcLibraryStaticOnly(moduleName string) bool {
+	return bp2buildCcLibraryStaticOnly[moduleName]
 }
 
 func ShouldKeepExistingBuildFileForDir(dir string) bool {
@@ -316,7 +330,7 @@ func (b *BazelModuleBase) MixedBuildsEnabled(ctx BazelConversionPathContext) boo
 		return false
 	}
 
-	if GenerateCcLibraryStaticOnly(ctx) {
+	if GenerateCcLibraryStaticOnly(ctx.Module().Name()) {
 		// Don't use partially-converted cc_library targets in mixed builds,
 		// since mixed builds would generally rely on both static and shared
 		// variants of a cc_library.
