@@ -61,6 +61,8 @@ type variableProperties struct {
 			Shared_libs         []string `android:"arch_variant"`
 			Whole_static_libs   []string `android:"arch_variant"`
 			Exclude_static_libs []string `android:"arch_variant"`
+			Srcs                []string `android:"arch_variant"`
+			Header_libs         []string `android:"arch_variant"`
 		} `android:"arch_variant"`
 
 		Malloc_zero_contents struct {
@@ -344,6 +346,7 @@ type productVariables struct {
 
 	BoardSepolicyVers       *string `json:",omitempty"`
 	PlatformSepolicyVersion *string `json:",omitempty"`
+	TotSepolicyVersion      *string `json:",omitempty"`
 
 	VendorVars map[string]map[string]string `json:",omitempty"`
 
@@ -407,6 +410,9 @@ type productVariables struct {
 	SelinuxIgnoreNeverallows bool `json:",omitempty"`
 
 	SepolicySplit bool `json:",omitempty"`
+
+	SepolicyFreezeTestExtraDirs         []string `json:",omitempty"`
+	SepolicyFreezeTestExtraPrebuiltDirs []string `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {

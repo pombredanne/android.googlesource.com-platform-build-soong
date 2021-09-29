@@ -212,7 +212,13 @@ func (r *robolectricTest) GenerateAndroidBuildActions(ctx android.ModuleContext)
 		installDeps = append(installDeps, installedData)
 	}
 
-	ctx.InstallFile(installPath, ctx.ModuleName()+".jar", r.combinedJar, installDeps...)
+	installed := ctx.InstallFile(installPath, ctx.ModuleName()+".jar", r.combinedJar, installDeps...)
+
+	if r.ExportedToMake() {
+		// Soong handles installation here, but Make is usually what creates the phony rule that atest
+		// uses to build the module.  Create it here for now.
+		ctx.Phony(ctx.ModuleName(), installed)
+	}
 }
 
 func generateRoboTestConfig(ctx android.ModuleContext, outputFile android.WritablePath,
@@ -417,10 +423,10 @@ func (r *robolectricRuntimes) GenerateAndroidBuildActions(ctx android.ModuleCont
 		}
 		runtimeFromSourceJar := android.OutputFileForModule(ctx, runtimeFromSourceModule, "")
 
-		// TODO(murj) Update this to ctx.Config().PlatformSdkCodename() once the platform
-		// classes like android.os.Build are updated to S.
-		runtimeName := fmt.Sprintf("android-all-%s-robolectric-r0.jar",
-			"R")
+		// "TREE" name is essential here because it hooks into the "TREE" name in
+		// Robolectric's SdkConfig.java that will always correspond to the NEWEST_SDK
+		// in Robolectric configs.
+		runtimeName := "android-all-current-robolectric-r0.jar"
 		installedRuntime := ctx.InstallFile(androidAllDir, runtimeName, runtimeFromSourceJar)
 		r.runtimes = append(r.runtimes, installedRuntime)
 	}

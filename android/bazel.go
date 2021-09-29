@@ -162,11 +162,15 @@ var (
 		"external/jsr305":/* recursive = */ true,
 		"frameworks/ex/common":/* recursive = */ true,
 
-		"prebuilts/sdk":/* recursive = */ false,
-		"prebuilts/sdk/tools":/* recursive = */ false,
-		"prebuilts/r8":/* recursive = */ false,
 		"packages/apps/Music":/* recursive = */ true,
 		"packages/apps/QuickSearchBox":/* recursive = */ true,
+		"packages/apps/WallpaperPicker":/* recursive = */ false,
+
+		"prebuilts/sdk":/* recursive = */ false,
+		"prebuilts/sdk/current/extras/app-toolkit":/* recursive = */ false,
+		"prebuilts/sdk/current/support":/* recursive = */ false,
+		"prebuilts/sdk/tools":/* recursive = */ false,
+		"prebuilts/r8":/* recursive = */ false,
 	}
 
 	// Configure modules in these directories to enable bp2build_available: true or false by default.
@@ -174,24 +178,29 @@ var (
 		"bionic":                            Bp2BuildDefaultTrueRecursively,
 		"build/bazel/examples/apex/minimal": Bp2BuildDefaultTrueRecursively,
 		"development/sdk":                   Bp2BuildDefaultTrueRecursively,
-		"external/gwp_asan":                 Bp2BuildDefaultTrueRecursively,
+		"external/arm-optimized-routines":   Bp2BuildDefaultTrueRecursively,
 		"external/brotli":                   Bp2BuildDefaultTrue,
+		"external/fmtlib":                   Bp2BuildDefaultTrueRecursively,
+		"external/gwp_asan":                 Bp2BuildDefaultTrueRecursively,
+		"external/jemalloc_new":             Bp2BuildDefaultTrueRecursively,
+		"external/libcap":                   Bp2BuildDefaultTrueRecursively,
+		"external/libcxx":                   Bp2BuildDefaultTrueRecursively,
+		"external/libcxxabi":                Bp2BuildDefaultTrueRecursively,
+		"external/lz4/lib":                  Bp2BuildDefaultTrue,
+		"external/protobuf":                 Bp2BuildDefaultTrueRecursively,
+		"external/python/six":               Bp2BuildDefaultTrueRecursively,
+		"external/scudo":                    Bp2BuildDefaultTrueRecursively,
+		"external/zlib":                     Bp2BuildDefaultTrueRecursively,
+		"prebuilts/clang/host/linux-x86":    Bp2BuildDefaultTrueRecursively,
+		"system/core/libasyncio":            Bp2BuildDefaultTrue,
 		"system/core/libcutils":             Bp2BuildDefaultTrueRecursively,
 		"system/core/libprocessgroup":       Bp2BuildDefaultTrue,
 		"system/core/property_service/libpropertyinfoparser": Bp2BuildDefaultTrueRecursively,
-		"system/libbase":                  Bp2BuildDefaultTrueRecursively,
-		"system/logging/liblog":           Bp2BuildDefaultTrueRecursively,
-		"system/sepolicy/apex":            Bp2BuildDefaultTrueRecursively,
-		"system/timezone/apex":            Bp2BuildDefaultTrueRecursively,
-		"system/timezone/output_data":     Bp2BuildDefaultTrueRecursively,
-		"external/arm-optimized-routines": Bp2BuildDefaultTrueRecursively,
-		"external/fmtlib":                 Bp2BuildDefaultTrueRecursively,
-		"external/jemalloc_new":           Bp2BuildDefaultTrueRecursively,
-		"external/libcxx":                 Bp2BuildDefaultTrueRecursively,
-		"external/libcxxabi":              Bp2BuildDefaultTrueRecursively,
-		"external/libcap":                 Bp2BuildDefaultTrueRecursively,
-		"external/scudo":                  Bp2BuildDefaultTrueRecursively,
-		"prebuilts/clang/host/linux-x86":  Bp2BuildDefaultTrueRecursively,
+		"system/libbase":              Bp2BuildDefaultTrueRecursively,
+		"system/logging/liblog":       Bp2BuildDefaultTrueRecursively,
+		"system/sepolicy/apex":        Bp2BuildDefaultTrueRecursively,
+		"system/timezone/apex":        Bp2BuildDefaultTrueRecursively,
+		"system/timezone/output_data": Bp2BuildDefaultTrueRecursively,
 	}
 
 	// Per-module denylist to always opt modules out of both bp2build and mixed builds.
@@ -218,25 +227,18 @@ var (
 		"libc_ndk",          // http://b/187013218, cc_library_static, depends on //bionic/libm:libm (http://b/183064661)
 		"libc_malloc_hooks", // http://b/187016307, cc_library, ld.lld: error: undefined symbol: __malloc_hook
 
-		// There are unexported symbols that don't surface on a shared library build,
-		// from the source static archive
-		// e.g. _Unwind_{GetRegionStart,GetLanguageSpecificData,GetIP,Set{IP,GR},Resume,{Raise,Delete}Exception}, pthread_atfork
-		// ... from: cxa_{personality,exception}.o, system_error.o, wrappers_c_bionic.o
-		// cf. http://b/198403271
-		"libc++",
-
 		// http://b/186823769: Needs C++ STL support, includes from unconverted standard libraries in //external/libcxx
 		// c++_static
 		"libbase_ndk", // http://b/186826477, cc_library, no such target '//build/bazel/platforms/os:darwin' when --platforms //build/bazel/platforms:android_x86 is added
 		// libcxx
 		"libBionicBenchmarksUtils", // cc_library_static, fatal error: 'map' file not found, from libcxx
-		"fmtlib",                   // cc_library_static, fatal error: 'cassert' file not found, from libcxx
-		"fmtlib_ndk",               // cc_library_static, fatal error: 'cassert' file not found
-		"liblog",                   // http://b/186822772: cc_library, 'sys/cdefs.h' file not found
-		"libbase",                  // Requires liblog. http://b/186826479, cc_library, fatal error: 'memory' file not found, from libcxx.
-		// Also depends on fmtlib.
+		"libbase",                  // Depends on fmtlib via static_libs and also whole_static_libs, which results in bazel errors.
 
-		"libfdtrack", // depends on STL
+		"libfdtrack", // depends on liblzma and libbase
+
+		"libprotobuf-python",               // contains .proto sources
+		"libprotobuf-internal-protos",      // we don't handle path property for fileegroups
+		"libprotobuf-internal-python-srcs", // we don't handle path property for fileegroups
 
 		"libseccomp_policy", // depends on libbase
 
@@ -276,6 +278,7 @@ var (
 		"libseccomp_policy_app_zygote_sources", // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
 		"libseccomp_policy_app_sources",        // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
 		"libseccomp_policy_system_sources",     // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
+
 	}
 
 	// Used for quicker lookups

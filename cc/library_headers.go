@@ -35,6 +35,8 @@ var headersLibrarySdkMemberType = &librarySdkMemberType{
 		HostOsDependent: true,
 		Traits: []android.SdkMemberTrait{
 			nativeBridgeSdkTrait,
+			ramdiskImageRequiredSdkTrait,
+			recoveryImageRequiredSdkTrait,
 		},
 	},
 	prebuiltModuleType: "cc_prebuilt_library_headers",
@@ -135,8 +137,8 @@ func CcLibraryHeadersBp2Build(ctx android.TopDownMutatorContext) {
 	attrs := &bazelCcLibraryHeadersAttributes{
 		Export_includes:        exportedIncludes.Includes,
 		Export_system_includes: exportedIncludes.SystemIncludes,
-		Implementation_deps:    linkerAttrs.deps,
-		Deps:                   linkerAttrs.exportedDeps,
+		Implementation_deps:    linkerAttrs.implementationDeps,
+		Deps:                   linkerAttrs.deps,
 		System_dynamic_deps:    linkerAttrs.systemDynamicDeps,
 	}
 
