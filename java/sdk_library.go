@@ -540,7 +540,7 @@ type scopePaths struct {
 	// The dex jar for the stubs.
 	//
 	// This is not the implementation jar, it still only contains stubs.
-	stubsDexJarPath android.Path
+	stubsDexJarPath OptionalDexJarPath
 
 	// The API specification file, e.g. system_current.txt.
 	currentApiFilePath android.OptionalPath
@@ -550,6 +550,9 @@ type scopePaths struct {
 
 	// The stubs source jar.
 	stubsSrcJar android.OptionalPath
+
+	// Extracted annotations.
+	annotationsZip android.OptionalPath
 }
 
 func (paths *scopePaths) extractStubsLibraryInfoFromDependency(ctx android.ModuleContext, dep android.Module) error {
@@ -585,6 +588,7 @@ func (paths *scopePaths) treatDepAsApiStubsSrcProvider(dep android.Module, actio
 }
 
 func (paths *scopePaths) extractApiInfoFromApiStubsProvider(provider ApiStubsProvider) {
+	paths.annotationsZip = android.OptionalPathForPath(provider.AnnotationsZip())
 	paths.currentApiFilePath = android.OptionalPathForPath(provider.ApiFilePath())
 	paths.removedApiFilePath = android.OptionalPathForPath(provider.RemovedApiFilePath())
 }
@@ -739,6 +743,8 @@ const (
 	apiTxtComponentName = "api.txt"
 
 	removedApiTxtComponentName = "removed-api.txt"
+
+	annotationsComponentName = "annotations.zip"
 )
 
 // A regular expression to match tags that reference a specific stubs component.
@@ -757,7 +763,7 @@ var tagSplitter = func() *regexp.Regexp {
 	scopesRegexp := choice(allScopeNames...)
 
 	// Regular expression to match one of the components.
-	componentsRegexp := choice(stubsSourceComponentName, apiTxtComponentName, removedApiTxtComponentName)
+	componentsRegexp := choice(stubsSourceComponentName, apiTxtComponentName, removedApiTxtComponentName, annotationsComponentName)
 
 	// Regular expression to match any combination of one scope and one component.
 	return regexp.MustCompile(fmt.Sprintf(`^\.(%s)\.(%s)$`, scopesRegexp, componentsRegexp))
@@ -765,9 +771,7 @@ var tagSplitter = func() *regexp.Regexp {
 
 // For OutputFileProducer interface
 //
-// .<scope>.stubs.source
-// .<scope>.api.txt
-// .<scope>.removed-api.txt
+// .<scope>.<component name>, for all ComponentNames (for example: .public.removed-api.txt)
 func (c *commonToSdkLibraryAndImport) commonOutputFiles(tag string) (android.Paths, error) {
 	if groups := tagSplitter.FindStringSubmatch(tag); groups != nil {
 		scopeName := groups[1]
@@ -793,6 +797,11 @@ func (c *commonToSdkLibraryAndImport) commonOutputFiles(tag string) (android.Pat
 			case removedApiTxtComponentName:
 				if paths.removedApiFilePath.Valid() {
 					return android.Paths{paths.removedApiFilePath.Path()}, nil
+				}
+
+			case annotationsComponentName:
+				if paths.annotationsZip.Valid() {
+					return android.Paths{paths.annotationsZip.Path()}, nil
 				}
 			}
 
@@ -906,10 +915,10 @@ func sdkKindToApiScope(kind android.SdkKind) *apiScope {
 }
 
 // to satisfy SdkLibraryDependency interface
-func (c *commonToSdkLibraryAndImport) SdkApiStubDexJar(ctx android.BaseModuleContext, kind android.SdkKind) android.Path {
+func (c *commonToSdkLibraryAndImport) SdkApiStubDexJar(ctx android.BaseModuleContext, kind android.SdkKind) OptionalDexJarPath {
 	paths := c.selectScopePaths(ctx, kind)
 	if paths == nil {
-		return nil
+		return makeUnsetDexJarPath()
 	}
 
 	return paths.stubsDexJarPath
@@ -1035,7 +1044,7 @@ type SdkLibraryDependency interface {
 
 	// SdkApiStubDexJar returns the dex jar for the stubs. It is needed by the hiddenapi processing
 	// tool which processes dex files.
-	SdkApiStubDexJar(ctx android.BaseModuleContext, kind android.SdkKind) android.Path
+	SdkApiStubDexJar(ctx android.BaseModuleContext, kind android.SdkKind) OptionalDexJarPath
 
 	// SdkRemovedTxtFile returns the optional path to the removed.txt file for the specified sdk kind.
 	SdkRemovedTxtFile(ctx android.BaseModuleContext, kind android.SdkKind) android.OptionalPath
@@ -1888,6 +1897,9 @@ type sdkLibraryScopeProperties struct {
 
 	// The removed.txt
 	Removed_api *string `android:"path"`
+
+	// Annotation zip
+	Annotations *string `android:"path"`
 }
 
 type sdkLibraryImportProperties struct {
@@ -1899,7 +1911,6 @@ type sdkLibraryImportProperties struct {
 	Compile_dex *bool
 
 	// If not empty, classes are restricted to the specified packages and their sub-packages.
-	// This information is used to generate the updatable-bcp-packages.txt file.
 	Permitted_packages []string
 }
 
@@ -1929,7 +1940,7 @@ type SdkLibraryImport struct {
 	xmlPermissionsFileModule *sdkLibraryXml
 
 	// Build path to the dex implementation jar obtained from the prebuilt_apex, if any.
-	dexJarFile android.Path
+	dexJarFile OptionalDexJarPath
 
 	// Expected install file path of the source module(sdk_library)
 	// or dex implementation jar obtained from the prebuilt_apex, if any.
@@ -2157,8 +2168,6 @@ func (module *SdkLibraryImport) OutputFiles(tag string) (android.Paths, error) {
 func (module *SdkLibraryImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	module.generateCommonBuildActions(ctx)
 
-	var deapexerModule android.Module
-
 	// Assume that source module(sdk_library) is installed in /<sdk_library partition>/framework
 	module.installFile = android.PathForModuleInstall(ctx, "framework", module.Stem()+".jar")
 
@@ -2187,11 +2196,6 @@ func (module *SdkLibraryImport) GenerateAndroidBuildActions(ctx android.ModuleCo
 				ctx.ModuleErrorf("xml permissions file module must be of type *sdkLibraryXml but was %T", to)
 			}
 		}
-
-		// Save away the `deapexer` module on which this depends, if any.
-		if tag == android.DeapexerTag {
-			deapexerModule = to
-		}
 	})
 
 	// Populate the scope paths with information from the properties.
@@ -2201,6 +2205,7 @@ func (module *SdkLibraryImport) GenerateAndroidBuildActions(ctx android.ModuleCo
 		}
 
 		paths := module.getScopePathsCreateIfNeeded(apiScope)
+		paths.annotationsZip = android.OptionalPathForModuleSrc(ctx, scopeProperties.Annotations)
 		paths.currentApiFilePath = android.OptionalPathForModuleSrc(ctx, scopeProperties.Current_api)
 		paths.removedApiFilePath = android.OptionalPathForModuleSrc(ctx, scopeProperties.Removed_api)
 	}
@@ -2210,21 +2215,18 @@ func (module *SdkLibraryImport) GenerateAndroidBuildActions(ctx android.ModuleCo
 		// obtained from the associated deapexer module.
 		ai := ctx.Provider(android.ApexInfoProvider).(android.ApexInfo)
 		if ai.ForPrebuiltApex {
-			if deapexerModule == nil {
-				// This should never happen as a variant for a prebuilt_apex is only created if the
-				// deapxer module has been configured to export the dex implementation jar for this module.
-				ctx.ModuleErrorf("internal error: module %q does not depend on a `deapexer` module for prebuilt_apex %q",
-					module.Name(), ai.ApexVariationName)
-			}
-
 			// Get the path of the dex implementation jar from the `deapexer` module.
-			di := ctx.OtherModuleProvider(deapexerModule, android.DeapexerProvider).(android.DeapexerInfo)
+			di := android.FindDeapexerProviderForModule(ctx)
+			if di == nil {
+				return // An error has been reported by FindDeapexerProviderForModule.
+			}
 			if dexOutputPath := di.PrebuiltExportPath(apexRootRelativePathToJavaLib(module.BaseModuleName())); dexOutputPath != nil {
-				module.dexJarFile = dexOutputPath
+				dexJarFile := makeDexJarPathFromPath(dexOutputPath)
+				module.dexJarFile = dexJarFile
 				installPath := android.PathForModuleInPartitionInstall(
 					ctx, "apex", ai.ApexVariationName, apexRootRelativePathToJavaLib(module.BaseModuleName()))
 				module.installFile = installPath
-				module.initHiddenAPI(ctx, dexOutputPath, module.findScopePaths(apiScopePublic).stubsImplPath[0], nil)
+				module.initHiddenAPI(ctx, dexJarFile, module.findScopePaths(apiScopePublic).stubsImplPath[0], nil)
 
 				// Dexpreopting.
 				module.dexpreopter.installPath = module.dexpreopter.getInstallPath(ctx, installPath)
@@ -2234,7 +2236,7 @@ func (module *SdkLibraryImport) GenerateAndroidBuildActions(ctx android.ModuleCo
 			} else {
 				// This should never happen as a variant for a prebuilt_apex is only created if the
 				// prebuilt_apex has been configured to export the java library dex file.
-				ctx.ModuleErrorf("internal error: no dex implementation jar available from prebuilt_apex %q", deapexerModule.Name())
+				ctx.ModuleErrorf("internal error: no dex implementation jar available from prebuilt APEX %s", di.ApexModuleName())
 			}
 		}
 	}
@@ -2269,14 +2271,14 @@ func (module *SdkLibraryImport) SdkImplementationJars(ctx android.BaseModuleCont
 }
 
 // to satisfy UsesLibraryDependency interface
-func (module *SdkLibraryImport) DexJarBuildPath() android.Path {
+func (module *SdkLibraryImport) DexJarBuildPath() OptionalDexJarPath {
 	// The dex implementation jar extracted from the .apex file should be used in preference to the
 	// source.
-	if module.dexJarFile != nil {
+	if module.dexJarFile.IsSet() {
 		return module.dexJarFile
 	}
 	if module.implLibraryModule == nil {
-		return nil
+		return makeUnsetDexJarPath()
 	} else {
 		return module.implLibraryModule.DexJarBuildPath()
 	}
@@ -2551,6 +2553,7 @@ type scopeProperties struct {
 	StubsSrcJar    android.Path
 	CurrentApiFile android.Path
 	RemovedApiFile android.Path
+	AnnotationsZip android.Path
 	SdkVersion     string
 }
 
@@ -2575,6 +2578,10 @@ func (s *sdkLibrarySdkMemberProperties) PopulateFromVariant(ctx android.SdkMembe
 			}
 			if paths.removedApiFilePath.Valid() {
 				properties.RemovedApiFile = paths.removedApiFilePath.Path()
+			}
+			// The annotations zip is only available for modules that set annotations_enabled: true.
+			if paths.annotationsZip.Valid() {
+				properties.AnnotationsZip = paths.annotationsZip.Path()
 			}
 			s.Scopes[apiScope] = properties
 		}
@@ -2638,6 +2645,12 @@ func (s *sdkLibrarySdkMemberProperties) AddToPropertySet(ctx android.SdkMemberCo
 				removedApiSnapshotPath := filepath.Join(scopeDir, ctx.Name()+"-removed.txt")
 				ctx.SnapshotBuilder().CopyToSnapshot(properties.RemovedApiFile, removedApiSnapshotPath)
 				scopeSet.AddProperty("removed_api", removedApiSnapshotPath)
+			}
+
+			if properties.AnnotationsZip != nil {
+				annotationsSnapshotPath := filepath.Join(scopeDir, ctx.Name()+"_annotations.zip")
+				ctx.SnapshotBuilder().CopyToSnapshot(properties.AnnotationsZip, annotationsSnapshotPath)
+				scopeSet.AddProperty("annotations", annotationsSnapshotPath)
 			}
 
 			if properties.SdkVersion != "" {
