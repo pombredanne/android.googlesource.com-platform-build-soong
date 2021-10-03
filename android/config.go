@@ -854,11 +854,6 @@ func (c *config) AlwaysUsePrebuiltSdks() bool {
 	return Bool(c.productVariables.Always_use_prebuilt_sdks)
 }
 
-// Returns true if the boot jars check should be skipped.
-func (c *config) SkipBootJarsCheck() bool {
-	return Bool(c.productVariables.Skip_boot_jars_check)
-}
-
 func (c *config) MinimizeJavaDebugInfo() bool {
 	return Bool(c.productVariables.MinimizeJavaDebugInfo) && !Bool(c.productVariables.Eng)
 }
@@ -1448,6 +1443,10 @@ func (c *deviceConfig) PlatformSepolicyVersion() string {
 	return String(c.config.productVariables.PlatformSepolicyVersion)
 }
 
+func (c *deviceConfig) TotSepolicyVersion() string {
+	return String(c.config.productVariables.TotSepolicyVersion)
+}
+
 func (c *deviceConfig) BoardSepolicyVers() string {
 	if ver := String(c.config.productVariables.BoardSepolicyVers); ver != "" {
 		return ver
@@ -1569,6 +1568,14 @@ func (c *config) SelinuxIgnoreNeverallows() bool {
 
 func (c *deviceConfig) SepolicySplit() bool {
 	return c.config.productVariables.SepolicySplit
+}
+
+func (c *deviceConfig) SepolicyFreezeTestExtraDirs() []string {
+	return c.config.productVariables.SepolicyFreezeTestExtraDirs
+}
+
+func (c *deviceConfig) SepolicyFreezeTestExtraPrebuiltDirs() []string {
+	return c.config.productVariables.SepolicyFreezeTestExtraPrebuiltDirs
 }
 
 // The ConfiguredJarList struct provides methods for handling a list of (apex, jar) pairs.
