@@ -71,23 +71,7 @@ func (library *Library) AndroidMkEntries() []android.AndroidMkEntries {
 		entriesList = append(entriesList, android.AndroidMkEntries{Disabled: true})
 	} else if !library.ApexModuleBase.AvailableFor(android.AvailableToPlatform) {
 		// Platform variant.  If not available for the platform, we don't need Make module.
-		// May still need to add some additional dependencies.
-		checkedModulePaths := library.additionalCheckedModules
-		if len(checkedModulePaths) != 0 {
-			entriesList = append(entriesList, android.AndroidMkEntries{
-				Class: "FAKE",
-				// Need at least one output file in order for this to take effect.
-				OutputFile: android.OptionalPathForPath(checkedModulePaths[0]),
-				Include:    "$(BUILD_PHONY_PACKAGE)",
-				ExtraEntries: []android.AndroidMkExtraEntriesFunc{
-					func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-						entries.AddStrings("LOCAL_ADDITIONAL_CHECKED_MODULE", checkedModulePaths.Strings()...)
-					},
-				},
-			})
-		} else {
-			entriesList = append(entriesList, android.AndroidMkEntries{Disabled: true})
-		}
+		entriesList = append(entriesList, android.AndroidMkEntries{Disabled: true})
 	} else {
 		entriesList = append(entriesList, android.AndroidMkEntries{
 			Class:      "JAVA_LIBRARIES",
@@ -123,10 +107,6 @@ func (library *Library) AndroidMkEntries() []android.AndroidMkEntries {
 					requiredUsesLibs, optionalUsesLibs := library.classLoaderContexts.UsesLibs()
 					entries.AddStrings("LOCAL_EXPORT_SDK_LIBRARIES", append(requiredUsesLibs, optionalUsesLibs...)...)
 
-					if len(library.additionalCheckedModules) != 0 {
-						entries.AddStrings("LOCAL_ADDITIONAL_CHECKED_MODULE", library.additionalCheckedModules.Strings()...)
-					}
-
 					entries.SetOptionalPath("LOCAL_SOONG_PROGUARD_DICT", library.dexer.proguardDictionary)
 					entries.SetOptionalPath("LOCAL_SOONG_PROGUARD_USAGE_ZIP", library.dexer.proguardUsageZip)
 					entries.SetString("LOCAL_MODULE_STEM", library.Stem())
@@ -147,20 +127,21 @@ func (library *Library) AndroidMkEntries() []android.AndroidMkEntries {
 }
 
 // Called for modules that are a component of a test suite.
-func testSuiteComponent(entries *android.AndroidMkEntries, test_suites []string) {
+func testSuiteComponent(entries *android.AndroidMkEntries, test_suites []string, perTestcaseDirectory bool) {
 	entries.SetString("LOCAL_MODULE_TAGS", "tests")
 	if len(test_suites) > 0 {
 		entries.AddCompatibilityTestSuites(test_suites...)
 	} else {
 		entries.AddCompatibilityTestSuites("null-suite")
 	}
+	entries.SetBoolIfTrue("LOCAL_COMPATIBILITY_PER_TESTCASE_DIRECTORY", perTestcaseDirectory)
 }
 
 func (j *Test) AndroidMkEntries() []android.AndroidMkEntries {
 	entriesList := j.Library.AndroidMkEntries()
 	entries := &entriesList[0]
 	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-		testSuiteComponent(entries, j.testProperties.Test_suites)
+		testSuiteComponent(entries, j.testProperties.Test_suites, Bool(j.testProperties.Per_testcase_directory))
 		if j.testConfig != nil {
 			entries.SetPath("LOCAL_FULL_TEST_CONFIG", j.testConfig)
 		}
@@ -188,7 +169,7 @@ func (j *TestHelperLibrary) AndroidMkEntries() []android.AndroidMkEntries {
 	entriesList := j.Library.AndroidMkEntries()
 	entries := &entriesList[0]
 	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-		testSuiteComponent(entries, j.testHelperLibraryProperties.Test_suites)
+		testSuiteComponent(entries, j.testHelperLibraryProperties.Test_suites, Bool(j.testHelperLibraryProperties.Per_testcase_directory))
 	})
 
 	return entriesList
@@ -450,7 +431,7 @@ func (a *AndroidTest) AndroidMkEntries() []android.AndroidMkEntries {
 	entriesList := a.AndroidApp.AndroidMkEntries()
 	entries := &entriesList[0]
 	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-		testSuiteComponent(entries, a.testProperties.Test_suites)
+		testSuiteComponent(entries, a.testProperties.Test_suites, Bool(a.testProperties.Per_testcase_directory))
 		if a.testConfig != nil {
 			entries.SetPath("LOCAL_FULL_TEST_CONFIG", a.testConfig)
 		}
@@ -466,7 +447,7 @@ func (a *AndroidTestHelperApp) AndroidMkEntries() []android.AndroidMkEntries {
 	entriesList := a.AndroidApp.AndroidMkEntries()
 	entries := &entriesList[0]
 	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-		testSuiteComponent(entries, a.appTestHelperAppProperties.Test_suites)
+		testSuiteComponent(entries, a.appTestHelperAppProperties.Test_suites, Bool(a.appTestHelperAppProperties.Per_testcase_directory))
 		// introduce a flag variable to control the generation of the .config file
 		entries.SetString("LOCAL_DISABLE_TEST_CONFIG", "true")
 	})
@@ -677,7 +658,7 @@ func (a *AndroidTestImport) AndroidMkEntries() []android.AndroidMkEntries {
 	entriesList := a.AndroidAppImport.AndroidMkEntries()
 	entries := &entriesList[0]
 	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-		testSuiteComponent(entries, a.testProperties.Test_suites)
+		testSuiteComponent(entries, a.testProperties.Test_suites, Bool(a.testProperties.Per_testcase_directory))
 		androidMkWriteTestData(a.data, entries)
 	})
 	return entriesList
