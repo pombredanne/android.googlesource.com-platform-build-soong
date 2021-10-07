@@ -15,6 +15,7 @@
 package java
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/google/blueprint"
@@ -37,6 +38,10 @@ type DexProperties struct {
 		Enabled *bool
 		// True if the module containing this has it set by default.
 		EnabledByDefault bool `blueprint:"mutated"`
+
+		// If true, runs R8 in Proguard compatibility mode (default).
+		// Otherwise, runs R8 in full mode.
+		Proguard_compatibility *bool
 
 		// If true, optimize for size by removing unused code.  Defaults to true for apps,
 		// false for libraries and tests.
@@ -79,7 +84,12 @@ func (d *dexer) effectiveOptimizeEnabled() bool {
 	return BoolDefault(d.dexProperties.Optimize.Enabled, d.dexProperties.Optimize.EnabledByDefault)
 }
 
-var d8, d8RE = remoteexec.MultiCommandStaticRules(pctx, "d8",
+func init() {
+	pctx.HostBinToolVariable("runWithTimeoutCmd", "run_with_timeout")
+	pctx.SourcePathVariable("jstackCmd", "${config.JavaToolchain}/jstack")
+}
+
+var d8, d8RE = pctx.MultiCommandRemoteStaticRules("d8",
 	blueprint.RuleParams{
 		Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
 			`$d8Template${config.D8Cmd} ${config.DexFlags} --output $outDir $d8Flags $in && ` +
@@ -107,13 +117,15 @@ var d8, d8RE = remoteexec.MultiCommandStaticRules(pctx, "d8",
 		},
 	}, []string{"outDir", "d8Flags", "zipFlags"}, nil)
 
-var r8, r8RE = remoteexec.MultiCommandStaticRules(pctx, "r8",
+var r8, r8RE = pctx.MultiCommandRemoteStaticRules("r8",
 	blueprint.RuleParams{
 		Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
 			`rm -f "$outDict" && rm -rf "${outUsageDir}" && ` +
 			`mkdir -p $$(dirname ${outUsage}) && ` +
-			`$r8Template${config.R8Cmd} ${config.DexFlags} -injars $in --output $outDir ` +
-			`--force-proguard-compatibility ` +
+			// TODO(b/181095653): remove R8 timeout and go back to config.R8Cmd.
+			`${runWithTimeoutCmd} -timeout 30m -on_timeout '${jstackCmd} $$PID' -- ` +
+			`$r8Template${config.JavaCmd} ${config.DexJavaFlags} -cp ${config.R8Jar} ` +
+			`com.android.tools.r8.compatproguard.CompatProguard -injars $in --output $outDir ` +
 			`--no-data-resources ` +
 			`-printmapping ${outDict} ` +
 			`-printusage ${outUsage} ` +
@@ -124,14 +136,16 @@ var r8, r8RE = remoteexec.MultiCommandStaticRules(pctx, "r8",
 			`$zipTemplate${config.SoongZipCmd} $zipFlags -o $outDir/classes.dex.jar -C $outDir -f "$outDir/classes*.dex" && ` +
 			`${config.MergeZipsCmd} -D -stripFile "**/*.class" $out $outDir/classes.dex.jar $in`,
 		CommandDeps: []string{
-			"${config.R8Cmd}",
+			"${config.R8Jar}",
 			"${config.SoongZipCmd}",
 			"${config.MergeZipsCmd}",
+			"${runWithTimeoutCmd}",
 		},
 	}, map[string]*remoteexec.REParams{
 		"$r8Template": &remoteexec.REParams{
 			Labels:          map[string]string{"type": "compile", "compiler": "r8"},
 			Inputs:          []string{"$implicits", "${config.R8Jar}"},
+			OutputFiles:     []string{"${outUsage}"},
 			ExecStrategy:    "${config.RER8ExecStrategy}",
 			ToolchainInputs: []string{"${config.JavaCmd}"},
 			Platform:        map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
@@ -153,7 +167,7 @@ var r8, r8RE = remoteexec.MultiCommandStaticRules(pctx, "r8",
 	}, []string{"outDir", "outDict", "outUsage", "outUsageZip", "outUsageDir",
 		"r8Flags", "zipFlags"}, []string{"implicits"})
 
-func (d *dexer) dexCommonFlags(ctx android.ModuleContext, minSdkVersion sdkSpec) []string {
+func (d *dexer) dexCommonFlags(ctx android.ModuleContext, minSdkVersion android.SdkSpec) []string {
 	flags := d.dexProperties.Dxflags
 	// Translate all the DX flags to D8 ones until all the build files have been migrated
 	// to D8 flags. See: b/69377755
@@ -170,12 +184,12 @@ func (d *dexer) dexCommonFlags(ctx android.ModuleContext, minSdkVersion sdkSpec)
 			"--verbose")
 	}
 
-	effectiveVersion, err := minSdkVersion.effectiveVersion(ctx)
+	effectiveVersion, err := minSdkVersion.EffectiveVersion(ctx)
 	if err != nil {
 		ctx.PropertyErrorf("min_sdk_version", "%s", err)
 	}
 
-	flags = append(flags, "--min-api "+effectiveVersion.asNumberString())
+	flags = append(flags, "--min-api "+strconv.Itoa(effectiveVersion.FinalOrFutureInt()))
 	return flags
 }
 
@@ -200,8 +214,9 @@ func (d *dexer) r8Flags(ctx android.ModuleContext, flags javaBuilderFlags) (r8Fl
 	// - prevent ProGuard stripping subclass in the support library that extends class added in the higher SDK version.
 	// See b/20667396
 	var proguardRaiseDeps classpath
-	ctx.VisitDirectDepsWithTag(proguardRaiseTag, func(dep android.Module) {
-		proguardRaiseDeps = append(proguardRaiseDeps, dep.(Dependency).HeaderJars()...)
+	ctx.VisitDirectDepsWithTag(proguardRaiseTag, func(m android.Module) {
+		dep := ctx.OtherModuleProvider(m, JavaInfoProvider).(JavaInfo)
+		proguardRaiseDeps = append(proguardRaiseDeps, dep.HeaderJars...)
 	})
 
 	r8Flags = append(r8Flags, proguardRaiseDeps.FormJavaClassPath("-libraryjars"))
@@ -230,6 +245,10 @@ func (d *dexer) r8Flags(ctx android.ModuleContext, flags javaBuilderFlags) (r8Fl
 
 	r8Flags = append(r8Flags, opt.Proguard_flags...)
 
+	if BoolDefault(opt.Proguard_compatibility, true) {
+		r8Flags = append(r8Flags, "--force-proguard-compatibility")
+	}
+
 	// TODO(ccross): Don't shrink app instrumentation tests by default.
 	if !Bool(opt.Shrink) {
 		r8Flags = append(r8Flags, "-dontshrink")
@@ -251,14 +270,17 @@ func (d *dexer) r8Flags(ctx android.ModuleContext, flags javaBuilderFlags) (r8Fl
 		r8Flags = append(r8Flags, "--debug")
 	}
 
+	// TODO(b/180878971): missing classes should be added to the relevant builds.
+	r8Flags = append(r8Flags, "-ignorewarnings")
+
 	return r8Flags, r8Deps
 }
 
-func (d *dexer) compileDex(ctx android.ModuleContext, flags javaBuilderFlags, minSdkVersion sdkSpec,
-	classesJar android.Path, jarName string) android.ModuleOutPath {
+func (d *dexer) compileDex(ctx android.ModuleContext, flags javaBuilderFlags, minSdkVersion android.SdkSpec,
+	classesJar android.Path, jarName string) android.OutputPath {
 
 	// Compile classes.jar into classes.dex and then javalib.jar
-	javalibJar := android.PathForModuleOut(ctx, "dex", jarName)
+	javalibJar := android.PathForModuleOut(ctx, "dex", jarName).OutputPath
 	outDir := android.PathForModuleOut(ctx, "dex")
 
 	zipFlags := "--ignore_missing_files"
@@ -280,7 +302,7 @@ func (d *dexer) compileDex(ctx android.ModuleContext, flags javaBuilderFlags, mi
 		r8Flags, r8Deps := d.r8Flags(ctx, flags)
 		rule := r8
 		args := map[string]string{
-			"r8Flags":     strings.Join(append(r8Flags, commonFlags...), " "),
+			"r8Flags":     strings.Join(append(commonFlags, r8Flags...), " "),
 			"zipFlags":    zipFlags,
 			"outDict":     proguardDictionary.String(),
 			"outUsageDir": proguardUsageDir.String(),
@@ -288,7 +310,7 @@ func (d *dexer) compileDex(ctx android.ModuleContext, flags javaBuilderFlags, mi
 			"outUsageZip": proguardUsageZip.String(),
 			"outDir":      outDir.String(),
 		}
-		if ctx.Config().IsEnvTrue("RBE_R8") {
+		if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_R8") {
 			rule = r8RE
 			args["implicits"] = strings.Join(r8Deps.Strings(), ",")
 		}
@@ -304,7 +326,7 @@ func (d *dexer) compileDex(ctx android.ModuleContext, flags javaBuilderFlags, mi
 	} else {
 		d8Flags, d8Deps := d8Flags(flags)
 		rule := d8
-		if ctx.Config().IsEnvTrue("RBE_D8") {
+		if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_D8") {
 			rule = d8RE
 		}
 		ctx.Build(pctx, android.BuildParams{
@@ -321,7 +343,7 @@ func (d *dexer) compileDex(ctx android.ModuleContext, flags javaBuilderFlags, mi
 		})
 	}
 	if proptools.Bool(d.dexProperties.Uncompress_dex) {
-		alignedJavalibJar := android.PathForModuleOut(ctx, "aligned", jarName)
+		alignedJavalibJar := android.PathForModuleOut(ctx, "aligned", jarName).OutputPath
 		TransformZipAlign(ctx, alignedJavalibJar, javalibJar)
 		javalibJar = alignedJavalibJar
 	}
