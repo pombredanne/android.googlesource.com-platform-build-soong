@@ -277,7 +277,24 @@ func bp2BuildParseCompilerProps(ctx android.TopDownMutatorContext, module *Modul
 					srcs.SetSelectValue(axis, config, srcsList)
 				}
 
-				archVariantCopts := parseCommandLineFlags(baseCompilerProps.Cflags)
+				var archVariantCopts []string
+				if axis == bazel.NoConfigAxis {
+					// If cpp_std is not specified, don't generate it in the
+					// BUILD file. For readability purposes, cpp_std and gnu_extensions are
+					// combined into a single -std=<version> copt, except in the
+					// default case where cpp_std is nil and gnu_extensions is true or unspecified,
+					// then the toolchain's default "gnu++17" will be used.
+					if baseCompilerProps.Cpp_std != nil {
+						// TODO(b/202491296): Handle C_std.
+						// These transformations are shared with compiler.go.
+						cppStdVal := parseCppStd(baseCompilerProps.Cpp_std)
+						_, cppStdVal = maybeReplaceGnuToC(baseCompilerProps.Gnu_extensions, "", cppStdVal)
+						archVariantCopts = append(archVariantCopts, "-std="+cppStdVal)
+					} else if baseCompilerProps.Gnu_extensions != nil && !*baseCompilerProps.Gnu_extensions {
+						archVariantCopts = append(archVariantCopts, "-std=c++17")
+					}
+				}
+				archVariantCopts = append(archVariantCopts, parseCommandLineFlags(baseCompilerProps.Cflags)...)
 				archVariantAsflags := parseCommandLineFlags(baseCompilerProps.Asflags)
 
 				localIncludeDirs := baseCompilerProps.Local_include_dirs
@@ -364,6 +381,7 @@ type linkerAttributes struct {
 	wholeArchiveDeps          bazel.LabelListAttribute
 	systemDynamicDeps         bazel.LabelListAttribute
 
+	linkCrt                       bazel.BoolAttribute
 	useLibcrt                     bazel.BoolAttribute
 	linkopts                      bazel.StringListAttribute
 	versionScript                 bazel.LabelAttribute
@@ -372,15 +390,7 @@ type linkerAttributes struct {
 	stripKeepSymbolsList          bazel.StringListAttribute
 	stripAll                      bazel.BoolAttribute
 	stripNone                     bazel.BoolAttribute
-}
-
-// FIXME(b/187655838): Use the existing linkerFlags() function instead of duplicating logic here
-func getBp2BuildLinkerFlags(linkerProperties *BaseLinkerProperties) []string {
-	flags := linkerProperties.Ldflags
-	if !BoolDefault(linkerProperties.Pack_relocations, true) {
-		flags = append(flags, "-Wl,--pack-dyn-relocs=none")
-	}
-	return flags
+	features                      bazel.StringListAttribute
 }
 
 // bp2BuildParseLinkerProps parses the linker properties of a module, including
@@ -398,6 +408,7 @@ func bp2BuildParseLinkerProps(ctx android.TopDownMutatorContext, module *Module)
 
 	var linkopts bazel.StringListAttribute
 	var versionScript bazel.LabelAttribute
+	var linkCrt bazel.BoolAttribute
 	var useLibcrt bazel.BoolAttribute
 
 	var stripKeepSymbols bazel.BoolAttribute
@@ -405,6 +416,8 @@ func bp2BuildParseLinkerProps(ctx android.TopDownMutatorContext, module *Module)
 	var stripKeepSymbolsList bazel.StringListAttribute
 	var stripAll bazel.BoolAttribute
 	var stripNone bazel.BoolAttribute
+
+	var features bazel.StringListAttribute
 
 	for axis, configToProps := range module.GetArchVariantProperties(ctx, &StripProperties{}) {
 		for config, props := range configToProps {
@@ -418,9 +431,13 @@ func bp2BuildParseLinkerProps(ctx android.TopDownMutatorContext, module *Module)
 		}
 	}
 
+	// Use a single variable to capture usage of nocrt in arch variants, so there's only 1 error message for this module
+	var disallowedArchVariantCrt bool
+
 	for axis, configToProps := range module.GetArchVariantProperties(ctx, &BaseLinkerProperties{}) {
 		for config, props := range configToProps {
 			if baseLinkerProps, ok := props.(*BaseLinkerProperties); ok {
+				var axisFeatures []string
 
 				// Excludes to parallel Soong:
 				// https://cs.android.com/android/platform/superproject/+/master:build/soong/cc/linker.go;l=247-249;drc=088b53577dde6e40085ffd737a1ae96ad82fc4b0
@@ -452,13 +469,38 @@ func bp2BuildParseLinkerProps(ctx android.TopDownMutatorContext, module *Module)
 				headerDeps.SetSelectValue(axis, config, hDeps.export)
 				implementationHeaderDeps.SetSelectValue(axis, config, hDeps.implementation)
 
-				linkopts.SetSelectValue(axis, config, getBp2BuildLinkerFlags(baseLinkerProps))
+				linkopts.SetSelectValue(axis, config, baseLinkerProps.Ldflags)
+				if !BoolDefault(baseLinkerProps.Pack_relocations, packRelocationsDefault) {
+					axisFeatures = append(axisFeatures, "disable_pack_relocations")
+				}
+
+				if Bool(baseLinkerProps.Allow_undefined_symbols) {
+					axisFeatures = append(axisFeatures, "-no_undefined_symbols")
+				}
+
 				if baseLinkerProps.Version_script != nil {
 					versionScript.SetSelectValue(axis, config, android.BazelLabelForModuleSrcSingle(ctx, *baseLinkerProps.Version_script))
 				}
 				useLibcrt.SetSelectValue(axis, config, baseLinkerProps.libCrt())
+
+				// it's very unlikely for nocrt to be arch variant, so bp2build doesn't support it.
+				if baseLinkerProps.crt() != nil {
+					if axis == bazel.NoConfigAxis {
+						linkCrt.SetSelectValue(axis, config, baseLinkerProps.crt())
+					} else if axis == bazel.ArchConfigurationAxis {
+						disallowedArchVariantCrt = true
+					}
+				}
+
+				if axisFeatures != nil {
+					features.SetSelectValue(axis, config, axisFeatures)
+				}
 			}
 		}
+	}
+
+	if disallowedArchVariantCrt {
+		ctx.ModuleErrorf("nocrt is not supported for arch variants")
 	}
 
 	type productVarDep struct {
@@ -530,6 +572,7 @@ func bp2BuildParseLinkerProps(ctx android.TopDownMutatorContext, module *Module)
 		wholeArchiveDeps:          wholeArchiveDeps,
 		systemDynamicDeps:         systemSharedDeps,
 
+		linkCrt:       linkCrt,
 		linkopts:      linkopts,
 		useLibcrt:     useLibcrt,
 		versionScript: versionScript,
@@ -540,6 +583,8 @@ func bp2BuildParseLinkerProps(ctx android.TopDownMutatorContext, module *Module)
 		stripKeepSymbolsList:          stripKeepSymbolsList,
 		stripAll:                      stripAll,
 		stripNone:                     stripNone,
+
+		features: features,
 	}
 }
 
