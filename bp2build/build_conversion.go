@@ -239,9 +239,7 @@ func NewCodegenContext(config android.Config, context android.Context, mode Code
 func propsToAttributes(props map[string]string) string {
 	var attributes string
 	for _, propName := range android.SortedStringKeys(props) {
-		if shouldGenerateAttribute(propName) {
-			attributes += fmt.Sprintf("    %s = %s,\n", propName, props[propName])
-		}
+		attributes += fmt.Sprintf("    %s = %s,\n", propName, props[propName])
 	}
 	return attributes
 }
@@ -411,7 +409,7 @@ type bp2buildModule interface {
 	TargetPackage() string
 	BazelRuleClass() string
 	BazelRuleLoadLocation() string
-	BazelAttributes() interface{}
+	BazelAttributes() []interface{}
 }
 
 func generateBazelTarget(ctx bpToBuildContext, m bp2buildModule) BazelTarget {
@@ -419,9 +417,11 @@ func generateBazelTarget(ctx bpToBuildContext, m bp2buildModule) BazelTarget {
 	bzlLoadLocation := m.BazelRuleLoadLocation()
 
 	// extract the bazel attributes from the module.
-	props := extractModuleProperties([]interface{}{m.BazelAttributes()})
+	attrs := m.BazelAttributes()
+	props := extractModuleProperties(attrs, true)
 
-	delete(props.Attrs, "bp2build_available")
+	// name is handled in a special manner
+	delete(props.Attrs, "name")
 
 	// Return the Bazel target with rule class and attributes, ready to be
 	// code-generated.
@@ -456,6 +456,10 @@ func generateSoongModuleTarget(ctx bpToBuildContext, m blueprint.Module) BazelTa
 			depLabels[qualifiedTargetLabel(ctx, depModule)] = true
 		})
 	}
+
+	for p, _ := range ignoredPropNames {
+		delete(props.Attrs, p)
+	}
 	attributes := propsToAttributes(props.Attrs)
 
 	depLabelList := "[\n"
@@ -482,14 +486,14 @@ func getBuildProperties(ctx bpToBuildContext, m blueprint.Module) BazelAttribute
 	// TODO: this omits properties for blueprint modules (blueprint_go_binary,
 	// bootstrap_go_binary, bootstrap_go_package), which will have to be handled separately.
 	if aModule, ok := m.(android.Module); ok {
-		return extractModuleProperties(aModule.GetProperties())
+		return extractModuleProperties(aModule.GetProperties(), false)
 	}
 
 	return BazelAttributes{}
 }
 
 // Generically extract module properties and types into a map, keyed by the module property name.
-func extractModuleProperties(props []interface{}) BazelAttributes {
+func extractModuleProperties(props []interface{}, checkForDuplicateProperties bool) BazelAttributes {
 	ret := map[string]string{}
 
 	// Iterate over this android.Module's property structs.
@@ -503,6 +507,11 @@ func extractModuleProperties(props []interface{}) BazelAttributes {
 		if isStructPtr(propertiesValue.Type()) {
 			structValue := propertiesValue.Elem()
 			for k, v := range extractStructProperties(structValue, 0) {
+				if existing, exists := ret[k]; checkForDuplicateProperties && exists {
+					panic(fmt.Errorf(
+						"%s (%v) is present in properties whereas it should be consolidated into a commonAttributes",
+						k, existing))
+				}
 				ret[k] = v
 			}
 		} else {

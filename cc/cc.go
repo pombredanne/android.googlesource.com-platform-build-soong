@@ -95,6 +95,7 @@ type Deps struct {
 
 	// Used for data dependencies adjacent to tests
 	DataLibs []string
+	DataBins []string
 
 	// Used by DepsMutator to pass system_shared_libs information to check_elf_file.py.
 	SystemSharedLibs []string
@@ -718,6 +719,7 @@ var (
 	staticVariantTag      = dependencyTag{name: "static variant"}
 	vndkExtDepTag         = dependencyTag{name: "vndk extends"}
 	dataLibDepTag         = dependencyTag{name: "data lib"}
+	dataBinDepTag         = dependencyTag{name: "data bin"}
 	runtimeDepTag         = installDependencyTag{name: "runtime lib"}
 	testPerSrcDepTag      = dependencyTag{name: "test_per_src"}
 	stubImplDepTag        = dependencyTag{name: "stub_impl"}
@@ -2274,6 +2276,8 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 		{Mutator: "link", Variation: "shared"},
 	}, dataLibDepTag, deps.DataLibs...)
 
+	actx.AddVariationDependencies(nil, dataBinDepTag, deps.DataBins...)
+
 	actx.AddVariationDependencies([]blueprint.Variation{
 		{Mutator: "link", Variation: "shared"},
 	}, runtimeDepTag, deps.RuntimeLibs...)
@@ -3451,6 +3455,7 @@ func DefaultsFactory(props ...interface{}) android.Module {
 		&android.ProtoProperties{},
 		// RustBindgenProperties is included here so that cc_defaults can be used for rust_bindgen modules.
 		&RustBindgenClangProperties{},
+		&prebuiltLinkerProperties{},
 	)
 
 	// Bazel module must be initialized _before_ Defaults to be included in cc_defaults module.

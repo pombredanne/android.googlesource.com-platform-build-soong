@@ -154,46 +154,38 @@ func main() {
 	}
 
 	// Convert!
-	ok := true
-	if *launcher != "" {
-		if len(flag.Args()) != 1 {
-			quit(fmt.Errorf("a launcher can be generated only for a single product"))
-		}
-		product := flag.Args()[0]
+	files := flag.Args()
+	if *allInSource {
 		productConfigMap := buildProductConfigMap()
-		path, found := productConfigMap[product]
-		if !found {
-			quit(fmt.Errorf("cannot generate configuration launcher for %s, it is not a known product",
-				product))
+		for _, path := range productConfigMap {
+			files = append(files, path)
+		}
+	}
+	ok := true
+	for _, mkFile := range files {
+		ok = convertOne(mkFile) && ok
+	}
+
+	if *launcher != "" {
+		if len(files) != 1 {
+			quit(fmt.Errorf("a launcher can be generated only for a single product"))
 		}
 		versionDefaults, err := generateVersionDefaults()
 		if err != nil {
 			quit(err)
 		}
-		ok = convertOne(path) && ok
 		versionDefaultsPath := outputFilePath(versionDefaultsMk)
 		err = writeGenerated(versionDefaultsPath, versionDefaults)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s:%s", path, err)
+			fmt.Fprintf(os.Stderr, "%s:%s", files[0], err)
 			ok = false
 		}
 
-		err = writeGenerated(*launcher, mk2rbc.Launcher(outputFilePath(path), versionDefaultsPath,
-			mk2rbc.MakePath2ModuleName(path)))
+		err = writeGenerated(*launcher, mk2rbc.Launcher(outputFilePath(files[0]), versionDefaultsPath,
+			mk2rbc.MakePath2ModuleName(files[0])))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s:%s", path, err)
+			fmt.Fprintf(os.Stderr, "%s:%s", files[0], err)
 			ok = false
-		}
-	} else {
-		files := flag.Args()
-		if *allInSource {
-			productConfigMap := buildProductConfigMap()
-			for _, path := range productConfigMap {
-				files = append(files, path)
-			}
-		}
-		for _, mkFile := range files {
-			ok = convertOne(mkFile) && ok
 		}
 	}
 
