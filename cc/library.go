@@ -248,16 +248,21 @@ type bazelCcLibraryAttributes struct {
 	Linkopts               bazel.StringListAttribute
 	Use_libcrt             bazel.BoolAttribute
 	Rtti                   bazel.BoolAttribute
-	Stl                    *string
+
+	Stl     *string
+	Cpp_std *string
 
 	// This is shared only.
 	Version_script bazel.LabelAttribute
+	Link_crt       bazel.BoolAttribute
 
 	// Common properties shared between both shared and static variants.
 	Shared staticOrSharedAttributes
 	Static staticOrSharedAttributes
 
 	Strip stripAttributes
+
+	Features bazel.StringListAttribute
 }
 
 type stripAttributes struct {
@@ -321,9 +326,11 @@ func CcLibraryBp2Build(ctx android.TopDownMutatorContext) {
 		Local_includes:              compilerAttrs.localIncludes,
 		Absolute_includes:           compilerAttrs.absoluteIncludes,
 		Linkopts:                    linkerAttrs.linkopts,
+		Link_crt:                    linkerAttrs.linkCrt,
 		Use_libcrt:                  linkerAttrs.useLibcrt,
 		Rtti:                        compilerAttrs.rtti,
 		Stl:                         compilerAttrs.stl,
+		Cpp_std:                     compilerAttrs.cppStd,
 
 		Version_script: linkerAttrs.versionScript,
 
@@ -338,6 +345,8 @@ func CcLibraryBp2Build(ctx android.TopDownMutatorContext) {
 		Shared: sharedAttrs,
 
 		Static: staticAttrs,
+
+		Features: linkerAttrs.features,
 	}
 
 	props := bazel.BazelTargetModuleProperties{
@@ -2397,6 +2406,7 @@ func ccSharedOrStaticBp2BuildMutatorInternal(ctx android.TopDownMutatorContext, 
 			Use_libcrt:             linkerAttrs.useLibcrt,
 			Rtti:                   compilerAttrs.rtti,
 			Stl:                    compilerAttrs.stl,
+			Cpp_std:                compilerAttrs.cppStd,
 			Export_includes:        exportedIncludes.Includes,
 			Export_system_includes: exportedIncludes.SystemIncludes,
 			Local_includes:         compilerAttrs.localIncludes,
@@ -2405,6 +2415,8 @@ func ccSharedOrStaticBp2BuildMutatorInternal(ctx android.TopDownMutatorContext, 
 			Cppflags:   compilerAttrs.cppFlags,
 			Conlyflags: compilerAttrs.conlyFlags,
 			Asflags:    asFlags,
+
+			Features: linkerAttrs.features,
 		}
 	} else {
 		attrs = &bazelCcLibrarySharedAttributes{
@@ -2415,9 +2427,11 @@ func ccSharedOrStaticBp2BuildMutatorInternal(ctx android.TopDownMutatorContext, 
 			Asflags:    asFlags,
 			Linkopts:   linkerAttrs.linkopts,
 
+			Link_crt:   linkerAttrs.linkCrt,
 			Use_libcrt: linkerAttrs.useLibcrt,
 			Rtti:       compilerAttrs.rtti,
 			Stl:        compilerAttrs.stl,
+			Cpp_std:    compilerAttrs.cppStd,
 
 			Export_includes:        exportedIncludes.Includes,
 			Export_system_includes: exportedIncludes.SystemIncludes,
@@ -2432,6 +2446,8 @@ func ccSharedOrStaticBp2BuildMutatorInternal(ctx android.TopDownMutatorContext, 
 				All:                          linkerAttrs.stripAll,
 				None:                         linkerAttrs.stripNone,
 			},
+
+			Features: linkerAttrs.features,
 		}
 	}
 
@@ -2451,6 +2467,7 @@ type bazelCcLibraryStaticAttributes struct {
 	Use_libcrt bazel.BoolAttribute
 	Rtti       bazel.BoolAttribute
 	Stl        *string
+	Cpp_std    *string
 
 	Export_includes        bazel.StringListAttribute
 	Export_system_includes bazel.StringListAttribute
@@ -2461,6 +2478,8 @@ type bazelCcLibraryStaticAttributes struct {
 	Cppflags   bazel.StringListAttribute
 	Conlyflags bazel.StringListAttribute
 	Asflags    bazel.StringListAttribute
+
+	Features bazel.StringListAttribute
 }
 
 func CcLibraryStaticBp2Build(ctx android.TopDownMutatorContext) {
@@ -2472,9 +2491,11 @@ type bazelCcLibrarySharedAttributes struct {
 	staticOrSharedAttributes
 
 	Linkopts   bazel.StringListAttribute
+	Link_crt   bazel.BoolAttribute // Only for linking shared library (and cc_binary)
 	Use_libcrt bazel.BoolAttribute
 	Rtti       bazel.BoolAttribute
 	Stl        *string
+	Cpp_std    *string
 
 	Export_includes        bazel.StringListAttribute
 	Export_system_includes bazel.StringListAttribute
@@ -2488,6 +2509,8 @@ type bazelCcLibrarySharedAttributes struct {
 	Cppflags   bazel.StringListAttribute
 	Conlyflags bazel.StringListAttribute
 	Asflags    bazel.StringListAttribute
+
+	Features bazel.StringListAttribute
 }
 
 func CcLibrarySharedBp2Build(ctx android.TopDownMutatorContext) {

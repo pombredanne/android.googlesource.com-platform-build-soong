@@ -22,7 +22,6 @@ import (
 
 	"android/soong/android"
 	"android/soong/java"
-
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
 )
@@ -137,10 +136,6 @@ func (p *prebuiltCommon) checkForceDisable(ctx android.ModuleContext) bool {
 	// Force disable the prebuilts when we are doing unbundled build. We do unbundled build
 	// to build the prebuilts themselves.
 	forceDisable = forceDisable || ctx.Config().UnbundledBuild()
-
-	// Force disable the prebuilts when coverage is enabled.
-	forceDisable = forceDisable || ctx.DeviceConfig().NativeCoverageEnabled()
-	forceDisable = forceDisable || ctx.Config().IsEnvTrue("EMMA_INSTRUMENT")
 
 	// b/137216042 don't use prebuilts when address sanitizer is on, unless the prebuilt has a sanitized source
 	sanitized := ctx.Module().(sanitizedPrebuilt)
@@ -269,17 +264,6 @@ func (p *prebuiltCommon) createEntriesForApexFile(fi apexFile, apexName string) 
 				// we need to remove the suffix from LOCAL_MODULE_STEM, otherwise
 				// we will have foo.jar.jar
 				entries.SetString("LOCAL_MODULE_STEM", strings.TrimSuffix(fi.stem(), ".jar"))
-				var classesJar android.Path
-				var headerJar android.Path
-				if javaModule, ok := fi.module.(java.ApexDependency); ok {
-					classesJar = javaModule.ImplementationAndResourcesJars()[0]
-					headerJar = javaModule.HeaderJars()[0]
-				} else {
-					classesJar = fi.builtFile
-					headerJar = fi.builtFile
-				}
-				entries.SetString("LOCAL_SOONG_CLASSES_JAR", classesJar.String())
-				entries.SetString("LOCAL_SOONG_HEADER_JAR", headerJar.String())
 				entries.SetString("LOCAL_SOONG_DEX_JAR", fi.builtFile.String())
 				entries.SetString("LOCAL_DEX_PREOPT", "false")
 			},
@@ -984,17 +968,6 @@ func (a *ApexSet) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	// or that apex_set overrides other apexes (using overrides: prop)
 	for _, overridden := range a.prebuiltCommonProperties.Overrides {
 		a.compatSymlinks = append(a.compatSymlinks, makeCompatSymlinks(overridden, ctx)...)
-	}
-
-	if ctx.Config().InstallExtraFlattenedApexes() {
-		// flattened apex should be in /system_ext/apex
-		flattenedApexDir := android.PathForModuleInstall(&systemExtContext{ctx}, "apex", a.BaseModuleName())
-		a.postInstallCommands = append(a.postInstallCommands,
-			fmt.Sprintf("$(HOST_OUT_EXECUTABLES)/deapexer --debugfs_path $(HOST_OUT_EXECUTABLES)/debugfs extract %s %s",
-				a.outputApex.String(),
-				flattenedApexDir.ToMakePath().String(),
-			))
-		a.hostRequired = []string{"deapexer", "debugfs"}
 	}
 }
 
