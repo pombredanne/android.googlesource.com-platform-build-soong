@@ -133,8 +133,8 @@ cc_library {
         "//conditions:default": [],
     }) + select({
         "//build/bazel/platforms/os:android": [
-            "android.cpp",
             "bionic.cpp",
+            "android.cpp",
         ],
         "//build/bazel/platforms/os:darwin": ["darwin.cpp"],
         "//build/bazel/platforms/os:linux": ["linux.cpp"],
@@ -803,8 +803,9 @@ cc_library {
 		blueprint: soongCcLibraryPreamble,
 		expectedBazelTargets: []string{`cc_library(
     name = "a",
+    additional_linker_inputs = ["v.map"],
+    linkopts = ["-Wl,--version-script,$(location v.map)"],
     srcs = ["a.cpp"],
-    version_script = "v.map",
 )`},
 	})
 }
@@ -838,12 +839,17 @@ cc_library {
 		blueprint: soongCcLibraryPreamble,
 		expectedBazelTargets: []string{`cc_library(
     name = "a",
-    srcs = ["a.cpp"],
-    version_script = select({
-        "//build/bazel/platforms/arch:arm": "arm.map",
-        "//build/bazel/platforms/arch:arm64": "arm64.map",
-        "//conditions:default": None,
+    additional_linker_inputs = select({
+        "//build/bazel/platforms/arch:arm": ["arm.map"],
+        "//build/bazel/platforms/arch:arm64": ["arm64.map"],
+        "//conditions:default": [],
     }),
+    linkopts = select({
+        "//build/bazel/platforms/arch:arm": ["-Wl,--version-script,$(location arm.map)"],
+        "//build/bazel/platforms/arch:arm64": ["-Wl,--version-script,$(location arm64.map)"],
+        "//conditions:default": [],
+    }),
+    srcs = ["a.cpp"],
 )`},
 	})
 }
@@ -1006,39 +1012,6 @@ func TestCcLibraryCppFlagsGoesIntoCopts(t *testing.T) {
         "//conditions:default": [],
     }),
     srcs = ["a.cpp"],
-)`},
-	})
-}
-
-func TestCcLibraryLabelAttributeGetTargetProperties(t *testing.T) {
-	runCcLibraryTestCase(t, bp2buildTestCase{
-		description:                        "cc_library GetTargetProperties on a LabelAttribute",
-		moduleTypeUnderTest:                "cc_library",
-		moduleTypeUnderTestFactory:         cc.LibraryFactory,
-		moduleTypeUnderTestBp2BuildMutator: cc.CcLibraryBp2Build,
-		blueprint: soongCcLibraryPreamble + `
-cc_library {
-   name: "a",
-   srcs: ["a.cpp"],
-   target: {
-     android_arm: {
-       version_script: "android_arm.map",
-     },
-     linux_bionic_arm64: {
-       version_script: "linux_bionic_arm64.map",
-     },
-   },
-    include_build_directory: false,
-}
-    `,
-		expectedBazelTargets: []string{`cc_library(
-    name = "a",
-    srcs = ["a.cpp"],
-    version_script = select({
-        "//build/bazel/platforms/os_arch:android_arm": "android_arm.map",
-        "//build/bazel/platforms/os_arch:linux_bionic_arm64": "linux_bionic_arm64.map",
-        "//conditions:default": None,
-    }),
 )`},
 	})
 }
@@ -1668,9 +1641,9 @@ cc_library {
     name = "foo-lib",
     srcs = ["base.cpp"] + select({
         "//build/bazel/platforms/os:android": [
-            "android.cpp",
-            "bionic.cpp",
             "linux.cpp",
+            "bionic.cpp",
+            "android.cpp",
         ],
         "//build/bazel/platforms/os:darwin": ["darwin.cpp"],
         "//build/bazel/platforms/os:linux": [
@@ -1678,8 +1651,8 @@ cc_library {
             "linux_glibc.cpp",
         ],
         "//build/bazel/platforms/os:linux_bionic": [
-            "bionic.cpp",
             "linux.cpp",
+            "bionic.cpp",
         ],
         "//build/bazel/platforms/os:linux_musl": [
             "linux.cpp",
@@ -1692,7 +1665,7 @@ cc_library {
 
 }
 
-func TestCcLibraryCppStdWithGnuExtensions_ConvertstoCopt(t *testing.T) {
+func TestCcLibraryCppStdWithGnuExtensions_ConvertsToFeatureAttr(t *testing.T) {
 	type testCase struct {
 		cpp_std        string
 		gnu_extensions string
@@ -1751,7 +1724,7 @@ func TestCcLibraryCppStdWithGnuExtensions_ConvertstoCopt(t *testing.T) {
 		}
 		bazelCppStdAttr := ""
 		if tc.bazel_cpp_std != "" {
-			bazelCppStdAttr = fmt.Sprintf("\n    copts = [\"-std=%s\"],", tc.bazel_cpp_std)
+			bazelCppStdAttr = fmt.Sprintf("\n    cpp_std = \"%s\",", tc.bazel_cpp_std)
 		}
 
 		runCcLibraryTestCase(t, bp2buildTestCase{
@@ -1769,6 +1742,44 @@ cc_library {
 }
 `, cppStdAttr, gnuExtensionsAttr),
 			expectedBazelTargets: []string{fmt.Sprintf(`cc_library(
+    name = "a",%s
+)`, bazelCppStdAttr)},
+		})
+
+		runCcLibraryStaticTestCase(t, bp2buildTestCase{
+			description: fmt.Sprintf(
+				"cc_library_static with cpp_std: %s and gnu_extensions: %s", tc.cpp_std, tc.gnu_extensions),
+			moduleTypeUnderTest:                "cc_library_static",
+			moduleTypeUnderTestFactory:         cc.LibraryStaticFactory,
+			moduleTypeUnderTestBp2BuildMutator: cc.CcLibraryStaticBp2Build,
+			blueprint: soongCcLibraryPreamble + fmt.Sprintf(`
+cc_library_static {
+	name: "a",
+%s // cpp_std: *string
+%s // gnu_extensions: *bool
+	include_build_directory: false,
+}
+`, cppStdAttr, gnuExtensionsAttr),
+			expectedBazelTargets: []string{fmt.Sprintf(`cc_library_static(
+    name = "a",%s
+)`, bazelCppStdAttr)},
+		})
+
+		runCcLibrarySharedTestCase(t, bp2buildTestCase{
+			description: fmt.Sprintf(
+				"cc_library_shared with cpp_std: %s and gnu_extensions: %s", tc.cpp_std, tc.gnu_extensions),
+			moduleTypeUnderTest:                "cc_library_shared",
+			moduleTypeUnderTestFactory:         cc.LibrarySharedFactory,
+			moduleTypeUnderTestBp2BuildMutator: cc.CcLibrarySharedBp2Build,
+			blueprint: soongCcLibraryPreamble + fmt.Sprintf(`
+cc_library_shared {
+	name: "a",
+%s // cpp_std: *string
+%s // gnu_extensions: *bool
+	include_build_directory: false,
+}
+`, cppStdAttr, gnuExtensionsAttr),
+			expectedBazelTargets: []string{fmt.Sprintf(`cc_library_shared(
     name = "a",%s
 )`, bazelCppStdAttr)},
 		})
