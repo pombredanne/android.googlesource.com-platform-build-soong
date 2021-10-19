@@ -326,7 +326,7 @@ var (
 	// Linux is the OS for the Linux kernel plus the glibc runtime.
 	Linux = newOsType("linux_glibc", Host, false, X86, X86_64)
 	// Darwin is the OS for MacOS/Darwin host machines.
-	Darwin = newOsType("darwin", Host, false, X86_64)
+	Darwin = newOsType("darwin", Host, false, Arm64, X86_64)
 	// LinuxBionic is the OS for the Linux kernel plus the Bionic libc runtime, but without the
 	// rest of Android.
 	LinuxBionic = newOsType("linux_bionic", Host, false, Arm64, X86_64)
@@ -717,6 +717,11 @@ func archMutator(bpctx blueprint.BottomUpMutatorContext) {
 	for i, m := range modules {
 		addTargetProperties(m, targets[i], multiTargets, i == 0)
 		m.base().setArchProperties(mctx)
+
+		// Install support doesn't understand Darwin+Arm64
+		if os == Darwin && targets[i].HostCross {
+			m.base().commonProperties.SkipInstall = true
+		}
 	}
 }
 
