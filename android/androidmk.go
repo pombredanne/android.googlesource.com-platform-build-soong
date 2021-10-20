@@ -29,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -836,6 +837,7 @@ func translateAndroidModule(ctx SingletonContext, w io.Writer, mod blueprint.Mod
 		case "*aidl.aidlApi": // writes non-custom before adding .phony
 		case "*aidl.aidlMapping": // writes non-custom before adding .phony
 		case "*android.customModule": // appears in tests only
+		case "*android_sdk.sdkRepoHost": // doesn't go through base_rules
 		case "*apex.apexBundle": // license properties written
 		case "*bpf.bpf": // license properties written (both for module and objs)
 		case "*genrule.Module": // writes non-custom before adding .phony
@@ -898,6 +900,13 @@ func shouldSkipAndroidMkProcessing(module *ModuleBase) bool {
 	if !module.commonProperties.NamespaceExportedToMake {
 		// TODO(jeffrygaston) do we want to validate that there are no modules being
 		// exported to Kati that depend on this module?
+		return true
+	}
+
+	// On Mac, only expose host darwin modules to Make, as that's all we claim to support.
+	// In reality, some of them depend on device-built (Java) modules, so we can't disable all
+	// device modules in Soong, but we can hide them from Make (and thus the build user interface)
+	if runtime.GOOS == "darwin" && module.Os() != Darwin {
 		return true
 	}
 
