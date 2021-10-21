@@ -56,9 +56,7 @@ var (
 		"10.13",
 		"10.14",
 		"10.15",
-		"11.0",
-		"11.1",
-		"11.3",
+		"11",
 	}
 
 	darwinAvailableLibraries = append(
@@ -113,6 +111,10 @@ func init() {
 	pctx.StaticVariable("DarwinYasmFlags", "-f macho -m amd64")
 }
 
+func MacStripPath(ctx android.PathContext) string {
+	return getMacTools(ctx).stripPath
+}
+
 type macPlatformTools struct {
 	once sync.Once
 	err  error
@@ -125,7 +127,7 @@ type macPlatformTools struct {
 
 var macTools = &macPlatformTools{}
 
-func getMacTools(ctx android.PackageVarContext) *macPlatformTools {
+func getMacTools(ctx android.PathContext) *macPlatformTools {
 	macTools.once.Do(func() {
 		xcrunTool := "/usr/bin/xcrun"
 
@@ -134,7 +136,7 @@ func getMacTools(ctx android.PackageVarContext) *macPlatformTools {
 				return ""
 			}
 
-			bytes, err := exec.Command(xcrunTool, args...).Output()
+			bytes, err := exec.Command(xcrunTool, append([]string{"--sdk", "macosx"}, args...)...).Output()
 			if err != nil {
 				macTools.err = fmt.Errorf("xcrun %q failed with: %q", args, err)
 				return ""
@@ -143,34 +145,26 @@ func getMacTools(ctx android.PackageVarContext) *macPlatformTools {
 			return strings.TrimSpace(string(bytes))
 		}
 
-		xcrunSdk := func(arg string) string {
-			if selected := ctx.Config().Getenv("MAC_SDK_VERSION"); selected != "" {
-				if !inList(selected, darwinSupportedSdkVersions) {
-					macTools.err = fmt.Errorf("MAC_SDK_VERSION %s isn't supported: %q", selected, darwinSupportedSdkVersions)
-					return ""
-				}
-
-				return xcrun("--sdk", "macosx"+selected, arg)
+		sdkVersion := xcrun("--show-sdk-version")
+		sdkVersionSupported := false
+		for _, version := range darwinSupportedSdkVersions {
+			if version == sdkVersion || strings.HasPrefix(sdkVersion, version+".") {
+				sdkVersionSupported = true
 			}
-
-			for _, sdk := range darwinSupportedSdkVersions {
-				bytes, err := exec.Command(xcrunTool, "--sdk", "macosx"+sdk, arg).Output()
-				if err == nil {
-					return strings.TrimSpace(string(bytes))
-				}
-			}
-			macTools.err = fmt.Errorf("Could not find a supported mac sdk: %q", darwinSupportedSdkVersions)
-			return ""
+		}
+		if !sdkVersionSupported {
+			macTools.err = fmt.Errorf("Unsupported macOS SDK version %q not in %v", sdkVersion, darwinSupportedSdkVersions)
+			return
 		}
 
-		macTools.sdkRoot = xcrunSdk("--show-sdk-path")
+		macTools.sdkRoot = xcrun("--show-sdk-path")
 
 		macTools.arPath = xcrun("--find", "ar")
 		macTools.stripPath = xcrun("--find", "strip")
 		macTools.toolPath = filepath.Dir(xcrun("--find", "ld"))
 	})
 	if macTools.err != nil {
-		ctx.Errorf("%q", macTools.err)
+		android.ReportPathErrorf(ctx, "%q", macTools.err)
 	}
 	return macTools
 }

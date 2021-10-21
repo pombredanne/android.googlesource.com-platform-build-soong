@@ -182,8 +182,8 @@ var (
 		"external/boringssl":                                 Bp2BuildDefaultTrueRecursively,
 		"external/brotli":                                    Bp2BuildDefaultTrue,
 		"external/fmtlib":                                    Bp2BuildDefaultTrueRecursively,
-		"external/googletest/googletest":                     Bp2BuildDefaultTrueRecursively,
 		"external/google-benchmark":                          Bp2BuildDefaultTrueRecursively,
+		"external/googletest/googletest":                     Bp2BuildDefaultTrueRecursively,
 		"external/gwp_asan":                                  Bp2BuildDefaultTrueRecursively,
 		"external/jemalloc_new":                              Bp2BuildDefaultTrueRecursively,
 		"external/jsoncpp":                                   Bp2BuildDefaultTrueRecursively,
@@ -191,10 +191,15 @@ var (
 		"external/libcxx":                                    Bp2BuildDefaultTrueRecursively,
 		"external/libcxxabi":                                 Bp2BuildDefaultTrueRecursively,
 		"external/lz4/lib":                                   Bp2BuildDefaultTrue,
+		"external/mdnsresponder":                             Bp2BuildDefaultTrueRecursively,
+		"external/minijail":                                  Bp2BuildDefaultTrueRecursively,
+		"external/pcre":                                      Bp2BuildDefaultTrueRecursively,
 		"external/protobuf":                                  Bp2BuildDefaultTrueRecursively,
 		"external/python/six":                                Bp2BuildDefaultTrueRecursively,
 		"external/scudo":                                     Bp2BuildDefaultTrueRecursively,
+		"external/selinux/libselinux":                        Bp2BuildDefaultTrueRecursively,
 		"external/zlib":                                      Bp2BuildDefaultTrueRecursively,
+		"external/zstd":                                      Bp2BuildDefaultTrueRecursively,
 		"frameworks/native/libs/adbd_auth":                   Bp2BuildDefaultTrueRecursively,
 		"packages/modules/adb":                               Bp2BuildDefaultTrue,
 		"packages/modules/adb/crypto":                        Bp2BuildDefaultTrueRecursively,
@@ -208,6 +213,7 @@ var (
 		"system/core/libasyncio":                             Bp2BuildDefaultTrue,
 		"system/core/libcrypto_utils":                        Bp2BuildDefaultTrueRecursively,
 		"system/core/libcutils":                              Bp2BuildDefaultTrueRecursively,
+		"system/core/libpackagelistparser":                   Bp2BuildDefaultTrueRecursively,
 		"system/core/libprocessgroup":                        Bp2BuildDefaultTrue,
 		"system/core/libprocessgroup/cgrouprc":               Bp2BuildDefaultTrue,
 		"system/core/libprocessgroup/cgrouprc_format":        Bp2BuildDefaultTrue,
@@ -237,9 +243,20 @@ var (
 
 		"brotli-fuzzer-corpus", // b/202015218: outputs are in location incompatible with bazel genrule handling.
 
+		// b/203369847: multiple genrules in the same package creating the same file
+		// //development/sdk/...
+		"platform_tools_properties",
+		"build_tools_source_properties",
+
 		// //external/libcap/...
 		"libcap",      // http://b/198595332, depends on _makenames, a cc_binary
 		"cap_names.h", // http://b/198596102, depends on _makenames, a cc_binary
+
+		"libminijail", // depends on unconverted modules: libcap
+		"getcap",      // depends on unconverted modules: libcap
+		"setcap",      // depends on unconverted modules: libcap
+		"minijail0",   // depends on unconverted modules: libcap, libminijail
+		"drop_privs",  // depends on unconverted modules: libminijail
 
 		// Tests. Handle later.
 		"libbionic_tests_headers_posix", // http://b/186024507, cc_library_static, sched.h, time.h not found
@@ -266,6 +283,20 @@ var (
 
 		"libgtest_ndk_c++",      // b/201816222: Requires sdk_version support.
 		"libgtest_main_ndk_c++", // b/201816222: Requires sdk_version support.
+
+		"abb",                     // depends on unconverted modules: libadbd_core, libadbd_services, libcmd, libbinder, libutils, libselinux
+		"adb",                     // depends on unconverted modules: bin2c_fastdeployagent, libadb_crypto, libadb_host, libadb_pairing_connection, libadb_protos, libandroidfw, libapp_processes_protos_full, libfastdeploy_host, libmdnssd, libopenscreen-discovery, libopenscreen-platform-impl, libusb, libutils, libziparchive, libzstd, AdbWinApi
+		"adbd",                    // depends on unconverted modules: libadb_crypto, libadb_pairing_connection, libadb_protos, libadbd, libadbd_core, libapp_processes_protos_lite, libmdnssd, libzstd, libadbd_services, libcap, libminijail, libselinux
+		"bionic_tests_zipalign",   // depends on unconverted modules: libziparchive, libutils
+		"linker",                  // depends on unconverted modules: liblinker_debuggerd_stub, libdebuggerd_handler_fallback, libziparchive, liblinker_main, liblinker_malloc
+		"linker_reloc_bench_main", // depends on unconverted modules: liblinker_reloc_bench_*
+		"sefcontext_compile",      // depends on unconverted modules: libsepol
+		"versioner",               // depends on unconverted modules: libclang_cxx_host, libLLVM_host
+
+		"linkerconfig", // http://b/202876379 has arch-variant static_executable
+		"mdnsd",        // http://b/202876379 has arch-variant static_executable
+
+		"acvp_modulewrapper", // disabled for android x86/x86_64
 	}
 
 	// Per-module denylist of cc_library modules to only generate the static
@@ -282,7 +313,7 @@ var (
 		"libseccomp_policy_app_zygote_sources", // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
 		"libseccomp_policy_app_sources",        // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
 		"libseccomp_policy_system_sources",     // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
-
+		"minijail_constants_json",              // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
 	}
 
 	// Used for quicker lookups

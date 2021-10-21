@@ -270,8 +270,8 @@ var (
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r433403"
-	ClangDefaultShortVersion = "13.0.2"
+	ClangDefaultVersion      = "clang-r433403b"
+	ClangDefaultShortVersion = "13.0.3"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{
@@ -366,28 +366,12 @@ func init() {
 	exportStringStaticVariable("CLANG_DEFAULT_VERSION", ClangDefaultVersion)
 	exportStringStaticVariable("CLANG_DEFAULT_SHORT_VERSION", ClangDefaultShortVersion)
 
-	pctx.SourcePathVariable("ClangDefaultBase", ClangDefaultBase)
-	pctx.VariableFunc("ClangBase", func(ctx android.PackageVarContext) string {
-		if override := ctx.Config().Getenv("LLVM_PREBUILTS_BASE"); override != "" {
-			return override
-		}
-		return "${ClangDefaultBase}"
-	})
-	pctx.VariableFunc("ClangVersion", func(ctx android.PackageVarContext) string {
-		if override := ctx.Config().Getenv("LLVM_PREBUILTS_VERSION"); override != "" {
-			return override
-		}
-		return ClangDefaultVersion
-	})
+	pctx.StaticVariableWithEnvOverride("ClangBase", "LLVM_PREBUILTS_BASE", ClangDefaultBase)
+	pctx.StaticVariableWithEnvOverride("ClangVersion", "LLVM_PREBUILTS_VERSION", ClangDefaultVersion)
 	pctx.StaticVariable("ClangPath", "${ClangBase}/${HostPrebuiltTag}/${ClangVersion}")
 	pctx.StaticVariable("ClangBin", "${ClangPath}/bin")
 
-	pctx.VariableFunc("ClangShortVersion", func(ctx android.PackageVarContext) string {
-		if override := ctx.Config().Getenv("LLVM_RELEASE_VERSION"); override != "" {
-			return override
-		}
-		return ClangDefaultShortVersion
-	})
+	pctx.StaticVariableWithEnvOverride("ClangShortVersion", "LLVM_RELEASE_VERSION", ClangDefaultShortVersion)
 	pctx.StaticVariable("ClangAsanLibDir", "${ClangBase}/linux-x86/${ClangVersion}/lib64/clang/${ClangShortVersion}/lib/linux")
 
 	// These are tied to the version of LLVM directly in external/llvm, so they might trail the host prebuilts
@@ -420,4 +404,30 @@ func init() {
 	pctx.StaticVariableWithEnvOverride("REAbiLinkerExecStrategy", "RBE_ABI_LINKER_EXEC_STRATEGY", remoteexec.LocalExecStrategy)
 }
 
-var HostPrebuiltTag = pctx.VariableConfigMethod("HostPrebuiltTag", android.Config.PrebuiltOS)
+var HostPrebuiltTag = exportVariableConfigMethod("HostPrebuiltTag", android.Config.PrebuiltOS)
+
+func ClangPath(ctx android.PathContext, file string) android.SourcePath {
+	type clangToolKey string
+
+	key := android.NewCustomOnceKey(clangToolKey(file))
+
+	return ctx.Config().OnceSourcePath(key, func() android.SourcePath {
+		return clangPath(ctx).Join(ctx, file)
+	})
+}
+
+var clangPathKey = android.NewOnceKey("clangPath")
+
+func clangPath(ctx android.PathContext) android.SourcePath {
+	return ctx.Config().OnceSourcePath(clangPathKey, func() android.SourcePath {
+		clangBase := ClangDefaultBase
+		if override := ctx.Config().Getenv("LLVM_PREBUILTS_BASE"); override != "" {
+			clangBase = override
+		}
+		clangVersion := ClangDefaultVersion
+		if override := ctx.Config().Getenv("LLVM_PREBUILTS_VERSION"); override != "" {
+			clangVersion = override
+		}
+		return android.PathForSource(ctx, clangBase, ctx.Config().PrebuiltOS(), clangVersion)
+	})
+}
