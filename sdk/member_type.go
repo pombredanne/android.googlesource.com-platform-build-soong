@@ -35,7 +35,7 @@ type sdkMemberTypeListProperty struct {
 
 	// the dependency tag used for items in this list that can be used to determine the memberType
 	// for a resolved dependency.
-	dependencyTag android.SdkMemberTypeDependencyTag
+	dependencyTag android.SdkMemberDependencyTag
 }
 
 func (p *sdkMemberTypeListProperty) propertyName() string {
@@ -64,14 +64,7 @@ func (d *dynamicSdkMemberTypes) createMemberTypeListProperties() interface{} {
 	return reflect.New(d.propertiesStructType).Interface()
 }
 
-func getDynamicSdkMemberTypes(registry *android.SdkMemberTypesRegistry) *dynamicSdkMemberTypes {
-
-	// Get a key that uniquely identifies the registry contents.
-	key := registry.UniqueOnceKey()
-
-	// Get the registered types.
-	registeredTypes := registry.RegisteredTypes()
-
+func getDynamicSdkMemberTypes(key android.OnceKey, registeredTypes []android.SdkMemberType) *dynamicSdkMemberTypes {
 	// Get the cached value, creating new instance if necessary.
 	return dynamicSdkMemberTypesMap.Once(key, func() interface{} {
 		return createDynamicSdkMemberTypes(registeredTypes)

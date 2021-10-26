@@ -39,6 +39,9 @@ type BaseCompilerProperties struct {
 	// or filegroup using the syntax ":module".
 	Srcs []string `android:"path,arch_variant"`
 
+	// list of source files that should not be compiled with clang-tidy.
+	Tidy_disabled_srcs []string `android:"path,arch_variant"`
+
 	// list of source files that should not be used to build the C/C++ module.
 	// This is most useful in the arch/multilib variants to remove non-common files
 	Exclude_srcs []string `android:"path,arch_variant"`
@@ -206,15 +209,6 @@ type BaseCompilerProperties struct {
 
 	// Build and link with OpenMP
 	Openmp *bool `android:"arch_variant"`
-
-	// Deprecated.
-	// Adds __ANDROID_APEX_<APEX_MODULE_NAME>__ macro defined for apex variants in addition to __ANDROID_APEX__
-	Use_apex_name_macro *bool
-
-	// Adds two macros for apex variants in addition to __ANDROID_APEX__
-	// * __ANDROID_APEX_COM_ANDROID_FOO__
-	// * __ANDROID_APEX_NAME__="com.android.foo"
-	UseApexNameMacro bool `blueprint:"mutated"`
 }
 
 func NewBaseCompiler() *baseCompiler {
@@ -288,10 +282,6 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	return deps
 }
 
-func (compiler *baseCompiler) useApexNameMacro() bool {
-	return Bool(compiler.Properties.Use_apex_name_macro) || compiler.Properties.UseApexNameMacro
-}
-
 // Return true if the module is in the WarningAllowedProjects.
 func warningsAreAllowed(subdir string) bool {
 	subdir += "/"
@@ -300,6 +290,25 @@ func warningsAreAllowed(subdir string) bool {
 
 func addToModuleList(ctx ModuleContext, key android.OnceKey, module string) {
 	getNamedMapForConfig(ctx.Config(), key).Store(module, true)
+}
+
+func maybeReplaceGnuToC(gnuExtensions *bool, cStd string, cppStd string) (string, string) {
+	if gnuExtensions != nil && *gnuExtensions == false {
+		cStd = gnuToCReplacer.Replace(cStd)
+		cppStd = gnuToCReplacer.Replace(cppStd)
+	}
+	return cStd, cppStd
+}
+
+func parseCppStd(cppStdPtr *string) string {
+	cppStd := String(cppStdPtr)
+	switch cppStd {
+	case "":
+		cppStd = config.CppStdVersion
+	case "experimental":
+		cppStd = config.ExperimentalCppStdVersion
+	}
+	return cppStd
 }
 
 // Create a Flags struct that collects the compile flags from global values,
@@ -383,10 +392,6 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 
 	if ctx.apexVariationName() != "" {
 		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX__")
-		if compiler.useApexNameMacro() {
-			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX_"+makeDefineString(ctx.apexVariationName())+"__")
-			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX_NAME__='\""+ctx.apexVariationName()+"\"'")
-		}
 		if ctx.Device() {
 			flags.Global.CommonFlags = append(flags.Global.CommonFlags,
 				fmt.Sprintf("-D__ANDROID_APEX_MIN_SDK_VERSION__=%d",
@@ -481,18 +486,9 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		cStd = String(compiler.Properties.C_std)
 	}
 
-	cppStd := String(compiler.Properties.Cpp_std)
-	switch String(compiler.Properties.Cpp_std) {
-	case "":
-		cppStd = config.CppStdVersion
-	case "experimental":
-		cppStd = config.ExperimentalCppStdVersion
-	}
+	cppStd := parseCppStd(compiler.Properties.Cpp_std)
 
-	if compiler.Properties.Gnu_extensions != nil && *compiler.Properties.Gnu_extensions == false {
-		cStd = gnuToCReplacer.Replace(cStd)
-		cppStd = gnuToCReplacer.Replace(cppStd)
-	}
+	cStd, cppStd = maybeReplaceGnuToC(compiler.Properties.Gnu_extensions, cStd, cppStd)
 
 	flags.Local.ConlyFlags = append([]string{"-std=" + cStd}, flags.Local.ConlyFlags...)
 	flags.Local.CppFlags = append([]string{"-std=" + cppStd}, flags.Local.CppFlags...)
@@ -621,10 +617,6 @@ func (compiler *baseCompiler) hasSrcExt(ext string) bool {
 	return false
 }
 
-func (compiler *baseCompiler) uniqueApexVariations() bool {
-	return compiler.useApexNameMacro()
-}
-
 var invalidDefineCharRegex = regexp.MustCompile("[^a-zA-Z0-9_]")
 
 // makeDefineString transforms a name of an APEX module into a value to be used as value for C define
@@ -663,7 +655,9 @@ func (compiler *baseCompiler) compile(ctx ModuleContext, flags Flags, deps PathD
 	compiler.srcs = srcs
 
 	// Compile files listed in c.Properties.Srcs into objects
-	objs := compileObjs(ctx, buildFlags, "", srcs, pathDeps, compiler.cFlagsDeps)
+	objs := compileObjs(ctx, buildFlags, "", srcs,
+		android.PathsForModuleSrc(ctx, compiler.Properties.Tidy_disabled_srcs),
+		pathDeps, compiler.cFlagsDeps)
 
 	if ctx.Failed() {
 		return Objects{}
@@ -673,10 +667,10 @@ func (compiler *baseCompiler) compile(ctx ModuleContext, flags Flags, deps PathD
 }
 
 // Compile a list of source files into objects a specified subdirectory
-func compileObjs(ctx android.ModuleContext, flags builderFlags,
-	subdir string, srcFiles, pathDeps android.Paths, cFlagsDeps android.Paths) Objects {
+func compileObjs(ctx android.ModuleContext, flags builderFlags, subdir string,
+	srcFiles, noTidySrcs, pathDeps android.Paths, cFlagsDeps android.Paths) Objects {
 
-	return transformSourceToObj(ctx, subdir, srcFiles, flags, pathDeps, cFlagsDeps)
+	return transformSourceToObj(ctx, subdir, srcFiles, noTidySrcs, flags, pathDeps, cFlagsDeps)
 }
 
 // Properties for rust_bindgen related to generating rust bindings.

@@ -476,7 +476,7 @@ func (a *AndroidApp) dexBuildActions(ctx android.ModuleContext) android.Path {
 		a.Module.compile(ctx, a.aaptSrcJar)
 	}
 
-	return a.dexJarFile
+	return a.dexJarFile.PathOrNil()
 }
 
 func (a *AndroidApp) jniBuildActions(jniLibs []jniLib, ctx android.ModuleContext) android.WritablePath {
@@ -760,18 +760,18 @@ func collectAppDeps(ctx android.ModuleContext, app appDepsInterface,
 				}
 
 				lib := dep.OutputFile()
-				path := lib.Path()
-				if seenModulePaths[path.String()] {
-					return false
-				}
-				seenModulePaths[path.String()] = true
-
-				if checkNativeSdkVersion && dep.SdkVersion() == "" {
-					ctx.PropertyErrorf("jni_libs", "JNI dependency %q uses platform APIs, but this module does not",
-						otherName)
-				}
-
 				if lib.Valid() {
+					path := lib.Path()
+					if seenModulePaths[path.String()] {
+						return false
+					}
+					seenModulePaths[path.String()] = true
+
+					if checkNativeSdkVersion && dep.SdkVersion() == "" {
+						ctx.PropertyErrorf("jni_libs", "JNI dependency %q uses platform APIs, but this module does not",
+							otherName)
+					}
+
 					jniLibs = append(jniLibs, jniLib{
 						name:           ctx.OtherModuleName(module),
 						path:           path,
@@ -1070,6 +1070,9 @@ type appTestHelperAppProperties struct {
 	// doesn't exist next to the Android.bp, this attribute doesn't need to be set to true
 	// explicitly.
 	Auto_gen_config *bool
+
+	// Install the test into a folder named for the module in all test suites.
+	Per_testcase_directory *bool
 }
 
 type AndroidTestHelperApp struct {
@@ -1305,7 +1308,8 @@ func (u *usesLibrary) classLoaderContextForUsesLibDeps(ctx android.ModuleContext
 				replaceInList(u.usesLibraryProperties.Optional_uses_libs, dep, libName)
 			}
 			clcMap.AddContext(ctx, tag.sdkVersion, libName, tag.optional, tag.implicit,
-				lib.DexJarBuildPath(), lib.DexJarInstallPath(), lib.ClassLoaderContexts())
+				lib.DexJarBuildPath().PathOrNil(), lib.DexJarInstallPath(),
+				lib.ClassLoaderContexts())
 		} else if ctx.Config().AllowMissingDependencies() {
 			ctx.AddMissingDependencies([]string{dep})
 		} else {
@@ -1427,5 +1431,5 @@ func androidAppCertificateBp2BuildInternal(ctx android.TopDownMutatorContext, mo
 		Bzl_load_location: "//build/bazel/rules:android_app_certificate.bzl",
 	}
 
-	ctx.CreateBazelTargetModule(module.Name(), props, attrs)
+	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: module.Name()}, attrs)
 }

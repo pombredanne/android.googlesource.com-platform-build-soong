@@ -16,7 +16,6 @@ package cc
 
 import (
 	"path/filepath"
-	"strings"
 
 	"android/soong/android"
 )
@@ -232,7 +231,7 @@ func (p *prebuiltLibraryLinker) disablePrebuilt() {
 
 // Implements versionedInterface
 func (p *prebuiltLibraryLinker) implementationModuleName(name string) string {
-	return strings.TrimPrefix(name, "prebuilt_")
+	return android.RemoveOptionalPrebuiltPrefix(name)
 }
 
 func NewPrebuiltLibrary(hod android.HostOrDeviceSupported) (*Module, *libraryDecorator) {
@@ -330,7 +329,7 @@ type prebuiltStaticLibraryBazelHandler struct {
 
 func (h *prebuiltStaticLibraryBazelHandler) GenerateBazelBuildActions(ctx android.ModuleContext, label string) bool {
 	bazelCtx := ctx.Config().BazelContext
-	ccInfo, ok, err := bazelCtx.GetCcInfo(label, ctx.Arch().ArchType)
+	ccInfo, ok, err := bazelCtx.GetCcInfo(label, android.GetConfigKey(ctx))
 	if err != nil {
 		ctx.ModuleErrorf("Error getting Bazel CcInfo: %s", err)
 	}

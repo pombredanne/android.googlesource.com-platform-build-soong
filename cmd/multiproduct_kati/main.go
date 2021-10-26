@@ -166,15 +166,6 @@ type mpContext struct {
 	MainLogsDir string
 }
 
-func detectTotalRAM() uint64 {
-	var info syscall.Sysinfo_t
-	err := syscall.Sysinfo(&info)
-	if err != nil {
-		panic(err)
-	}
-	return info.Totalram * uint64(info.Unit)
-}
-
 func findNamedProducts(soongUi string, log logger.Logger) []string {
 	cmd := exec.Command(soongUi, "--dumpvars-mode", "--vars=all_named_products")
 	output, err := cmd.Output()
@@ -218,10 +209,16 @@ func distDir(outDir string) string {
 	}
 }
 
+func forceAnsiOutput() bool {
+	value := os.Getenv("SOONG_UI_ANSI_OUTPUT")
+	return value == "1" || value == "y" || value == "yes" || value == "on" || value == "true"
+}
+
 func main() {
 	stdio := terminal.StdioImpl{}
 
-	output := terminal.NewStatusOutput(stdio.Stdout(), "", false, false)
+	output := terminal.NewStatusOutput(stdio.Stdout(), "", false, false,
+		forceAnsiOutput())
 	log := logger.New(output)
 	defer log.Cleanup()
 
@@ -295,7 +292,7 @@ func main() {
 		jobs = runtime.NumCPU() / 4
 
 		ramGb := int(detectTotalRAM() / (1024 * 1024 * 1024))
-		if ramJobs := ramGb / 25; ramGb > 0 && jobs > ramJobs {
+		if ramJobs := ramGb / 30; ramGb > 0 && jobs > ramJobs {
 			jobs = ramJobs
 		}
 

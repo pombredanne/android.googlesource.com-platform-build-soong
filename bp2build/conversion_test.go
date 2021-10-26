@@ -17,6 +17,8 @@ package bp2build
 import (
 	"sort"
 	"testing"
+
+	"android/soong/android"
 )
 
 type bazelFilepath struct {
@@ -80,7 +82,7 @@ func TestCreateBazelFiles_QueryView_AddsTopLevelFiles(t *testing.T) {
 }
 
 func TestCreateBazelFiles_Bp2Build_CreatesDefaultFiles(t *testing.T) {
-	files := CreateSoongInjectionFiles(CodegenCompatLayer{})
+	files := CreateSoongInjectionFiles(android.Config{}, CodegenMetrics{})
 
 	expectedFilePaths := []bazelFilepath{
 		{
@@ -92,8 +94,8 @@ func TestCreateBazelFiles_Bp2Build_CreatesDefaultFiles(t *testing.T) {
 			basename: "constants.bzl",
 		},
 		{
-			dir:      "module_name_to_label",
-			basename: GeneratedBuildFileName,
+			dir:      "metrics",
+			basename: "converted_modules.txt",
 		},
 	}
 
@@ -106,10 +108,6 @@ func TestCreateBazelFiles_Bp2Build_CreatesDefaultFiles(t *testing.T) {
 
 		if actualFile.Dir != expectedFile.dir || actualFile.Basename != expectedFile.basename {
 			t.Errorf("Did not find expected file %s/%s", actualFile.Dir, actualFile.Basename)
-		}
-
-		if expectedFile.basename != GeneratedBuildFileName && actualFile.Contents == "" {
-			t.Errorf("Contents of %s unexpected empty.", actualFile)
 		}
 	}
 }

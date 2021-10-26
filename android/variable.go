@@ -40,6 +40,7 @@ type variableProperties struct {
 		Platform_sdk_version struct {
 			Asflags []string
 			Cflags  []string
+			Cmd     *string
 		}
 
 		Platform_sdk_version_or_codename struct {
@@ -48,6 +49,10 @@ type variableProperties struct {
 
 		Platform_sdk_extension_version struct {
 			Cmd *string
+		}
+
+		Platform_version_name struct {
+			Base_dir *string
 		}
 
 		// unbundled_build is a catch-all property to annotate modules that don't build in one or
@@ -61,6 +66,8 @@ type variableProperties struct {
 			Shared_libs         []string `android:"arch_variant"`
 			Whole_static_libs   []string `android:"arch_variant"`
 			Exclude_static_libs []string `android:"arch_variant"`
+			Srcs                []string `android:"arch_variant"`
+			Header_libs         []string `android:"arch_variant"`
 		} `android:"arch_variant"`
 
 		Malloc_zero_contents struct {
@@ -143,6 +150,7 @@ type variableProperties struct {
 		Arc struct {
 			Cflags            []string `android:"arch_variant"`
 			Exclude_srcs      []string `android:"arch_variant"`
+			Header_libs       []string `android:"arch_variant"`
 			Include_dirs      []string `android:"arch_variant"`
 			Shared_libs       []string `android:"arch_variant"`
 			Static_libs       []string `android:"arch_variant"`
@@ -333,6 +341,7 @@ type productVariables struct {
 	VendorSnapshotDirsExcluded   []string `json:",omitempty"`
 	RecoverySnapshotDirsExcluded []string `json:",omitempty"`
 	RecoverySnapshotDirsIncluded []string `json:",omitempty"`
+	HostFakeSnapshotEnabled      bool     `json:",omitempty"`
 
 	BoardVendorSepolicyDirs      []string `json:",omitempty"`
 	BoardOdmSepolicyDirs         []string `json:",omitempty"`
@@ -343,6 +352,7 @@ type productVariables struct {
 
 	BoardSepolicyVers       *string `json:",omitempty"`
 	PlatformSepolicyVersion *string `json:",omitempty"`
+	TotSepolicyVersion      *string `json:",omitempty"`
 
 	VendorVars map[string]map[string]string `json:",omitempty"`
 
@@ -406,6 +416,11 @@ type productVariables struct {
 	SelinuxIgnoreNeverallows bool `json:",omitempty"`
 
 	SepolicySplit bool `json:",omitempty"`
+
+	SepolicyFreezeTestExtraDirs         []string `json:",omitempty"`
+	SepolicyFreezeTestExtraPrebuiltDirs []string `json:",omitempty"`
+
+	GenerateAidlNdkPlatformBackend bool `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {

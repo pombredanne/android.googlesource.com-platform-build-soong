@@ -31,6 +31,7 @@ import (
 	"android/soong/cc/config"
 	"android/soong/fuzz"
 	"android/soong/genrule"
+	"android/soong/snapshot"
 )
 
 func init() {
@@ -94,6 +95,7 @@ type Deps struct {
 
 	// Used for data dependencies adjacent to tests
 	DataLibs []string
+	DataBins []string
 
 	// Used by DepsMutator to pass system_shared_libs information to check_elf_file.py.
 	SystemSharedLibs []string
@@ -717,6 +719,7 @@ var (
 	staticVariantTag      = dependencyTag{name: "static variant"}
 	vndkExtDepTag         = dependencyTag{name: "vndk extends"}
 	dataLibDepTag         = dependencyTag{name: "data lib"}
+	dataBinDepTag         = dependencyTag{name: "data bin"}
 	runtimeDepTag         = installDependencyTag{name: "runtime lib"}
 	testPerSrcDepTag      = dependencyTag{name: "test_per_src"}
 	stubImplDepTag        = dependencyTag{name: "stub_impl"}
@@ -1710,7 +1713,9 @@ func (c *Module) setSubnameProperty(actx android.ModuleContext) {
 func (c *Module) maybeGenerateBazelActions(actx android.ModuleContext) bool {
 	bazelModuleLabel := c.GetBazelLabel(actx, c)
 	bazelActionsUsed := false
-	if c.MixedBuildsEnabled(actx) && c.bazelHandler != nil {
+	// Mixed builds mode is disabled for modules outside of device OS.
+	// TODO(b/200841190): Support non-device OS in mixed builds.
+	if c.MixedBuildsEnabled(actx) && c.bazelHandler != nil && actx.Os().Class == android.Device {
 		bazelActionsUsed = c.bazelHandler.GenerateBazelBuildActions(actx, bazelModuleLabel)
 	}
 	return bazelActionsUsed
@@ -1812,15 +1817,6 @@ func (c *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 	}
 
 	flags.AssemblerWithCpp = inList("-xassembler-with-cpp", flags.Local.AsFlags)
-
-	// Optimization to reduce size of build.ninja
-	// Replace the long list of flags for each file with a module-local variable
-	ctx.Variable(pctx, "cflags", strings.Join(flags.Local.CFlags, " "))
-	ctx.Variable(pctx, "cppflags", strings.Join(flags.Local.CppFlags, " "))
-	ctx.Variable(pctx, "asflags", strings.Join(flags.Local.AsFlags, " "))
-	flags.Local.CFlags = []string{"$cflags"}
-	flags.Local.CppFlags = []string{"$cppflags"}
-	flags.Local.AsFlags = []string{"$asflags"}
 
 	var objs Objects
 	if c.compiler != nil {
@@ -2279,6 +2275,8 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 	actx.AddVariationDependencies([]blueprint.Variation{
 		{Mutator: "link", Variation: "shared"},
 	}, dataLibDepTag, deps.DataLibs...)
+
+	actx.AddVariationDependencies(nil, dataBinDepTag, deps.DataBins...)
 
 	actx.AddVariationDependencies([]blueprint.Variation{
 		{Mutator: "link", Variation: "shared"},
@@ -3251,16 +3249,6 @@ func (c *Module) TestFor() []string {
 	return c.Properties.Test_for
 }
 
-func (c *Module) UniqueApexVariations() bool {
-	if u, ok := c.compiler.(interface {
-		uniqueApexVariations() bool
-	}); ok {
-		return u.uniqueApexVariations()
-	} else {
-		return false
-	}
-}
-
 func (c *Module) EverInstallable() bool {
 	return c.installer != nil &&
 		// Check to see whether the module is actually ever installable.
@@ -3401,6 +3389,8 @@ func (c *Module) AlwaysRequiresPlatformApexVariant() bool {
 	return c.IsStubs() || c.Target().NativeBridge == android.NativeBridgeEnabled
 }
 
+var _ snapshot.RelativeInstallPath = (*Module)(nil)
+
 //
 // Defaults
 //
@@ -3455,6 +3445,7 @@ func DefaultsFactory(props ...interface{}) android.Module {
 		&android.ProtoProperties{},
 		// RustBindgenProperties is included here so that cc_defaults can be used for rust_bindgen modules.
 		&RustBindgenClangProperties{},
+		&prebuiltLinkerProperties{},
 	)
 
 	// Bazel module must be initialized _before_ Defaults to be included in cc_defaults module.

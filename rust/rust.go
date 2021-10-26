@@ -130,9 +130,10 @@ type BaseProperties struct {
 	// Minimum sdk version that the artifact should support when it runs as part of mainline modules(APEX).
 	Min_sdk_version *string
 
-	PreventInstall bool
-	HideFromMake   bool
-	Installable    *bool
+	HideFromMake   bool `blueprint:"mutated"`
+	PreventInstall bool `blueprint:"mutated"`
+
+	Installable *bool
 }
 
 type Module struct {
@@ -177,8 +178,8 @@ func (mod *Module) SetHideFromMake() {
 	mod.Properties.HideFromMake = true
 }
 
-func (c *Module) HiddenFromMake() bool {
-	return c.Properties.HideFromMake
+func (mod *Module) HiddenFromMake() bool {
+	return mod.Properties.HideFromMake
 }
 
 func (mod *Module) SanitizePropDefined() bool {
@@ -436,6 +437,8 @@ type RustLibrary struct {
 type compiler interface {
 	initialize(ctx ModuleContext)
 	compilerFlags(ctx ModuleContext, flags Flags) Flags
+	cfgFlags(ctx ModuleContext, flags Flags) Flags
+	featureFlags(ctx ModuleContext, flags Flags) Flags
 	compilerProps() []interface{}
 	compile(ctx ModuleContext, flags Flags, deps PathDeps) android.Path
 	compilerDeps(ctx DepsContext, deps Deps) Deps
@@ -524,10 +527,6 @@ func (mod *Module) PreventInstall() bool {
 	return mod.Properties.PreventInstall
 }
 
-func (mod *Module) HideFromMake() {
-	mod.Properties.HideFromMake = true
-}
-
 func (mod *Module) MarkAsCoverageVariant(coverage bool) {
 	mod.coverage.Properties.IsCoverageVariant = coverage
 }
@@ -593,6 +592,13 @@ func (mod *Module) CcLibraryInterface() bool {
 		}
 	}
 	return false
+}
+
+func (mod *Module) UnstrippedOutputFile() android.Path {
+	if mod.unstrippedOutputFile.Valid() {
+		return mod.unstrippedOutputFile.Path()
+	}
+	return nil
 }
 
 func (mod *Module) IncludeDirs() android.Paths {
@@ -661,7 +667,7 @@ func (mod *Module) CoverageFiles() android.Paths {
 }
 
 func (mod *Module) installable(apexInfo android.ApexInfo) bool {
-	if !mod.EverInstallable() {
+	if !proptools.BoolDefault(mod.Installable(), mod.EverInstallable()) {
 		return false
 	}
 
@@ -847,8 +853,11 @@ func (mod *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 		Toolchain: toolchain,
 	}
 
+	// Calculate rustc flags
 	if mod.compiler != nil {
 		flags = mod.compiler.compilerFlags(ctx, flags)
+		flags = mod.compiler.cfgFlags(ctx, flags)
+		flags = mod.compiler.featureFlags(ctx, flags)
 	}
 	if mod.coverage != nil {
 		flags, deps = mod.coverage.flags(ctx, flags, deps)
@@ -893,8 +902,24 @@ func (mod *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 		}
 
 		apexInfo := actx.Provider(android.ApexInfoProvider).(android.ApexInfo)
-		if mod.installable(apexInfo) {
+		if !proptools.BoolDefault(mod.Installable(), mod.EverInstallable()) {
+			// If the module has been specifically configure to not be installed then
+			// hide from make as otherwise it will break when running inside make as the
+			// output path to install will not be specified. Not all uninstallable
+			// modules can be hidden from make as some are needed for resolving make
+			// side dependencies.
+			mod.HideFromMake()
+		} else if !mod.installable(apexInfo) {
+			mod.SkipInstall()
+		}
+
+		// Still call install though, the installs will be stored as PackageSpecs to allow
+		// using the outputs in a genrule.
+		if mod.OutputFile().Valid() {
 			mod.compiler.install(ctx)
+			if ctx.Failed() {
+				return
+			}
 		}
 
 		ctx.Phony("rust", ctx.RustModule().OutputFile().Path())

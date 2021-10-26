@@ -17,7 +17,6 @@ package apex
 import (
 	"encoding/json"
 	"fmt"
-	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -66,6 +65,7 @@ func init() {
 	pctx.HostBinToolVariable("extract_apks", "extract_apks")
 	pctx.HostBinToolVariable("make_f2fs", "make_f2fs")
 	pctx.HostBinToolVariable("sload_f2fs", "sload_f2fs")
+	pctx.HostBinToolVariable("make_erofs", "make_erofs")
 	pctx.HostBinToolVariable("apex_compression_tool", "apex_compression_tool")
 	pctx.SourcePathVariable("genNdkUsedbyApexPath", "build/soong/scripts/gen_ndk_usedby_apex.sh")
 }
@@ -121,7 +121,7 @@ var (
 			`--payload_type image ` +
 			`--key ${key} ${opt_flags} ${image_dir} ${out} `,
 		CommandDeps: []string{"${apexer}", "${avbtool}", "${e2fsdroid}", "${merge_zips}",
-			"${mke2fs}", "${resize2fs}", "${sefcontext_compile}", "${make_f2fs}", "${sload_f2fs}",
+			"${mke2fs}", "${resize2fs}", "${sefcontext_compile}", "${make_f2fs}", "${sload_f2fs}", "${make_erofs}",
 			"${soong_zip}", "${zipalign}", "${aapt2}", "prebuilts/sdk/current/public/android.jar"},
 		Rspfile:        "${out}.copy_commands",
 		RspfileContent: "${copy_commands}",
@@ -256,14 +256,24 @@ func (a *apexBundle) buildManifest(ctx android.ModuleContext, provideNativeLibs,
 // labeled as system_file.
 func (a *apexBundle) buildFileContexts(ctx android.ModuleContext) android.OutputPath {
 	var fileContexts android.Path
+	var fileContextsDir string
 	if a.properties.File_contexts == nil {
 		fileContexts = android.PathForSource(ctx, "system/sepolicy/apex", ctx.ModuleName()+"-file_contexts")
 	} else {
+		if m, t := android.SrcIsModuleWithTag(*a.properties.File_contexts); m != "" {
+			otherModule := android.GetModuleFromPathDep(ctx, m, t)
+			fileContextsDir = ctx.OtherModuleDir(otherModule)
+		}
 		fileContexts = android.PathForModuleSrc(ctx, *a.properties.File_contexts)
 	}
+	if fileContextsDir == "" {
+		fileContextsDir = filepath.Dir(fileContexts.String())
+	}
+	fileContextsDir += string(filepath.Separator)
+
 	if a.Platform() {
-		if matched, err := path.Match("system/sepolicy/**/*", fileContexts.String()); err != nil || !matched {
-			ctx.PropertyErrorf("file_contexts", "should be under system/sepolicy, but %q", fileContexts)
+		if !strings.HasPrefix(fileContextsDir, "system/sepolicy/") {
+			ctx.PropertyErrorf("file_contexts", "should be under system/sepolicy, but found in  %q", fileContextsDir)
 		}
 	}
 	if !android.ExistentPathForSource(ctx, fileContexts.String()).Valid() {
@@ -706,12 +716,10 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			}
 		}
 		apisBackedbyOutputFile := android.PathForModuleOut(ctx, a.Name()+"_backing.txt")
-		ndkLibraryList := android.PathForSource(ctx, "system/core/rootdir/etc/public.libraries.android.txt")
 		rule := android.NewRuleBuilder(pctx, ctx)
 		rule.Command().
 			Tool(android.PathForSource(ctx, "build/soong/scripts/gen_ndk_backedby_apex.sh")).
 			Output(apisBackedbyOutputFile).
-			Input(ndkLibraryList).
 			Flags(libNames)
 		rule.Build("ndk_backedby_list", "Generate API libraries backed by Apex")
 		a.apisBackedByModuleFile = apisBackedbyOutputFile
@@ -786,7 +794,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 
 	if apexType == imageApex && (compressionEnabled || a.testOnlyShouldForceCompression()) {
 		a.isCompressed = true
-		unsignedCompressedOutputFile := android.PathForModuleOut(ctx, a.Name()+".capex.unsigned")
+		unsignedCompressedOutputFile := android.PathForModuleOut(ctx, a.Name()+imageCapexSuffix+".unsigned")
 
 		compressRule := android.NewRuleBuilder(pctx, ctx)
 		compressRule.Command().
@@ -800,7 +808,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			FlagWithOutput("--output ", unsignedCompressedOutputFile)
 		compressRule.Build("compressRule", "Generate unsigned compressed APEX file")
 
-		signedCompressedOutputFile := android.PathForModuleOut(ctx, a.Name()+".capex")
+		signedCompressedOutputFile := android.PathForModuleOut(ctx, a.Name()+imageCapexSuffix)
 		if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_SIGNAPK") {
 			args["outCommaList"] = signedCompressedOutputFile.String()
 		}
@@ -815,10 +823,8 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		a.outputFile = signedCompressedOutputFile
 	}
 
-	// Install to $OUT/soong/{target,host}/.../apex
-	if a.installable() {
-		ctx.InstallFile(a.installDir, a.Name()+suffix, a.outputFile)
-	}
+	// Install to $OUT/soong/{target,host}/.../apex.
+	ctx.InstallFile(a.installDir, a.Name()+suffix, a.outputFile)
 
 	// installed-files.txt is dist'ed
 	a.installedFilesFile = a.buildInstalledFilesFile(ctx, a.outputFile, imageDir)

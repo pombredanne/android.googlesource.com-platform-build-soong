@@ -77,10 +77,6 @@ var (
 		// TODO: can we remove this now?
 		"-Wno-reserved-id-macro",
 
-		// Workaround for ccache with clang.
-		// See http://petereisentraut.blogspot.com/2011/05/ccache-and-clang.html.
-		"-Wno-unused-command-line-argument",
-
 		// Force clang to always output color diagnostics. Ninja will strip the ANSI
 		// color codes if it is not running in a terminal.
 		"-fcolor-diagnostics",
@@ -230,6 +226,9 @@ var (
 		"-Wno-string-concatenation", // http://b/175068488
 		// New warnings to be fixed after clang-r428724
 		"-Wno-align-mismatch", // http://b/193679946
+		// New warnings to be fixed after clang-r433403
+		"-Wno-error=unused-but-set-variable",  // http://b/197240255
+		"-Wno-error=unused-but-set-parameter", // http://b/197240255
 	}
 
 	// Extra cflags for external third-party projects to disable warnings that
@@ -255,6 +254,9 @@ var (
 
 		// http://b/165945989
 		"-Wno-psabi",
+
+		// http://b/199369603
+		"-Wno-null-pointer-subtraction",
 	}
 
 	IllegalFlags = []string{
@@ -268,8 +270,8 @@ var (
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r428724"
-	ClangDefaultShortVersion = "13.0.1"
+	ClangDefaultVersion      = "clang-r433403b"
+	ClangDefaultShortVersion = "13.0.3"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{
@@ -323,6 +325,12 @@ func init() {
 			// Default to zero initialization.
 			flags = append(flags, "-ftrivial-auto-var-init=zero -enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang")
 		}
+
+		// Workaround for ccache with clang.
+		// See http://petereisentraut.blogspot.com/2011/05/ccache-and-clang.html.
+		if ctx.Config().IsEnvTrue("USE_CCACHE") {
+			flags = append(flags, "-Wno-unused-command-line-argument")
+		}
 		return strings.Join(flags, " ")
 	})
 
@@ -358,28 +366,12 @@ func init() {
 	exportStringStaticVariable("CLANG_DEFAULT_VERSION", ClangDefaultVersion)
 	exportStringStaticVariable("CLANG_DEFAULT_SHORT_VERSION", ClangDefaultShortVersion)
 
-	pctx.SourcePathVariable("ClangDefaultBase", ClangDefaultBase)
-	pctx.VariableFunc("ClangBase", func(ctx android.PackageVarContext) string {
-		if override := ctx.Config().Getenv("LLVM_PREBUILTS_BASE"); override != "" {
-			return override
-		}
-		return "${ClangDefaultBase}"
-	})
-	pctx.VariableFunc("ClangVersion", func(ctx android.PackageVarContext) string {
-		if override := ctx.Config().Getenv("LLVM_PREBUILTS_VERSION"); override != "" {
-			return override
-		}
-		return ClangDefaultVersion
-	})
+	pctx.StaticVariableWithEnvOverride("ClangBase", "LLVM_PREBUILTS_BASE", ClangDefaultBase)
+	pctx.StaticVariableWithEnvOverride("ClangVersion", "LLVM_PREBUILTS_VERSION", ClangDefaultVersion)
 	pctx.StaticVariable("ClangPath", "${ClangBase}/${HostPrebuiltTag}/${ClangVersion}")
 	pctx.StaticVariable("ClangBin", "${ClangPath}/bin")
 
-	pctx.VariableFunc("ClangShortVersion", func(ctx android.PackageVarContext) string {
-		if override := ctx.Config().Getenv("LLVM_RELEASE_VERSION"); override != "" {
-			return override
-		}
-		return ClangDefaultShortVersion
-	})
+	pctx.StaticVariableWithEnvOverride("ClangShortVersion", "LLVM_RELEASE_VERSION", ClangDefaultShortVersion)
 	pctx.StaticVariable("ClangAsanLibDir", "${ClangBase}/linux-x86/${ClangVersion}/lib64/clang/${ClangShortVersion}/lib/linux")
 
 	// These are tied to the version of LLVM directly in external/llvm, so they might trail the host prebuilts
@@ -412,4 +404,30 @@ func init() {
 	pctx.StaticVariableWithEnvOverride("REAbiLinkerExecStrategy", "RBE_ABI_LINKER_EXEC_STRATEGY", remoteexec.LocalExecStrategy)
 }
 
-var HostPrebuiltTag = pctx.VariableConfigMethod("HostPrebuiltTag", android.Config.PrebuiltOS)
+var HostPrebuiltTag = exportVariableConfigMethod("HostPrebuiltTag", android.Config.PrebuiltOS)
+
+func ClangPath(ctx android.PathContext, file string) android.SourcePath {
+	type clangToolKey string
+
+	key := android.NewCustomOnceKey(clangToolKey(file))
+
+	return ctx.Config().OnceSourcePath(key, func() android.SourcePath {
+		return clangPath(ctx).Join(ctx, file)
+	})
+}
+
+var clangPathKey = android.NewOnceKey("clangPath")
+
+func clangPath(ctx android.PathContext) android.SourcePath {
+	return ctx.Config().OnceSourcePath(clangPathKey, func() android.SourcePath {
+		clangBase := ClangDefaultBase
+		if override := ctx.Config().Getenv("LLVM_PREBUILTS_BASE"); override != "" {
+			clangBase = override
+		}
+		clangVersion := ClangDefaultVersion
+		if override := ctx.Config().Getenv("LLVM_PREBUILTS_VERSION"); override != "" {
+			clangVersion = override
+		}
+		return android.PathForSource(ctx, clangBase, ctx.Config().PrebuiltOS(), clangVersion)
+	})
+}

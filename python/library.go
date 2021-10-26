@@ -45,7 +45,6 @@ func PythonLibraryHostFactory() android.Module {
 
 type bazelPythonLibraryAttributes struct {
 	Srcs         bazel.LabelListAttribute
-	Data         bazel.LabelListAttribute
 	Deps         bazel.LabelListAttribute
 	Srcs_version string
 }
@@ -88,14 +87,10 @@ func pythonLibBp2Build(ctx android.TopDownMutatorContext, modType string) {
 		// do nothing, since python_version defaults to PY2ANDPY3
 	}
 
-	srcs := android.BazelLabelForModuleSrcExcludes(ctx, m.properties.Srcs, m.properties.Exclude_srcs)
-	data := android.BazelLabelForModuleSrc(ctx, m.properties.Data)
-	deps := android.BazelLabelForModuleDeps(ctx, m.properties.Libs)
-
+	baseAttrs := m.makeArchVariantBaseAttributes(ctx)
 	attrs := &bazelPythonLibraryAttributes{
-		Srcs:         bazel.MakeLabelListAttribute(srcs),
-		Data:         bazel.MakeLabelListAttribute(data),
-		Deps:         bazel.MakeLabelListAttribute(deps),
+		Srcs:         baseAttrs.Srcs,
+		Deps:         baseAttrs.Deps,
 		Srcs_version: python_version,
 	}
 
@@ -104,7 +99,10 @@ func pythonLibBp2Build(ctx android.TopDownMutatorContext, modType string) {
 		Rule_class: "py_library",
 	}
 
-	ctx.CreateBazelTargetModule(m.Name(), props, attrs)
+	ctx.CreateBazelTargetModule(props, android.CommonAttributes{
+		Name: m.Name(),
+		Data: baseAttrs.Data,
+	}, attrs)
 }
 
 func PythonLibraryFactory() android.Module {

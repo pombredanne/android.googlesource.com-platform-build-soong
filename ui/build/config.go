@@ -33,7 +33,8 @@ import (
 type Config struct{ *configImpl }
 
 type configImpl struct {
-	// From the environment
+	// Some targets that are implemented in soong_build
+	// (bp2build, json-module-graph) are not here and have their own bits below.
 	arguments     []string
 	goma          bool
 	environ       *Environment
@@ -41,17 +42,21 @@ type configImpl struct {
 	buildDateTime string
 
 	// From the arguments
-	parallel       int
-	keepGoing      int
-	verbose        bool
-	checkbuild     bool
-	dist           bool
-	skipConfig     bool
-	skipKati       bool
-	skipKatiNinja  bool
-	skipSoong      bool
-	skipNinja      bool
-	skipSoongTests bool
+	parallel        int
+	keepGoing       int
+	verbose         bool
+	checkbuild      bool
+	dist            bool
+	jsonModuleGraph bool
+	bp2build        bool
+	queryview       bool
+	soongDocs       bool
+	skipConfig      bool
+	skipKati        bool
+	skipKatiNinja   bool
+	skipSoong       bool
+	skipNinja       bool
+	skipSoongTests  bool
 
 	// From the product config
 	katiArgs        []string
@@ -78,6 +83,8 @@ type configImpl struct {
 
 	// Set by multiproduct_kati
 	emptyNinjaFile bool
+
+	metricsUploader string
 }
 
 const srcDirFileCheck = "build/soong/root.bp"
@@ -105,12 +112,6 @@ type bazelBuildMode int
 const (
 	// Don't use bazel at all.
 	noBazel bazelBuildMode = iota
-
-	// Only generate build files (in a subdirectory of the out directory) and exit.
-	generateBuildFiles
-
-	// Only generate the Soong json module graph for use with jq, and exit.
-	generateJsonModuleGraph
 
 	// Generate synthetic build files and incorporate these files into a build which
 	// partially uses Bazel. Build metadata may come from Android.bp or BUILD files.
@@ -238,13 +239,16 @@ func NewConfig(ctx Context, args ...string) Config {
 	// Precondition: the current directory is the top of the source tree
 	checkTopDir(ctx)
 
-	if srcDir := absPath(ctx, "."); strings.ContainsRune(srcDir, ' ') {
+	srcDir := absPath(ctx, ".")
+	if strings.ContainsRune(srcDir, ' ') {
 		ctx.Println("You are building in a directory whose absolute path contains a space character:")
 		ctx.Println()
 		ctx.Printf("%q\n", srcDir)
 		ctx.Println()
 		ctx.Fatalln("Directory names containing spaces are not supported")
 	}
+
+	ret.metricsUploader = GetMetricsUploader(srcDir, ret.environ)
 
 	if outDir := ret.OutDir(); strings.ContainsRune(outDir, ' ') {
 		ctx.Println("The absolute path of your output directory ($OUT_DIR) contains a space character:")
@@ -356,13 +360,16 @@ func storeConfigMetrics(ctx Context, config Config) {
 }
 
 func buildConfig(config Config) *smpb.BuildConfig {
-	return &smpb.BuildConfig{
+	c := &smpb.BuildConfig{
 		ForceUseGoma:    proto.Bool(config.ForceUseGoma()),
 		UseGoma:         proto.Bool(config.UseGoma()),
 		UseRbe:          proto.Bool(config.UseRBE()),
 		BazelAsNinja:    proto.Bool(config.UseBazel()),
 		BazelMixedBuild: proto.Bool(config.bazelBuildMode() == mixedBuild),
 	}
+	c.Targets = append(c.Targets, config.arguments...)
+
+	return c
 }
 
 // getConfigArgs processes the command arguments based on the build action and creates a set of new
@@ -639,6 +646,14 @@ func (c *configImpl) parseArgs(ctx Context, args []string) {
 			c.environ.Set(k, v)
 		} else if arg == "dist" {
 			c.dist = true
+		} else if arg == "json-module-graph" {
+			c.jsonModuleGraph = true
+		} else if arg == "bp2build" {
+			c.bp2build = true
+		} else if arg == "queryview" {
+			c.queryview = true
+		} else if arg == "soong_docs" {
+			c.soongDocs = true
 		} else {
 			if arg == "checkbuild" {
 				c.checkbuild = true
@@ -705,6 +720,26 @@ func (c *configImpl) Arguments() []string {
 	return c.arguments
 }
 
+func (c *configImpl) SoongBuildInvocationNeeded() bool {
+	if c.Dist() {
+		return true
+	}
+
+	if len(c.Arguments()) > 0 {
+		// Explicit targets requested that are not special targets like b2pbuild
+		// or the JSON module graph
+		return true
+	}
+
+	if !c.JsonModuleGraph() && !c.Bp2Build() && !c.Queryview() && !c.SoongDocs() {
+		// Command line was empty, the default Ninja target is built
+		return true
+	}
+
+	// build.ninja doesn't need to be generated
+	return false
+}
+
 func (c *configImpl) OutDir() string {
 	if outDir, ok := c.environ.Get("OUT_DIR"); ok {
 		return outDir
@@ -753,12 +788,28 @@ func (c *configImpl) HostToolDir() string {
 	return filepath.Join(c.SoongOutDir(), "host", c.PrebuiltOS(), "bin")
 }
 
+func (c *configImpl) NamedGlobFile(name string) string {
+	return shared.JoinPath(c.SoongOutDir(), ".bootstrap/build-globs."+name+".ninja")
+}
+
+func (c *configImpl) UsedEnvFile(tag string) string {
+	return shared.JoinPath(c.SoongOutDir(), usedEnvFile+"."+tag)
+}
+
 func (c *configImpl) MainNinjaFile() string {
 	return shared.JoinPath(c.SoongOutDir(), "build.ninja")
 }
 
 func (c *configImpl) Bp2BuildMarkerFile() string {
 	return shared.JoinPath(c.SoongOutDir(), ".bootstrap/bp2build_workspace_marker")
+}
+
+func (c *configImpl) SoongDocsHtml() string {
+	return shared.JoinPath(c.SoongOutDir(), "docs/soong_build.html")
+}
+
+func (c *configImpl) QueryviewMarkerFile() string {
+	return shared.JoinPath(c.SoongOutDir(), "queryview.marker")
 }
 
 func (c *configImpl) ModuleGraphFile() string {
@@ -788,6 +839,22 @@ func (c *configImpl) Checkbuild() bool {
 
 func (c *configImpl) Dist() bool {
 	return c.dist
+}
+
+func (c *configImpl) JsonModuleGraph() bool {
+	return c.jsonModuleGraph
+}
+
+func (c *configImpl) Bp2Build() bool {
+	return c.bp2build
+}
+
+func (c *configImpl) Queryview() bool {
+	return c.queryview
+}
+
+func (c *configImpl) SoongDocs() bool {
+	return c.soongDocs
 }
 
 func (c *configImpl) IsVerbose() bool {
@@ -935,10 +1002,6 @@ func (c *configImpl) UseBazel() bool {
 func (c *configImpl) bazelBuildMode() bazelBuildMode {
 	if c.Environment().IsEnvTrue("USE_BAZEL_ANALYSIS") {
 		return mixedBuild
-	} else if c.Environment().IsEnvTrue("GENERATE_BAZEL_FILES") {
-		return generateBuildFiles
-	} else if c.Environment().IsEnvTrue("GENERATE_JSON_MODULE_GRAPH") {
-		return generateJsonModuleGraph
 	} else {
 		return noBazel
 	}
@@ -1188,10 +1251,7 @@ func (c *configImpl) BuildDateTime() string {
 }
 
 func (c *configImpl) MetricsUploaderApp() string {
-	if p, ok := c.environ.Get("ANDROID_ENABLE_METRICS_UPLOAD"); ok {
-		return p
-	}
-	return ""
+	return c.metricsUploader
 }
 
 // LogsDir returns the logs directory where build log and metrics
@@ -1218,4 +1278,15 @@ func (c *configImpl) SetEmptyNinjaFile(v bool) {
 
 func (c *configImpl) EmptyNinjaFile() bool {
 	return c.emptyNinjaFile
+}
+
+func GetMetricsUploader(topDir string, env *Environment) string {
+	if p, ok := env.Get("METRICS_UPLOADER"); ok {
+		metricsUploader := filepath.Join(topDir, p)
+		if _, err := os.Stat(metricsUploader); err == nil {
+			return metricsUploader
+		}
+	}
+
+	return ""
 }

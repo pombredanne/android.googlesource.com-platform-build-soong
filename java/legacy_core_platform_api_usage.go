@@ -20,6 +20,8 @@ import (
 )
 
 var legacyCorePlatformApiModules = []string{
+	"AAECarSystemUI",
+	"AAECarSystemUI-tests",
 	"ArcSettings",
 	"ahat-test-dump",
 	"android.car",
@@ -30,28 +32,33 @@ var legacyCorePlatformApiModules = []string{
 	"api-stubs-docs",
 	"art_cts_jvmti_test_library",
 	"art-gtest-jars-MyClassNatives",
+	"BackupEncryption",
 	"BackupFrameworksServicesRoboTests",
 	"backuplib",
 	"BandwidthEnforcementTest",
 	"BlockedNumberProvider",
 	"BluetoothInstrumentationTests",
+	"BluetoothMidiLib",
 	"BluetoothMidiService",
-	"CarDeveloperOptions",
+	"BTTestApp",
+	"CallEnhancement",
+	"CapCtrlInterface",
 	"CarService",
 	"CarServiceTest",
-	"car-apps-common",
 	"car-service-test-lib",
 	"car-service-test-static-lib",
 	"CertInstaller",
+	"com.qti.location.sdk",
 	"com.qti.media.secureprocessor",
 	"ConnectivityManagerTest",
 	"ContactsProvider",
 	"CorePerfTests",
 	"core-tests-support",
+	"cronet_impl_common_java",
+	"cronet_impl_native_java",
+	"cronet_impl_platform_java",
 	"CtsAppExitTestCases",
 	"CtsContentTestCases",
-	"CtsIkeTestCases",
-	"CtsAppExitTestCases",
 	"CtsLibcoreWycheproofBCTestCases",
 	"CtsMediaTestCases",
 	"CtsNetTestCases",
@@ -64,8 +71,10 @@ var legacyCorePlatformApiModules = []string{
 	"DeviceInfo",
 	"DiagnosticTools",
 	"DisplayCutoutEmulationEmu01Overlay",
+	"DocumentsUIGoogleTests",
 	"DocumentsUIPerfTests",
 	"DocumentsUITests",
+	"DocumentsUIUnitTests",
 	"DownloadProvider",
 	"DownloadProviderTests",
 	"DownloadProviderUi",
@@ -75,10 +84,12 @@ var legacyCorePlatformApiModules = []string{
 	"ethernet-service",
 	"EthernetServiceTests",
 	"ExternalStorageProvider",
-	"ExtServices",
-	"ExtServices-core",
-	"framework-all",
+	"face-V1-0-javalib",
+	"FloralClocks",
+	"framework-jobscheduler",
 	"framework-minus-apex",
+	"framework-minus-apex-intdefs",
+	"FrameworkOverlayG6QU3",
 	"FrameworksCoreTests",
 	"FrameworksIkeTests",
 	"FrameworksNetCommonTests",
@@ -87,29 +98,50 @@ var legacyCorePlatformApiModules = []string{
 	"FrameworksServicesTests",
 	"FrameworksMockingServicesTests",
 	"FrameworksUtilTests",
-	"FrameworksWifiTests",
+	"GtsIncrementalInstallTestCases",
+	"GtsIncrementalInstallTriggerApp",
+	"GtsInstallerV2TestCases",
+	"HelloOslo",
 	"hid",
 	"hidl_test_java_java",
 	"hwbinder",
-	"ims",
+	"imssettings",
+	"izat.lib.glue",
 	"KeyChain",
-	"ksoap2",
+	"LocalSettingsLib",
 	"LocalTransport",
 	"lockagent",
 	"mediaframeworktest",
-	"MediaProvider",
+	"mediatek-ims-base",
 	"MmsService",
-	"MtpDocumentsProvider",
+	"ModemTestMode",
+	"MtkCapCtrl",
+	"MtpService",
 	"MultiDisplayProvider",
+	"my.tests.snapdragonsdktest",
+	"NetworkSetting",
 	"NetworkStackIntegrationTestsLib",
 	"NetworkStackNextIntegrationTests",
 	"NetworkStackNextTests",
 	"NetworkStackTests",
 	"NetworkStackTestsLib",
-	"NfcNci",
+	"online-gcm-ref-docs",
+	"online-gts-docs",
+	"PerformanceMode",
 	"platform_library-docs",
+	"PowerStatsService",
 	"PrintSpooler",
+	"pxp-monitor",
+	"QColor",
+	"qcom.fmradio",
+	"QDCMMobileApp",
+	"Qmmi",
+	"QPerformance",
+	"remotesimlockmanagerlibrary",
 	"RollbackTest",
+	"sam",
+	"saminterfacelibrary",
+	"sammanagerlibrary",
 	"service-blobstore",
 	"service-connectivity-pre-jarjar",
 	"service-jobscheduler",
@@ -123,21 +155,50 @@ var legacyCorePlatformApiModules = []string{
 	"services.usb",
 	"Settings-core",
 	"SettingsGoogle",
+	"SettingsGoogleOverlayCoral",
+	"SettingsGoogleOverlayFlame",
 	"SettingsLib",
+	"SettingsOverlayG020A",
+	"SettingsOverlayG020B",
+	"SettingsOverlayG020C",
+	"SettingsOverlayG020D",
+	"SettingsOverlayG020E",
+	"SettingsOverlayG020E_VN",
+	"SettingsOverlayG020F",
+	"SettingsOverlayG020F_VN",
+	"SettingsOverlayG020G",
+	"SettingsOverlayG020G_VN",
+	"SettingsOverlayG020H",
+	"SettingsOverlayG020H_VN",
+	"SettingsOverlayG020I",
+	"SettingsOverlayG020I_VN",
+	"SettingsOverlayG020J",
+	"SettingsOverlayG020M",
+	"SettingsOverlayG020N",
+	"SettingsOverlayG020P",
+	"SettingsOverlayG020Q",
+	"SettingsOverlayG025H",
+	"SettingsOverlayG025J",
+	"SettingsOverlayG025M",
+	"SettingsOverlayG025N",
+	"SettingsOverlayG5NZ6",
 	"SettingsProvider",
 	"SettingsProviderTest",
 	"SettingsRoboTests",
 	"Shell",
 	"ShellTests",
+	"SimContact",
+	"SimContacts",
+	"SimSettings",
 	"sl4a.Common",
 	"StatementService",
 	"SystemUI-core",
 	"SystemUISharedLib",
 	"SystemUI-tests",
+	"tcmiface",
 	"Telecom",
 	"TelecomUnitTests",
 	"telephony-common",
-	"TelephonyProvider",
 	"TelephonyProviderTests",
 	"TeleService",
 	"testables",
@@ -147,12 +208,16 @@ var legacyCorePlatformApiModules = []string{
 	"time_zone_distro_installer-tests",
 	"time_zone_distro-tests",
 	"time_zone_updater",
+	"TMobilePlanProvider",
 	"TvProvider",
 	"uiautomator-stubs-docs",
+	"uimgbamanagerlibrary",
 	"UsbHostExternalManagementTestApp",
 	"UserDictionaryProvider",
+	"UxPerformance",
 	"WallpaperBackup",
-	"wifi-service",
+	"WallpaperBackupAgentTests",
+	"WfdCommon",
 }
 
 var legacyCorePlatformApiLookup = make(map[string]struct{})
@@ -163,17 +228,27 @@ func init() {
 	}
 }
 
-func useLegacyCorePlatformApi(ctx android.EarlyModuleContext) bool {
-	return useLegacyCorePlatformApiByName(ctx.ModuleName())
+var legacyCorePlatformApiLookupKey = android.NewOnceKey("legacyCorePlatformApiLookup")
+
+func getLegacyCorePlatformApiLookup(config android.Config) map[string]struct{} {
+	return config.Once(legacyCorePlatformApiLookupKey, func() interface{} {
+		return legacyCorePlatformApiLookup
+	}).(map[string]struct{})
 }
 
-func useLegacyCorePlatformApiByName(name string) bool {
-	_, found := legacyCorePlatformApiLookup[name]
+// useLegacyCorePlatformApi checks to see whether the supplied module name is in the list of modules
+// that are able to use the legacy core platform API and returns true if it does, false otherwise.
+//
+// This method takes the module name separately from the context as this may be being called for a
+// module that is not the target of the supplied context.
+func useLegacyCorePlatformApi(ctx android.EarlyModuleContext, moduleName string) bool {
+	lookup := getLegacyCorePlatformApiLookup(ctx.Config())
+	_, found := lookup[moduleName]
 	return found
 }
 
 func corePlatformSystemModules(ctx android.EarlyModuleContext) string {
-	if useLegacyCorePlatformApi(ctx) {
+	if useLegacyCorePlatformApi(ctx, ctx.ModuleName()) {
 		return config.LegacyCorePlatformSystemModules
 	} else {
 		return config.StableCorePlatformSystemModules
@@ -181,7 +256,7 @@ func corePlatformSystemModules(ctx android.EarlyModuleContext) string {
 }
 
 func corePlatformBootclasspathLibraries(ctx android.EarlyModuleContext) []string {
-	if useLegacyCorePlatformApi(ctx) {
+	if useLegacyCorePlatformApi(ctx, ctx.ModuleName()) {
 		return config.LegacyCorePlatformBootclasspathLibraries
 	} else {
 		return config.StableCorePlatformBootclasspathLibraries

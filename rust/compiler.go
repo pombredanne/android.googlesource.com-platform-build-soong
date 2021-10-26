@@ -231,6 +231,7 @@ func (compiler *baseCompiler) cfgsToFlags() []string {
 	for _, cfg := range compiler.Properties.Cfgs {
 		flags = append(flags, "--cfg '"+cfg+"'")
 	}
+
 	return flags
 }
 
@@ -239,6 +240,24 @@ func (compiler *baseCompiler) featuresToFlags() []string {
 	for _, feature := range compiler.Properties.Features {
 		flags = append(flags, "--cfg 'feature=\""+feature+"\"'")
 	}
+
+	return flags
+}
+
+func (compiler *baseCompiler) featureFlags(ctx ModuleContext, flags Flags) Flags {
+	flags.RustFlags = append(flags.RustFlags, compiler.featuresToFlags()...)
+	flags.RustdocFlags = append(flags.RustdocFlags, compiler.featuresToFlags()...)
+
+	return flags
+}
+
+func (compiler *baseCompiler) cfgFlags(ctx ModuleContext, flags Flags) Flags {
+	if ctx.RustModule().UseVndk() {
+		compiler.Properties.Cfgs = append(compiler.Properties.Cfgs, "android_vndk")
+	}
+
+	flags.RustFlags = append(flags.RustFlags, compiler.cfgsToFlags()...)
+	flags.RustdocFlags = append(flags.RustdocFlags, compiler.cfgsToFlags()...)
 	return flags
 }
 
@@ -269,10 +288,6 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags) Flag
 
 	flags.RustFlags = append(flags.RustFlags, lintFlags)
 	flags.RustFlags = append(flags.RustFlags, compiler.Properties.Flags...)
-	flags.RustFlags = append(flags.RustFlags, compiler.cfgsToFlags()...)
-	flags.RustFlags = append(flags.RustFlags, compiler.featuresToFlags()...)
-	flags.RustdocFlags = append(flags.RustdocFlags, compiler.cfgsToFlags()...)
-	flags.RustdocFlags = append(flags.RustdocFlags, compiler.featuresToFlags()...)
 	flags.RustFlags = append(flags.RustFlags, "--edition="+compiler.edition())
 	flags.RustdocFlags = append(flags.RustdocFlags, "--edition="+compiler.edition())
 	flags.LinkFlags = append(flags.LinkFlags, compiler.Properties.Ld_flags...)
@@ -294,10 +309,6 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags) Flag
 		}
 		flags.LinkFlags = append(flags.LinkFlags, "-Wl,-rpath,"+rpathPrefix+rpath)
 		flags.LinkFlags = append(flags.LinkFlags, "-Wl,-rpath,"+rpathPrefix+"../"+rpath)
-	}
-
-	if ctx.RustModule().UseVndk() {
-		flags.RustFlags = append(flags.RustFlags, "--cfg 'android_vndk'")
 	}
 
 	return flags
@@ -438,6 +449,10 @@ func (compiler *baseCompiler) relativeInstallPath() string {
 
 // Returns the Path for the main source file along with Paths for generated source files from modules listed in srcs.
 func srcPathFromModuleSrcs(ctx ModuleContext, srcs []string) (android.Path, android.Paths) {
+	if len(srcs) == 0 {
+		ctx.PropertyErrorf("srcs", "srcs must not be empty")
+	}
+
 	// The srcs can contain strings with prefix ":".
 	// They are dependent modules of this module, with android.SourceDepTag.
 	// They are not the main source file compiled by rustc.

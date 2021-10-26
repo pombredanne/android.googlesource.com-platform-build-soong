@@ -439,6 +439,7 @@ func PrebuiltEtcHostFactory() android.Module {
 	InitPrebuiltEtcModule(module, "etc")
 	// This module is host-only
 	android.InitAndroidArchModule(module, android.HostSupported, android.MultilibCommon)
+	android.InitDefaultableModule(module)
 	return module
 }
 
@@ -449,6 +450,7 @@ func PrebuiltRootFactory() android.Module {
 	InitPrebuiltRootModule(module)
 	// This module is device-only
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibFirst)
+	android.InitDefaultableModule(module)
 	return module
 }
 
@@ -459,6 +461,7 @@ func PrebuiltUserShareFactory() android.Module {
 	InitPrebuiltEtcModule(module, "usr/share")
 	// This module is device-only
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibFirst)
+	android.InitDefaultableModule(module)
 	return module
 }
 
@@ -469,6 +472,7 @@ func PrebuiltUserShareHostFactory() android.Module {
 	InitPrebuiltEtcModule(module, "usr/share")
 	// This module is host-only
 	android.InitAndroidArchModule(module, android.HostSupported, android.MultilibCommon)
+	android.InitDefaultableModule(module)
 	return module
 }
 
@@ -478,6 +482,7 @@ func PrebuiltFontFactory() android.Module {
 	InitPrebuiltEtcModule(module, "fonts")
 	// This module is device-only
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibFirst)
+	android.InitDefaultableModule(module)
 	return module
 }
 
@@ -491,6 +496,7 @@ func PrebuiltFirmwareFactory() android.Module {
 	InitPrebuiltEtcModule(module, "etc/firmware")
 	// This module is device-only
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibFirst)
+	android.InitDefaultableModule(module)
 	return module
 }
 
@@ -503,6 +509,7 @@ func PrebuiltDSPFactory() android.Module {
 	InitPrebuiltEtcModule(module, "etc/dsp")
 	// This module is device-only
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibFirst)
+	android.InitDefaultableModule(module)
 	return module
 }
 
@@ -516,14 +523,8 @@ func PrebuiltRFSAFactory() android.Module {
 	InitPrebuiltEtcModule(module, "lib/rfsa")
 	// This module is device-only
 	android.InitAndroidArchModule(module, android.DeviceSupported, android.MultilibFirst)
+	android.InitDefaultableModule(module)
 	return module
-}
-
-// Flags to be included in the snapshot
-type snapshotJsonFlags struct {
-	ModuleName          string `json:",omitempty"`
-	Filename            string `json:",omitempty"`
-	RelativeInstallPath string `json:",omitempty"`
 }
 
 // Copy file into the snapshot
@@ -612,7 +613,7 @@ func generatePrebuiltSnapshot(s snapshot.SnapshotSingleton, ctx android.Singleto
 		snapshotLibOut := filepath.Join(snapshotArchDir, targetArch, "etc", m.BaseModuleName())
 		snapshotOutputs = append(snapshotOutputs, copyFile(ctx, m.OutputFile(), snapshotLibOut, s.Fake))
 
-		prop := snapshotJsonFlags{}
+		prop := snapshot.SnapshotJsonFlags{}
 		propOut := snapshotLibOut + ".json"
 		prop.ModuleName = m.BaseModuleName()
 		if m.subdirProperties.Relative_install_path != nil {
@@ -680,8 +681,16 @@ func PrebuiltEtcBp2Build(ctx android.TopDownMutatorContext) {
 
 func prebuiltEtcBp2BuildInternal(ctx android.TopDownMutatorContext, module *PrebuiltEtc) {
 	var srcLabelAttribute bazel.LabelAttribute
-	if module.properties.Src != nil {
-		srcLabelAttribute.SetValue(android.BazelLabelForModuleSrcSingle(ctx, *module.properties.Src))
+	for axis, configToProps := range module.GetArchVariantProperties(ctx, &prebuiltEtcProperties{}) {
+		for config, p := range configToProps {
+			props, ok := p.(*prebuiltEtcProperties)
+			if !ok {
+				continue
+			}
+			if props.Src != nil {
+				srcLabelAttribute.SetSelectValue(axis, config, android.BazelLabelForModuleSrcSingle(ctx, *props.Src))
+			}
+		}
 	}
 
 	var filename string
@@ -711,5 +720,5 @@ func prebuiltEtcBp2BuildInternal(ctx android.TopDownMutatorContext, module *Preb
 		Bzl_load_location: "//build/bazel/rules:prebuilt_etc.bzl",
 	}
 
-	ctx.CreateBazelTargetModule(module.Name(), props, attrs)
+	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: module.Name()}, attrs)
 }

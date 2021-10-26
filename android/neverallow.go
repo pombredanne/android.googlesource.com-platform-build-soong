@@ -150,9 +150,10 @@ func createTrebleRules() []Rule {
 
 func createJavaDeviceForHostRules() []Rule {
 	javaDeviceForHostProjectsAllowedList := []string{
+		"development/build",
 		"external/guava",
 		"external/robolectric-shadows",
-		"framework/layoutlib",
+		"frameworks/layoutlib",
 	}
 
 	return []Rule{
@@ -175,6 +176,7 @@ func createCcSdkVariantRules() []Rule {
 		"tools/test/graphicsbenchmark/apps/sample_app",
 		"tools/test/graphicsbenchmark/functional_tests/java",
 		"vendor/xts/gts-tests/hostsidetests/gamedevicecert/apps/javatests",
+		"external/libtextclassifier/native",
 	}
 
 	platformVariantPropertiesAllowedList := []string{

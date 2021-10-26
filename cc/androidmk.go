@@ -294,9 +294,6 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 			if library.buildStubs() {
 				entries.SetBool("LOCAL_NO_NOTICE_FILE", true)
 			}
-			if library.apiListCoverageXmlPath.String() != "" {
-				entries.SetString("SOONG_CC_API_XML", "$(SOONG_CC_API_XML) "+library.apiListCoverageXmlPath.String())
-			}
 		})
 	}
 	// If a library providing a stub is included in an APEX, the private APIs of the library
@@ -394,6 +391,8 @@ func (test *testBinary) AndroidMkEntries(ctx AndroidMkContext, entries *android.
 		if Bool(test.Properties.Test_options.Unit_test) {
 			entries.SetBool("LOCAL_IS_UNIT_TEST", true)
 		}
+
+		entries.SetBoolIfTrue("LOCAL_COMPATIBILITY_PER_TESTCASE_DIRECTORY", Bool(test.Properties.Per_testcase_directory))
 	})
 
 	AndroidMkWriteTestData(test.data, entries)

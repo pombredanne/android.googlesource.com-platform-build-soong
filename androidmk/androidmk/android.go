@@ -15,10 +15,11 @@
 package androidmk
 
 import (
-	mkparser "android/soong/androidmk/parser"
 	"fmt"
 	"sort"
 	"strings"
+
+	mkparser "android/soong/androidmk/parser"
 
 	bpparser "github.com/google/blueprint/parser"
 )
@@ -128,6 +129,8 @@ func init() {
 			"LOCAL_STATIC_LIBRARIES":              "static_libs",
 			"LOCAL_WHOLE_STATIC_LIBRARIES":        "whole_static_libs",
 			"LOCAL_SYSTEM_SHARED_LIBRARIES":       "system_shared_libs",
+			"LOCAL_USES_LIBRARIES":                "uses_libs",
+			"LOCAL_OPTIONAL_USES_LIBRARIES":       "optional_uses_libs",
 			"LOCAL_ASFLAGS":                       "asflags",
 			"LOCAL_CLANG_ASFLAGS":                 "clang_asflags",
 			"LOCAL_COMPATIBILITY_SUPPORT_FILES":   "data",
@@ -201,6 +204,7 @@ func init() {
 			"LOCAL_VENDOR_MODULE":              "vendor",
 			"LOCAL_ODM_MODULE":                 "device_specific",
 			"LOCAL_PRODUCT_MODULE":             "product_specific",
+			"LOCAL_PRODUCT_SERVICES_MODULE":    "product_specific",
 			"LOCAL_SYSTEM_EXT_MODULE":          "system_ext_specific",
 			"LOCAL_EXPORT_PACKAGE_RESOURCES":   "export_package_resources",
 			"LOCAL_PRIVILEGED_MODULE":          "privileged",
@@ -635,6 +639,12 @@ func prebuiltModulePath(ctx variableAssignmentContext) error {
 	if len(val.Variables) == 1 && varLiteralName(val.Variables[0]) != "" && len(val.Strings) == 2 && val.Strings[0] == "" {
 		fixed = val.Strings[1]
 		varname = val.Variables[0].Name.Strings[0]
+		// TARGET_OUT_OPTIONAL_EXECUTABLES puts the artifact in xbin, which is
+		// deprecated. TARGET_OUT_DATA_APPS install location will be handled
+		// automatically by Soong
+		if varname == "TARGET_OUT_OPTIONAL_EXECUTABLES" || varname == "TARGET_OUT_DATA_APPS" {
+			return nil
+		}
 	} else if len(val.Variables) == 2 && varLiteralName(val.Variables[0]) == "PRODUCT_OUT" && varLiteralName(val.Variables[1]) == "TARGET_COPY_OUT_VENDOR" &&
 		len(val.Strings) == 3 && val.Strings[0] == "" && val.Strings[1] == "/" {
 		fixed = val.Strings[2]

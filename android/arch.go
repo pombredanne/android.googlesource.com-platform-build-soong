@@ -631,8 +631,7 @@ func archMutator(bpctx blueprint.BottomUpMutatorContext) {
 	image := base.commonProperties.ImageVariation
 	// Filter NativeBridge targets unless they are explicitly supported.
 	// Skip creating native bridge variants for non-core modules.
-	if os == Android &&
-		!(Bool(base.commonProperties.Native_bridge_supported) && image == CoreVariation) {
+	if os == Android && !(base.IsNativeBridgeSupported() && image == CoreVariation) {
 
 		var targets []Target
 		for _, t := range osTargets {
@@ -935,6 +934,8 @@ func filterArchStruct(field reflect.StructField, prefix string) (bool, reflect.S
 		if len(values) > 0 && values[0] != "path" {
 			panic(fmt.Errorf("unknown tags %q in field %q", values, prefix+field.Name))
 		} else if len(values) == 1 {
+			// FIXME(b/200678898): This assumes that the only tag type when there's
+			// `android:"arch_variant"` is `android` itself and thus clobbers others
 			field.Tag = reflect.StructTag(`android:"` + strings.Join(values, ",") + `"`)
 		} else {
 			field.Tag = ``
@@ -1586,10 +1587,12 @@ func hasArmAbi(arch Arch) bool {
 	return PrefixInList(arch.Abi, "arm")
 }
 
-// hasArmArch returns true if targets has at least non-native_bridge arm Android arch
+// hasArmAndroidArch returns true if targets has at least
+// one arm Android arch (possibly native bridged)
 func hasArmAndroidArch(targets []Target) bool {
 	for _, target := range targets {
-		if target.Os == Android && target.Arch.ArchType == Arm {
+		if target.Os == Android &&
+			(target.Arch.ArchType == Arm || target.Arch.ArchType == Arm64) {
 			return true
 		}
 	}
@@ -1998,38 +2001,80 @@ func (m *ModuleBase) GetArchVariantProperties(ctx ArchVariantContext, propertySe
 		// Create a new instance of the requested property set
 		value := reflect.New(reflect.ValueOf(propertySet).Elem().Type()).Interface()
 
-		// Merge all the structs together
-		for _, propertyStruct := range propertyStructs {
-			mergePropertyStruct(ctx, value, propertyStruct)
-		}
-
-		archToProp[arch.Name] = value
+		archToProp[arch.Name] = mergeStructs(ctx, propertyStructs, value)
 	}
 	axisToProps[bazel.ArchConfigurationAxis] = archToProp
 
 	osToProp := ArchVariantProperties{}
 	archOsToProp := ArchVariantProperties{}
+
+	linuxStructs := getTargetStructs(ctx, archProperties, "Linux")
+	bionicStructs := getTargetStructs(ctx, archProperties, "Bionic")
+	hostStructs := getTargetStructs(ctx, archProperties, "Host")
+	hostNotWindowsStructs := getTargetStructs(ctx, archProperties, "Not_windows")
+
 	// For android, linux, ...
 	for _, os := range osTypeList {
 		if os == CommonOS {
 			// It looks like this OS value is not used in Blueprint files
 			continue
 		}
-		osToProp[os.Name] = getTargetStruct(ctx, propertySet, archProperties, os.Field)
+		osStructs := make([]reflect.Value, 0)
+
+		osSpecificStructs := getTargetStructs(ctx, archProperties, os.Field)
+		if os.Class == Host {
+			osStructs = append(osStructs, hostStructs...)
+		}
+		if os.Linux() {
+			osStructs = append(osStructs, linuxStructs...)
+		}
+		if os.Bionic() {
+			osStructs = append(osStructs, bionicStructs...)
+		}
+
+		if os == LinuxMusl {
+			osStructs = append(osStructs, getTargetStructs(ctx, archProperties, "Musl")...)
+		}
+		if os == Linux {
+			osStructs = append(osStructs, getTargetStructs(ctx, archProperties, "Glibc")...)
+		}
+
+		osStructs = append(osStructs, osSpecificStructs...)
+
+		if os.Class == Host && os != Windows {
+			osStructs = append(osStructs, hostNotWindowsStructs...)
+		}
+		osToProp[os.Name] = mergeStructs(ctx, osStructs, propertySet)
+
 		// For arm, x86, ...
 		for _, arch := range osArchTypeMap[os] {
+			osArchStructs := make([]reflect.Value, 0)
+
+			// Auto-combine with Linux_ and Bionic_ targets. This potentially results in
+			// repetition and select() bloat, but use of Linux_* and Bionic_* targets is rare.
+			// TODO(b/201423152): Look into cleanup.
+			if os.Linux() {
+				targetField := "Linux_" + arch.Name
+				targetStructs := getTargetStructs(ctx, archProperties, targetField)
+				osArchStructs = append(osArchStructs, targetStructs...)
+			}
+			if os.Bionic() {
+				targetField := "Bionic_" + arch.Name
+				targetStructs := getTargetStructs(ctx, archProperties, targetField)
+				osArchStructs = append(osArchStructs, targetStructs...)
+			}
+
 			targetField := GetCompoundTargetField(os, arch)
 			targetName := fmt.Sprintf("%s_%s", os.Name, arch.Name)
-			archOsToProp[targetName] = getTargetStruct(ctx, propertySet, archProperties, targetField)
+			targetStructs := getTargetStructs(ctx, archProperties, targetField)
+			osArchStructs = append(osArchStructs, targetStructs...)
+
+			archOsToProp[targetName] = mergeStructs(ctx, osArchStructs, propertySet)
 		}
 	}
+
 	axisToProps[bazel.OsConfigurationAxis] = osToProp
 	axisToProps[bazel.OsArchConfigurationAxis] = archOsToProp
-
-	axisToProps[bazel.BionicConfigurationAxis] = map[string]interface{}{
-		"bionic": getTargetStruct(ctx, propertySet, archProperties, "Bionic"),
-	}
-
 	return axisToProps
 }
 
@@ -2047,17 +2092,23 @@ func (m *ModuleBase) GetArchVariantProperties(ctx ArchVariantContext, propertySe
 //      }
 //    }
 // This would return a BaseCompilerProperties with BaseCompilerProperties.Srcs = ["foo.c"]
-func getTargetStruct(ctx ArchVariantContext, propertySet interface{}, archProperties []interface{}, targetName string) interface{} {
-	propertyStructs := make([]reflect.Value, 0)
+func getTargetStructs(ctx ArchVariantContext, archProperties []interface{}, targetName string) []reflect.Value {
+	var propertyStructs []reflect.Value
 	for _, archProperty := range archProperties {
 		archPropValues := reflect.ValueOf(archProperty).Elem()
 		targetProp := archPropValues.FieldByName("Target").Elem()
 		targetStruct, ok := getChildPropertyStruct(ctx, targetProp, targetName, targetName)
 		if ok {
 			propertyStructs = append(propertyStructs, targetStruct)
+		} else {
+			return []reflect.Value{}
 		}
 	}
 
+	return propertyStructs
+}
+
+func mergeStructs(ctx ArchVariantContext, propertyStructs []reflect.Value, propertySet interface{}) interface{} {
 	// Create a new instance of the requested property set
 	value := reflect.New(reflect.ValueOf(propertySet).Elem().Type()).Interface()
 

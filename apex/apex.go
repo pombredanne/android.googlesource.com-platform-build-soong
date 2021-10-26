@@ -111,9 +111,6 @@ type apexBundleProperties struct {
 	// List of java libraries that are embedded inside this APEX bundle.
 	Java_libs []string
 
-	// List of prebuilt files that are embedded inside this APEX bundle.
-	Prebuilts []string
-
 	// List of platform_compat_config files that are embedded inside this APEX bundle.
 	Compat_configs []string
 
@@ -144,11 +141,6 @@ type apexBundleProperties struct {
 	// Default: true.
 	Compressible *bool
 
-	// For native libraries and binaries, use the vendor variant instead of the core (platform)
-	// variant. Default is false. DO NOT use this for APEXes that are installed to the system or
-	// system_ext partition.
-	Use_vendor *bool
-
 	// If set true, VNDK libs are considered as stable libs and are not included in this APEX.
 	// Should be only used in non-system apexes (e.g. vendor: true). Default is false.
 	Use_vndk_as_stable *bool
@@ -166,8 +158,8 @@ type apexBundleProperties struct {
 	// is 'image'.
 	Payload_type *string
 
-	// The type of filesystem to use when the payload_type is 'image'. Either 'ext4' or 'f2fs'.
-	// Default 'ext4'.
+	// The type of filesystem to use when the payload_type is 'image'. Either 'ext4', 'f2fs'
+	// or 'erofs'. Default 'ext4'.
 	Payload_fs_type *string
 
 	// For telling the APEX to ignore special handling for system libraries such as bionic.
@@ -291,6 +283,9 @@ type overridableProperties struct {
 	// List of APKs that are embedded inside this APEX.
 	Apps []string
 
+	// List of prebuilt files that are embedded inside this APEX bundle.
+	Prebuilts []string
+
 	// List of runtime resource overlays (RROs) that are embedded inside this APEX.
 	Rros []string
 
@@ -353,7 +348,6 @@ type apexBundle struct {
 	// Flags for special variants of APEX
 	testApex bool
 	vndkApex bool
-	artApex  bool
 
 	// Tells whether this variant of the APEX bundle is the primary one or not. Only the primary
 	// one gets installed to the device.
@@ -654,10 +648,7 @@ func (a *apexBundle) getImageVariation(ctx android.BottomUpMutatorContext) strin
 	var prefix string
 	var vndkVersion string
 	if deviceConfig.VndkVersion() != "" {
-		if proptools.Bool(a.properties.Use_vendor) {
-			prefix = cc.VendorVariationPrefix
-			vndkVersion = deviceConfig.PlatformVndkVersion()
-		} else if a.SocSpecific() || a.DeviceSpecific() {
+		if a.SocSpecific() || a.DeviceSpecific() {
 			prefix = cc.VendorVariationPrefix
 			vndkVersion = deviceConfig.VndkVersion()
 		} else if a.ProductSpecific() {
@@ -676,15 +667,11 @@ func (a *apexBundle) getImageVariation(ctx android.BottomUpMutatorContext) strin
 }
 
 func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
-	// TODO(jiyong): move this kind of checks to GenerateAndroidBuildActions?
-	checkUseVendorProperty(ctx, a)
-
 	// apexBundle is a multi-arch targets module. Arch variant of apexBundle is set to 'common'.
 	// arch-specific targets are enabled by the compile_multilib setting of the apex bundle. For
 	// each target os/architectures, appropriate dependencies are selected by their
 	// target.<os>.multilib.<type> groups and are added as (direct) dependencies.
 	targets := ctx.MultiTargets()
-	config := ctx.DeviceConfig()
 	imageVariation := a.getImageVariation(ctx)
 
 	a.combineProperties(ctx)
@@ -758,23 +745,6 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 		}
 	}
 
-	if prebuilts := a.properties.Prebuilts; len(prebuilts) > 0 {
-		// For prebuilt_etc, use the first variant (64 on 64/32bit device, 32 on 32bit device)
-		// regardless of the TARGET_PREFER_* setting. See b/144532908
-		archForPrebuiltEtc := config.Arches()[0]
-		for _, arch := range config.Arches() {
-			// Prefer 64-bit arch if there is any
-			if arch.ArchType.Multilib == "lib64" {
-				archForPrebuiltEtc = arch
-				break
-			}
-		}
-		ctx.AddFarVariationDependencies([]blueprint.Variation{
-			{Mutator: "os", Variation: ctx.Os().String()},
-			{Mutator: "arch", Variation: archForPrebuiltEtc.String()},
-		}, prebuiltTag, prebuilts...)
-	}
-
 	// Common-arch dependencies come next
 	commonVariation := ctx.Config().AndroidCommonTarget.Variations()
 	ctx.AddFarVariationDependencies(commonVariation, bcpfTag, a.properties.Bootclasspath_fragments...)
@@ -782,13 +752,6 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 	ctx.AddFarVariationDependencies(commonVariation, javaLibTag, a.properties.Java_libs...)
 	ctx.AddFarVariationDependencies(commonVariation, fsTag, a.properties.Filesystems...)
 	ctx.AddFarVariationDependencies(commonVariation, compatConfigTag, a.properties.Compat_configs...)
-
-	if a.artApex {
-		// With EMMA_INSTRUMENT_FRAMEWORK=true the ART boot image includes jacoco library.
-		if ctx.Config().IsEnvTrue("EMMA_INSTRUMENT_FRAMEWORK") {
-			ctx.AddFarVariationDependencies(commonVariation, javaLibTag, "jacocoagent")
-		}
-	}
 
 	// Marks that this APEX (in fact all the modules in it) has to be built with the given SDKs.
 	// This field currently isn't used.
@@ -814,6 +777,25 @@ func (a *apexBundle) OverridablePropertiesDepsMutator(ctx android.BottomUpMutato
 	ctx.AddFarVariationDependencies(commonVariation, androidAppTag, a.overridableProperties.Apps...)
 	ctx.AddFarVariationDependencies(commonVariation, bpfTag, a.overridableProperties.Bpfs...)
 	ctx.AddFarVariationDependencies(commonVariation, rroTag, a.overridableProperties.Rros...)
+	if prebuilts := a.overridableProperties.Prebuilts; len(prebuilts) > 0 {
+		// For prebuilt_etc, use the first variant (64 on 64/32bit device, 32 on 32bit device)
+		// regardless of the TARGET_PREFER_* setting. See b/144532908
+		arches := ctx.DeviceConfig().Arches()
+		if len(arches) != 0 {
+			archForPrebuiltEtc := arches[0]
+			for _, arch := range arches {
+				// Prefer 64-bit arch if there is any
+				if arch.ArchType.Multilib == "lib64" {
+					archForPrebuiltEtc = arch
+					break
+				}
+			}
+			ctx.AddFarVariationDependencies([]blueprint.Variation{
+				{Mutator: "os", Variation: ctx.Os().String()},
+				{Mutator: "arch", Variation: archForPrebuiltEtc.String()},
+			}, prebuiltTag, prebuilts...)
+		}
+	}
 
 	// Dependencies for signing
 	if String(a.overridableProperties.Key) == "" {
@@ -1151,17 +1133,19 @@ const (
 
 const (
 	// File extensions of an APEX for different packaging methods
-	imageApexSuffix = ".apex"
-	zipApexSuffix   = ".zipapex"
-	flattenedSuffix = ".flattened"
+	imageApexSuffix  = ".apex"
+	imageCapexSuffix = ".capex"
+	zipApexSuffix    = ".zipapex"
+	flattenedSuffix  = ".flattened"
 
 	// variant names each of which is for a packaging method
 	imageApexType     = "image"
 	zipApexType       = "zip"
 	flattenedApexType = "flattened"
 
-	ext4FsType = "ext4"
-	f2fsFsType = "f2fs"
+	ext4FsType  = "ext4"
+	f2fsFsType  = "f2fs"
+	erofsFsType = "erofs"
 )
 
 // The suffix for the output "file", not the module
@@ -1236,42 +1220,6 @@ func apexFlattenedMutator(mctx android.BottomUpMutatorContext) {
 		// TODO(jiyong): is this the right decision?
 		mctx.CreateVariations(imageApexType, flattenedApexType)
 	}
-}
-
-// checkUseVendorProperty checks if the use of `use_vendor` property is allowed for the given APEX.
-// When use_vendor is used, native modules are built with __ANDROID_VNDK__ and __ANDROID_APEX__,
-// which may cause compatibility issues. (e.g. libbinder) Even though libbinder restricts its
-// availability via 'apex_available' property and relies on yet another macro
-// __ANDROID_APEX_<NAME>__, we restrict usage of "use_vendor:" from other APEX modules to avoid
-// similar problems.
-func checkUseVendorProperty(ctx android.BottomUpMutatorContext, a *apexBundle) {
-	if proptools.Bool(a.properties.Use_vendor) && !android.InList(a.Name(), useVendorAllowList(ctx.Config())) {
-		ctx.PropertyErrorf("use_vendor", "not allowed to set use_vendor: true")
-	}
-}
-
-var (
-	useVendorAllowListKey = android.NewOnceKey("useVendorAllowList")
-)
-
-func useVendorAllowList(config android.Config) []string {
-	return config.Once(useVendorAllowListKey, func() interface{} {
-		return []string{
-			// swcodec uses "vendor" variants for smaller size
-			"com.android.media.swcodec",
-			"test_com.android.media.swcodec",
-		}
-	}).([]string)
-}
-
-// setUseVendorAllowListForTest returns a FixturePreparer that overrides useVendorAllowList and
-// must be called before the first call to useVendorAllowList()
-func setUseVendorAllowListForTest(allowList []string) android.FixturePreparer {
-	return android.FixtureModifyConfig(func(config android.Config) {
-		config.Once(useVendorAllowListKey, func() interface{} {
-			return allowList
-		})
-	})
 }
 
 var _ android.DepIsInSameApex = (*apexBundle)(nil)
@@ -1543,7 +1491,7 @@ func apexFileForCompatConfig(ctx android.BaseModuleContext, config java.Platform
 type javaModule interface {
 	android.Module
 	BaseModuleName() string
-	DexJarBuildPath() android.Path
+	DexJarBuildPath() java.OptionalDexJarPath
 	JacocoReportClassesFile() android.Path
 	LintDepSets() java.LintDepSets
 	Stem() string
@@ -1557,7 +1505,7 @@ var _ javaModule = (*java.SdkLibraryImport)(nil)
 
 // apexFileForJavaModule creates an apexFile for a java module's dex implementation jar.
 func apexFileForJavaModule(ctx android.BaseModuleContext, module javaModule) apexFile {
-	return apexFileForJavaModuleWithFile(ctx, module, module.DexJarBuildPath())
+	return apexFileForJavaModuleWithFile(ctx, module, module.DexJarBuildPath().PathOrNil())
 }
 
 // apexFileForJavaModuleWithFile creates an apexFile for a java module with the supplied file.
@@ -1567,6 +1515,11 @@ func apexFileForJavaModuleWithFile(ctx android.BaseModuleContext, module javaMod
 	af.jacocoReportClassesFile = module.JacocoReportClassesFile()
 	af.lintDepSets = module.LintDepSets()
 	af.customStem = module.Stem() + ".jar"
+	if dexpreopter, ok := module.(java.DexpreopterInterface); ok {
+		for _, install := range dexpreopter.DexpreoptBuiltInstalledForApex() {
+			af.requiredModuleNames = append(af.requiredModuleNames, install.FullModuleName())
+		}
+	}
 	return af
 }
 
@@ -1665,6 +1618,7 @@ type fsType int
 const (
 	ext4 fsType = iota
 	f2fs
+	erofs
 )
 
 func (f fsType) string() string {
@@ -1673,6 +1627,8 @@ func (f fsType) string() string {
 		return ext4FsType
 	case f2fs:
 		return f2fsFsType
+	case erofs:
+		return erofsFsType
 	default:
 		panic(fmt.Errorf("unknown APEX payload type %d", f))
 	}
@@ -1717,6 +1673,9 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	ctx.WalkDepsBlueprint(func(child, parent blueprint.Module) bool {
 		depTag := ctx.OtherModuleDependencyTag(child)
 		if _, ok := depTag.(android.ExcludeFromApexContentsTag); ok {
+			return false
+		}
+		if mod, ok := child.(android.Module); ok && !mod.Enabled() {
 			return false
 		}
 		depName := ctx.OtherModuleName(child)
@@ -1921,13 +1880,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 							// system libraries.
 							if !am.DirectlyInAnyApex() {
 								// we need a module name for Make
-								name := cc.ImplementationModuleNameForMake(ctx)
-
-								if !proptools.Bool(a.properties.Use_vendor) {
-									// we don't use subName(.vendor) for a "use_vendor: true" apex
-									// which is supposed to be installed in /system
-									name += cc.Properties.SubName
-								}
+								name := cc.ImplementationModuleNameForMake(ctx) + cc.Properties.SubName
 								if !android.InList(name, a.requiredDeps) {
 									a.requiredDeps = append(a.requiredDeps, name)
 								}
@@ -2102,8 +2055,10 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		a.payloadFsType = ext4
 	case f2fsFsType:
 		a.payloadFsType = f2fs
+	case erofsFsType:
+		a.payloadFsType = erofs
 	default:
-		ctx.PropertyErrorf("payload_fs_type", "%q is not a valid filesystem for apex [ext4, f2fs]", *a.properties.Payload_fs_type)
+		ctx.PropertyErrorf("payload_fs_type", "%q is not a valid filesystem for apex [ext4, f2fs, erofs]", *a.properties.Payload_fs_type)
 	}
 
 	// Optimization. If we are building bundled APEX, for the files that are gathered due to the
@@ -2111,7 +2066,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	// the same library in the system partition, thus effectively sharing the same libraries
 	// across the APEX boundary. For unbundled APEX, all the gathered files are actually placed
 	// in the APEX.
-	a.linkToSystemLib = !ctx.Config().UnbundledBuild() && a.installable() && !proptools.Bool(a.properties.Use_vendor)
+	a.linkToSystemLib = !ctx.Config().UnbundledBuild() && a.installable()
 
 	// APEXes targeting other than system/system_ext partitions use vendor/product variants.
 	// So we can't link them to /system/lib libs which are core variants.
@@ -2240,10 +2195,9 @@ func newApexBundle() *apexBundle {
 	return module
 }
 
-func ApexBundleFactory(testApex bool, artApex bool) android.Module {
+func ApexBundleFactory(testApex bool) android.Module {
 	bundle := newApexBundle()
 	bundle.testApex = testApex
-	bundle.artApex = artApex
 	return bundle
 }
 
@@ -2318,10 +2272,6 @@ func overrideApexFactory() android.Module {
 // of this apexBundle.
 func (a *apexBundle) checkMinSdkVersion(ctx android.ModuleContext) {
 	if a.testApex || a.vndkApex {
-		return
-	}
-	// Meaningless to check min_sdk_version when building use_vendor modules against non-Trebleized targets
-	if proptools.Bool(a.properties.Use_vendor) && ctx.DeviceConfig().VndkVersion() == "" {
 		return
 	}
 	// apexBundle::minSdkVersion reports its own errors.
@@ -2943,7 +2893,6 @@ func makeApexAvailableBaseline() map[string][]string {
 		"libstagefright_amrwbdec",
 		"libstagefright_amrwbenc",
 		"libstagefright_bufferpool@2.0.1",
-		"libstagefright_bufferqueue_helper",
 		"libstagefright_enc_common",
 		"libstagefright_flacdec",
 		"libstagefright_foundation",
@@ -3282,7 +3231,7 @@ func apexBundleBp2BuildInternal(ctx android.TopDownMutatorContext, module *apexB
 	nativeSharedLibsLabelList := android.BazelLabelForModuleDeps(ctx, nativeSharedLibs)
 	nativeSharedLibsLabelListAttribute := bazel.MakeLabelListAttribute(nativeSharedLibsLabelList)
 
-	prebuilts := module.properties.Prebuilts
+	prebuilts := module.overridableProperties.Prebuilts
 	prebuiltsLabelList := android.BazelLabelForModuleDeps(ctx, prebuilts)
 	prebuiltsLabelListAttribute := bazel.MakeLabelListAttribute(prebuiltsLabelList)
 
@@ -3318,5 +3267,5 @@ func apexBundleBp2BuildInternal(ctx android.TopDownMutatorContext, module *apexB
 		Bzl_load_location: "//build/bazel/rules:apex.bzl",
 	}
 
-	ctx.CreateBazelTargetModule(module.Name(), props, attrs)
+	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: module.Name()}, attrs)
 }

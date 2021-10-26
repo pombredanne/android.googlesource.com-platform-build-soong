@@ -120,22 +120,25 @@ def init(g, handle):
 		desc:   "Inherit configuration always",
 		mkname: "product.mk",
 		in: `
-ifdef PRODUCT_NAME
 $(call inherit-product, part.mk)
+ifdef PRODUCT_NAME
+$(call inherit-product, part1.mk)
 else # Comment
-$(call inherit-product, $(LOCAL_PATH)/part.mk)
+$(call inherit-product, $(LOCAL_PATH)/part1.mk)
 endif
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 load(":part.star", _part_init = "init")
+load(":part1.star|init", _part1_init = "init")
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
+  rblf.inherit(handle, "part", _part_init)
   if g.get("PRODUCT_NAME") != None:
-    rblf.inherit(handle, "part", _part_init)
+    rblf.inherit(handle, "part1", _part1_init)
   else:
     # Comment
-    rblf.inherit(handle, "part", _part_init)
+    rblf.inherit(handle, "part1", _part1_init)
 `,
 	},
 	{
@@ -158,22 +161,25 @@ def init(g, handle):
 		desc:   "Include configuration",
 		mkname: "product.mk",
 		in: `
-ifdef PRODUCT_NAME
 include part.mk
+ifdef PRODUCT_NAME
+include part1.mk
 else
--include $(LOCAL_PATH)/part.mk)
+-include $(LOCAL_PATH)/part1.mk)
 endif
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
-load(":part.star|init", _part_init = "init")
+load(":part.star", _part_init = "init")
+load(":part1.star|init", _part1_init = "init")
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
+  _part_init(g, handle)
   if g.get("PRODUCT_NAME") != None:
-    _part_init(g, handle)
+    _part1_init(g, handle)
   else:
-    if _part_init != None:
-      _part_init(g, handle)
+    if _part1_init != None:
+      _part1_init(g, handle)
 `,
 	},
 
@@ -354,20 +360,27 @@ ifeq ($(TARGET_BUILD_VARIANT), $(filter $(TARGET_BUILD_VARIANT), userdebug eng))
 endif
 ifneq (,$(filter true, $(v1)$(v2)))
 endif
+ifeq (,$(filter barbet coral%,$(TARGET_PRODUCT)))
+else ifneq (,$(filter barbet%,$(TARGET_PRODUCT)))
+endif
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
-  if g["TARGET_BUILD_VARIANT"] not in ["userdebug", "eng"]:
+  if not rblf.filter("userdebug eng", g["TARGET_BUILD_VARIANT"]):
     pass
-  if g["TARGET_BUILD_VARIANT"] == "userdebug":
+  if rblf.filter("userdebug", g["TARGET_BUILD_VARIANT"]):
     pass
   if "plaf" in g.get("PLATFORM_LIST", []):
     pass
   if g["TARGET_BUILD_VARIANT"] in ["userdebug", "eng"]:
     pass
-  if "%s%s" % (_v1, _v2) == "true":
+  if rblf.filter("true", "%s%s" % (_v1, _v2)):
+    pass
+  if not rblf.filter("barbet coral%", g["TARGET_PRODUCT"]):
+    pass
+  elif rblf.filter("barbet%", g["TARGET_PRODUCT"]):
     pass
 `,
 	},
@@ -414,7 +427,7 @@ endif
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
-  if rblf.filter(g.get("PRODUCT_LIST", ""), g["TARGET_PRODUCT"]):
+  if rblf.filter(g.get("PRODUCT_LIST", []), g["TARGET_PRODUCT"]):
     pass
 `,
 	},
