@@ -409,7 +409,7 @@ type ModuleContext interface {
 	PackageFile(installPath InstallPath, name string, srcPath Path) PackagingSpec
 
 	CheckbuildFile(srcPath Path)
-	TidyFile(srcPath Path)
+	TidyFile(srcPath WritablePath)
 
 	InstallInData() bool
 	InstallInTestcases() bool
@@ -1190,7 +1190,7 @@ type ModuleBase struct {
 	installFiles         InstallPaths
 	installFilesDepSet   *installPathsDepSet
 	checkbuildFiles      Paths
-	tidyFiles            Paths
+	tidyFiles            WritablePaths
 	packagingSpecs       []PackagingSpec
 	packagingSpecsDepSet *packagingSpecsDepSet
 	noticeFiles          Paths
@@ -1764,12 +1764,18 @@ func (m *ModuleBase) VintfFragments() Paths {
 func (m *ModuleBase) generateModuleTarget(ctx ModuleContext) {
 	var allInstalledFiles InstallPaths
 	var allCheckbuildFiles Paths
-	var allTidyFiles Paths
+	var allTidyFiles WritablePaths
 	ctx.VisitAllModuleVariants(func(module Module) {
 		a := module.base()
 		allInstalledFiles = append(allInstalledFiles, a.installFiles...)
-		allCheckbuildFiles = append(allCheckbuildFiles, a.checkbuildFiles...)
-		allTidyFiles = append(allTidyFiles, a.tidyFiles...)
+		// A module's -{checkbuild,tidy} phony targets should
+		// not be created if the module is not exported to make.
+		// Those could depend on the build target and fail to compile
+		// for the current build target.
+		if !ctx.Config().KatiEnabled() || !shouldSkipAndroidMkProcessing(a) {
+			allCheckbuildFiles = append(allCheckbuildFiles, a.checkbuildFiles...)
+			allTidyFiles = append(allTidyFiles, a.tidyFiles...)
+		}
 	})
 
 	var deps Paths
@@ -1795,7 +1801,7 @@ func (m *ModuleBase) generateModuleTarget(ctx ModuleContext) {
 
 	if len(allTidyFiles) > 0 {
 		name := namespacePrefix + ctx.ModuleName() + "-tidy"
-		ctx.Phony(name, allTidyFiles...)
+		ctx.Phony(name, allTidyFiles.Paths()...)
 		m.tidyTarget = PathForPhony(ctx, name)
 		deps = append(deps, m.tidyTarget)
 	}
@@ -2207,7 +2213,7 @@ type moduleContext struct {
 	packagingSpecs  []PackagingSpec
 	installFiles    InstallPaths
 	checkbuildFiles Paths
-	tidyFiles       Paths
+	tidyFiles       WritablePaths
 	module          Module
 	phonies         map[string]Paths
 
@@ -2942,7 +2948,7 @@ func (m *moduleContext) CheckbuildFile(srcPath Path) {
 	m.checkbuildFiles = append(m.checkbuildFiles, srcPath)
 }
 
-func (m *moduleContext) TidyFile(srcPath Path) {
+func (m *moduleContext) TidyFile(srcPath WritablePath) {
 	m.tidyFiles = append(m.tidyFiles, srcPath)
 }
 
