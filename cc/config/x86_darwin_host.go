@@ -60,12 +60,6 @@ var (
 	darwinClangLldflags = ClangFilterUnknownLldflags(darwinClangLdflags)
 
 	darwinSupportedSdkVersions = []string{
-		"10.10",
-		"10.11",
-		"10.12",
-		"10.13",
-		"10.14",
-		"10.15",
 		"11",
 	}
 
