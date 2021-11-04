@@ -178,6 +178,10 @@ type apexBundleProperties struct {
 	// used in tests.
 	Test_only_force_compression *bool
 
+	// Put extra tags (signer=<value>) to apexkeys.txt, so that release tools can sign this apex
+	// with the tool to sign payload contents.
+	Custom_sign_tool *string
+
 	// Canonical name of this APEX bundle. Used to determine the path to the
 	// activated APEX on device (i.e. /apex/<apexVariationName>), and used for the
 	// apex mutator variations. For override_apex modules, this is the name of the
@@ -1454,12 +1458,7 @@ func apexFileForPyBinary(ctx android.BaseModuleContext, py *python.Module) apexF
 
 func apexFileForGoBinary(ctx android.BaseModuleContext, depName string, gb bootstrap.GoBinaryTool) apexFile {
 	dirInApex := "bin"
-	s, err := filepath.Rel(android.PathForOutput(ctx).String(), gb.InstallPath())
-	if err != nil {
-		ctx.ModuleErrorf("Unable to use compiled binary at %s", gb.InstallPath())
-		return apexFile{}
-	}
-	fileToCopy := android.PathForOutput(ctx, s)
+	fileToCopy := android.PathForGoBinary(ctx, gb)
 	// NB: Since go binaries are static we don't need the module for anything here, which is
 	// good since the go tool is a blueprint.Module not an android.Module like we would
 	// normally use.

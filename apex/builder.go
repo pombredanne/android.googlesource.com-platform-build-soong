@@ -106,7 +106,7 @@ var (
 		Description: "convert ${in}=>${out}",
 	})
 
-	// TODO(b/113233103): make sure that file_contexts is sane, i.e., validate
+	// TODO(b/113233103): make sure that file_contexts is as expected, i.e., validate
 	// against the binary policy using sefcontext_compiler -p <policy>.
 
 	// TODO(b/114327326): automate the generation of file_contexts
@@ -524,7 +524,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 	}
 
 	unsignedOutputFile := android.PathForModuleOut(ctx, a.Name()+suffix+".unsigned")
-	outHostBinDir := android.PathForOutput(ctx, "host", ctx.Config().PrebuiltOS(), "bin").String()
+	outHostBinDir := ctx.Config().HostToolPath(ctx, "").String()
 	prebuiltSdkToolsBinDir := filepath.Join("prebuilts", "sdk", "tools", runtime.GOOS, "bin")
 
 	// Figure out if need to compress apex.
