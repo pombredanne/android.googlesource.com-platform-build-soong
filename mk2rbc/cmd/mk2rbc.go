@@ -46,17 +46,19 @@ var (
 	dryRun   = flag.Bool("dry_run", false, "dry run")
 	recurse  = flag.Bool("convert_dependents", false, "convert all dependent files")
 	mode     = flag.String("mode", "", `"backup" to back up existing files, "write" to overwrite them`)
-	warn     = flag.Bool("warnings", false, "warn about partially failed conversions")
+	noWarn   = flag.Bool("no_warnings", false, "don't warn about partially failed conversions")
 	verbose  = flag.Bool("v", false, "print summary")
 	errstat  = flag.Bool("error_stat", false, "print error statistics")
 	traceVar = flag.String("trace", "", "comma-separated list of variables to trace")
 	// TODO(asmundak): this option is for debugging
 	allInSource           = flag.Bool("all", false, "convert all product config makefiles in the tree under //")
 	outputTop             = flag.String("outdir", "", "write output files into this directory hierarchy")
-	launcher              = flag.String("launcher", "", "generated launcher path. If set, the non-flag argument is _product_name_")
+	launcher              = flag.String("launcher", "", "generated launcher path.")
+	boardlauncher         = flag.String("boardlauncher", "", "generated board configuration launcher path.")
 	printProductConfigMap = flag.Bool("print_product_config_map", false, "print product config map and exit")
 	cpuProfile            = flag.String("cpu_profile", "", "write cpu profile to file")
 	traceCalls            = flag.Bool("trace_calls", false, "trace function calls")
+	inputVariables        = flag.String("input_variables", "", "starlark file containing product config and global variables")
 )
 
 func init() {
@@ -73,7 +75,7 @@ func init() {
 	flagAlias("root", "d")
 	flagAlias("dry_run", "n")
 	flagAlias("convert_dependents", "r")
-	flagAlias("warnings", "w")
+	flagAlias("no_warnings", "w")
 	flagAlias("error_stat", "e")
 }
 
@@ -87,8 +89,7 @@ func main() {
 	flag.Usage = func() {
 		cmd := filepath.Base(os.Args[0])
 		fmt.Fprintf(flag.CommandLine.Output(),
-			"Usage: %[1]s flags file...\n"+
-				"or:    %[1]s flags --launcher=PATH PRODUCT\n", cmd)
+			"Usage: %[1]s flags file...\n", cmd)
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -177,14 +178,31 @@ func main() {
 		versionDefaultsPath := outputFilePath(versionDefaultsMk)
 		err = writeGenerated(versionDefaultsPath, versionDefaults)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s:%s", files[0], err)
+			fmt.Fprintf(os.Stderr, "%s: %s", files[0], err)
 			ok = false
 		}
 
 		err = writeGenerated(*launcher, mk2rbc.Launcher(outputFilePath(files[0]), versionDefaultsPath,
 			mk2rbc.MakePath2ModuleName(files[0])))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s:%s", files[0], err)
+			fmt.Fprintf(os.Stderr, "%s: %s", files[0], err)
+			ok = false
+		}
+	}
+	if *boardlauncher != "" {
+		if len(files) != 1 {
+			quit(fmt.Errorf("a launcher can be generated only for a single product"))
+		}
+		if *inputVariables == "" {
+			quit(fmt.Errorf("the board launcher requires an input variables file"))
+		}
+		if !convertOne(*inputVariables) {
+			quit(fmt.Errorf("the board launcher input variables file failed to convert"))
+		}
+		err := writeGenerated(*boardlauncher, mk2rbc.BoardLauncher(
+			outputFilePath(files[0]), outputFilePath(*inputVariables)))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: %s", files[0], err)
 			ok = false
 		}
 	}
@@ -318,7 +336,7 @@ func convertOne(mkFile string) (ok bool) {
 		OutputSuffix:       *suffix,
 		TracedVariables:    tracedVariables,
 		TraceCalls:         *traceCalls,
-		WarnPartialSuccess: *warn,
+		WarnPartialSuccess: !*noWarn,
 		SourceFS:           os.DirFS(*rootDir),
 		MakefileFinder:     makefileFinder,
 	}
@@ -401,7 +419,7 @@ func writeGenerated(path string, contents string) error {
 
 func printStats() {
 	var sortedFiles []string
-	if !*warn && !*verbose {
+	if *noWarn && !*verbose {
 		return
 	}
 	for p := range converted {
@@ -419,7 +437,7 @@ func printStats() {
 			nOk++
 		}
 	}
-	if *warn {
+	if !*noWarn {
 		if nPartial > 0 {
 			fmt.Fprintf(os.Stderr, "Conversion was partially successful for:\n")
 			for _, f := range sortedFiles {

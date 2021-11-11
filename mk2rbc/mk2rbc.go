@@ -52,7 +52,9 @@ const (
 	// And here are the functions and variables:
 	cfnGetCfg          = baseName + ".cfg"
 	cfnMain            = baseName + ".product_configuration"
+	cfnBoardMain       = baseName + ".board_configuration"
 	cfnPrintVars       = baseName + ".printvars"
+	cfnPrintGlobals    = baseName + ".printglobals"
 	cfnWarning         = baseName + ".warning"
 	cfnLocalAppend     = baseName + ".local_append"
 	cfnLocalSetDefault = baseName + ".local_set_default"
@@ -70,6 +72,7 @@ const (
 	soongConfigVarSetOld    = "add_soong_config_var_value"
 	soongConfigAppend       = "soong_config_append"
 	soongConfigAssign       = "soong_config_set"
+	soongConfigGet          = "soong_config_get"
 	wildcardExistsPhony     = "$wildcard_exists"
 )
 
@@ -93,6 +96,7 @@ var knownFunctions = map[string]struct {
 	soongConfigVarSetOld:                  {baseName + ".soong_config_set", starlarkTypeVoid, hiddenArgGlobal},
 	soongConfigAssign:                     {baseName + ".soong_config_set", starlarkTypeVoid, hiddenArgGlobal},
 	soongConfigAppend:                     {baseName + ".soong_config_append", starlarkTypeVoid, hiddenArgGlobal},
+	soongConfigGet:                        {baseName + ".soong_config_get", starlarkTypeString, hiddenArgGlobal},
 	"add-to-product-copy-files-if-exists": {baseName + ".copy_if_exists", starlarkTypeList, hiddenArgNone},
 	"addprefix":                           {baseName + ".addprefix", starlarkTypeList, hiddenArgNone},
 	"addsuffix":                           {baseName + ".addsuffix", starlarkTypeList, hiddenArgNone},
@@ -536,7 +540,7 @@ func (ctx *parseContext) handleAssignment(a *mkparser.Assignment) {
 		return
 	}
 	name := a.Name.Strings[0]
-	// Soong confuguration
+	// Soong configuration
 	if strings.HasPrefix(name, soongNsPrefix) {
 		ctx.handleSoongNsAssignment(strings.TrimPrefix(name, soongNsPrefix), a)
 		return
@@ -637,7 +641,7 @@ func (ctx *parseContext) handleSoongNsAssignment(name string, asgn *mkparser.Ass
 		// Upon seeing
 		//      SOONG_CONFIG_x_y = v
 		// find a namespace called `x` and act as if we encountered
-		//      $(call add_config_var_value(x,y,v)
+		//      $(call soong_config_set,x,y,v)
 		// or check that `x_y` is a namespace, and then add the RHS of this assignment as variables in
 		// it.
 		// Emit an error in the ambiguous situation (namespaces `foo_bar` with a variable `baz`
@@ -678,7 +682,7 @@ func (ctx *parseContext) handleSoongNsAssignment(name string, asgn *mkparser.Ass
 			ctx.errorf(asgn, "no %s variable in %s namespace, please use add_soong_config_var_value instead", varName, namespaceName)
 			return
 		}
-		fname := soongConfigVarSetOld
+		fname := soongConfigAssign
 		if asgn.Type == "+=" {
 			fname = soongConfigAppend
 		}
@@ -1167,10 +1171,12 @@ func (ctx *parseContext) parseCheckFunctionCallResult(directive *mkparser.Direct
 				return ctx.newBadExpr(directive,
 					fmt.Sprintf("the result of %s can be compared only to empty", x.name)), true
 			}
+			// if the expression is ifneq (,$(call is-vendor-board-platform,...)), negate==true,
+			// so we should set inExpr.isNot to false
 			return &inExpr{
 				expr:  &variableRefExpr{ctx.addVariable("TARGET_BOARD_PLATFORM"), false},
 				list:  &variableRefExpr{ctx.addVariable("QCOM_BOARD_PLATFORMS"), true},
-				isNot: negate,
+				isNot: !negate,
 			}, true
 		default:
 			return ctx.newBadExpr(directive, "Unknown function in ifeq: %s", x.name), true
@@ -1318,7 +1324,7 @@ func (ctx *parseContext) parseReference(node mkparser.Node, ref *mkparser.MakeSt
 		}
 		if strings.HasPrefix(refDump, soongNsPrefix) {
 			// TODO (asmundak): if we find many, maybe handle them.
-			return ctx.newBadExpr(node, "SOONG_CONFIG_ variables cannot be referenced: %s", refDump)
+			return ctx.newBadExpr(node, "SOONG_CONFIG_ variables cannot be referenced, use soong_config_get instead: %s", refDump)
 		}
 		if v := ctx.addVariable(refDump); v != nil {
 			return &variableRefExpr{v, ctx.lastAssignment(v.name()) != nil}
@@ -1384,11 +1390,14 @@ func (ctx *parseContext) parseSubstFunc(node mkparser.Node, fname string, args *
 	if len(words) != 3 {
 		return ctx.newBadExpr(node, "%s function should have 3 arguments", fname)
 	}
-	if !words[0].Const() || !words[1].Const() {
-		return ctx.newBadExpr(node, "%s function's from and to arguments should be constant", fname)
+	from := ctx.parseMakeString(node, words[0])
+	if xBad, ok := from.(*badExpr); ok {
+		return xBad
 	}
-	from := words[0].Strings[0]
-	to := words[1].Strings[0]
+	to := ctx.parseMakeString(node, words[1])
+	if xBad, ok := to.(*badExpr); ok {
+		return xBad
+	}
 	words[2].TrimLeftSpaces()
 	words[2].TrimRightSpaces()
 	obj := ctx.parseMakeString(node, words[2])
@@ -1398,13 +1407,13 @@ func (ctx *parseContext) parseSubstFunc(node mkparser.Node, fname string, args *
 		return &callExpr{
 			object:     obj,
 			name:       "replace",
-			args:       []starlarkExpr{&stringLiteralExpr{from}, &stringLiteralExpr{to}},
+			args:       []starlarkExpr{from, to},
 			returnType: typ,
 		}
 	}
 	return &callExpr{
 		name:       fname,
-		args:       []starlarkExpr{&stringLiteralExpr{from}, &stringLiteralExpr{to}, obj},
+		args:       []starlarkExpr{from, to, obj},
 		returnType: obj.typ(),
 	}
 }
@@ -1699,6 +1708,17 @@ func Launcher(mainModuleUri, versionDefaultsUri, mainModuleName string) string {
 	fmt.Fprintf(&buf, "load(%q, \"version_defaults\")\n", versionDefaultsUri)
 	fmt.Fprintf(&buf, "load(%q, \"init\")\n", mainModuleUri)
 	fmt.Fprintf(&buf, "%s(%s(%q, init, version_defaults))\n", cfnPrintVars, cfnMain, mainModuleName)
+	return buf.String()
+}
+
+func BoardLauncher(mainModuleUri string, inputVariablesUri string) string {
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "load(%q, %q)\n", baseUri, baseName)
+	fmt.Fprintf(&buf, "load(%q, \"init\")\n", mainModuleUri)
+	fmt.Fprintf(&buf, "load(%q, input_variables_init = \"init\")\n", inputVariablesUri)
+	fmt.Fprintf(&buf, "globals, cfg, globals_base = %s(init, input_variables_init)\n", cfnBoardMain)
+	fmt.Fprintf(&buf, "# TODO: Some product config variables need to be printed, but most are readonly so we can't just print cfg here.\n")
+	fmt.Fprintf(&buf, "%s(globals, globals_base)\n", cfnPrintGlobals)
 	return buf.String()
 }
 
