@@ -46,7 +46,7 @@ var (
 	dryRun   = flag.Bool("dry_run", false, "dry run")
 	recurse  = flag.Bool("convert_dependents", false, "convert all dependent files")
 	mode     = flag.String("mode", "", `"backup" to back up existing files, "write" to overwrite them`)
-	warn     = flag.Bool("warnings", false, "warn about partially failed conversions")
+	noWarn   = flag.Bool("no_warnings", false, "don't warn about partially failed conversions")
 	verbose  = flag.Bool("v", false, "print summary")
 	errstat  = flag.Bool("error_stat", false, "print error statistics")
 	traceVar = flag.String("trace", "", "comma-separated list of variables to trace")
@@ -75,13 +75,13 @@ func init() {
 	flagAlias("root", "d")
 	flagAlias("dry_run", "n")
 	flagAlias("convert_dependents", "r")
-	flagAlias("warnings", "w")
+	flagAlias("no_warnings", "w")
 	flagAlias("error_stat", "e")
 }
 
 var backupSuffix string
 var tracedVariables []string
-var errorLogger = errorsByType{data: make(map[string]datum)}
+var errorLogger = errorSink{data: make(map[string]datum)}
 var makefileFinder = &LinuxMakefileFinder{}
 var versionDefaultsMk = filepath.Join("build", "make", "core", "version_defaults.mk")
 
@@ -336,12 +336,10 @@ func convertOne(mkFile string) (ok bool) {
 		OutputSuffix:       *suffix,
 		TracedVariables:    tracedVariables,
 		TraceCalls:         *traceCalls,
-		WarnPartialSuccess: *warn,
+		WarnPartialSuccess: !*noWarn,
 		SourceFS:           os.DirFS(*rootDir),
 		MakefileFinder:     makefileFinder,
-	}
-	if *errstat {
-		mk2starRequest.ErrorLogger = errorLogger
+		ErrorLogger:        errorLogger,
 	}
 	ss, err := mk2rbc.Convert(mk2starRequest)
 	if err != nil {
@@ -419,7 +417,7 @@ func writeGenerated(path string, contents string) error {
 
 func printStats() {
 	var sortedFiles []string
-	if !*warn && !*verbose {
+	if *noWarn && !*verbose {
 		return
 	}
 	for p := range converted {
@@ -437,7 +435,7 @@ func printStats() {
 			nOk++
 		}
 	}
-	if *warn {
+	if !*noWarn {
 		if nPartial > 0 {
 			fmt.Fprintf(os.Stderr, "Conversion was partially successful for:\n")
 			for _, f := range sortedFiles {
@@ -456,10 +454,8 @@ func printStats() {
 			}
 		}
 	}
-	if *verbose {
-		fmt.Fprintf(os.Stderr, "%-16s%5d\n", "Succeeded:", nOk)
-		fmt.Fprintf(os.Stderr, "%-16s%5d\n", "Partial:", nPartial)
-		fmt.Fprintf(os.Stderr, "%-16s%5d\n", "Failed:", nFailed)
+	if *verbose && (nPartial > 0 || nFailed > 0) {
+		fmt.Fprintln(os.Stderr, "Succeeded: ", nOk, " Partial: ", nPartial, " Failed: ", nFailed)
 	}
 }
 
@@ -468,11 +464,18 @@ type datum struct {
 	formattingArgs []string
 }
 
-type errorsByType struct {
+type errorSink struct {
 	data map[string]datum
 }
 
-func (ebt errorsByType) NewError(message string, node parser.Node, args ...interface{}) {
+func (ebt errorSink) NewError(sourceFile string, sourceLine int, node parser.Node, message string, args ...interface{}) {
+	fmt.Fprintf(os.Stderr, "%s:%d ", sourceFile, sourceLine)
+	fmt.Fprintf(os.Stderr, message, args...)
+	fmt.Fprintln(os.Stderr)
+	if !*errstat {
+		return
+	}
+
 	v, exists := ebt.data[message]
 	if exists {
 		v.count++
@@ -497,7 +500,7 @@ func (ebt errorsByType) NewError(message string, node parser.Node, args ...inter
 	ebt.data[message] = v
 }
 
-func (ebt errorsByType) printStatistics() {
+func (ebt errorSink) printStatistics() {
 	if len(ebt.data) > 0 {
 		fmt.Fprintln(os.Stderr, "Error counts:")
 	}

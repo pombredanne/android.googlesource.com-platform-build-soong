@@ -407,6 +407,9 @@ type Module struct {
 	// installed file for binary dependency
 	installFile android.Path
 
+	// installed file for hostdex copy
+	hostdexInstallFile android.InstallPath
+
 	// list of .java files and srcjars that was passed to javac
 	compiledJavaSrcs android.Paths
 	compiledSrcJars  android.Paths
@@ -783,6 +786,9 @@ func (j *Module) aidlFlags(ctx android.ModuleContext, aidlPreprocess android.Opt
 	if Bool(j.deviceProperties.Aidl.Generate_get_transaction_name) {
 		flags = append(flags, "--transaction_names")
 	}
+
+	aidlMinSdkVersion := j.MinSdkVersion(ctx).ApiLevel.String()
+	flags = append(flags, "--min_sdk_version="+aidlMinSdkVersion)
 
 	return strings.Join(flags, " "), deps
 }
