@@ -110,7 +110,7 @@ func TestJavaSdkLibrary(t *testing.T) {
 		`)
 
 	// check the existence of the internal modules
-	result.ModuleForTests("foo", "android_common")
+	foo := result.ModuleForTests("foo", "android_common")
 	result.ModuleForTests(apiScopePublic.stubsLibraryModuleName("foo"), "android_common")
 	result.ModuleForTests(apiScopeSystem.stubsLibraryModuleName("foo"), "android_common")
 	result.ModuleForTests(apiScopeTest.stubsLibraryModuleName("foo"), "android_common")
@@ -121,6 +121,17 @@ func TestJavaSdkLibrary(t *testing.T) {
 	result.ModuleForTests("foo.api.public.28", "")
 	result.ModuleForTests("foo.api.system.28", "")
 	result.ModuleForTests("foo.api.test.28", "")
+
+	exportedComponentsInfo := result.ModuleProvider(foo.Module(), ExportedComponentsInfoProvider).(ExportedComponentsInfo)
+	expectedFooExportedComponents := []string{
+		"foo.stubs",
+		"foo.stubs.source",
+		"foo.stubs.source.system",
+		"foo.stubs.source.test",
+		"foo.stubs.system",
+		"foo.stubs.test",
+	}
+	android.AssertArrayString(t, "foo exported components", expectedFooExportedComponents, exportedComponentsInfo.Components)
 
 	bazJavac := result.ModuleForTests("baz", "android_common").Rule("javac")
 	// tests if baz is actually linked to the stubs lib
@@ -236,12 +247,37 @@ func TestJavaSdkLibrary_DoNotAccessImplWhenItIsNotBuilt(t *testing.T) {
 	}
 }
 
-func TestJavaSdkLibrary_UseSourcesFromAnotherSdkLibrary(t *testing.T) {
+func TestJavaSdkLibrary_AccessOutputFiles(t *testing.T) {
 	android.GroupFixturePreparers(
 		prepareForJavaTest,
 		PrepareForTestWithJavaSdkLibraryFiles,
 		FixtureWithLastReleaseApis("foo"),
 	).RunTestWithBp(t, `
+		java_sdk_library {
+			name: "foo",
+			srcs: ["a.java"],
+			api_packages: ["foo"],
+			annotations_enabled: true,
+			public: {
+				enabled: true,
+			},
+		}
+		java_library {
+			name: "bar",
+			srcs: ["b.java", ":foo{.public.stubs.source}"],
+			java_resources: [":foo{.public.annotations.zip}"],
+		}
+		`)
+}
+
+func TestJavaSdkLibrary_AccessOutputFiles_NoAnnotations(t *testing.T) {
+	android.GroupFixturePreparers(
+		prepareForJavaTest,
+		PrepareForTestWithJavaSdkLibraryFiles,
+		FixtureWithLastReleaseApis("foo"),
+	).
+		ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(`module "bar" variant "android_common": path dependency ":foo{.public.annotations.zip}": annotations.zip not available for api scope public`)).
+		RunTestWithBp(t, `
 		java_sdk_library {
 			name: "foo",
 			srcs: ["a.java"],
@@ -254,6 +290,7 @@ func TestJavaSdkLibrary_UseSourcesFromAnotherSdkLibrary(t *testing.T) {
 		java_library {
 			name: "bar",
 			srcs: ["b.java", ":foo{.public.stubs.source}"],
+			java_resources: [":foo{.public.annotations.zip}"],
 		}
 		`)
 }
@@ -317,6 +354,7 @@ func TestJavaSdkLibraryImport_AccessOutputFiles(t *testing.T) {
 				stub_srcs: ["a.java"],
 				current_api: "api/current.txt",
 				removed_api: "api/removed.txt",
+				annotations: "x/annotations.zip",
 			},
 		}
 
@@ -326,6 +364,7 @@ func TestJavaSdkLibraryImport_AccessOutputFiles(t *testing.T) {
 			java_resources: [
 				":foo{.public.api.txt}",
 				":foo{.public.removed-api.txt}",
+				":foo{.public.annotations.zip}",
 			],
 		}
 		`)

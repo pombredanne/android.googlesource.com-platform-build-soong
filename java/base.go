@@ -253,8 +253,8 @@ type embeddableInModuleAndImport struct {
 	EmbeddableSdkLibraryComponent
 }
 
-func (e *embeddableInModuleAndImport) initModuleAndImport(moduleBase *android.ModuleBase) {
-	e.initSdkLibraryComponent(moduleBase)
+func (e *embeddableInModuleAndImport) initModuleAndImport(module android.Module) {
+	e.initSdkLibraryComponent(module)
 }
 
 // Module/Import's DepIsInSameApex(...) delegates to this method.
@@ -1152,10 +1152,25 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 
 	// Check package restrictions if necessary.
 	if len(j.properties.Permitted_packages) > 0 {
-		// Check packages and copy to package-checked file.
+		// Time stamp file created by the package check rule.
 		pkgckFile := android.PathForModuleOut(ctx, "package-check.stamp")
+
+		// Create a rule to copy the output jar to another path and add a validate dependency that
+		// will check that the jar only contains the permitted packages. The new location will become
+		// the output file of this module.
+		inputFile := outputFile
+		outputFile = android.PathForModuleOut(ctx, "package-check", jarName).OutputPath
+		ctx.Build(pctx, android.BuildParams{
+			Rule:   android.Cp,
+			Input:  inputFile,
+			Output: outputFile,
+			// Make sure that any dependency on the output file will cause ninja to run the package check
+			// rule.
+			Validation: pkgckFile,
+		})
+
+		// Check packages and create a timestamp file when complete.
 		CheckJarPackages(ctx, pkgckFile, outputFile, j.properties.Permitted_packages)
-		j.additionalCheckedModules = append(j.additionalCheckedModules, pkgckFile)
 
 		if ctx.Failed() {
 			return
@@ -1275,6 +1290,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		j.linter.minSdkVersion = lintSDKVersionString(j.MinSdkVersion(ctx))
 		j.linter.targetSdkVersion = lintSDKVersionString(j.TargetSdkVersion(ctx))
 		j.linter.compileSdkVersion = lintSDKVersionString(j.SdkVersion(ctx))
+		j.linter.compileSdkKind = j.SdkVersion(ctx).Kind
 		j.linter.javaLanguageLevel = flags.javaVersion.String()
 		j.linter.kotlinLanguageLevel = "1.3"
 		if !apexInfo.IsForPlatform() && ctx.Config().UnbundledBuildApps() {

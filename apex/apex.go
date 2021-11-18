@@ -177,6 +177,12 @@ type apexBundleProperties struct {
 	// used in tests.
 	Test_only_force_compression *bool
 
+	// Canonical name of this APEX bundle. Used to determine the path to the
+	// activated APEX on device (i.e. /apex/<apexVariationName>), and used for the
+	// apex mutator variations. For override_apex modules, this is the name of the
+	// overridden base module.
+	ApexVariationName string `blueprint:"mutated"`
+
 	IsCoverageVariant bool `blueprint:"mutated"`
 
 	// List of sanitizer names that this APEX is enabled for
@@ -808,6 +814,10 @@ var ApexBundleInfoProvider = blueprint.NewMutatorProvider(ApexBundleInfo{}, "ape
 
 var _ ApexInfoMutator = (*apexBundle)(nil)
 
+func (a *apexBundle) ApexVariationName() string {
+	return a.properties.ApexVariationName
+}
+
 // ApexInfoMutator is responsible for collecting modules that need to have apex variants. They are
 // identified by doing a graph walk starting from an apexBundle. Basically, all the (direct and
 // indirect) dependencies are collected. But a few types of modules that shouldn't be included in
@@ -896,15 +906,15 @@ func (a *apexBundle) ApexInfoMutator(mctx android.TopDownMutatorContext) {
 	// This is the main part of this mutator. Mark the collected dependencies that they need to
 	// be built for this apexBundle.
 
-	// Note that there are many different names.
-	// ApexVariationName: this is the name of the apex variation
+	apexVariationName := proptools.StringDefault(a.properties.Apex_name, mctx.ModuleName()) // could be com.android.foo
+	a.properties.ApexVariationName = apexVariationName
 	apexInfo := android.ApexInfo{
-		ApexVariationName: mctx.ModuleName(), // could be com.android.foo
+		ApexVariationName: apexVariationName,
 		MinSdkVersion:     minSdkVersion,
 		RequiredSdks:      a.RequiredSdks(),
 		Updatable:         a.Updatable(),
-		InApexVariants:    []string{mctx.ModuleName()}, // could be com.android.foo
-		InApexModules:     []string{a.Name()},          // could be com.mycompany.android.foo
+		InApexVariants:    []string{apexVariationName},
+		InApexModules:     []string{a.Name()}, // could be com.mycompany.android.foo
 		ApexContents:      []*android.ApexContents{apexContents},
 	}
 	mctx.WalkDeps(func(child, parent android.Module) bool {
@@ -917,6 +927,10 @@ func (a *apexBundle) ApexInfoMutator(mctx android.TopDownMutatorContext) {
 }
 
 type ApexInfoMutator interface {
+	// ApexVariationName returns the name of the APEX variation to use in the apex
+	// mutator etc. It is the same name as ApexInfo.ApexVariationName.
+	ApexVariationName() string
+
 	// ApexInfoMutator implementations must call BuildForApex(ApexInfo) on any modules that are
 	// depended upon by an apex and which require an apex specific variant.
 	ApexInfoMutator(android.TopDownMutatorContext)
@@ -1042,10 +1056,8 @@ func apexMutator(mctx android.BottomUpMutatorContext) {
 	}
 
 	// apexBundle itself is mutated so that it and its dependencies have the same apex variant.
-	// TODO(jiyong): document the reason why the VNDK APEX is an exception here.
-	unprefixedModuleName := android.RemoveOptionalPrebuiltPrefix(mctx.ModuleName())
-	if apexModuleTypeRequiresVariant(mctx.Module()) {
-		apexBundleName := unprefixedModuleName
+	if ai, ok := mctx.Module().(ApexInfoMutator); ok && apexModuleTypeRequiresVariant(ai) {
+		apexBundleName := ai.ApexVariationName()
 		mctx.CreateVariations(apexBundleName)
 		if strings.HasPrefix(apexBundleName, "com.android.art") {
 			// Create an alias from the platform variant. This is done to make
@@ -1068,6 +1080,7 @@ func apexMutator(mctx android.BottomUpMutatorContext) {
 		// apex variant name. This name matches the name used to create the variations of modules for
 		// which apexModuleTypeRequiresVariant return true.
 		// TODO(b/191269918): Remove this workaround.
+		unprefixedModuleName := android.RemoveOptionalPrebuiltPrefix(mctx.ModuleName())
 		mctx.SetDefaultDependencyVariation(&unprefixedModuleName)
 		mctx.CreateVariations(apexBundleName)
 		if strings.HasPrefix(apexBundleName, "com.android.art") {
@@ -1079,18 +1092,13 @@ func apexMutator(mctx android.BottomUpMutatorContext) {
 
 // apexModuleTypeRequiresVariant determines whether the module supplied requires an apex specific
 // variant.
-func apexModuleTypeRequiresVariant(module android.Module) bool {
+func apexModuleTypeRequiresVariant(module ApexInfoMutator) bool {
 	if a, ok := module.(*apexBundle); ok {
+		// TODO(jiyong): document the reason why the VNDK APEX is an exception here.
 		return !a.vndkApex
 	}
 
-	// Match apex_set and prebuilt_apex. Would also match apexBundle but that is handled specially
-	// above.
-	if _, ok := module.(ApexInfoMutator); ok {
-		return true
-	}
-
-	return false
+	return true
 }
 
 // See android.UpdateDirectlyInAnyApex
@@ -1514,6 +1522,7 @@ type androidApp interface {
 	JacocoReportClassesFile() android.Path
 	Certificate() java.Certificate
 	BaseModuleName() string
+	LintDepSets() java.LintDepSets
 }
 
 var _ androidApp = (*java.AndroidApp)(nil)
@@ -1528,6 +1537,7 @@ func apexFileForAndroidApp(ctx android.BaseModuleContext, aapp androidApp) apexF
 	fileToCopy := aapp.OutputFile()
 	af := newApexFile(ctx, fileToCopy, aapp.BaseModuleName(), dirInApex, app, aapp)
 	af.jacocoReportClassesFile = aapp.JacocoReportClassesFile()
+	af.lintDepSets = aapp.LintDepSets()
 	af.certificate = aapp.Certificate()
 
 	if app, ok := aapp.(interface {
@@ -1706,7 +1716,9 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 						ctx.PropertyErrorf("systemserverclasspath_fragments", "%q is not a systemserverclasspath_fragment module", depName)
 						return false
 					}
-					filesInfo = append(filesInfo, apexClasspathFragmentProtoFile(ctx, child))
+					if af := apexClasspathFragmentProtoFile(ctx, child); af != nil {
+						filesInfo = append(filesInfo, *af)
+					}
 					return true
 				}
 			case javaLibTag:
@@ -2103,17 +2115,23 @@ func apexBootclasspathFragmentFiles(ctx android.ModuleContext, module blueprint.
 	}
 
 	// Add classpaths.proto config.
-	filesToAdd = append(filesToAdd, apexClasspathFragmentProtoFile(ctx, module))
+	if af := apexClasspathFragmentProtoFile(ctx, module); af != nil {
+		filesToAdd = append(filesToAdd, *af)
+	}
 
 	return filesToAdd
 }
 
-// apexClasspathFragmentProtoFile returns apexFile structure defining the classpath.proto config that
-// the module contributes to the apex.
-func apexClasspathFragmentProtoFile(ctx android.ModuleContext, module blueprint.Module) apexFile {
-	fragmentInfo := ctx.OtherModuleProvider(module, java.ClasspathFragmentProtoContentInfoProvider).(java.ClasspathFragmentProtoContentInfo)
-	classpathProtoOutput := fragmentInfo.ClasspathFragmentProtoOutput
-	return newApexFile(ctx, classpathProtoOutput, classpathProtoOutput.Base(), fragmentInfo.ClasspathFragmentProtoInstallDir.Rel(), etc, nil)
+// apexClasspathFragmentProtoFile returns *apexFile structure defining the classpath.proto config that
+// the module contributes to the apex; or nil if the proto config was not generated.
+func apexClasspathFragmentProtoFile(ctx android.ModuleContext, module blueprint.Module) *apexFile {
+	info := ctx.OtherModuleProvider(module, java.ClasspathFragmentProtoContentInfoProvider).(java.ClasspathFragmentProtoContentInfo)
+	if !info.ClasspathFragmentProtoGenerated {
+		return nil
+	}
+	classpathProtoOutput := info.ClasspathFragmentProtoOutput
+	af := newApexFile(ctx, classpathProtoOutput, classpathProtoOutput.Base(), info.ClasspathFragmentProtoInstallDir.Rel(), etc, nil)
+	return &af
 }
 
 // apexFileForBootclasspathFragmentContentModule creates an apexFile for a bootclasspath_fragment
@@ -2295,16 +2313,30 @@ func (a *apexBundle) checkStaticLinkingToStubLibraries(ctx android.ModuleContext
 	})
 }
 
-// Enforce that Java deps of the apex are using stable SDKs to compile
+// checkUpdatable enforces APEX and its transitive dep properties to have desired values for updatable APEXes.
 func (a *apexBundle) checkUpdatable(ctx android.ModuleContext) {
 	if a.Updatable() {
 		if String(a.properties.Min_sdk_version) == "" {
 			ctx.PropertyErrorf("updatable", "updatable APEXes should set min_sdk_version as well")
 		}
 		a.checkJavaStableSdkVersion(ctx)
+		a.checkClasspathFragments(ctx)
 	}
 }
 
+// checkClasspathFragments enforces that all classpath fragments in deps generate classpaths.proto config.
+func (a *apexBundle) checkClasspathFragments(ctx android.ModuleContext) {
+	ctx.VisitDirectDeps(func(module android.Module) {
+		if tag := ctx.OtherModuleDependencyTag(module); tag == bcpfTag || tag == sscpfTag {
+			info := ctx.OtherModuleProvider(module, java.ClasspathFragmentProtoContentInfoProvider).(java.ClasspathFragmentProtoContentInfo)
+			if !info.ClasspathFragmentProtoGenerated {
+				ctx.OtherModuleErrorf(module, "is included in updatable apex %v, it must not set generate_classpaths_proto to false", ctx.ModuleName())
+			}
+		}
+	})
+}
+
+// checkJavaStableSdkVersion enforces that all Java deps are using stable SDKs to compile.
 func (a *apexBundle) checkJavaStableSdkVersion(ctx android.ModuleContext) {
 	// Visit direct deps only. As long as we guarantee top-level deps are using stable SDKs,
 	// java's checkLinkType guarantees correct usage for transitive deps
@@ -2323,7 +2355,7 @@ func (a *apexBundle) checkJavaStableSdkVersion(ctx android.ModuleContext) {
 	})
 }
 
-// Ensures that the all the dependencies are marked as available for this APEX
+// checkApexAvailability ensures that the all the dependencies are marked as available for this APEX.
 func (a *apexBundle) checkApexAvailability(ctx android.ModuleContext) {
 	// Let's be practical. Availability for test, host, and the VNDK apex isn't important
 	if ctx.Host() || a.testApex || a.vndkApex {
