@@ -346,7 +346,7 @@ func checkVndkOutput(t *testing.T, ctx *android.TestContext, output string, expe
 
 func checkVndkLibrariesOutput(t *testing.T, ctx *android.TestContext, module string, expected []string) {
 	t.Helper()
-	got := ctx.ModuleForTests(module, "").Module().(*vndkLibrariesTxt).fileNames
+	got := ctx.ModuleForTests(module, "android_common").Module().(*vndkLibrariesTxt).fileNames
 	assertArrayString(t, got, expected)
 }
 
@@ -532,11 +532,11 @@ func TestVndk(t *testing.T) {
 	CheckSnapshot(t, ctx, snapshotSingleton, "libllndk", "libllndk.so", llndkLib2ndPath, variant2nd)
 
 	snapshotConfigsPath := filepath.Join(snapshotVariantPath, "configs")
-	CheckSnapshot(t, ctx, snapshotSingleton, "llndk.libraries.txt", "llndk.libraries.txt", snapshotConfigsPath, "")
-	CheckSnapshot(t, ctx, snapshotSingleton, "vndkcore.libraries.txt", "vndkcore.libraries.txt", snapshotConfigsPath, "")
-	CheckSnapshot(t, ctx, snapshotSingleton, "vndksp.libraries.txt", "vndksp.libraries.txt", snapshotConfigsPath, "")
-	CheckSnapshot(t, ctx, snapshotSingleton, "vndkprivate.libraries.txt", "vndkprivate.libraries.txt", snapshotConfigsPath, "")
-	CheckSnapshot(t, ctx, snapshotSingleton, "vndkproduct.libraries.txt", "vndkproduct.libraries.txt", snapshotConfigsPath, "")
+	CheckSnapshot(t, ctx, snapshotSingleton, "llndk.libraries.txt", "llndk.libraries.txt", snapshotConfigsPath, "android_common")
+	CheckSnapshot(t, ctx, snapshotSingleton, "vndkcore.libraries.txt", "vndkcore.libraries.txt", snapshotConfigsPath, "android_common")
+	CheckSnapshot(t, ctx, snapshotSingleton, "vndksp.libraries.txt", "vndksp.libraries.txt", snapshotConfigsPath, "android_common")
+	CheckSnapshot(t, ctx, snapshotSingleton, "vndkprivate.libraries.txt", "vndkprivate.libraries.txt", snapshotConfigsPath, "android_common")
+	CheckSnapshot(t, ctx, snapshotSingleton, "vndkproduct.libraries.txt", "vndkproduct.libraries.txt", snapshotConfigsPath, "android_common")
 
 	checkVndkOutput(t, ctx, "vndk/vndk.libraries.txt", []string{
 		"LLNDK: libc.so",
@@ -614,7 +614,7 @@ func TestVndkLibrariesTxtAndroidMk(t *testing.T) {
 	config.TestProductVariables.Platform_vndk_version = StringPtr("29")
 	ctx := testCcWithConfig(t, config)
 
-	module := ctx.ModuleForTests("llndk.libraries.txt", "")
+	module := ctx.ModuleForTests("llndk.libraries.txt", "android_common")
 	entries := android.AndroidMkEntriesForTest(t, ctx, module.Module())[0]
 	assertArrayString(t, entries.EntryMap["LOCAL_MODULE_STEM"], []string{"llndk.libraries.29.txt"})
 }
@@ -730,9 +730,16 @@ func TestDataLibsRelativeInstallPath(t *testing.T) {
 			gtest: false,
 		}
 
+		cc_binary {
+			name: "test_bin",
+			relative_install_path: "foo/bar/baz",
+			compile_multilib: "both",
+		}
+
 		cc_test {
 			name: "main_test",
 			data_libs: ["test_lib"],
+			data_bins: ["test_bin"],
 			gtest: false,
 		}
  `
@@ -750,10 +757,10 @@ func TestDataLibsRelativeInstallPath(t *testing.T) {
 		t.Fatalf("Expected cc_test to produce output files, error: %s", err)
 	}
 	if len(outputFiles) != 1 {
-		t.Errorf("expected exactly one output file. output files: [%s]", outputFiles)
+		t.Fatalf("expected exactly one output file. output files: [%s]", outputFiles)
 	}
-	if len(testBinary.dataPaths()) != 1 {
-		t.Errorf("expected exactly one test data file. test data files: [%s]", testBinary.dataPaths())
+	if len(testBinary.dataPaths()) != 2 {
+		t.Fatalf("expected exactly one test data file. test data files: [%s]", testBinary.dataPaths())
 	}
 
 	outputPath := outputFiles[0].String()
@@ -765,6 +772,10 @@ func TestDataLibsRelativeInstallPath(t *testing.T) {
 	if !strings.HasSuffix(entries.EntryMap["LOCAL_TEST_DATA"][0], ":test_lib.so:foo/bar/baz") {
 		t.Errorf("expected LOCAL_TEST_DATA to end with `:test_lib.so:foo/bar/baz`,"+
 			" but was '%s'", entries.EntryMap["LOCAL_TEST_DATA"][0])
+	}
+	if !strings.HasSuffix(entries.EntryMap["LOCAL_TEST_DATA"][1], ":test_bin:foo/bar/baz") {
+		t.Errorf("expected LOCAL_TEST_DATA to end with `:test_bin:foo/bar/baz`,"+
+			" but was '%s'", entries.EntryMap["LOCAL_TEST_DATA"][1])
 	}
 }
 

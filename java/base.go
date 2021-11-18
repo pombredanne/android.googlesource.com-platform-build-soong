@@ -184,16 +184,21 @@ type CommonProperties struct {
 // Properties that are specific to device modules. Host module factories should not add these when
 // constructing a new module.
 type DeviceProperties struct {
-	// if not blank, set to the version of the sdk to compile against.
+	// If not blank, set to the version of the sdk to compile against.
 	// Defaults to compiling against the current platform.
+	// Values are of one of the following forms:
+	// 1) numerical API level or "current"
+	// 2) An SDK kind with an API level: "<sdk kind>_<API level>". See
+	// build/soong/android/sdk_version.go for the complete and up to date list of
+	// SDK kinds. If the SDK kind value is empty, it will be set to public.
 	Sdk_version *string
 
 	// if not blank, set the minimum version of the sdk that the compiled artifacts will run against.
-	// Defaults to sdk_version if not set.
+	// Defaults to sdk_version if not set. See sdk_version for possible values.
 	Min_sdk_version *string
 
 	// if not blank, set the targetSdkVersion in the AndroidManifest.xml.
-	// Defaults to sdk_version if not set.
+	// Defaults to sdk_version if not set. See sdk_version for possible values.
 	Target_sdk_version *string
 
 	// Whether to compile against the platform APIs instead of an SDK.
@@ -407,6 +412,9 @@ type Module struct {
 	// installed file for binary dependency
 	installFile android.Path
 
+	// installed file for hostdex copy
+	hostdexInstallFile android.InstallPath
+
 	// list of .java files and srcjars that was passed to javac
 	compiledJavaSrcs android.Paths
 	compiledSrcJars  android.Paths
@@ -502,9 +510,9 @@ func (j *Module) checkPlatformAPI(ctx android.ModuleContext) {
 		usePlatformAPI := proptools.Bool(j.deviceProperties.Platform_apis)
 		sdkVersionSpecified := sc.SdkVersion(ctx).Specified()
 		if usePlatformAPI && sdkVersionSpecified {
-			ctx.PropertyErrorf("platform_apis", "platform_apis must be false when sdk_version is not empty.")
+			ctx.PropertyErrorf("platform_apis", "This module has conflicting settings. sdk_version is not empty, which means this module cannot use platform APIs. However platform_apis is set to true.")
 		} else if !usePlatformAPI && !sdkVersionSpecified {
-			ctx.PropertyErrorf("platform_apis", "platform_apis must be true when sdk_version is empty.")
+			ctx.PropertyErrorf("platform_apis", "This module has conflicting settings. sdk_version is empty, which means that this module is build against platform APIs. However platform_apis is not set to true")
 		}
 
 	}

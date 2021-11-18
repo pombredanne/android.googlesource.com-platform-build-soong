@@ -32,6 +32,10 @@ type properties struct {
 	Bazel_module bazel.BazelModuleProperties
 }
 
+// namespacedVariableProperties is a map from a string representing a Soong
+// config variable namespace, like "android" or "vendor_name" to a struct
+// pointer representing the soong_config_variables property of a module created
+// by a soong_config_module_type or soong_config_module_type_import.
 type namespacedVariableProperties map[string]interface{}
 
 // BazelModuleBase contains the property structs with metadata for modules which can be converted to
@@ -188,6 +192,7 @@ var (
 		"packages/apps/QuickSearchBox":/* recursive = */ true,
 		"packages/apps/WallpaperPicker":/* recursive = */ false,
 
+		"prebuilts/gcc":/* recursive = */ true,
 		"prebuilts/sdk":/* recursive = */ false,
 		"prebuilts/sdk/current/extras/app-toolkit":/* recursive = */ false,
 		"prebuilts/sdk/current/support":/* recursive = */ false,
@@ -199,6 +204,7 @@ var (
 	bp2buildDefaultConfig = Bp2BuildConfig{
 		"bionic":                                             Bp2BuildDefaultTrueRecursively,
 		"build/bazel/examples/apex/minimal":                  Bp2BuildDefaultTrueRecursively,
+		"build/soong/cc/libbuildversion":                     Bp2BuildDefaultTrue, // Skip tests subdir
 		"development/sdk":                                    Bp2BuildDefaultTrueRecursively,
 		"external/arm-optimized-routines":                    Bp2BuildDefaultTrueRecursively,
 		"external/boringssl":                                 Bp2BuildDefaultTrueRecursively,
@@ -250,6 +256,8 @@ var (
 
 	// Per-module denylist to always opt modules out of both bp2build and mixed builds.
 	bp2buildModuleDoNotConvertList = []string{
+		"libprotobuf-cpp-full", "libprotobuf-cpp-lite", // Unsupported product&vendor suffix. b/204811222 and b/204810610.
+
 		"libc_malloc_debug", // depends on libunwindstack, which depends on unsupported module art_cc_library_statics
 
 		"libbase_ndk", // http://b/186826477, fails to link libctscamera2_jni for device (required for CtsCameraTestCases)
@@ -270,14 +278,8 @@ var (
 		"platform_tools_properties",
 		"build_tools_source_properties",
 
-		// //external/libcap/...
-		"cap_names.h", // http://b/196105070 host toolchain misconfigurations for mixed builds
-		"libcap",      // http://b/196105070 host toolchain misconfigurations for mixed builds
-
-		"libminijail", // depends on unconverted modules: libcap
-		"getcap",      // depends on unconverted modules: libcap
-		"setcap",      // depends on unconverted modules: libcap
-		"minijail0",   // depends on unconverted modules: libcap, libminijail
+		"libminijail", // b/202491296: Uses unsupported c_std property.
+		"minijail0",   // depends on unconverted modules: libminijail
 		"drop_privs",  // depends on unconverted modules: libminijail
 
 		// Tests. Handle later.
@@ -330,12 +332,11 @@ var (
 	// Per-module denylist to opt modules out of mixed builds. Such modules will
 	// still be generated via bp2build.
 	mixedBuildsDisabledList = []string{
-		"libbrotli",                            // http://b/198585397, ld.lld: error: bionic/libc/arch-arm64/generic/bionic/memmove.S:95:(.text+0x10): relocation R_AARCH64_CONDBR19 out of range: -1404176 is not in [-1048576, 1048575]; references __memcpy
-		"func_to_syscall_nrs",                  // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
-		"libseccomp_policy_app_zygote_sources", // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
-		"libseccomp_policy_app_sources",        // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
-		"libseccomp_policy_system_sources",     // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
-		"minijail_constants_json",              // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
+		"libbrotli",               // http://b/198585397, ld.lld: error: bionic/libc/arch-arm64/generic/bionic/memmove.S:95:(.text+0x10): relocation R_AARCH64_CONDBR19 out of range: -1404176 is not in [-1048576, 1048575]; references __memcpy
+		"minijail_constants_json", // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
+
+		"cap_names.h", // TODO(b/204913827) runfiles need to be handled in mixed builds
+		"libcap",      // TODO(b/204913827) runfiles need to be handled in mixed builds
 	}
 
 	// Used for quicker lookups
@@ -381,7 +382,11 @@ func ShouldKeepExistingBuildFileForDir(dir string) bool {
 
 // MixedBuildsEnabled checks that a module is ready to be replaced by a
 // converted or handcrafted Bazel target.
-func (b *BazelModuleBase) MixedBuildsEnabled(ctx BazelConversionPathContext) bool {
+func (b *BazelModuleBase) MixedBuildsEnabled(ctx ModuleContext) bool {
+	if ctx.Os() == Windows {
+		// Windows toolchains are not currently supported.
+		return false
+	}
 	if !ctx.Config().BazelContext.BazelEnabled() {
 		return false
 	}

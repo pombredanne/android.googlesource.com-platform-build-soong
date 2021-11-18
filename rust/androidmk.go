@@ -51,7 +51,7 @@ func (mod *Module) AndroidMkEntries() []android.AndroidMkEntries {
 
 	ret := android.AndroidMkEntries{
 		OutputFile: android.OptionalPathForPath(mod.UnstrippedOutputFile()),
-		Include:    "$(BUILD_SYSTEM)/soong_rust_prebuilt.mk",
+		Include:    "$(BUILD_SYSTEM)/soong_cc_rust_prebuilt.mk",
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
 			func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
 				entries.AddStrings("LOCAL_RLIB_LIBRARIES", mod.Properties.AndroidMkRlibs...)
@@ -147,6 +147,7 @@ func (library *libraryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.An
 			}
 		})
 }
+
 func (procMacro *procMacroDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkEntries) {
 	ctx.SubAndroidMk(ret, procMacro.baseCompiler)
 

@@ -103,6 +103,11 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 		return moduleNames
 	}
 
+	// Avoid creating duplicate build rules for multi-installed APEXes.
+	if proptools.BoolDefault(a.properties.Multi_install_skip_symbol_files, false) {
+		return moduleNames
+	}
+
 	var postInstallCommands []string
 	for _, fi := range a.filesInfo {
 		if a.linkToSystemLib && fi.transitiveDep && fi.availableToPlatform() {
@@ -272,7 +277,7 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 					fmt.Fprintln(w, "LOCAL_PREBUILT_COVERAGE_ARCHIVE :=", ccMod.CoverageOutputFile().String())
 				}
 			}
-			fmt.Fprintln(w, "include $(BUILD_SYSTEM)/soong_cc_prebuilt.mk")
+			fmt.Fprintln(w, "include $(BUILD_SYSTEM)/soong_cc_rust_prebuilt.mk")
 		default:
 			fmt.Fprintln(w, "LOCAL_MODULE_STEM :=", fi.stem())
 			if fi.builtFile == a.manifestPbOut && apexType == flattenedApex {
@@ -449,23 +454,18 @@ func (a *apexBundle) androidMkForType() android.AndroidMkData {
 					fmt.Fprintf(w, dist)
 				}
 
-				if a.apisUsedByModuleFile.String() != "" {
-					goal := "apps_only"
-					distFile := a.apisUsedByModuleFile.String()
-					fmt.Fprintf(w, "ifneq (,$(filter $(my_register_name),$(TARGET_BUILD_APPS)))\n"+
-						" $(call dist-for-goals,%s,%s:ndk_apis_usedby_apex/$(notdir %s))\n"+
-						"endif\n",
-						goal, distFile, distFile)
-				}
-
-				if a.apisBackedByModuleFile.String() != "" {
-					goal := "apps_only"
-					distFile := a.apisBackedByModuleFile.String()
-					fmt.Fprintf(w, "ifneq (,$(filter $(my_register_name),$(TARGET_BUILD_APPS)))\n"+
-						" $(call dist-for-goals,%s,%s:ndk_apis_backedby_apex/$(notdir %s))\n"+
-						"endif\n",
-						goal, distFile, distFile)
-				}
+				distCoverageFiles(w, "ndk_apis_usedby_apex", a.nativeApisUsedByModuleFile.String())
+				distCoverageFiles(w, "ndk_apis_usedby_apex", a.nativeApisBackedByModuleFile.String())
+				distCoverageFiles(w, "java_apis_used_by_apex", a.javaApisUsedByModuleFile.String())
 			}
 		}}
+}
+
+func distCoverageFiles(w io.Writer, dir string, distfile string) {
+	if distfile != "" {
+		goal := "apps_only"
+		fmt.Fprintf(w, "ifneq (,$(filter $(my_register_name),$(TARGET_BUILD_APPS)))\n"+
+			" $(call dist-for-goals,%s,%s:%s/$(notdir %s))\n"+
+			"endif\n", goal, distfile, dir, distfile)
+	}
 }
