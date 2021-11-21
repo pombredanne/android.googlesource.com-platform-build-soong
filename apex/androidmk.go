@@ -103,6 +103,11 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 		return moduleNames
 	}
 
+	// Avoid creating duplicate build rules for multi-installed APEXes.
+	if proptools.BoolDefault(a.properties.Multi_install_skip_symbol_files, false) {
+		return moduleNames
+	}
+
 	var postInstallCommands []string
 	for _, fi := range a.filesInfo {
 		if a.linkToSystemLib && fi.transitiveDep && fi.availableToPlatform() {
@@ -258,7 +263,7 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 			if !ok {
 				panic(fmt.Sprintf("Expected %s to be AndroidAppSet", fi.module))
 			}
-			fmt.Fprintln(w, "LOCAL_APK_SET_INSTALL_FILE :=", as.InstallFile())
+			fmt.Fprintln(w, "LOCAL_APK_SET_INSTALL_FILE :=", as.PackedAdditionalOutputs().String())
 			fmt.Fprintln(w, "LOCAL_APKCERTS_FILE :=", as.APKCertsFile().String())
 			fmt.Fprintln(w, "include $(BUILD_SYSTEM)/soong_android_app_set.mk")
 		case nativeSharedLib, nativeExecutable, nativeTest:
@@ -272,7 +277,7 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 					fmt.Fprintln(w, "LOCAL_PREBUILT_COVERAGE_ARCHIVE :=", ccMod.CoverageOutputFile().String())
 				}
 			}
-			fmt.Fprintln(w, "include $(BUILD_SYSTEM)/soong_cc_prebuilt.mk")
+			fmt.Fprintln(w, "include $(BUILD_SYSTEM)/soong_cc_rust_prebuilt.mk")
 		default:
 			fmt.Fprintln(w, "LOCAL_MODULE_STEM :=", fi.stem())
 			if fi.builtFile == a.manifestPbOut && apexType == flattenedApex {

@@ -105,15 +105,12 @@ def init(g, handle):
 PRODUCT_NAME := $(call foo1, bar)
 PRODUCT_NAME := $(call foo0)
 `,
-		expected: `# MK2RBC TRANSLATION ERROR: cannot handle invoking foo1
-# PRODUCT_NAME := $(call foo1, bar)
-# MK2RBC TRANSLATION ERROR: cannot handle invoking foo0
-# PRODUCT_NAME := $(call foo0)
-load("//build/make/core:product_config.rbc", "rblf")
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
-  rblf.warning("product.mk", "partially successful conversion")
+  rblf.mk2rbc_error("product.mk:2", "cannot handle invoking foo1")
+  rblf.mk2rbc_error("product.mk:3", "cannot handle invoking foo0")
 `,
 	},
 	{
@@ -207,15 +204,11 @@ define some-macro
     $(info foo)
 endef
 `,
-		expected: `# MK2RBC TRANSLATION ERROR: define is not supported: some-macro
-# define  some-macro
-#     $(info foo)
-# endef
-load("//build/make/core:product_config.rbc", "rblf")
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
-  rblf.warning("product.mk", "partially successful conversion")
+  rblf.mk2rbc_error("product.mk:2", "define is not supported: some-macro")
 `,
 	},
 	{
@@ -282,9 +275,7 @@ def init(g, handle):
     # Comment
     pass
   else:
-    # MK2RBC TRANSLATION ERROR: cannot set predefined variable TARGET_COPY_OUT_RECOVERY to "foo", its value should be "recovery"
-    pass
-  rblf.warning("product.mk", "partially successful conversion")
+    rblf.mk2rbc_error("product.mk:5", "cannot set predefined variable TARGET_COPY_OUT_RECOVERY to \"foo\", its value should be \"recovery\"")
 `,
 	},
 	{
@@ -350,6 +341,36 @@ def init(g, handle):
     cfg["PRODUCT_MODEL"] = "pix21"
   if "aosp_x86" != g["TARGET_PRODUCT"]:
     cfg["PRODUCT_MODEL"] = "pix3"
+`,
+	},
+	{
+		desc:   "ifeq with soong_config_get",
+		mkname: "product.mk",
+		in: `
+ifeq (true,$(call soong_config_get,art_module,source_build))
+endif
+`,
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  if "true" == rblf.soong_config_get(g, "art_module", "source_build"):
+    pass
+`,
+	},
+	{
+		desc:   "ifeq with $(NATIVE_COVERAGE)",
+		mkname: "product.mk",
+		in: `
+ifeq ($(NATIVE_COVERAGE),true)
+endif
+`,
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  if g.get("NATIVE_COVERAGE", False):
+    pass
 `,
 	},
 	{
@@ -515,6 +536,21 @@ def init(g, handle):
 `,
 	},
 	{
+		desc:   "if with interpolation",
+		mkname: "product.mk",
+		in: `
+ifeq ($(VARIABLE1)text$(VARIABLE2),true)
+endif
+`,
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  if "%stext%s" % (g.get("VARIABLE1", ""), g.get("VARIABLE2", "")) == "true":
+    pass
+`,
+	},
+	{
 		desc:   "ifneq $(X),true",
 		mkname: "product.mk",
 		in: `
@@ -659,6 +695,7 @@ $(call enforce-product-packages-exist,)
 $(call enforce-product-packages-exist, foo)
 $(call require-artifacts-in-path, foo, bar)
 $(call require-artifacts-in-path-relaxed, foo, bar)
+$(call dist-for-goals, goal, from:to)
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
@@ -668,6 +705,7 @@ def init(g, handle):
   rblf.enforce_product_packages_exist("foo")
   rblf.require_artifacts_in_path("foo", "bar")
   rblf.require_artifacts_in_path_relaxed("foo", "bar")
+  rblf.mkdist_for_goals(g, "goal", "from:to")
 `,
 	},
 	{
@@ -827,9 +865,7 @@ def init(g, handle):
   rblf.soong_config_namespace(g, "cvd")
   rblf.soong_config_set(g, "cvd", "launch_configs", "cvd_config_auto.json")
   rblf.soong_config_append(g, "cvd", "grub_config", "grub.cfg")
-  # MK2RBC TRANSLATION ERROR: SOONG_CONFIG_ variables cannot be referenced, use soong_config_get instead: SOONG_CONFIG_cvd_grub_config
-  # x := $(SOONG_CONFIG_cvd_grub_config)
-  rblf.warning("product.mk", "partially successful conversion")
+  rblf.mk2rbc_error("product.mk:7", "SOONG_CONFIG_ variables cannot be referenced, use soong_config_get instead: SOONG_CONFIG_cvd_grub_config")
 `,
 	}, {
 		desc:   "soong namespace accesses",
@@ -1016,15 +1052,11 @@ def init(g, handle):
 		in: `
 foo: foo.c
 	gcc -o $@ $*`,
-		expected: `# MK2RBC TRANSLATION ERROR: unsupported line rule:       foo: foo.c
-#gcc -o $@ $*
-# rule:       foo: foo.c
-# gcc -o $@ $*
-load("//build/make/core:product_config.rbc", "rblf")
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
-  rblf.warning("product.mk", "partially successful conversion")
+  rblf.mk2rbc_error("product.mk:2", "unsupported line rule:       foo: foo.c\n#gcc -o $@ $*")
 `,
 	},
 	{
@@ -1032,14 +1064,27 @@ def init(g, handle):
 		mkname: "product.mk",
 		in: `
 override FOO:=`,
-		expected: `# MK2RBC TRANSLATION ERROR: cannot handle override directive
-# override FOO :=
-load("//build/make/core:product_config.rbc", "rblf")
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
+  rblf.mk2rbc_error("product.mk:2", "cannot handle override directive")
   g["override FOO"] = ""
-  rblf.warning("product.mk", "partially successful conversion")
+`,
+	},
+	{
+		desc:   "Bad expression",
+		mkname: "build/product.mk",
+		in: `
+ifeq (,$(call foobar))
+endif
+`,
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  if rblf.mk2rbc_error("build/product.mk:2", "cannot handle invoking foobar"):
+    pass
 `,
 	},
 }
@@ -1049,6 +1094,7 @@ var known_variables = []struct {
 	class varClass
 	starlarkType
 }{
+	{"NATIVE_COVERAGE", VarClassSoong, starlarkTypeBool},
 	{"PRODUCT_NAME", VarClassConfig, starlarkTypeString},
 	{"PRODUCT_MODEL", VarClassConfig, starlarkTypeString},
 	{"PRODUCT_PACKAGES", VarClassConfig, starlarkTypeList},
@@ -1110,13 +1156,12 @@ func TestGood(t *testing.T) {
 		t.Run(test.desc,
 			func(t *testing.T) {
 				ss, err := Convert(Request{
-					MkFile:             test.mkname,
-					Reader:             bytes.NewBufferString(test.in),
-					RootDir:            ".",
-					OutputSuffix:       ".star",
-					WarnPartialSuccess: true,
-					SourceFS:           fs,
-					MakefileFinder:     &testMakefileFinder{fs: fs},
+					MkFile:         test.mkname,
+					Reader:         bytes.NewBufferString(test.in),
+					RootDir:        ".",
+					OutputSuffix:   ".star",
+					SourceFS:       fs,
+					MakefileFinder: &testMakefileFinder{fs: fs},
 				})
 				if err != nil {
 					t.Error(err)

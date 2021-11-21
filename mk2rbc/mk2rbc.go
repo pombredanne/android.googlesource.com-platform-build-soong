@@ -102,6 +102,7 @@ var knownFunctions = map[string]struct {
 	"addsuffix":                           {baseName + ".addsuffix", starlarkTypeList, hiddenArgNone},
 	"copy-files":                          {baseName + ".copy_files", starlarkTypeList, hiddenArgNone},
 	"dir":                                 {baseName + ".dir", starlarkTypeList, hiddenArgNone},
+	"dist-for-goals":                      {baseName + ".mkdist_for_goals", starlarkTypeVoid, hiddenArgGlobal},
 	"enforce-product-packages-exist":      {baseName + ".enforce_product_packages_exist", starlarkTypeVoid, hiddenArgNone},
 	"error":                               {baseName + ".mkerror", starlarkTypeVoid, hiddenArgNone},
 	"findstring":                          {"!findstring", starlarkTypeInt, hiddenArgNone},
@@ -156,23 +157,31 @@ var builtinFuncRex = regexp.MustCompile(
 
 // Conversion request parameters
 type Request struct {
-	MkFile             string    // file to convert
-	Reader             io.Reader // if set, read input from this stream instead
-	RootDir            string    // root directory path used to resolve included files
-	OutputSuffix       string    // generated Starlark files suffix
-	OutputDir          string    // if set, root of the output hierarchy
-	ErrorLogger        ErrorLogger
-	TracedVariables    []string // trace assignment to these variables
-	TraceCalls         bool
-	WarnPartialSuccess bool
-	SourceFS           fs.FS
-	MakefileFinder     MakefileFinder
+	MkFile          string    // file to convert
+	Reader          io.Reader // if set, read input from this stream instead
+	RootDir         string    // root directory path used to resolve included files
+	OutputSuffix    string    // generated Starlark files suffix
+	OutputDir       string    // if set, root of the output hierarchy
+	ErrorLogger     ErrorLogger
+	TracedVariables []string // trace assignment to these variables
+	TraceCalls      bool
+	SourceFS        fs.FS
+	MakefileFinder  MakefileFinder
 }
 
 // ErrorLogger prints errors and gathers error statistics.
 // Its NewError function is called on every error encountered during the conversion.
 type ErrorLogger interface {
-	NewError(sourceFile string, sourceLine int, node mkparser.Node, text string, args ...interface{})
+	NewError(el ErrorLocation, node mkparser.Node, text string, args ...interface{})
+}
+
+type ErrorLocation struct {
+	MkFile string
+	MkLine int
+}
+
+func (el ErrorLocation) String() string {
+	return fmt.Sprintf("%s:%d", el.MkFile, el.MkLine)
 }
 
 // Derives module name for a given file. It is base name
@@ -248,10 +257,6 @@ func (gctx *generationContext) emit() string {
 		node.emit(gctx)
 	}
 
-	if ss.hasErrors && ss.warnPartialSuccess {
-		gctx.newLine()
-		gctx.writef("%s(%q, %q)", cfnWarning, filepath.Base(ss.mkFile), "partially successful conversion")
-	}
 	if gctx.starScript.traceCalls {
 		gctx.newLine()
 		gctx.writef(`print("<%s")`, gctx.starScript.mkFile)
@@ -304,6 +309,10 @@ func (gctx *generationContext) newLine() {
 	}
 	gctx.write("\n")
 	gctx.writef("%*s", 2*gctx.indentLevel, "")
+}
+
+func (gctx *generationContext) emitConversionError(el ErrorLocation, message string) {
+	gctx.writef(`rblf.mk2rbc_error("%s", %q)`, el, message)
 }
 
 type knownVariable struct {
@@ -370,18 +379,17 @@ type nodeReceiver interface {
 
 // Information about the generated Starlark script.
 type StarlarkScript struct {
-	mkFile             string
-	moduleName         string
-	mkPos              scanner.Position
-	nodes              []starlarkNode
-	inherited          []*moduleInfo
-	hasErrors          bool
-	topDir             string
-	traceCalls         bool // print enter/exit each init function
-	warnPartialSuccess bool
-	sourceFS           fs.FS
-	makefileFinder     MakefileFinder
-	nodeLocator        func(pos mkparser.Pos) int
+	mkFile         string
+	moduleName     string
+	mkPos          scanner.Position
+	nodes          []starlarkNode
+	inherited      []*moduleInfo
+	hasErrors      bool
+	topDir         string
+	traceCalls     bool // print enter/exit each init function
+	sourceFS       fs.FS
+	makefileFinder MakefileFinder
+	nodeLocator    func(pos mkparser.Pos) int
 }
 
 func (ss *StarlarkScript) newNode(node starlarkNode) {
@@ -560,7 +568,7 @@ func (ctx *parseContext) handleAssignment(a *mkparser.Assignment) {
 		return
 	}
 	_, isTraced := ctx.tracedVariables[name]
-	asgn := &assignmentNode{lhs: lhs, mkValue: a.Value, isTraced: isTraced}
+	asgn := &assignmentNode{lhs: lhs, mkValue: a.Value, isTraced: isTraced, location: ctx.errorLocation(a)}
 	if lhs.valueType() == starlarkTypeUnknown {
 		// Try to divine variable type from the RHS
 		asgn.value = ctx.parseMakeString(a, a.Value)
@@ -1023,10 +1031,10 @@ func (ctx *parseContext) parseCondition(check *mkparser.Directive) starlarkNode 
 func (ctx *parseContext) newBadExpr(node mkparser.Node, text string, args ...interface{}) starlarkExpr {
 	message := fmt.Sprintf(text, args...)
 	if ctx.errorLogger != nil {
-		ctx.errorLogger.NewError(ctx.script.mkFile, ctx.script.nodeLocator(node.Pos()), node, text, args...)
+		ctx.errorLogger.NewError(ctx.errorLocation(node), node, text, args...)
 	}
 	ctx.script.hasErrors = true
-	return &badExpr{node, message}
+	return &badExpr{errorLocation: ctx.errorLocation(node), message: message}
 }
 
 func (ctx *parseContext) parseCompare(cond *mkparser.Directive) starlarkExpr {
@@ -1044,48 +1052,54 @@ func (ctx *parseContext) parseCompare(cond *mkparser.Directive) starlarkExpr {
 	args[1].TrimLeftSpaces()
 
 	isEq := !strings.HasSuffix(cond.Name, "neq")
-	switch xLeft := ctx.parseMakeString(cond, args[0]).(type) {
-	case *stringLiteralExpr, *variableRefExpr:
-		switch xRight := ctx.parseMakeString(cond, args[1]).(type) {
-		case *stringLiteralExpr, *variableRefExpr:
-			return &eqExpr{left: xLeft, right: xRight, isEq: isEq}
-		case *badExpr:
-			return xRight
-		default:
-			expr, ok := ctx.parseCheckFunctionCallResult(cond, xLeft, args[1])
-			if ok {
-				return expr
-			}
-			return ctx.newBadExpr(cond, "right operand is too complex: %s", args[1].Dump())
-		}
-	case *badExpr:
-		return xLeft
-	default:
-		switch xRight := ctx.parseMakeString(cond, args[1]).(type) {
-		case *stringLiteralExpr, *variableRefExpr:
-			expr, ok := ctx.parseCheckFunctionCallResult(cond, xRight, args[0])
-			if ok {
-				return expr
-			}
-			return ctx.newBadExpr(cond, "left operand is too complex: %s", args[0].Dump())
-		case *badExpr:
-			return xRight
-		default:
-			return ctx.newBadExpr(cond, "operands are too complex: (%s,%s)", args[0].Dump(), args[1].Dump())
-		}
+	xLeft := ctx.parseMakeString(cond, args[0])
+	xRight := ctx.parseMakeString(cond, args[1])
+	if bad, ok := xLeft.(*badExpr); ok {
+		return bad
 	}
+	if bad, ok := xRight.(*badExpr); ok {
+		return bad
+	}
+
+	if expr, ok := ctx.parseCompareSpecialCases(cond, xLeft, xRight); ok {
+		return expr
+	}
+
+	return &eqExpr{left: xLeft, right: xRight, isEq: isEq}
 }
 
-func (ctx *parseContext) parseCheckFunctionCallResult(directive *mkparser.Directive, xValue starlarkExpr,
-	varArg *mkparser.MakeString) (starlarkExpr, bool) {
-	mkSingleVar, ok := varArg.SingleVariable()
-	if !ok {
+// Given an if statement's directive and the left/right starlarkExprs,
+// check if the starlarkExprs are one of a few hardcoded special cases
+// that can be converted to a simpler equalify expression than simply comparing
+// the two.
+func (ctx *parseContext) parseCompareSpecialCases(directive *mkparser.Directive, left starlarkExpr,
+	right starlarkExpr) (starlarkExpr, bool) {
+	isEq := !strings.HasSuffix(directive.Name, "neq")
+
+	// All the special cases require a call on one side and a
+	// string literal/variable on the other. Turn the left/right variables into
+	// call/value variables, and return false if that's not possible.
+	var value starlarkExpr = nil
+	call, ok := left.(*callExpr)
+	if ok {
+		switch right.(type) {
+		case *stringLiteralExpr, *variableRefExpr:
+			value = right
+		}
+	} else {
+		call, _ = right.(*callExpr)
+		switch left.(type) {
+		case *stringLiteralExpr, *variableRefExpr:
+			value = left
+		}
+	}
+
+	if call == nil || value == nil {
 		return nil, false
 	}
-	expr := ctx.parseReference(directive, mkSingleVar)
-	negate := strings.HasSuffix(directive.Name, "neq")
+
 	checkIsSomethingFunction := func(xCall *callExpr) starlarkExpr {
-		s, ok := maybeString(xValue)
+		s, ok := maybeString(value)
 		if !ok || s != "true" {
 			return ctx.newBadExpr(directive,
 				fmt.Sprintf("the result of %s can be compared only to 'true'", xCall.name))
@@ -1095,97 +1109,90 @@ func (ctx *parseContext) parseCheckFunctionCallResult(directive *mkparser.Direct
 		}
 		return nil
 	}
-	switch x := expr.(type) {
-	case *callExpr:
-		switch x.name {
-		case "filter":
-			return ctx.parseCompareFilterFuncResult(directive, x, xValue, !negate), true
-		case "filter-out":
-			return ctx.parseCompareFilterFuncResult(directive, x, xValue, negate), true
-		case "wildcard":
-			return ctx.parseCompareWildcardFuncResult(directive, x, xValue, negate), true
-		case "findstring":
-			return ctx.parseCheckFindstringFuncResult(directive, x, xValue, negate), true
-		case "strip":
-			return ctx.parseCompareStripFuncResult(directive, x, xValue, negate), true
-		case "is-board-platform":
-			if xBad := checkIsSomethingFunction(x); xBad != nil {
-				return xBad, true
-			}
-			return &eqExpr{
-				left:  &variableRefExpr{ctx.addVariable("TARGET_BOARD_PLATFORM"), false},
-				right: x.args[0],
-				isEq:  !negate,
-			}, true
-		case "is-board-platform-in-list":
-			if xBad := checkIsSomethingFunction(x); xBad != nil {
-				return xBad, true
-			}
-			return &inExpr{
-				expr:  &variableRefExpr{ctx.addVariable("TARGET_BOARD_PLATFORM"), false},
-				list:  maybeConvertToStringList(x.args[0]),
-				isNot: negate,
-			}, true
-		case "is-product-in-list":
-			if xBad := checkIsSomethingFunction(x); xBad != nil {
-				return xBad, true
-			}
-			return &inExpr{
-				expr:  &variableRefExpr{ctx.addVariable("TARGET_PRODUCT"), true},
-				list:  maybeConvertToStringList(x.args[0]),
-				isNot: negate,
-			}, true
-		case "is-vendor-board-platform":
-			if xBad := checkIsSomethingFunction(x); xBad != nil {
-				return xBad, true
-			}
-			s, ok := maybeString(x.args[0])
-			if !ok {
-				return ctx.newBadExpr(directive, "cannot handle non-constant argument to is-vendor-board-platform"), true
-			}
-			return &inExpr{
-				expr:  &variableRefExpr{ctx.addVariable("TARGET_BOARD_PLATFORM"), false},
-				list:  &variableRefExpr{ctx.addVariable(s + "_BOARD_PLATFORMS"), true},
-				isNot: negate,
-			}, true
 
-		case "is-board-platform2", "is-board-platform-in-list2":
-			if s, ok := maybeString(xValue); !ok || s != "" {
-				return ctx.newBadExpr(directive,
-					fmt.Sprintf("the result of %s can be compared only to empty", x.name)), true
-			}
-			if len(x.args) != 1 {
-				return ctx.newBadExpr(directive, "%s requires an argument", x.name), true
-			}
-			cc := &callExpr{
-				name:       x.name,
-				args:       []starlarkExpr{x.args[0]},
-				returnType: starlarkTypeBool,
-			}
-			if !negate {
-				return &notExpr{cc}, true
-			}
-			return cc, true
-		case "is-vendor-board-qcom":
-			if s, ok := maybeString(xValue); !ok || s != "" {
-				return ctx.newBadExpr(directive,
-					fmt.Sprintf("the result of %s can be compared only to empty", x.name)), true
-			}
-			// if the expression is ifneq (,$(call is-vendor-board-platform,...)), negate==true,
-			// so we should set inExpr.isNot to false
-			return &inExpr{
-				expr:  &variableRefExpr{ctx.addVariable("TARGET_BOARD_PLATFORM"), false},
-				list:  &variableRefExpr{ctx.addVariable("QCOM_BOARD_PLATFORMS"), true},
-				isNot: !negate,
-			}, true
-		default:
-			return ctx.newBadExpr(directive, "Unknown function in ifeq: %s", x.name), true
+	switch call.name {
+	case "filter":
+		return ctx.parseCompareFilterFuncResult(directive, call, value, isEq), true
+	case "filter-out":
+		return ctx.parseCompareFilterFuncResult(directive, call, value, !isEq), true
+	case "wildcard":
+		return ctx.parseCompareWildcardFuncResult(directive, call, value, !isEq), true
+	case "findstring":
+		return ctx.parseCheckFindstringFuncResult(directive, call, value, !isEq), true
+	case "strip":
+		return ctx.parseCompareStripFuncResult(directive, call, value, !isEq), true
+	case "is-board-platform":
+		if xBad := checkIsSomethingFunction(call); xBad != nil {
+			return xBad, true
 		}
-	case *badExpr:
-		return x, true
-	default:
-		return nil, false
+		return &eqExpr{
+			left:  &variableRefExpr{ctx.addVariable("TARGET_BOARD_PLATFORM"), false},
+			right: call.args[0],
+			isEq:  isEq,
+		}, true
+	case "is-board-platform-in-list":
+		if xBad := checkIsSomethingFunction(call); xBad != nil {
+			return xBad, true
+		}
+		return &inExpr{
+			expr:  &variableRefExpr{ctx.addVariable("TARGET_BOARD_PLATFORM"), false},
+			list:  maybeConvertToStringList(call.args[0]),
+			isNot: !isEq,
+		}, true
+	case "is-product-in-list":
+		if xBad := checkIsSomethingFunction(call); xBad != nil {
+			return xBad, true
+		}
+		return &inExpr{
+			expr:  &variableRefExpr{ctx.addVariable("TARGET_PRODUCT"), true},
+			list:  maybeConvertToStringList(call.args[0]),
+			isNot: !isEq,
+		}, true
+	case "is-vendor-board-platform":
+		if xBad := checkIsSomethingFunction(call); xBad != nil {
+			return xBad, true
+		}
+		s, ok := maybeString(call.args[0])
+		if !ok {
+			return ctx.newBadExpr(directive, "cannot handle non-constant argument to is-vendor-board-platform"), true
+		}
+		return &inExpr{
+			expr:  &variableRefExpr{ctx.addVariable("TARGET_BOARD_PLATFORM"), false},
+			list:  &variableRefExpr{ctx.addVariable(s + "_BOARD_PLATFORMS"), true},
+			isNot: !isEq,
+		}, true
+
+	case "is-board-platform2", "is-board-platform-in-list2":
+		if s, ok := maybeString(value); !ok || s != "" {
+			return ctx.newBadExpr(directive,
+				fmt.Sprintf("the result of %s can be compared only to empty", call.name)), true
+		}
+		if len(call.args) != 1 {
+			return ctx.newBadExpr(directive, "%s requires an argument", call.name), true
+		}
+		cc := &callExpr{
+			name:       call.name,
+			args:       []starlarkExpr{call.args[0]},
+			returnType: starlarkTypeBool,
+		}
+		if isEq {
+			return &notExpr{cc}, true
+		}
+		return cc, true
+	case "is-vendor-board-qcom":
+		if s, ok := maybeString(value); !ok || s != "" {
+			return ctx.newBadExpr(directive,
+				fmt.Sprintf("the result of %s can be compared only to empty", call.name)), true
+		}
+		// if the expression is ifneq (,$(call is-vendor-board-platform,...)), negate==true,
+		// so we should set inExpr.isNot to false
+		return &inExpr{
+			expr:  &variableRefExpr{ctx.addVariable("TARGET_BOARD_PLATFORM"), false},
+			list:  &variableRefExpr{ctx.addVariable("QCOM_BOARD_PLATFORMS"), true},
+			isNot: isEq,
+		}, true
 	}
+	return nil, false
 }
 
 func (ctx *parseContext) parseCompareFilterFuncResult(cond *mkparser.Directive,
@@ -1545,18 +1552,14 @@ func (ctx *parseContext) carryAsComment(failedNode mkparser.Node) {
 // records that the given node failed to be converted and includes an explanatory message
 func (ctx *parseContext) errorf(failedNode mkparser.Node, message string, args ...interface{}) {
 	if ctx.errorLogger != nil {
-		ctx.errorLogger.NewError(ctx.script.mkFile, ctx.script.nodeLocator(failedNode.Pos()), failedNode, message, args...)
+		ctx.errorLogger.NewError(ctx.errorLocation(failedNode), failedNode, message, args...)
 	}
-	message = fmt.Sprintf(message, args...)
-	ctx.insertComment(fmt.Sprintf("# MK2RBC TRANSLATION ERROR: %s", message))
-	ctx.carryAsComment(failedNode)
-
+	ctx.receiver.newNode(&exprNode{ctx.newBadExpr(failedNode, message, args...)})
 	ctx.script.hasErrors = true
 }
 
 func (ctx *parseContext) wrapBadExpr(xBad *badExpr) {
-	ctx.insertComment(fmt.Sprintf("# MK2RBC TRANSLATION ERROR: %s", xBad.message))
-	ctx.carryAsComment(xBad.node)
+	ctx.receiver.newNode(&exprNode{xBad})
 }
 
 func (ctx *parseContext) loadedModulePath(path string) string {
@@ -1622,6 +1625,10 @@ func (ctx *parseContext) hasNamespaceVar(namespaceName string, varName string) b
 	return ok
 }
 
+func (ctx *parseContext) errorLocation(node mkparser.Node) ErrorLocation {
+	return ErrorLocation{ctx.script.mkFile, ctx.script.nodeLocator(node.Pos())}
+}
+
 func (ss *StarlarkScript) String() string {
 	return NewGenerateContext(ss).emit()
 }
@@ -1660,14 +1667,13 @@ func Convert(req Request) (*StarlarkScript, error) {
 		return nil, fmt.Errorf("bad makefile %s", req.MkFile)
 	}
 	starScript := &StarlarkScript{
-		moduleName:         moduleNameForFile(req.MkFile),
-		mkFile:             req.MkFile,
-		topDir:             req.RootDir,
-		traceCalls:         req.TraceCalls,
-		warnPartialSuccess: req.WarnPartialSuccess,
-		sourceFS:           req.SourceFS,
-		makefileFinder:     req.MakefileFinder,
-		nodeLocator:        func(pos mkparser.Pos) int { return parser.Unpack(pos).Line },
+		moduleName:     moduleNameForFile(req.MkFile),
+		mkFile:         req.MkFile,
+		topDir:         req.RootDir,
+		traceCalls:     req.TraceCalls,
+		sourceFS:       req.SourceFS,
+		makefileFinder: req.MakefileFinder,
+		nodeLocator:    func(pos mkparser.Pos) int { return parser.Unpack(pos).Line },
 	}
 	ctx := newParseContext(starScript, nodes)
 	ctx.outputSuffix = req.OutputSuffix
