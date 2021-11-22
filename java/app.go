@@ -471,6 +471,7 @@ func (a *AndroidApp) dexBuildActions(ctx android.ModuleContext) android.Path {
 	a.dexpreopter.enforceUsesLibs = a.usesLibrary.enforceUsesLibraries()
 	a.dexpreopter.classLoaderContexts = a.classLoaderContexts
 	a.dexpreopter.manifestFile = a.mergedManifestFile
+	a.dexpreopter.preventInstall = a.appProperties.PreventInstall
 
 	if ctx.ModuleName() != "framework-res" {
 		a.Module.compile(ctx, a.aaptSrcJar)
@@ -720,11 +721,15 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 	apexInfo := ctx.Provider(android.ApexInfoProvider).(android.ApexInfo)
 
 	// Install the app package.
-	if (Bool(a.Module.properties.Installable) || ctx.Host()) && apexInfo.IsForPlatform() {
-		ctx.InstallFile(a.installDir, a.outputFile.Base(), a.outputFile)
+	if (Bool(a.Module.properties.Installable) || ctx.Host()) && apexInfo.IsForPlatform() &&
+		!a.appProperties.PreventInstall {
+
+		var extraInstalledPaths android.Paths
 		for _, extra := range a.extraOutputFiles {
-			ctx.InstallFile(a.installDir, extra.Base(), extra)
+			installed := ctx.InstallFile(a.installDir, extra.Base(), extra)
+			extraInstalledPaths = append(extraInstalledPaths, installed)
 		}
+		ctx.InstallFile(a.installDir, a.outputFile.Base(), a.outputFile, extraInstalledPaths...)
 	}
 
 	a.buildAppDependencyInfo(ctx)

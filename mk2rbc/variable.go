@@ -177,8 +177,8 @@ type localVariable struct {
 	baseVariable
 }
 
-func (lv localVariable) emitDefined(_ *generationContext) {
-	panic("implement me")
+func (lv localVariable) emitDefined(gctx *generationContext) {
+	gctx.writef(lv.String())
 }
 
 func (lv localVariable) String() string {
@@ -228,10 +228,9 @@ func (pv predefinedVariable) emitSet(gctx *generationContext, asgn *assignmentNo
 			if actualValue == expectedValue {
 				return
 			}
-			gctx.writef("# MK2RBC TRANSLATION ERROR: cannot set predefined variable %s to %q, its value should be %q",
-				pv.name(), actualValue, expectedValue)
-			gctx.newLine()
-			gctx.write("pass")
+			gctx.emitConversionError(asgn.location,
+				fmt.Sprintf("cannot set predefined variable %s to %q, its value should be %q",
+					pv.name(), actualValue, expectedValue))
 			gctx.starScript.hasErrors = true
 			return
 		}

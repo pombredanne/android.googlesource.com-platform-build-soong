@@ -156,13 +156,15 @@ type Module struct {
 	sourceProvider   SourceProvider
 	subAndroidMkOnce map[SubAndroidMkProvider]bool
 
-	// Unstripped output. This is usually used when this module is linked to another module
-	// as a library. The stripped output which is used for installation can be found via
-	// compiler.strippedOutputFile if it exists.
-	unstrippedOutputFile android.OptionalPath
-	docTimestampFile     android.OptionalPath
+	// Output file to be installed, may be stripped or unstripped.
+	outputFile android.OptionalPath
+
+	docTimestampFile android.OptionalPath
 
 	hideApexVariantFromMake bool
+
+	// For apex variants, this is set as apex.min_sdk_version
+	apexSdkVersion android.ApiLevel
 }
 
 func (mod *Module) Header() bool {
@@ -391,6 +393,10 @@ type Deps struct {
 	WholeStaticLibs []string
 	HeaderLibs      []string
 
+	// Used for data dependencies adjacent to tests
+	DataLibs []string
+	DataBins []string
+
 	CrtBegin, CrtEnd string
 }
 
@@ -465,6 +471,7 @@ type compiler interface {
 
 	stdLinkage(ctx *depsContext) RustLinkage
 
+	unstrippedOutputFilePath() android.Path
 	strippedOutputFilePath() android.OptionalPath
 }
 
@@ -574,7 +581,7 @@ func (mod *Module) CrateName() string {
 
 func (mod *Module) CcLibrary() bool {
 	if mod.compiler != nil {
-		if _, ok := mod.compiler.(*libraryDecorator); ok {
+		if _, ok := mod.compiler.(libraryInterface); ok {
 			return true
 		}
 	}
@@ -593,8 +600,8 @@ func (mod *Module) CcLibraryInterface() bool {
 }
 
 func (mod *Module) UnstrippedOutputFile() android.Path {
-	if mod.unstrippedOutputFile.Valid() {
-		return mod.unstrippedOutputFile.Path()
+	if mod.compiler != nil {
+		return mod.compiler.unstrippedOutputFilePath()
 	}
 	return nil
 }
@@ -651,10 +658,7 @@ func (mod *Module) Module() android.Module {
 }
 
 func (mod *Module) OutputFile() android.OptionalPath {
-	if mod.compiler != nil && mod.compiler.strippedOutputFilePath().Valid() {
-		return mod.compiler.strippedOutputFilePath()
-	}
-	return mod.unstrippedOutputFile
+	return mod.outputFile
 }
 
 func (mod *Module) CoverageFiles() android.Paths {
@@ -676,6 +680,10 @@ func (mod *Module) installable(apexInfo android.ApexInfo) bool {
 	}
 
 	return mod.OutputFile().Valid() && !mod.Properties.PreventInstall
+}
+
+func (ctx moduleContext) apexVariationName() string {
+	return ctx.Provider(android.ApexInfoProvider).(android.ApexInfo).ApexVariationName
 }
 
 var _ cc.LinkableInterface = (*Module)(nil)
@@ -885,9 +893,12 @@ func (mod *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 
 	if mod.compiler != nil && !mod.compiler.Disabled() {
 		mod.compiler.initialize(ctx)
-		unstrippedOutputFile := mod.compiler.compile(ctx, flags, deps)
-		mod.unstrippedOutputFile = android.OptionalPathForPath(unstrippedOutputFile)
-		bloaty.MeasureSizeForPaths(ctx, mod.compiler.strippedOutputFilePath(), mod.unstrippedOutputFile)
+		outputFile := mod.compiler.compile(ctx, flags, deps)
+		if ctx.Failed() {
+			return
+		}
+		mod.outputFile = android.OptionalPathForPath(outputFile)
+		bloaty.MeasureSizeForPaths(ctx, mod.compiler.strippedOutputFilePath(), android.OptionalPathForPath(mod.compiler.unstrippedOutputFilePath()))
 
 		mod.docTimestampFile = mod.compiler.rustdoc(ctx, flags, deps)
 
@@ -975,6 +986,8 @@ var (
 	procMacroDepTag     = dependencyTag{name: "procMacro", procMacro: true}
 	testPerSrcDepTag    = dependencyTag{name: "rust_unit_tests"}
 	sourceDepTag        = dependencyTag{name: "source"}
+	dataLibDepTag       = dependencyTag{name: "data lib"}
+	dataBinDepTag       = dependencyTag{name: "data bin"}
 )
 
 func IsDylibDepTag(depTag blueprint.DependencyTag) bool {
@@ -1012,6 +1025,13 @@ func (mod *Module) begin(ctx BaseModuleContext) {
 	}
 }
 
+func (mod *Module) Prebuilt() *android.Prebuilt {
+	if p, ok := mod.compiler.(*prebuiltLibraryDecorator); ok {
+		return p.prebuilt()
+	}
+	return nil
+}
+
 func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 	var depPaths PathDeps
 
@@ -1022,6 +1042,20 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 	directStaticLibDeps := [](cc.LinkableInterface){}
 	directSrcProvidersDeps := []*Module{}
 	directSrcDeps := [](android.SourceFileProducer){}
+
+	// For the dependency from platform to apex, use the latest stubs
+	mod.apexSdkVersion = android.FutureApiLevel
+	apexInfo := ctx.Provider(android.ApexInfoProvider).(android.ApexInfo)
+	if !apexInfo.IsForPlatform() {
+		mod.apexSdkVersion = apexInfo.MinSdkVersion
+	}
+
+	if android.InList("hwaddress", ctx.Config().SanitizeDevice()) {
+		// In hwasan build, we override apexSdkVersion to the FutureApiLevel(10000)
+		// so that even Q(29/Android10) apexes could use the dynamic unwinder by linking the newer stubs(e.g libc(R+)).
+		// (b/144430859)
+		mod.apexSdkVersion = android.FutureApiLevel
+	}
 
 	ctx.VisitDirectDeps(func(dep android.Module) {
 		depName := ctx.OtherModuleName(dep)
@@ -1083,13 +1117,8 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 			}
 
 			if depTag == dylibDepTag || depTag == rlibDepTag || depTag == procMacroDepTag {
-				linkFile := rustDep.unstrippedOutputFile
-				if !linkFile.Valid() {
-					ctx.ModuleErrorf("Invalid output file when adding dep %q to %q",
-						depName, ctx.ModuleName())
-					return
-				}
-				linkDir := linkPathFromFilePath(linkFile.Path())
+				linkFile := rustDep.UnstrippedOutputFile()
+				linkDir := linkPathFromFilePath(linkFile)
 				if lib, ok := mod.compiler.(exportedFlagsProducer); ok {
 					lib.exportLinkDirs(linkDir)
 				}
@@ -1198,15 +1227,15 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 
 	var rlibDepFiles RustLibraries
 	for _, dep := range directRlibDeps {
-		rlibDepFiles = append(rlibDepFiles, RustLibrary{Path: dep.unstrippedOutputFile.Path(), CrateName: dep.CrateName()})
+		rlibDepFiles = append(rlibDepFiles, RustLibrary{Path: dep.UnstrippedOutputFile(), CrateName: dep.CrateName()})
 	}
 	var dylibDepFiles RustLibraries
 	for _, dep := range directDylibDeps {
-		dylibDepFiles = append(dylibDepFiles, RustLibrary{Path: dep.unstrippedOutputFile.Path(), CrateName: dep.CrateName()})
+		dylibDepFiles = append(dylibDepFiles, RustLibrary{Path: dep.UnstrippedOutputFile(), CrateName: dep.CrateName()})
 	}
 	var procMacroDepFiles RustLibraries
 	for _, dep := range directProcMacroDeps {
-		procMacroDepFiles = append(procMacroDepFiles, RustLibrary{Path: dep.unstrippedOutputFile.Path(), CrateName: dep.CrateName()})
+		procMacroDepFiles = append(procMacroDepFiles, RustLibrary{Path: dep.UnstrippedOutputFile(), CrateName: dep.CrateName()})
 	}
 
 	var staticLibDepFiles android.Paths
@@ -1271,6 +1300,10 @@ func (mod *Module) InstallInVendorRamdisk() bool {
 
 func (mod *Module) InstallInRecovery() bool {
 	return mod.InRecovery()
+}
+
+func (mod *Module) InstallBypassMake() bool {
+	return true
 }
 
 func linkPathFromFilePath(filepath android.Path) string {
@@ -1401,6 +1434,12 @@ func (mod *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 		}
 	}
 
+	actx.AddVariationDependencies([]blueprint.Variation{
+		{Mutator: "link", Variation: "shared"},
+	}, dataLibDepTag, deps.DataLibs...)
+
+	actx.AddVariationDependencies(nil, dataBinDepTag, deps.DataBins...)
+
 	// proc_macros are compiler plugins, and so we need the host arch variant as a dependendcy.
 	actx.AddFarVariationDependencies(ctx.Config().BuildOSTarget.Variations(), procMacroDepTag, deps.ProcMacros...)
 }
@@ -1515,7 +1554,7 @@ func (mod *Module) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Mo
 // Overrides ApexModule.IsInstallabeToApex()
 func (mod *Module) IsInstallableToApex() bool {
 	if mod.compiler != nil {
-		if lib, ok := mod.compiler.(*libraryDecorator); ok && (lib.shared() || lib.dylib()) {
+		if lib, ok := mod.compiler.(libraryInterface); ok && (lib.shared() || lib.dylib()) {
 			return true
 		}
 		if _, ok := mod.compiler.(*binaryDecorator); ok {

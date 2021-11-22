@@ -155,6 +155,7 @@ type config struct {
 	fs         pathtools.FileSystem
 	mockBpList string
 
+	runningAsBp2Build        bool
 	bp2buildPackageConfig    Bp2BuildConfig
 	bp2buildModuleTypeConfig map[string]bool
 
@@ -333,10 +334,8 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 			ShippingApiLevel:                  stringPtr("30"),
 		},
 
-		outDir: buildDir,
-		// soongOutDir is inconsistent with production (it should be buildDir + "/soong")
-		// but a lot of tests assume this :(
-		soongOutDir:  buildDir,
+		outDir:       buildDir,
+		soongOutDir:  filepath.Join(buildDir, "soong"),
 		captureBuild: true,
 		env:          envCopy,
 
@@ -591,12 +590,11 @@ func (c *config) HostJNIToolPath(ctx PathContext, lib string) Path {
 	return path
 }
 
-func (c *config) HostJavaToolPath(ctx PathContext, path string) Path {
-	return PathForOutput(ctx, "host", c.PrebuiltOS(), "framework", path)
-}
-
-func (c *config) HostJavaBinToolPath(ctx PathContext, tool string) Path {
-	path := pathForInstall(ctx, ctx.Config().BuildOS, ctx.Config().BuildArch, "bin", false, tool)
+func (c *config) HostJavaToolPath(ctx PathContext, tool string) Path {
+	path := pathForInstall(ctx, ctx.Config().BuildOS, ctx.Config().BuildArch, "framework", false, tool)
+	if ctx.Config().KatiEnabled() {
+		path = path.ToMakePath()
+	}
 	return path
 }
 
