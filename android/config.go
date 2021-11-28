@@ -155,9 +155,10 @@ type config struct {
 	fs         pathtools.FileSystem
 	mockBpList string
 
-	runningAsBp2Build        bool
-	bp2buildPackageConfig    Bp2BuildConfig
-	bp2buildModuleTypeConfig map[string]bool
+	runningAsBp2Build              bool
+	bp2buildPackageConfig          Bp2BuildConfig
+	bp2buildModuleTypeConfig       map[string]bool
+	Bp2buildSoongConfigDefinitions soongconfig.Bp2BuildSoongConfigDefinitions
 
 	// If testAllowNonExistentPaths is true then PathForSource and PathForModuleSrc won't error
 	// in tests when a path doesn't exist.
@@ -323,7 +324,7 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 			DeviceName:                        stringPtr("test_device"),
 			Platform_sdk_version:              intPtr(30),
 			Platform_sdk_codename:             stringPtr("S"),
-			Platform_version_active_codenames: []string{"S"},
+			Platform_version_active_codenames: []string{"S", "Tiramisu"},
 			DeviceSystemSdkVersions:           []string{"14", "15"},
 			Platform_systemsdk_versions:       []string{"29", "30"},
 			AAPTConfig:                        []string{"normal", "large", "xlarge", "hdpi", "xhdpi", "xxhdpi"},
@@ -855,7 +856,7 @@ func (c *config) UnbundledBuild() bool {
 // Returns true if building apps that aren't bundled with the platform.
 // UnbundledBuild() is always true when this is true.
 func (c *config) UnbundledBuildApps() bool {
-	return Bool(c.productVariables.Unbundled_build_apps)
+	return len(c.productVariables.Unbundled_build_apps) > 0
 }
 
 // Returns true if building image that aren't bundled with the platform.
