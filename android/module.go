@@ -1300,6 +1300,8 @@ func (m *ModuleBase) ComponentDepsMutator(BottomUpMutatorContext) {}
 
 func (m *ModuleBase) DepsMutator(BottomUpMutatorContext) {}
 
+// AddProperties "registers" the provided props
+// each value in props MUST be a pointer to a struct
 func (m *ModuleBase) AddProperties(props ...interface{}) {
 	m.registerProps = append(m.registerProps, props...)
 }
@@ -1702,7 +1704,7 @@ func (m *ModuleBase) InstallInRoot() bool {
 }
 
 func (m *ModuleBase) InstallBypassMake() bool {
-	return false
+	return true
 }
 
 func (m *ModuleBase) InstallForceOS() (*OsType, *ArchType) {
