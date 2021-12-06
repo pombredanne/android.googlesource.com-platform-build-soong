@@ -549,6 +549,10 @@ func transformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles, no
 		return "$" + kind + n
 	}
 
+	// clang-tidy checks source files and does not need to link with libraries.
+	// tidyPathDeps should contain pathDeps but not libraries.
+	tidyPathDeps := skipNdkLibraryDeps(ctx, pathDeps)
+
 	for i, srcFile := range srcFiles {
 		objFile := android.ObjPathWithExt(ctx, subdir, srcFile, "o")
 
@@ -672,7 +676,7 @@ func transformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles, no
 				Output:      tidyFile,
 				Input:       srcFile,
 				Implicits:   cFlagsDeps,
-				OrderOnly:   pathDeps,
+				OrderOnly:   tidyPathDeps,
 				Args: map[string]string{
 					"ccCmd":     ccCmd,
 					"cFlags":    shareFlags("cFlags", escapeSingleQuotes(moduleToolingFlags)),
@@ -949,8 +953,7 @@ func sourceAbiDiff(ctx android.ModuleContext, inputDump android.Path, referenceD
 }
 
 // Generate a rule for extracting a table of contents from a shared library (.so)
-func transformSharedObjectToToc(ctx android.ModuleContext, inputFile android.Path,
-	outputFile android.WritablePath, flags builderFlags) {
+func TransformSharedObjectToToc(ctx android.ModuleContext, inputFile android.Path, outputFile android.WritablePath) {
 
 	var format string
 	if ctx.Darwin() {

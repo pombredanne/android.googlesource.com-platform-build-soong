@@ -111,6 +111,9 @@ type apexBundleProperties struct {
 	// List of java libraries that are embedded inside this APEX bundle.
 	Java_libs []string
 
+	// List of sh binaries that are embedded inside this APEX bundle.
+	Sh_binaries []string
+
 	// List of platform_compat_config files that are embedded inside this APEX bundle.
 	Compat_configs []string
 
@@ -126,6 +129,13 @@ type apexBundleProperties struct {
 	// min_sdk_version should be set as well. This will also disable the size optimizations like
 	// symlinking to the system libs. Default is true.
 	Updatable *bool
+
+	// Marks that this APEX is designed to be updatable in the future, although it's not
+	// updatable yet. This is used to mimic some of the build behaviors that are applied only to
+	// updatable APEXes. Currently, this disables the size optimization, so that the size of
+	// APEX will not increase when the APEX is actually marked as truly updatable. Default is
+	// false.
+	Future_updatable *bool
 
 	// Whether this APEX can use platform APIs or not. Can be set to true only when `updatable:
 	// false`. Default is false.
@@ -144,6 +154,16 @@ type apexBundleProperties struct {
 	// If set true, VNDK libs are considered as stable libs and are not included in this APEX.
 	// Should be only used in non-system apexes (e.g. vendor: true). Default is false.
 	Use_vndk_as_stable *bool
+
+	// Whether this is multi-installed APEX should skip installing symbol files.
+	// Multi-installed APEXes share the same apex_name and are installed at the same time.
+	// Default is false.
+	//
+	// Should be set to true for all multi-installed APEXes except the singular
+	// default version within the multi-installed group.
+	// Only the default version can install symbol files in $(PRODUCT_OUT}/apex,
+	// or else conflicting build rules may be created.
+	Multi_install_skip_symbol_files *bool
 
 	// List of SDKs that are used to build this APEX. A reference to an SDK should be either
 	// `name#version` or `name` which is an alias for `name#current`. If left empty,
@@ -177,6 +197,10 @@ type apexBundleProperties struct {
 	// Whenever apex should be compressed, regardless of product flag used. Should be only
 	// used in tests.
 	Test_only_force_compression *bool
+
+	// Put extra tags (signer=<value>) to apexkeys.txt, so that release tools can sign this apex
+	// with the tool to sign payload contents.
+	Custom_sign_tool *string
 
 	// Canonical name of this APEX bundle. Used to determine the path to the
 	// activated APEX on device (i.e. /apex/<apexVariationName>), and used for the
@@ -395,14 +419,14 @@ type apexBundle struct {
 	// vendor/google/build/build_unbundled_mainline_module.sh for more detail.
 	bundleModuleFile android.WritablePath
 
-	// Target path to install this APEX. Usually out/target/product/<device>/<partition>/apex.
+	// Target directory to install this APEX. Usually out/target/product/<device>/<partition>/apex.
 	installDir android.InstallPath
 
-	// List of commands to create symlinks for backward compatibility. These commands will be
-	// attached as LOCAL_POST_INSTALL_CMD to apex package itself (for unflattened build) or
-	// apex_manifest (for flattened build) so that compat symlinks are always installed
-	// regardless of TARGET_FLATTEN_APEX setting.
-	compatSymlinks []string
+	// Path where this APEX was installed.
+	installedFile android.InstallPath
+
+	// Installed locations of symlinks for backward compatibility.
+	compatSymlinks android.InstallPaths
 
 	// Text file having the list of individual files that are included in this APEX. Used for
 	// debugging purpose.
@@ -420,11 +444,16 @@ type apexBundle struct {
 	isCompressed bool
 
 	// Path of API coverage generate file
-	apisUsedByModuleFile   android.ModuleOutPath
-	apisBackedByModuleFile android.ModuleOutPath
+	nativeApisUsedByModuleFile   android.ModuleOutPath
+	nativeApisBackedByModuleFile android.ModuleOutPath
+	javaApisUsedByModuleFile     android.ModuleOutPath
 
 	// Collect the module directory for IDE info in java/jdeps.go.
 	modulePaths []string
+}
+
+func (*apexBundle) InstallBypassMake() bool {
+	return true
 }
 
 // apexFileClass represents a type of file that can be included in APEX.
@@ -599,6 +628,7 @@ var (
 	sharedLibTag    = dependencyTag{name: "sharedLib", payload: true}
 	testForTag      = dependencyTag{name: "test for"}
 	testTag         = dependencyTag{name: "test", payload: true}
+	shBinaryTag     = dependencyTag{name: "shBinary", payload: true}
 )
 
 // TODO(jiyong): shorten this function signature
@@ -743,6 +773,10 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 		for _, d := range depsList {
 			addDependenciesForNativeModules(ctx, d, target, imageVariation)
 		}
+		ctx.AddFarVariationDependencies([]blueprint.Variation{
+			{Mutator: "os", Variation: target.OsVariation()},
+			{Mutator: "arch", Variation: target.ArchVariation()},
+		}, shBinaryTag, a.properties.Sh_binaries...)
 	}
 
 	// Common-arch dependencies come next
@@ -1279,6 +1313,10 @@ func (a *apexBundle) Updatable() bool {
 	return proptools.BoolDefault(a.properties.Updatable, true)
 }
 
+func (a *apexBundle) FutureUpdatable() bool {
+	return proptools.BoolDefault(a.properties.Future_updatable, false)
+}
+
 func (a *apexBundle) UsePlatformApis() bool {
 	return proptools.BoolDefault(a.properties.Platform_apis, false)
 }
@@ -1454,12 +1492,7 @@ func apexFileForPyBinary(ctx android.BaseModuleContext, py *python.Module) apexF
 
 func apexFileForGoBinary(ctx android.BaseModuleContext, depName string, gb bootstrap.GoBinaryTool) apexFile {
 	dirInApex := "bin"
-	s, err := filepath.Rel(android.PathForOutput(ctx).String(), gb.InstallPath())
-	if err != nil {
-		ctx.ModuleErrorf("Unable to use compiled binary at %s", gb.InstallPath())
-		return apexFile{}
-	}
-	fileToCopy := android.PathForOutput(ctx, s)
+	fileToCopy := android.PathForGoBinary(ctx, gb)
 	// NB: Since go binaries are static we don't need the module for anything here, which is
 	// good since the go tool is a blueprint.Module not an android.Module like we would
 	// normally use.
@@ -1468,6 +1501,9 @@ func apexFileForGoBinary(ctx android.BaseModuleContext, depName string, gb boots
 
 func apexFileForShBinary(ctx android.BaseModuleContext, sh *sh.ShBinary) apexFile {
 	dirInApex := filepath.Join("bin", sh.SubDir())
+	if sh.Target().NativeBridge == android.NativeBridgeEnabled {
+		dirInApex = filepath.Join(dirInApex, sh.Target().NativeBridgeRelativePath)
+	}
 	fileToCopy := sh.OutputFile()
 	af := newApexFile(ctx, fileToCopy, sh.BaseModuleName(), dirInApex, shBinary, sh)
 	af.symlinks = sh.Symlinks()
@@ -1645,7 +1681,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	// 1) do some validity checks such as apex_available, min_sdk_version, etc.
 	a.checkApexAvailability(ctx)
 	a.checkUpdatable(ctx)
-	a.checkMinSdkVersion(ctx)
+	a.CheckMinSdkVersion(ctx)
 	a.checkStaticLinkingToStubLibraries(ctx)
 	a.checkStaticExecutables(ctx)
 	if len(a.properties.Tests) > 0 && !a.testApex {
@@ -1696,6 +1732,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 					return true // track transitive dependencies
 				} else if r, ok := child.(*rust.Module); ok {
 					fi := apexFileForRustLibrary(ctx, r)
+					fi.isJniLib = isJniLib
 					filesInfo = append(filesInfo, fi)
 				} else {
 					propertyName := "native_shared_libs"
@@ -1708,8 +1745,6 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 				if cc, ok := child.(*cc.Module); ok {
 					filesInfo = append(filesInfo, apexFileForExecutable(ctx, cc))
 					return true // track transitive dependencies
-				} else if sh, ok := child.(*sh.ShBinary); ok {
-					filesInfo = append(filesInfo, apexFileForShBinary(ctx, sh))
 				} else if py, ok := child.(*python.Module); ok && py.HostToolPath().Valid() {
 					filesInfo = append(filesInfo, apexFileForPyBinary(ctx, py))
 				} else if gb, ok := child.(bootstrap.GoBinaryTool); ok && a.Host() {
@@ -1718,7 +1753,13 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 					filesInfo = append(filesInfo, apexFileForRustExecutable(ctx, rust))
 					return true // track transitive dependencies
 				} else {
-					ctx.PropertyErrorf("binaries", "%q is neither cc_binary, rust_binary, (embedded) py_binary, (host) blueprint_go_binary, (host) bootstrap_go_binary, nor sh_binary", depName)
+					ctx.PropertyErrorf("binaries", "%q is neither cc_binary, rust_binary, (embedded) py_binary, (host) blueprint_go_binary, nor (host) bootstrap_go_binary", depName)
+				}
+			case shBinaryTag:
+				if sh, ok := child.(*sh.ShBinary); ok {
+					filesInfo = append(filesInfo, apexFileForShBinary(ctx, sh))
+				} else {
+					ctx.PropertyErrorf("sh_binaries", "%q is not a sh_binary module", depName)
 				}
 			case bcpfTag:
 				{
@@ -2075,10 +2116,11 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 
 	forced := ctx.Config().ForceApexSymlinkOptimization()
+	updatable := a.Updatable() || a.FutureUpdatable()
 
 	// We don't need the optimization for updatable APEXes, as it might give false signal
 	// to the system health when the APEXes are still bundled (b/149805758).
-	if !forced && a.Updatable() && a.properties.ApexType == imageApex {
+	if !forced && updatable && a.properties.ApexType == imageApex {
 		a.linkToSystemLib = false
 	}
 
@@ -2087,7 +2129,9 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		a.linkToSystemLib = false
 	}
 
-	a.compatSymlinks = makeCompatSymlinks(a.BaseModuleName(), ctx)
+	if a.properties.ApexType != zipApex {
+		a.compatSymlinks = makeCompatSymlinks(a.BaseModuleName(), ctx, a.primaryApexType)
+	}
 
 	////////////////////////////////////////////////////////////////////////////////////////////
 	// 4) generate the build rules to create the APEX. This is done in builder.go.
@@ -2270,13 +2314,13 @@ func overrideApexFactory() android.Module {
 
 // Entures that min_sdk_version of the included modules are equal or less than the min_sdk_version
 // of this apexBundle.
-func (a *apexBundle) checkMinSdkVersion(ctx android.ModuleContext) {
+func (a *apexBundle) CheckMinSdkVersion(ctx android.ModuleContext) {
 	if a.testApex || a.vndkApex {
 		return
 	}
 	// apexBundle::minSdkVersion reports its own errors.
 	minSdkVersion := a.minSdkVersion(ctx)
-	android.CheckMinSdkVersion(a, ctx, minSdkVersion)
+	android.CheckMinSdkVersion(ctx, minSdkVersion, a.WalkPayloadDeps)
 }
 
 func (a *apexBundle) minSdkVersion(ctx android.BaseModuleContext) android.ApiLevel {
@@ -2344,6 +2388,12 @@ func (a *apexBundle) checkUpdatable(ctx android.ModuleContext) {
 		}
 		if a.UsePlatformApis() {
 			ctx.PropertyErrorf("updatable", "updatable APEXes can't use platform APIs")
+		}
+		if a.SocSpecific() || a.DeviceSpecific() {
+			ctx.PropertyErrorf("updatable", "vendor APEXes are not updatable")
+		}
+		if a.FutureUpdatable() {
+			ctx.PropertyErrorf("future_updatable", "Already updatable. Remove `future_updatable: true:`")
 		}
 		a.checkJavaStableSdkVersion(ctx)
 		a.checkClasspathFragments(ctx)
@@ -2652,7 +2702,6 @@ func makeApexAvailableBaseline() map[string][]string {
 		"libbuildversion",
 		"libmath",
 		"libprocpartition",
-		"libsync",
 	}
 	//
 	// Module separator
@@ -2760,7 +2809,6 @@ func makeApexAvailableBaseline() map[string][]string {
 		"libstagefright_metadatautils",
 		"libstagefright_mpeg2extractor",
 		"libstagefright_mpeg2support",
-		"libsync",
 		"libui",
 		"libui_headers",
 		"libunwindstack",
@@ -2901,7 +2949,6 @@ func makeApexAvailableBaseline() map[string][]string {
 		"libstagefright_m4vh263dec",
 		"libstagefright_m4vh263enc",
 		"libstagefright_mp3dec",
-		"libsync",
 		"libui",
 		"libui_headers",
 		"libunwindstack",
@@ -3172,7 +3219,7 @@ type bazelApexBundleAttributes struct {
 	File_contexts      bazel.LabelAttribute
 	Key                bazel.LabelAttribute
 	Certificate        bazel.LabelAttribute
-	Min_sdk_version    string
+	Min_sdk_version    *string
 	Updatable          bazel.BoolAttribute
 	Installable        bazel.BoolAttribute
 	Native_shared_libs bazel.LabelListAttribute
@@ -3212,9 +3259,9 @@ func apexBundleBp2BuildInternal(ctx android.TopDownMutatorContext, module *apexB
 		fileContextsLabelAttribute.SetValue(android.BazelLabelForModuleDepSingle(ctx, *module.properties.File_contexts))
 	}
 
-	var minSdkVersion string
+	var minSdkVersion *string
 	if module.properties.Min_sdk_version != nil {
-		minSdkVersion = *module.properties.Min_sdk_version
+		minSdkVersion = module.properties.Min_sdk_version
 	}
 
 	var keyLabelAttribute bazel.LabelAttribute

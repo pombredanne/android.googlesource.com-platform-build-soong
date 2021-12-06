@@ -155,8 +155,10 @@ type config struct {
 	fs         pathtools.FileSystem
 	mockBpList string
 
-	bp2buildPackageConfig    Bp2BuildConfig
-	bp2buildModuleTypeConfig map[string]bool
+	runningAsBp2Build              bool
+	bp2buildPackageConfig          Bp2BuildConfig
+	bp2buildModuleTypeConfig       map[string]bool
+	Bp2buildSoongConfigDefinitions soongconfig.Bp2BuildSoongConfigDefinitions
 
 	// If testAllowNonExistentPaths is true then PathForSource and PathForModuleSrc won't error
 	// in tests when a path doesn't exist.
@@ -322,7 +324,7 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 			DeviceName:                        stringPtr("test_device"),
 			Platform_sdk_version:              intPtr(30),
 			Platform_sdk_codename:             stringPtr("S"),
-			Platform_version_active_codenames: []string{"S"},
+			Platform_version_active_codenames: []string{"S", "Tiramisu"},
 			DeviceSystemSdkVersions:           []string{"14", "15"},
 			Platform_systemsdk_versions:       []string{"29", "30"},
 			AAPTConfig:                        []string{"normal", "large", "xlarge", "hdpi", "xhdpi", "xxhdpi"},
@@ -333,10 +335,8 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 			ShippingApiLevel:                  stringPtr("30"),
 		},
 
-		outDir: buildDir,
-		// soongOutDir is inconsistent with production (it should be buildDir + "/soong")
-		// but a lot of tests assume this :(
-		soongOutDir:  buildDir,
+		outDir:       buildDir,
+		soongOutDir:  filepath.Join(buildDir, "soong"),
 		captureBuild: true,
 		env:          envCopy,
 
@@ -355,13 +355,13 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 
 	config.bp2buildModuleTypeConfig = map[string]bool{}
 
+	determineBuildOS(config)
+
 	return Config{config}
 }
 
 func modifyTestConfigToSupportArchMutator(testConfig Config) {
 	config := testConfig.config
-
-	determineBuildOS(config)
 
 	config.Targets = map[OsType][]Target{
 		Android: []Target{
@@ -564,23 +564,39 @@ func (c *config) SetAllowMissingDependencies() {
 // BlueprintToolLocation returns the directory containing build system tools
 // from Blueprint, like soong_zip and merge_zips.
 func (c *config) HostToolDir() string {
-	return filepath.Join(c.soongOutDir, "host", c.PrebuiltOS(), "bin")
+	if c.KatiEnabled() {
+		return filepath.Join(c.outDir, "host", c.PrebuiltOS(), "bin")
+	} else {
+		return filepath.Join(c.soongOutDir, "host", c.PrebuiltOS(), "bin")
+	}
 }
 
 func (c *config) HostToolPath(ctx PathContext, tool string) Path {
-	return PathForOutput(ctx, "host", c.PrebuiltOS(), "bin", tool)
+	path := pathForInstall(ctx, ctx.Config().BuildOS, ctx.Config().BuildArch, "bin", false, tool)
+	if ctx.Config().KatiEnabled() {
+		path = path.ToMakePath()
+	}
+	return path
 }
 
-func (c *config) HostJNIToolPath(ctx PathContext, path string) Path {
+func (c *config) HostJNIToolPath(ctx PathContext, lib string) Path {
 	ext := ".so"
 	if runtime.GOOS == "darwin" {
 		ext = ".dylib"
 	}
-	return PathForOutput(ctx, "host", c.PrebuiltOS(), "lib64", path+ext)
+	path := pathForInstall(ctx, ctx.Config().BuildOS, ctx.Config().BuildArch, "lib64", false, lib+ext)
+	if ctx.Config().KatiEnabled() {
+		path = path.ToMakePath()
+	}
+	return path
 }
 
-func (c *config) HostJavaToolPath(ctx PathContext, path string) Path {
-	return PathForOutput(ctx, "host", c.PrebuiltOS(), "framework", path)
+func (c *config) HostJavaToolPath(ctx PathContext, tool string) Path {
+	path := pathForInstall(ctx, ctx.Config().BuildOS, ctx.Config().BuildArch, "framework", false, tool)
+	if ctx.Config().KatiEnabled() {
+		path = path.ToMakePath()
+	}
+	return path
 }
 
 // PrebuiltOS returns the name of the host OS used in prebuilts directories.
@@ -749,6 +765,16 @@ func (c *config) PreviewApiLevels() []ApiLevel {
 	return levels
 }
 
+func (c *config) LatestPreviewApiLevel() ApiLevel {
+	level := NoneApiLevel
+	for _, l := range c.PreviewApiLevels() {
+		if l.GreaterThan(level) {
+			level = l
+		}
+	}
+	return level
+}
+
 func (c *config) AllSupportedApiLevels() []ApiLevel {
 	var levels []ApiLevel
 	levels = append(levels, c.FinalApiLevels()...)
@@ -840,7 +866,7 @@ func (c *config) UnbundledBuild() bool {
 // Returns true if building apps that aren't bundled with the platform.
 // UnbundledBuild() is always true when this is true.
 func (c *config) UnbundledBuildApps() bool {
-	return Bool(c.productVariables.Unbundled_build_apps)
+	return len(c.productVariables.Unbundled_build_apps) > 0
 }
 
 // Returns true if building image that aren't bundled with the platform.

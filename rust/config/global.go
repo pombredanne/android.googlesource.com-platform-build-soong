@@ -24,7 +24,7 @@ import (
 var pctx = android.NewPackageContext("android/soong/rust/config")
 
 var (
-	RustDefaultVersion = "1.55.0"
+	RustDefaultVersion = "1.57.0"
 	RustDefaultBase    = "prebuilts/rust/"
 	DefaultEdition     = "2018"
 	Stdlibs            = []string{
@@ -47,6 +47,7 @@ var (
 		"-C opt-level=3",
 		"-C relocation-model=pic",
 		"-C overflow-checks=on",
+		"-C force-unwind-tables=yes",
 		// Use v0 mangling to distinguish from C++ symbols
 		"-Z symbol-mangling-version=v0",
 	}
@@ -54,6 +55,8 @@ var (
 	deviceGlobalRustFlags = []string{
 		"-C panic=abort",
 		"-Z link-native-libraries=no",
+		// Generate additional debug info for AutoFDO
+		"-Z debug-info-for-profiling",
 	}
 
 	deviceGlobalLinkFlags = []string{

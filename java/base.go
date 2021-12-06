@@ -184,16 +184,25 @@ type CommonProperties struct {
 // Properties that are specific to device modules. Host module factories should not add these when
 // constructing a new module.
 type DeviceProperties struct {
-	// if not blank, set to the version of the sdk to compile against.
+	// If not blank, set to the version of the sdk to compile against.
 	// Defaults to compiling against the current platform.
+	// Values are of one of the following forms:
+	// 1) numerical API level or "current"
+	// 2) An SDK kind with an API level: "<sdk kind>_<API level>". See
+	// build/soong/android/sdk_version.go for the complete and up to date list of
+	// SDK kinds. If the SDK kind value is empty, it will be set to public.
 	Sdk_version *string
 
 	// if not blank, set the minimum version of the sdk that the compiled artifacts will run against.
-	// Defaults to sdk_version if not set.
+	// Defaults to sdk_version if not set. See sdk_version for possible values.
 	Min_sdk_version *string
 
+	// if not blank, set the maximum version of the sdk that the compiled artifacts will run against.
+	// Defaults to empty string "". See sdk_version for possible values.
+	Max_sdk_version *string
+
 	// if not blank, set the targetSdkVersion in the AndroidManifest.xml.
-	// Defaults to sdk_version if not set.
+	// Defaults to sdk_version if not set. See sdk_version for possible values.
 	Target_sdk_version *string
 
 	// Whether to compile against the platform APIs instead of an SDK.
@@ -407,6 +416,9 @@ type Module struct {
 	// installed file for binary dependency
 	installFile android.Path
 
+	// installed file for hostdex copy
+	hostdexInstallFile android.InstallPath
+
 	// list of .java files and srcjars that was passed to javac
 	compiledJavaSrcs android.Paths
 	compiledSrcJars  android.Paths
@@ -452,6 +464,7 @@ type Module struct {
 
 	sdkVersion    android.SdkSpec
 	minSdkVersion android.SdkSpec
+	maxSdkVersion android.SdkSpec
 }
 
 func (j *Module) CheckStableSdkVersion(ctx android.BaseModuleContext) error {
@@ -502,9 +515,9 @@ func (j *Module) checkPlatformAPI(ctx android.ModuleContext) {
 		usePlatformAPI := proptools.Bool(j.deviceProperties.Platform_apis)
 		sdkVersionSpecified := sc.SdkVersion(ctx).Specified()
 		if usePlatformAPI && sdkVersionSpecified {
-			ctx.PropertyErrorf("platform_apis", "platform_apis must be false when sdk_version is not empty.")
+			ctx.PropertyErrorf("platform_apis", "This module has conflicting settings. sdk_version is not empty, which means this module cannot use platform APIs. However platform_apis is set to true.")
 		} else if !usePlatformAPI && !sdkVersionSpecified {
-			ctx.PropertyErrorf("platform_apis", "platform_apis must be true when sdk_version is empty.")
+			ctx.PropertyErrorf("platform_apis", "This module has conflicting settings. sdk_version is empty, which means that this module is build against platform APIs. However platform_apis is not set to true")
 		}
 
 	}
@@ -607,6 +620,13 @@ func (j *Module) MinSdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
 		return android.SdkSpecFrom(ctx, *j.deviceProperties.Min_sdk_version)
 	}
 	return j.SdkVersion(ctx)
+}
+
+func (j *Module) MaxSdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
+	maxSdkVersion := proptools.StringDefault(j.deviceProperties.Max_sdk_version, "")
+	// SdkSpecFrom returns SdkSpecPrivate for this, which may be confusing.
+	// TODO(b/208456999): ideally MaxSdkVersion should be an ApiLevel and not SdkSpec.
+	return android.SdkSpecFrom(ctx, maxSdkVersion)
 }
 
 func (j *Module) MinSdkVersionString() string {
@@ -783,6 +803,9 @@ func (j *Module) aidlFlags(ctx android.ModuleContext, aidlPreprocess android.Opt
 	if Bool(j.deviceProperties.Aidl.Generate_get_transaction_name) {
 		flags = append(flags, "--transaction_names")
 	}
+
+	aidlMinSdkVersion := j.MinSdkVersion(ctx).ApiLevel.String()
+	flags = append(flags, "--min_sdk_version="+aidlMinSdkVersion)
 
 	return strings.Join(flags, " "), deps
 }
@@ -1055,7 +1078,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	j.compiledSrcJars = srcJars
 
 	enableSharding := false
-	var headerJarFileWithoutJarjar android.Path
+	var headerJarFileWithoutDepsOrJarjar android.Path
 	if ctx.Device() && !ctx.Config().IsEnvFalse("TURBINE_ENABLED") && !deps.disableTurbine {
 		if j.properties.Javac_shard_size != nil && *(j.properties.Javac_shard_size) > 0 {
 			enableSharding = true
@@ -1065,7 +1088,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 			// allow for the use of annotation processors that do function correctly
 			// with sharding enabled. See: b/77284273.
 		}
-		headerJarFileWithoutJarjar, j.headerJarFile =
+		headerJarFileWithoutDepsOrJarjar, j.headerJarFile =
 			j.compileJavaHeader(ctx, uniqueSrcFiles, srcJars, deps, flags, jarName, kotlinJars)
 		if ctx.Failed() {
 			return
@@ -1094,7 +1117,9 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		}
 
 		if enableSharding {
-			flags.classpath = append(flags.classpath, headerJarFileWithoutJarjar)
+			if headerJarFileWithoutDepsOrJarjar != nil {
+				flags.classpath = append(classpath{headerJarFileWithoutDepsOrJarjar}, flags.classpath...)
+			}
 			shardSize := int(*(j.properties.Javac_shard_size))
 			var shardSrcs []android.Paths
 			if len(uniqueSrcFiles) > 0 {
@@ -1497,7 +1522,7 @@ func CheckKotlincFlags(ctx android.ModuleContext, flags []string) {
 
 func (j *Module) compileJavaHeader(ctx android.ModuleContext, srcFiles, srcJars android.Paths,
 	deps deps, flags javaBuilderFlags, jarName string,
-	extraJars android.Paths) (headerJar, jarjarHeaderJar android.Path) {
+	extraJars android.Paths) (headerJar, jarjarAndDepsHeaderJar android.Path) {
 
 	var jars android.Paths
 	if len(srcFiles) > 0 || len(srcJars) > 0 {
@@ -1508,6 +1533,7 @@ func (j *Module) compileJavaHeader(ctx android.ModuleContext, srcFiles, srcJars 
 			return nil, nil
 		}
 		jars = append(jars, turbineJar)
+		headerJar = turbineJar
 	}
 
 	jars = append(jars, extraJars...)
@@ -1521,20 +1547,19 @@ func (j *Module) compileJavaHeader(ctx android.ModuleContext, srcFiles, srcJars 
 	combinedJar := android.PathForModuleOut(ctx, "turbine-combined", jarName)
 	TransformJarsToJar(ctx, combinedJar, "for turbine", jars, android.OptionalPath{},
 		false, nil, []string{"META-INF/TRANSITIVE"})
-	headerJar = combinedJar
-	jarjarHeaderJar = combinedJar
+	jarjarAndDepsHeaderJar = combinedJar
 
 	if j.expandJarjarRules != nil {
 		// Transform classes.jar into classes-jarjar.jar
 		jarjarFile := android.PathForModuleOut(ctx, "turbine-jarjar", jarName)
-		TransformJarJar(ctx, jarjarFile, headerJar, j.expandJarjarRules)
-		jarjarHeaderJar = jarjarFile
+		TransformJarJar(ctx, jarjarFile, jarjarAndDepsHeaderJar, j.expandJarjarRules)
+		jarjarAndDepsHeaderJar = jarjarFile
 		if ctx.Failed() {
 			return nil, nil
 		}
 	}
 
-	return headerJar, jarjarHeaderJar
+	return headerJar, jarjarAndDepsHeaderJar
 }
 
 func (j *Module) instrument(ctx android.ModuleContext, flags javaBuilderFlags,

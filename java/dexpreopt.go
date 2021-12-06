@@ -66,6 +66,7 @@ type dexpreopter struct {
 	isApp               bool
 	isTest              bool
 	isPresignedPrebuilt bool
+	preventInstall      bool
 
 	manifestFile        android.Path
 	statusFile          android.WritablePath
@@ -121,13 +122,7 @@ func moduleName(ctx android.BaseModuleContext) string {
 }
 
 func (d *dexpreopter) dexpreoptDisabled(ctx android.BaseModuleContext) bool {
-	global := dexpreopt.GetGlobalConfig(ctx)
-
-	if global.DisablePreopt {
-		return true
-	}
-
-	if inList(moduleName(ctx), global.DisablePreoptModules) {
+	if !ctx.Device() {
 		return true
 	}
 
@@ -143,7 +138,17 @@ func (d *dexpreopter) dexpreoptDisabled(ctx android.BaseModuleContext) bool {
 		return true
 	}
 
-	if ctx.Host() {
+	if !android.IsModulePreferred(ctx.Module()) {
+		return true
+	}
+
+	global := dexpreopt.GetGlobalConfig(ctx)
+
+	if global.DisablePreopt {
+		return true
+	}
+
+	if inList(moduleName(ctx), global.DisablePreoptModules) {
 		return true
 	}
 
@@ -158,10 +163,6 @@ func (d *dexpreopter) dexpreoptDisabled(ctx android.BaseModuleContext) bool {
 		if global.ApexSystemServerJars.ContainsJar(moduleName(ctx)) {
 			return true
 		}
-	}
-
-	if !android.IsModulePreferred(ctx.Module()) {
-		return true
 	}
 
 	// TODO: contains no java code
@@ -335,17 +336,19 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Wr
 
 	dexpreoptRule.Build("dexpreopt", "dexpreopt")
 
-	if global.ApexSystemServerJars.ContainsJar(moduleName(ctx)) {
-		// APEX variants of java libraries are hidden from Make, so their dexpreopt outputs need special
-		// handling. Currently, for APEX variants of java libraries, only those in the system server
-		// classpath are handled here. Preopting of boot classpath jars in the ART APEX are handled in
-		// java/dexpreopt_bootjars.go, and other APEX jars are not preopted.
-		for _, install := range dexpreoptRule.Installs() {
-			// Remove the "/" prefix because the path should be relative to $ANDROID_PRODUCT_OUT.
-			installDir := strings.TrimPrefix(filepath.Dir(install.To), "/")
-			installBase := filepath.Base(install.To)
-			arch := filepath.Base(installDir)
-			installPath := android.PathForModuleInPartitionInstall(ctx, "", installDir)
+	for _, install := range dexpreoptRule.Installs() {
+		// Remove the "/" prefix because the path should be relative to $ANDROID_PRODUCT_OUT.
+		installDir := strings.TrimPrefix(filepath.Dir(install.To), "/")
+		installBase := filepath.Base(install.To)
+		arch := filepath.Base(installDir)
+		installPath := android.PathForModuleInPartitionInstall(ctx, "", installDir)
+
+		if global.ApexSystemServerJars.ContainsJar(moduleName(ctx)) {
+			// APEX variants of java libraries are hidden from Make, so their dexpreopt
+			// outputs need special handling. Currently, for APEX variants of java
+			// libraries, only those in the system server classpath are handled here.
+			// Preopting of boot classpath jars in the ART APEX are handled in
+			// java/dexpreopt_bootjars.go, and other APEX jars are not preopted.
 			// The installs will be handled by Make as sub-modules of the java library.
 			d.builtInstalledForApex = append(d.builtInstalledForApex, dexpreopterInstall{
 				name:                arch + "-" + installBase,
@@ -354,10 +357,12 @@ func (d *dexpreopter) dexpreopt(ctx android.ModuleContext, dexJarFile android.Wr
 				installDirOnDevice:  installPath,
 				installFileOnDevice: installBase,
 			})
+		} else if !d.preventInstall {
+			ctx.InstallFile(installPath, installBase, install.From)
 		}
-	} else {
-		// The installs will be handled by Make as LOCAL_SOONG_BUILT_INSTALLED of the java library
-		// module.
+	}
+
+	if !global.ApexSystemServerJars.ContainsJar(moduleName(ctx)) {
 		d.builtInstalled = dexpreoptRule.Installs().String()
 	}
 }

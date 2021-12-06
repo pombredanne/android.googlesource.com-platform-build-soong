@@ -265,6 +265,8 @@ func (j *Module) XrefJavaFiles() android.Paths {
 	return j.kytheFiles
 }
 
+func (j *Module) InstallBypassMake() bool { return true }
+
 type dependencyTag struct {
 	blueprint.BaseDependencyTag
 	name string
@@ -445,6 +447,7 @@ const (
 	JAVA_VERSION_7           = 7
 	JAVA_VERSION_8           = 8
 	JAVA_VERSION_9           = 9
+	JAVA_VERSION_11          = 11
 )
 
 func (v javaVersion) String() string {
@@ -457,6 +460,8 @@ func (v javaVersion) String() string {
 		return "1.8"
 	case JAVA_VERSION_9:
 		return "1.9"
+	case JAVA_VERSION_11:
+		return "11"
 	default:
 		return "unsupported"
 	}
@@ -477,8 +482,10 @@ func normalizeJavaVersion(ctx android.BaseModuleContext, javaVersion string) jav
 		return JAVA_VERSION_8
 	case "1.9", "9":
 		return JAVA_VERSION_9
-	case "10", "11":
-		ctx.PropertyErrorf("java_version", "Java language levels above 9 are not supported")
+	case "11":
+		return JAVA_VERSION_11
+	case "10":
+		ctx.PropertyErrorf("java_version", "Java language levels 10 is not supported")
 		return JAVA_VERSION_UNSUPPORTED
 	default:
 		ctx.PropertyErrorf("java_version", "Unrecognized Java language level")
@@ -543,6 +550,7 @@ func setUncompressDex(ctx android.ModuleContext, dexpreopter *dexpreopter, dexer
 func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	j.sdkVersion = j.SdkVersion(ctx)
 	j.minSdkVersion = j.MinSdkVersion(ctx)
+	j.maxSdkVersion = j.MaxSdkVersion(ctx)
 
 	apexInfo := ctx.Provider(android.ApexInfoProvider).(android.ApexInfo)
 	if !apexInfo.IsForPlatform() {
@@ -567,8 +575,23 @@ func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		if j.InstallMixin != nil {
 			extraInstallDeps = j.InstallMixin(ctx, j.outputFile)
 		}
-		j.installFile = ctx.InstallFile(android.PathForModuleInstall(ctx, "framework"),
-			j.Stem()+".jar", j.outputFile, extraInstallDeps...)
+		hostDexNeeded := Bool(j.deviceProperties.Hostdex) && !ctx.Host()
+		if hostDexNeeded {
+			j.hostdexInstallFile = ctx.InstallFile(
+				android.PathForHostDexInstall(ctx, "framework"),
+				j.Stem()+"-hostdex.jar", j.outputFile)
+		}
+		var installDir android.InstallPath
+		if ctx.InstallInTestcases() {
+			var archDir string
+			if !ctx.Host() {
+				archDir = ctx.DeviceConfig().DeviceArch()
+			}
+			installDir = android.PathForModuleInstall(ctx, ctx.ModuleName(), archDir)
+		} else {
+			installDir = android.PathForModuleInstall(ctx, "framework")
+		}
+		j.installFile = ctx.InstallFile(installDir, j.Stem()+".jar", j.outputFile, extraInstallDeps...)
 	}
 }
 
@@ -840,6 +863,20 @@ type JavaTestImport struct {
 
 	testConfig android.Path
 	dexJarFile android.Path
+}
+
+func (j *Test) InstallInTestcases() bool {
+	// Host java tests install into $(HOST_OUT_JAVA_LIBRARIES), and then are copied into
+	// testcases by base_rules.mk.
+	return !j.Host()
+}
+
+func (j *TestHelperLibrary) InstallInTestcases() bool {
+	return true
+}
+
+func (j *JavaTestImport) InstallInTestcases() bool {
+	return true
 }
 
 func (j *TestHost) DepsMutator(ctx android.BottomUpMutatorContext) {
@@ -1376,8 +1413,17 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	})
 
 	if Bool(j.properties.Installable) {
-		ctx.InstallFile(android.PathForModuleInstall(ctx, "framework"),
-			jarName, outputFile)
+		var installDir android.InstallPath
+		if ctx.InstallInTestcases() {
+			var archDir string
+			if !ctx.Host() {
+				archDir = ctx.DeviceConfig().DeviceArch()
+			}
+			installDir = android.PathForModuleInstall(ctx, ctx.ModuleName(), archDir)
+		} else {
+			installDir = android.PathForModuleInstall(ctx, "framework")
+		}
+		ctx.InstallFile(installDir, jarName, outputFile)
 	}
 
 	j.exportAidlIncludeDirs = android.PathsForModuleSrc(ctx, j.properties.Aidl.Export_include_dirs)

@@ -149,15 +149,15 @@ func runBp2BuildTestCase(t *testing.T, registerModuleTypes func(ctx android.Regi
 }
 
 type nestedProps struct {
-	Nested_prop string
+	Nested_prop *string
 }
 
 type EmbeddedProps struct {
-	Embedded_prop string
+	Embedded_prop *string
 }
 
 type OtherEmbeddedProps struct {
-	Other_embedded_prop string
+	Other_embedded_prop *string
 }
 
 type customProps struct {
@@ -262,17 +262,17 @@ func customDefaultsModuleFactory() android.Module {
 }
 
 type EmbeddedAttr struct {
-	Embedded_attr string
+	Embedded_attr *string
 }
 
 type OtherEmbeddedAttr struct {
-	Other_embedded_attr string
+	Other_embedded_attr *string
 }
 
 type customBazelModuleAttributes struct {
 	EmbeddedAttr
 	*OtherEmbeddedAttr
-	String_prop      string
+	String_ptr_prop  *string
 	String_list_prop []string
 	Arch_paths       bazel.LabelListAttribute
 }
@@ -296,7 +296,7 @@ func customBp2BuildMutator(ctx android.TopDownMutatorContext) {
 		paths.ResolveExcludes()
 
 		attrs := &customBazelModuleAttributes{
-			String_prop:      m.props.String_prop,
+			String_ptr_prop:  m.props.String_ptr_prop,
 			String_list_prop: m.props.String_list_prop,
 			Arch_paths:       paths,
 		}
@@ -363,4 +363,17 @@ func simpleModuleDoNotConvertBp2build(typ, name string) string {
 		name: "%s",
 		bazel_module: { bp2build_available: false },
 }`, typ, name)
+}
+
+type attrNameToString map[string]string
+
+func makeBazelTarget(typ, name string, attrs attrNameToString) string {
+	attrStrings := make([]string, 0, len(attrs)+1)
+	attrStrings = append(attrStrings, fmt.Sprintf(`    name = "%s",`, name))
+	for _, k := range android.SortedStringKeys(attrs) {
+		attrStrings = append(attrStrings, fmt.Sprintf("    %s = %s,", k, attrs[k]))
+	}
+	return fmt.Sprintf(`%s(
+%s
+)`, typ, strings.Join(attrStrings, "\n"))
 }

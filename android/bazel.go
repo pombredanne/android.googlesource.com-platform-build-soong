@@ -48,10 +48,30 @@ type properties struct {
 	Bazel_module bazelModuleProperties
 }
 
+// namespacedVariableProperties is a map from a string representing a Soong
+// config variable namespace, like "android" or "vendor_name" to a slice of
+// pointer to a struct containing a single field called Soong_config_variables
+// whose value mirrors the structure in the Blueprint file.
+type namespacedVariableProperties map[string][]interface{}
+
 // BazelModuleBase contains the property structs with metadata for modules which can be converted to
 // Bazel.
 type BazelModuleBase struct {
 	bazelProperties properties
+
+	// namespacedVariableProperties is used for soong_config_module_type support
+	// in bp2build. Soong config modules allow users to set module properties
+	// based on custom product variables defined in Android.bp files. These
+	// variables are namespaced to prevent clobbering, especially when set from
+	// Makefiles.
+	namespacedVariableProperties namespacedVariableProperties
+
+	// baseModuleType is set when this module was created from a module type
+	// defined by a soong_config_module_type. Every soong_config_module_type
+	// "wraps" another module type, e.g. a soong_config_module_type can wrap a
+	// cc_defaults to a custom_cc_defaults, or cc_binary to a custom_cc_binary.
+	// This baseModuleType is set to the wrapped module type.
+	baseModuleType string
 }
 
 // Bazelable is specifies the interface for modules that can be converted to Bazel.
@@ -60,9 +80,23 @@ type Bazelable interface {
 	HasHandcraftedLabel() bool
 	HandcraftedLabel() string
 	GetBazelLabel(ctx BazelConversionPathContext, module blueprint.Module) string
-	ConvertWithBp2build(ctx BazelConversionPathContext) bool
-	convertWithBp2build(ctx BazelConversionPathContext, module blueprint.Module) bool
+	ConvertWithBp2build(ctx BazelConversionContext) bool
+	convertWithBp2build(ctx BazelConversionContext, module blueprint.Module) bool
 	GetBazelBuildFileContents(c Config, path, name string) (string, error)
+
+	// namespacedVariableProps is a map from a soong config variable namespace
+	// (e.g. acme, android) to a map of interfaces{}, which are really
+	// reflect.Struct pointers, representing the value of the
+	// soong_config_variables property of a module. The struct pointer is the
+	// one with the single member called Soong_config_variables, which itself is
+	// a struct containing fields for each supported feature in that namespace.
+	//
+	// The reason for using an slice of interface{} is to support defaults
+	// propagation of the struct pointers.
+	namespacedVariableProps() namespacedVariableProperties
+	setNamespacedVariableProps(props namespacedVariableProperties)
+	BaseModuleType() string
+	SetBaseModuleType(baseModuleType string)
 }
 
 // BazelModule is a lightweight wrapper interface around Module for Bazel-convertible modules.
@@ -80,6 +114,22 @@ func InitBazelModule(module BazelModule) {
 // bazelProps returns the Bazel properties for the given BazelModuleBase.
 func (b *BazelModuleBase) bazelProps() *properties {
 	return &b.bazelProperties
+}
+
+func (b *BazelModuleBase) namespacedVariableProps() namespacedVariableProperties {
+	return b.namespacedVariableProperties
+}
+
+func (b *BazelModuleBase) setNamespacedVariableProps(props namespacedVariableProperties) {
+	b.namespacedVariableProperties = props
+}
+
+func (b *BazelModuleBase) BaseModuleType() string {
+	return b.baseModuleType
+}
+
+func (b *BazelModuleBase) SetBaseModuleType(baseModuleType string) {
+	b.baseModuleType = baseModuleType
 }
 
 // HasHandcraftedLabel returns whether this module has a handcrafted Bazel label.
@@ -166,6 +216,7 @@ var (
 		"packages/apps/QuickSearchBox":/* recursive = */ true,
 		"packages/apps/WallpaperPicker":/* recursive = */ false,
 
+		"prebuilts/gcc":/* recursive = */ true,
 		"prebuilts/sdk":/* recursive = */ false,
 		"prebuilts/sdk/current/extras/app-toolkit":/* recursive = */ false,
 		"prebuilts/sdk/current/support":/* recursive = */ false,
@@ -175,32 +226,44 @@ var (
 
 	// Configure modules in these directories to enable bp2build_available: true or false by default.
 	bp2buildDefaultConfig = Bp2BuildConfig{
-		"bionic":                                             Bp2BuildDefaultTrueRecursively,
+		"art/libdexfile": Bp2BuildDefaultTrueRecursively,
+		"bionic":         Bp2BuildDefaultTrueRecursively,
+		"build/bazel/examples/soong_config_variables":        Bp2BuildDefaultTrueRecursively,
 		"build/bazel/examples/apex/minimal":                  Bp2BuildDefaultTrueRecursively,
+		"build/soong":                                        Bp2BuildDefaultTrue,
+		"build/soong/cc/libbuildversion":                     Bp2BuildDefaultTrue, // Skip tests subdir
+		"build/soong/cc/ndkstubgen":                          Bp2BuildDefaultTrue,
+		"build/soong/cc/symbolfile":                          Bp2BuildDefaultTrue,
+		"cts/common/device-side/nativetesthelper/jni":        Bp2BuildDefaultTrueRecursively,
 		"development/sdk":                                    Bp2BuildDefaultTrueRecursively,
 		"external/arm-optimized-routines":                    Bp2BuildDefaultTrueRecursively,
 		"external/boringssl":                                 Bp2BuildDefaultTrueRecursively,
 		"external/brotli":                                    Bp2BuildDefaultTrue,
 		"external/fmtlib":                                    Bp2BuildDefaultTrueRecursively,
 		"external/google-benchmark":                          Bp2BuildDefaultTrueRecursively,
-		"external/googletest/googletest":                     Bp2BuildDefaultTrueRecursively,
+		"external/googletest":                                Bp2BuildDefaultTrueRecursively,
 		"external/gwp_asan":                                  Bp2BuildDefaultTrueRecursively,
 		"external/jemalloc_new":                              Bp2BuildDefaultTrueRecursively,
 		"external/jsoncpp":                                   Bp2BuildDefaultTrueRecursively,
 		"external/libcap":                                    Bp2BuildDefaultTrueRecursively,
 		"external/libcxx":                                    Bp2BuildDefaultTrueRecursively,
 		"external/libcxxabi":                                 Bp2BuildDefaultTrueRecursively,
+		"external/libevent":                                  Bp2BuildDefaultTrueRecursively,
 		"external/lz4/lib":                                   Bp2BuildDefaultTrue,
+		"external/lzma/C":                                    Bp2BuildDefaultTrueRecursively,
 		"external/mdnsresponder":                             Bp2BuildDefaultTrueRecursively,
 		"external/minijail":                                  Bp2BuildDefaultTrueRecursively,
 		"external/pcre":                                      Bp2BuildDefaultTrueRecursively,
 		"external/protobuf":                                  Bp2BuildDefaultTrueRecursively,
 		"external/python/six":                                Bp2BuildDefaultTrueRecursively,
+		"external/selinux/libsepol":                          Bp2BuildDefaultTrueRecursively,
 		"external/scudo":                                     Bp2BuildDefaultTrueRecursively,
 		"external/selinux/libselinux":                        Bp2BuildDefaultTrueRecursively,
 		"external/zlib":                                      Bp2BuildDefaultTrueRecursively,
 		"external/zstd":                                      Bp2BuildDefaultTrueRecursively,
 		"frameworks/native/libs/adbd_auth":                   Bp2BuildDefaultTrueRecursively,
+		"frameworks/proto_logging/stats/stats_log_api_gen":   Bp2BuildDefaultTrueRecursively,
+		"libnativehelper":                                    Bp2BuildDefaultTrueRecursively,
 		"packages/modules/adb":                               Bp2BuildDefaultTrue,
 		"packages/modules/adb/crypto":                        Bp2BuildDefaultTrueRecursively,
 		"packages/modules/adb/libs":                          Bp2BuildDefaultTrueRecursively,
@@ -209,6 +272,8 @@ var (
 		"packages/modules/adb/proto":                         Bp2BuildDefaultTrueRecursively,
 		"packages/modules/adb/tls":                           Bp2BuildDefaultTrueRecursively,
 		"prebuilts/clang/host/linux-x86":                     Bp2BuildDefaultTrueRecursively,
+		"system/apex":                                        Bp2BuildDefaultFalse, // TODO(b/207466993): flaky failures
+		"system/core/debuggerd":                              Bp2BuildDefaultTrue,
 		"system/core/diagnose_usb":                           Bp2BuildDefaultTrueRecursively,
 		"system/core/libasyncio":                             Bp2BuildDefaultTrue,
 		"system/core/libcrypto_utils":                        Bp2BuildDefaultTrueRecursively,
@@ -217,27 +282,79 @@ var (
 		"system/core/libprocessgroup":                        Bp2BuildDefaultTrue,
 		"system/core/libprocessgroup/cgrouprc":               Bp2BuildDefaultTrue,
 		"system/core/libprocessgroup/cgrouprc_format":        Bp2BuildDefaultTrue,
+		"system/core/libsystem":                              Bp2BuildDefaultTrueRecursively,
+		"system/core/libutils":                               Bp2BuildDefaultTrueRecursively,
+		"system/core/libvndksupport":                         Bp2BuildDefaultTrueRecursively,
 		"system/core/property_service/libpropertyinfoparser": Bp2BuildDefaultTrueRecursively,
 		"system/libbase":                                     Bp2BuildDefaultTrueRecursively,
+		"system/libprocinfo":                                 Bp2BuildDefaultTrue,
 		"system/libziparchive":                               Bp2BuildDefaultTrueRecursively,
 		"system/logging/liblog":                              Bp2BuildDefaultTrueRecursively,
 		"system/sepolicy/apex":                               Bp2BuildDefaultTrueRecursively,
 		"system/timezone/apex":                               Bp2BuildDefaultTrueRecursively,
 		"system/timezone/output_data":                        Bp2BuildDefaultTrueRecursively,
+		"system/unwinding/libbacktrace":                      Bp2BuildDefaultTrueRecursively,
+		"system/unwinding/libunwindstack":                    Bp2BuildDefaultTrueRecursively,
 	}
 
 	// Per-module denylist to always opt modules out of both bp2build and mixed builds.
 	bp2buildModuleDoNotConvertList = []string{
-		"libc_malloc_debug", // depends on libunwindstack, which depends on unsupported module art_cc_library_statics
+		"libnativehelper_compat_libc++",              // Broken compile: implicit declaration of function 'strerror_r' is invalid in C99
+		"art_libdexfile_dex_instruction_list_header", // breaks libart_mterp.armng, header not found
+
+		"libandroid_runtime_lazy", // depends on unconverted modules: libbinder_headers
+		"libcmd",                  // depends on unconverted modules: libbinder
+
+		"chkcon", "sefcontext_compile", // depends on unconverted modules: libsepol
+
+		"libsepol", // TODO(b/207408632): Unsupported case of .l sources in cc library rules
+
+		"get_clang_version_test", // depends on unconverted module: get_clang_version
+
+		"libbinder",               // TODO(b/188503688): Disabled for some archs,
+		"libactivitymanager_aidl", // TODO(b/207426160): Depends on activity_manager_procstate_aidl, which is an aidl filegroup.
+
+		"libnativehelper_lazy_mts_jni", // depends on unconverted modules: libgmock_ndk
+		"libnativehelper_mts_jni",      // depends on unconverted modules: libgmock_ndk
+		"libnativetesthelper_jni",      // depends on unconverted modules: libgtest_ndk_c++
+
+		"statslog-framework-java-gen", "statslog.cpp", "statslog.h", "statslog.rs", "statslog_header.rs", // depends on unconverted modules: stats-log-api-gen
+
+		"stats-log-api-gen", // depends on unconverted modules: libstats_proto_host, libprotobuf-cpp-full
+
+		"libstatslog", // depends on unconverted modules: statslog.cpp, statslog.h, ...
+
+		"libgmock_main_ndk", "libgmock_ndk", // depends on unconverted module: libgtest_ndk_c++
+
+		"cmd",                                                        // depends on unconverted module packagemanager_aidl-cpp, of unsupported type aidl_interface
+		"servicedispatcher",                                          // depends on unconverted module android.debug_aidl, of unsupported type aidl_interface
+		"libutilscallstack",                                          // depends on unconverted module libbacktrace
+		"libbacktrace",                                               // depends on unconverted module libunwindstack
+		"libdebuggerd_handler",                                       // depends on unconverted module libdebuggerd_handler_core
+		"libdebuggerd_handler_core", "libdebuggerd_handler_fallback", // depends on unconverted module libdebuggerd
+		"unwind_for_offline",        // depends on unconverted module libunwindstack_utils
+		"libdebuggerd",              // depends on unconverted modules libdexfile_support, libunwindstack, gwp_asan_crash_handler, libtombstone_proto, libprotobuf-cpp-lite
+		"libdexfile_static",         // depends on libartpalette, libartbase, libdexfile, which are of unsupported type: art_cc_library.
+		"host_bionic_linker_asm",    // depends on extract_linker, a go binary.
+		"host_bionic_linker_script", // depends on extract_linker, a go binary.
+
+		"pbtombstone", // depends on libprotobuf-cpp-lite, libtombstone_proto
+		"crash_dump",  // depends on unconverted module libprotobuf-cpp-lite
+
+		"libunwindstack_local", "libunwindstack_utils", // depends on unconverted module libunwindstack
+		"libunwindstack",    // depends on libdexfile_support, of unsupported module type art_cc_library_static
+		"libc_malloc_debug", // depends on unconverted module libunwindstack
 
 		"libbase_ndk", // http://b/186826477, fails to link libctscamera2_jni for device (required for CtsCameraTestCases)
+
+		"lib_linker_config_proto_lite", // contains .proto sources
 
 		"libprotobuf-python",               // contains .proto sources
 		"libprotobuf-internal-protos",      // we don't handle path property for fileegroups
 		"libprotobuf-internal-python-srcs", // we don't handle path property for fileegroups
 
 		"libseccomp_policy", // b/201094425: depends on func_to_syscall_nrs, which depends on py_binary, which is unsupported in mixed builds.
-		"libfdtrack",        // depends on libunwindstack, which depends on unsupported module art_cc_library_statics
+		"libfdtrack",        // depends on unconverted module libunwindstack
 
 		"gwp_asan_crash_handler", // cc_library, ld.lld: error: undefined symbol: memset
 
@@ -248,16 +365,6 @@ var (
 		"platform_tools_properties",
 		"build_tools_source_properties",
 
-		// //external/libcap/...
-		"libcap",      // http://b/198595332, depends on _makenames, a cc_binary
-		"cap_names.h", // http://b/198596102, depends on _makenames, a cc_binary
-
-		"libminijail", // depends on unconverted modules: libcap
-		"getcap",      // depends on unconverted modules: libcap
-		"setcap",      // depends on unconverted modules: libcap
-		"minijail0",   // depends on unconverted modules: libcap, libminijail
-		"drop_privs",  // depends on unconverted modules: libminijail
-
 		// Tests. Handle later.
 		"libbionic_tests_headers_posix", // http://b/186024507, cc_library_static, sched.h, time.h not found
 		"libjemalloc5_integrationtest",
@@ -267,31 +374,20 @@ var (
 		// APEX support
 		"com.android.runtime", // http://b/194746715, apex, depends on 'libc_malloc_debug'
 
-		"libadb_crypto",                    // Depends on libadb_protos
-		"libadb_crypto_static",             // Depends on libadb_protos_static
-		"libadb_pairing_connection",        // Depends on libadb_protos
-		"libadb_pairing_connection_static", // Depends on libadb_protos_static
-		"libadb_pairing_server",            // Depends on libadb_protos
-		"libadb_pairing_server_static",     // Depends on libadb_protos_static
-		"libadbd",                          // Depends on libadbd_core
-		"libadbd_core",                     // Depends on libadb_protos
-		"libadbd_services",                 // Depends on libadb_protos
+		"libadbd_core",     // http://b/208481704: requijres use_version_lib
+		"libadbd_services", // http://b/208481704: requires use_version_lib
 
-		"libadb_protos_static",         // b/200601772: Requires cc_library proto support
-		"libadb_protos",                // b/200601772: Requires cc_library proto support
-		"libapp_processes_protos_lite", // b/200601772: Requires cc_library proto support
+		"libadbd", // depends on unconverted modules: libadbd_core, libadbd_services
 
 		"libgtest_ndk_c++",      // b/201816222: Requires sdk_version support.
 		"libgtest_main_ndk_c++", // b/201816222: Requires sdk_version support.
 
-		"abb",                     // depends on unconverted modules: libadbd_core, libadbd_services, libcmd, libbinder, libutils, libselinux
-		"adb",                     // depends on unconverted modules: bin2c_fastdeployagent, libadb_crypto, libadb_host, libadb_pairing_connection, libadb_protos, libandroidfw, libapp_processes_protos_full, libfastdeploy_host, libmdnssd, libopenscreen-discovery, libopenscreen-platform-impl, libusb, libutils, libziparchive, libzstd, AdbWinApi
-		"adbd",                    // depends on unconverted modules: libadb_crypto, libadb_pairing_connection, libadb_protos, libadbd, libadbd_core, libapp_processes_protos_lite, libmdnssd, libzstd, libadbd_services, libcap, libminijail, libselinux
-		"bionic_tests_zipalign",   // depends on unconverted modules: libziparchive, libutils
-		"linker",                  // depends on unconverted modules: liblinker_debuggerd_stub, libdebuggerd_handler_fallback, libziparchive, liblinker_main, liblinker_malloc
+		"abb",                     // depends on unconverted modules: libadbd_core, libadbd_services,
+		"adb",                     // depends on unconverted modules: bin2c_fastdeployagent, libadb_crypto, libadb_host, libadb_pairing_connection, libadb_protos, libandroidfw, libapp_processes_protos_full, libfastdeploy_host, libopenscreen-discovery, libopenscreen-platform-impl, libusb, libzstd, AdbWinApi
+		"adbd",                    // depends on unconverted modules: libadb_crypto, libadb_pairing_connection, libadb_protos, libadbd, libadbd_core, libapp_processes_protos_lite, libzstd, libadbd_services, libcap, libminijail
+		"linker",                  // depends on unconverted modules: libdebuggerd_handler_fallback
 		"linker_reloc_bench_main", // depends on unconverted modules: liblinker_reloc_bench_*
-		"sefcontext_compile",      // depends on unconverted modules: libsepol
-		"versioner",               // depends on unconverted modules: libclang_cxx_host, libLLVM_host
+		"versioner",               // depends on unconverted modules: libclang_cxx_host, libLLVM_host, of unsupported type llvm_host_prebuilt_library_shared
 
 		"linkerconfig", // http://b/202876379 has arch-variant static_executable
 		"mdnsd",        // http://b/202876379 has arch-variant static_executable
@@ -308,12 +404,19 @@ var (
 	// Per-module denylist to opt modules out of mixed builds. Such modules will
 	// still be generated via bp2build.
 	mixedBuildsDisabledList = []string{
-		"libbrotli",                            // http://b/198585397, ld.lld: error: bionic/libc/arch-arm64/generic/bionic/memmove.S:95:(.text+0x10): relocation R_AARCH64_CONDBR19 out of range: -1404176 is not in [-1048576, 1048575]; references __memcpy
-		"func_to_syscall_nrs",                  // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
-		"libseccomp_policy_app_zygote_sources", // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
-		"libseccomp_policy_app_sources",        // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
-		"libseccomp_policy_system_sources",     // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
-		"minijail_constants_json",              // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
+		"libbrotli",               // http://b/198585397, ld.lld: error: bionic/libc/arch-arm64/generic/bionic/memmove.S:95:(.text+0x10): relocation R_AARCH64_CONDBR19 out of range: -1404176 is not in [-1048576, 1048575]; references __memcpy
+		"minijail_constants_json", // http://b/200899432, bazel-built cc_genrule does not work in mixed build when it is a dependency of another soong module.
+
+		"cap_names.h",                                  // TODO(b/204913827) runfiles need to be handled in mixed builds
+		"libcap",                                       // TODO(b/204913827) runfiles need to be handled in mixed builds
+		"libprotobuf-cpp-full", "libprotobuf-cpp-lite", // Unsupported product&vendor suffix. b/204811222 and b/204810610.
+
+		// Depends on libprotobuf-cpp-*
+		"libadb_crypto", "libadb_crypto_static", "libadb_pairing_connection",
+		"libadb_pairing_connection_static",
+		"libadb_pairing_server", "libadb_pairing_server_static",
+		"libadb_protos_static", "libadb_protos",
+		"libapp_processes_protos_lite",
 	}
 
 	// Used for quicker lookups
@@ -359,7 +462,11 @@ func ShouldKeepExistingBuildFileForDir(dir string) bool {
 
 // MixedBuildsEnabled checks that a module is ready to be replaced by a
 // converted or handcrafted Bazel target.
-func (b *BazelModuleBase) MixedBuildsEnabled(ctx BazelConversionPathContext) bool {
+func (b *BazelModuleBase) MixedBuildsEnabled(ctx ModuleContext) bool {
+	if ctx.Os() == Windows {
+		// Windows toolchains are not currently supported.
+		return false
+	}
 	if !ctx.Config().BazelContext.BazelEnabled() {
 		return false
 	}
@@ -377,7 +484,7 @@ func (b *BazelModuleBase) MixedBuildsEnabled(ctx BazelConversionPathContext) boo
 }
 
 // ConvertedToBazel returns whether this module has been converted (with bp2build or manually) to Bazel.
-func convertedToBazel(ctx BazelConversionPathContext, module blueprint.Module) bool {
+func convertedToBazel(ctx BazelConversionContext, module blueprint.Module) bool {
 	b, ok := module.(Bazelable)
 	if !ok {
 		return false
@@ -386,11 +493,11 @@ func convertedToBazel(ctx BazelConversionPathContext, module blueprint.Module) b
 }
 
 // ConvertWithBp2build returns whether the given BazelModuleBase should be converted with bp2build.
-func (b *BazelModuleBase) ConvertWithBp2build(ctx BazelConversionPathContext) bool {
+func (b *BazelModuleBase) ConvertWithBp2build(ctx BazelConversionContext) bool {
 	return b.convertWithBp2build(ctx, ctx.Module())
 }
 
-func (b *BazelModuleBase) convertWithBp2build(ctx BazelConversionPathContext, module blueprint.Module) bool {
+func (b *BazelModuleBase) convertWithBp2build(ctx BazelConversionContext, module blueprint.Module) bool {
 	if bp2buildModuleDoNotConvert[module.Name()] {
 		return false
 	}
@@ -399,7 +506,15 @@ func (b *BazelModuleBase) convertWithBp2build(ctx BazelConversionPathContext, mo
 	// prevents mixed builds from using auto-converted modules just by matching
 	// the package dir; it also has to have a bp2build mutator as well.
 	if ctx.Config().bp2buildModuleTypeConfig[ctx.OtherModuleType(module)] == false {
-		return false
+		if b, ok := module.(Bazelable); ok && b.BaseModuleType() != "" {
+			// For modules with custom types from soong_config_module_types,
+			// check that their _base module type_ has a bp2build mutator.
+			if ctx.Config().bp2buildModuleTypeConfig[b.BaseModuleType()] == false {
+				return false
+			}
+		} else {
+			return false
+		}
 	}
 
 	packagePath := ctx.OtherModuleDir(module)

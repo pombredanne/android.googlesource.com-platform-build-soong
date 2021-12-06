@@ -304,11 +304,24 @@ func parseCppStd(cppStdPtr *string) string {
 	cppStd := String(cppStdPtr)
 	switch cppStd {
 	case "":
-		cppStd = config.CppStdVersion
+		return config.CppStdVersion
 	case "experimental":
-		cppStd = config.ExperimentalCppStdVersion
+		return config.ExperimentalCppStdVersion
+	default:
+		return cppStd
 	}
-	return cppStd
+}
+
+func parseCStd(cStdPtr *string) string {
+	cStd := String(cStdPtr)
+	switch cStd {
+	case "":
+		return config.CStdVersion
+	case "experimental":
+		return config.ExperimentalCStdVersion
+	default:
+		return cStd
+	}
 }
 
 // Create a Flags struct that collects the compile flags from global values,
@@ -479,13 +492,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 
 	flags.Global.CommonFlags = append(flags.Global.CommonFlags, tc.ToolchainCflags())
 
-	cStd := config.CStdVersion
-	if String(compiler.Properties.C_std) == "experimental" {
-		cStd = config.ExperimentalCStdVersion
-	} else if String(compiler.Properties.C_std) != "" {
-		cStd = String(compiler.Properties.C_std)
-	}
-
+	cStd := parseCStd(compiler.Properties.C_std)
 	cppStd := parseCppStd(compiler.Properties.Cpp_std)
 
 	cStd, cppStd = maybeReplaceGnuToC(compiler.Properties.Gnu_extensions, cStd, cppStd)
@@ -551,6 +558,12 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		if Bool(compiler.Properties.Aidl.Generate_traces) {
 			flags.aidlFlags = append(flags.aidlFlags, "-t")
 		}
+
+		aidlMinSdkVersion := ctx.minSdkVersion()
+		if aidlMinSdkVersion == "" {
+			aidlMinSdkVersion = "platform_apis"
+		}
+		flags.aidlFlags = append(flags.aidlFlags, "--min_sdk_version="+aidlMinSdkVersion)
 
 		flags.Local.CommonFlags = append(flags.Local.CommonFlags,
 			"-I"+android.PathForModuleGen(ctx, "aidl").String())

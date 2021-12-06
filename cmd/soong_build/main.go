@@ -386,7 +386,7 @@ func touch(path string) {
 // - won't be overwritten by corresponding bp2build generated files
 //
 // And return their paths so they can be left out of the Bazel workspace dir (i.e. ignored)
-func getPathsToIgnoredBuildFiles(topDir string, generatedRoot string, srcDirBazelFiles []string) []string {
+func getPathsToIgnoredBuildFiles(topDir string, generatedRoot string, srcDirBazelFiles []string, verbose bool) []string {
 	paths := make([]string, 0)
 
 	for _, srcDirBazelFileRelativePath := range srcDirBazelFiles {
@@ -416,7 +416,9 @@ func getPathsToIgnoredBuildFiles(topDir string, generatedRoot string, srcDirBaze
 			// BUILD file clash resolution happens later in the symlink forest creation
 			continue
 		}
-		fmt.Fprintf(os.Stderr, "Ignoring existing BUILD file: %s\n", srcDirBazelFileRelativePath)
+		if verbose {
+			fmt.Fprintf(os.Stderr, "Ignoring existing BUILD file: %s\n", srcDirBazelFileRelativePath)
+		}
 		paths = append(paths, srcDirBazelFileRelativePath)
 	}
 
@@ -463,6 +465,11 @@ func runBp2Build(configuration android.Config, extraNinjaDeps []string) {
 	// Register an alternate set of singletons and mutators for bazel
 	// conversion for Bazel conversion.
 	bp2buildCtx := android.NewContext(configuration)
+
+	// Soong internals like LoadHooks behave differently when running as
+	// bp2build. This is the bit to differentiate between Soong-as-Soong and
+	// Soong-as-bp2build.
+	bp2buildCtx.SetRunningAsBp2build()
 
 	// Propagate "allow misssing dependencies" bit. This is normally set in
 	// newContext(), but we create bp2buildCtx without calling that method.
@@ -518,7 +525,7 @@ func runBp2Build(configuration android.Config, extraNinjaDeps []string) {
 		os.Exit(1)
 	}
 
-	pathsToIgnoredBuildFiles := getPathsToIgnoredBuildFiles(topDir, generatedRoot, existingBazelRelatedFiles)
+	pathsToIgnoredBuildFiles := getPathsToIgnoredBuildFiles(topDir, generatedRoot, existingBazelRelatedFiles, configuration.IsEnvTrue("BP2BUILD_VERBOSE"))
 	excludes = append(excludes, pathsToIgnoredBuildFiles...)
 
 	excludes = append(excludes, getTemporaryExcludes()...)

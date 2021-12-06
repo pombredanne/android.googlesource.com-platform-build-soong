@@ -47,6 +47,7 @@ func (library *Library) AndroidMkEntriesHostDex() android.AndroidMkEntries {
 					if library.dexJarFile.IsSet() {
 						entries.SetPath("LOCAL_SOONG_DEX_JAR", library.dexJarFile.Path())
 					}
+					entries.SetPath("LOCAL_SOONG_INSTALLED_MODULE", library.hostdexInstallFile)
 					entries.SetPath("LOCAL_SOONG_HEADER_JAR", library.headerJarFile)
 					entries.SetPath("LOCAL_SOONG_CLASSES_JAR", library.implementationAndResourcesJar)
 					entries.SetString("LOCAL_MODULE_STEM", library.Stem()+"-hostdex")
@@ -285,11 +286,6 @@ func (binary *Binary) AndroidMkEntries() []android.AndroidMkEntries {
 		}}
 	} else {
 		outputFile := binary.wrapperFile
-		// Have Make installation trigger Soong installation by using Soong's install path as
-		// the output file.
-		if binary.Host() {
-			outputFile = binary.binaryFile
-		}
 
 		return []android.AndroidMkEntries{android.AndroidMkEntries{
 			Class:      "EXECUTABLES",
@@ -700,12 +696,12 @@ func (apkSet *AndroidAppSet) AndroidMkEntries() []android.AndroidMkEntries {
 	return []android.AndroidMkEntries{
 		android.AndroidMkEntries{
 			Class:      "APPS",
-			OutputFile: android.OptionalPathForPath(apkSet.packedOutput),
+			OutputFile: android.OptionalPathForPath(apkSet.primaryOutput),
 			Include:    "$(BUILD_SYSTEM)/soong_android_app_set.mk",
 			ExtraEntries: []android.AndroidMkExtraEntriesFunc{
 				func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
 					entries.SetBoolIfTrue("LOCAL_PRIVILEGED_MODULE", apkSet.Privileged())
-					entries.SetString("LOCAL_APK_SET_INSTALL_FILE", apkSet.InstallFile())
+					entries.SetPath("LOCAL_APK_SET_INSTALL_FILE", apkSet.PackedAdditionalOutputs())
 					entries.SetPath("LOCAL_APKCERTS_FILE", apkSet.apkcertsFile)
 					entries.AddStrings("LOCAL_OVERRIDES_PACKAGES", apkSet.properties.Overrides...)
 				},
