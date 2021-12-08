@@ -765,6 +765,16 @@ func (c *config) PreviewApiLevels() []ApiLevel {
 	return levels
 }
 
+func (c *config) LatestPreviewApiLevel() ApiLevel {
+	level := NoneApiLevel
+	for _, l := range c.PreviewApiLevels() {
+		if l.GreaterThan(level) {
+			level = l
+		}
+	}
+	return level
+}
+
 func (c *config) AllSupportedApiLevels() []ApiLevel {
 	var levels []ApiLevel
 	levels = append(levels, c.FinalApiLevels()...)
@@ -1182,10 +1192,6 @@ func (c *deviceConfig) BtConfigIncludeDir() string {
 
 func (c *deviceConfig) DeviceKernelHeaderDirs() []string {
 	return c.config.productVariables.DeviceKernelHeaders
-}
-
-func (c *deviceConfig) SamplingPGO() bool {
-	return Bool(c.config.productVariables.SamplingPGO)
 }
 
 // JavaCoverageEnabledForPath returns whether Java code coverage is enabled for

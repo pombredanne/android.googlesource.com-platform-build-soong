@@ -221,6 +221,13 @@ var bp2buildMutators = map[string]RegisterMutatorFunc{}
 // See http://b/192523357
 var bp2buildLock sync.Mutex
 
+// A minimal context for Bp2build conversion
+type Bp2buildMutatorContext interface {
+	BazelConversionPathContext
+
+	CreateBazelTargetModule(bazel.BazelTargetModuleProperties, CommonAttributes, interface{})
+}
+
 // RegisterBp2BuildMutator registers specially crafted mutators for
 // converting Blueprint/Android modules into special modules that can
 // be code-generated into Bazel BUILD targets.
@@ -527,28 +534,6 @@ func (t *topDownMutatorContext) CreateBazelTargetModule(
 		Attrs:       attrs,
 	}
 	mod.base().addBp2buildInfo(info)
-}
-
-func (t *topDownMutatorContext) appendPrependHelper(props []interface{},
-	extendFn func([]interface{}, interface{}, proptools.ExtendPropertyFilterFunc) error) {
-	for _, p := range props {
-		err := extendFn(t.Module().base().customizableProperties, p, nil)
-		if err != nil {
-			if propertyErr, ok := err.(*proptools.ExtendPropertyError); ok {
-				t.PropertyErrorf(propertyErr.Property, "%s", propertyErr.Err.Error())
-			} else {
-				panic(err)
-			}
-		}
-	}
-}
-
-func (t *topDownMutatorContext) AppendProperties(props ...interface{}) {
-	t.appendPrependHelper(props, proptools.AppendMatchingProperties)
-}
-
-func (t *topDownMutatorContext) PrependProperties(props ...interface{}) {
-	t.appendPrependHelper(props, proptools.PrependMatchingProperties)
 }
 
 // android.topDownMutatorContext either has to embed blueprint.TopDownMutatorContext, in which case every method that

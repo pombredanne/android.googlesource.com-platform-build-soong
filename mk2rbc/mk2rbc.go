@@ -1111,10 +1111,8 @@ func (ctx *parseContext) parseCompareSpecialCases(directive *mkparser.Directive,
 	}
 
 	switch call.name {
-	case "filter":
+	case "filter", "filter-out":
 		return ctx.parseCompareFilterFuncResult(directive, call, value, isEq), true
-	case "filter-out":
-		return ctx.parseCompareFilterFuncResult(directive, call, value, !isEq), true
 	case "wildcard":
 		return ctx.parseCompareWildcardFuncResult(directive, call, value, !isEq), true
 	case "findstring":
@@ -1695,12 +1693,12 @@ func Convert(req Request) (*StarlarkScript, error) {
 	return starScript, nil
 }
 
-func Launcher(mainModuleUri, versionDefaultsUri, mainModuleName string) string {
+func Launcher(mainModuleUri, inputVariablesUri, mainModuleName string) string {
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "load(%q, %q)\n", baseUri, baseName)
-	fmt.Fprintf(&buf, "load(%q, \"version_defaults\")\n", versionDefaultsUri)
+	fmt.Fprintf(&buf, "load(%q, input_variables_init = \"init\")\n", inputVariablesUri)
 	fmt.Fprintf(&buf, "load(%q, \"init\")\n", mainModuleUri)
-	fmt.Fprintf(&buf, "%s(%s(%q, init, version_defaults))\n", cfnPrintVars, cfnMain, mainModuleName)
+	fmt.Fprintf(&buf, "%s(%s(%q, init, input_variables_init))\n", cfnPrintVars, cfnMain, mainModuleName)
 	return buf.String()
 }
 
