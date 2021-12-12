@@ -165,6 +165,12 @@ var (
 		}
 	}()
 
+	darwinLipo = pctx.AndroidStaticRule("darwinLipo",
+		blueprint.RuleParams{
+			Command:     "${config.MacLipoPath} -create -output $out $in",
+			CommandDeps: []string{"${config.MacLipoPath}"},
+		})
+
 	_ = pctx.SourcePathVariable("archiveRepackPath", "build/soong/scripts/archive_repack.sh")
 
 	// Rule to repack an archive (.a) file with a subset of object files.
@@ -413,7 +419,7 @@ type StripFlags struct {
 // Objects is a collection of file paths corresponding to outputs for C++ related build statements.
 type Objects struct {
 	objFiles      android.Paths
-	tidyFiles     android.WritablePaths
+	tidyFiles     android.Paths
 	coverageFiles android.Paths
 	sAbiDumpFiles android.Paths
 	kytheFiles    android.Paths
@@ -422,7 +428,7 @@ type Objects struct {
 func (a Objects) Copy() Objects {
 	return Objects{
 		objFiles:      append(android.Paths{}, a.objFiles...),
-		tidyFiles:     append(android.WritablePaths{}, a.tidyFiles...),
+		tidyFiles:     append(android.Paths{}, a.tidyFiles...),
 		coverageFiles: append(android.Paths{}, a.coverageFiles...),
 		sAbiDumpFiles: append(android.Paths{}, a.sAbiDumpFiles...),
 		kytheFiles:    append(android.Paths{}, a.kytheFiles...),
@@ -451,11 +457,11 @@ func transformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles, no
 
 	// Source files are one-to-one with tidy, coverage, or kythe files, if enabled.
 	objFiles := make(android.Paths, len(srcFiles))
-	var tidyFiles android.WritablePaths
+	var tidyFiles android.Paths
 	noTidySrcsMap := make(map[android.Path]bool)
 	var tidyVars string
 	if flags.tidy {
-		tidyFiles = make(android.WritablePaths, 0, len(srcFiles))
+		tidyFiles = make(android.Paths, 0, len(srcFiles))
 		for _, path := range noTidySrcs {
 			noTidySrcsMap[path] = true
 		}
@@ -548,10 +554,6 @@ func transformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles, no
 		}
 		return "$" + kind + n
 	}
-
-	// clang-tidy checks source files and does not need to link with libraries.
-	// tidyPathDeps should contain pathDeps but not libraries.
-	tidyPathDeps := skipNdkLibraryDeps(ctx, pathDeps)
 
 	for i, srcFile := range srcFiles {
 		objFile := android.ObjPathWithExt(ctx, subdir, srcFile, "o")
@@ -669,14 +671,13 @@ func transformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles, no
 				rule = clangTidyRE
 			}
 
-			ctx.TidyFile(tidyFile)
 			ctx.Build(pctx, android.BuildParams{
 				Rule:        rule,
 				Description: "clang-tidy " + srcFile.Rel(),
 				Output:      tidyFile,
 				Input:       srcFile,
 				Implicits:   cFlagsDeps,
-				OrderOnly:   tidyPathDeps,
+				OrderOnly:   pathDeps,
 				Args: map[string]string{
 					"ccCmd":     ccCmd,
 					"cFlags":    shareFlags("cFlags", escapeSingleQuotes(moduleToolingFlags)),
@@ -723,7 +724,7 @@ func transformSourceToObj(ctx android.ModuleContext, subdir string, srcFiles, no
 // Generate a rule for compiling multiple .o files to a static library (.a)
 func transformObjToStaticLib(ctx android.ModuleContext,
 	objFiles android.Paths, wholeStaticLibs android.Paths,
-	flags builderFlags, outputFile android.ModuleOutPath, deps android.Paths, validations android.WritablePaths) {
+	flags builderFlags, outputFile android.ModuleOutPath, deps android.Paths, validations android.Paths) {
 
 	arCmd := "${config.ClangBin}/llvm-ar"
 	arFlags := ""
@@ -738,7 +739,7 @@ func transformObjToStaticLib(ctx android.ModuleContext,
 			Output:      outputFile,
 			Inputs:      objFiles,
 			Implicits:   deps,
-			Validations: validations.Paths(),
+			Validations: validations,
 			Args: map[string]string{
 				"arFlags": "crsPD" + arFlags,
 				"arCmd":   arCmd,
@@ -768,7 +769,7 @@ func transformObjToStaticLib(ctx android.ModuleContext,
 func transformObjToDynamicBinary(ctx android.ModuleContext,
 	objFiles, sharedLibs, staticLibs, lateStaticLibs, wholeStaticLibs, deps, crtBegin, crtEnd android.Paths,
 	groupLate bool, flags builderFlags, outputFile android.WritablePath,
-	implicitOutputs android.WritablePaths, validations android.WritablePaths) {
+	implicitOutputs android.WritablePaths, validations android.Paths) {
 
 	ldCmd := "${config.ClangBin}/clang++"
 
@@ -835,7 +836,7 @@ func transformObjToDynamicBinary(ctx android.ModuleContext,
 		Inputs:          objFiles,
 		Implicits:       deps,
 		OrderOnly:       sharedLibs,
-		Validations:     validations.Paths(),
+		Validations:     validations,
 		Args:            args,
 	})
 }
@@ -1061,6 +1062,15 @@ func transformDarwinStrip(ctx android.ModuleContext, inputFile android.Path,
 		Description: "strip " + outputFile.Base(),
 		Output:      outputFile,
 		Input:       inputFile,
+	})
+}
+
+func transformDarwinUniversalBinary(ctx android.ModuleContext, outputFile android.WritablePath, inputFiles ...android.Path) {
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        darwinLipo,
+		Description: "lipo " + outputFile.Base(),
+		Output:      outputFile,
+		Inputs:      inputFiles,
 	})
 }
 

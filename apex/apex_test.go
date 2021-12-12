@@ -7037,6 +7037,7 @@ func testDexpreoptWithApexes(t *testing.T, bp, errmsg string, preparer android.F
 				`, insert))
 			}
 		}),
+		dexpreopt.FixtureSetBootImageProfiles("art/build/boot/boot-image-profile.txt"),
 	).
 		ExtendWithErrorHandler(errorHandler).
 		RunTestWithBp(t, bp)
@@ -7358,6 +7359,7 @@ func TestApexPermittedPackagesRules(t *testing.T) {
 					apex_available: ["myapex"],
 					sdk_version: "none",
 					system_modules: "none",
+					min_sdk_version: "30",
 				}
 				java_library {
 					name: "nonbcp_lib2",
@@ -7366,9 +7368,11 @@ func TestApexPermittedPackagesRules(t *testing.T) {
 					permitted_packages: ["a.b"],
 					sdk_version: "none",
 					system_modules: "none",
+					min_sdk_version: "30",
 				}
 				apex {
 					name: "myapex",
+					min_sdk_version: "30",
 					key: "myapex.key",
 					java_libs: ["bcp_lib1", "nonbcp_lib2"],
 					updatable: false,
@@ -7381,8 +7385,8 @@ func TestApexPermittedPackagesRules(t *testing.T) {
 			},
 		},
 		{
-			name:          "Bootclasspath apex jar not satisfying allowed module packages.",
-			expectedError: `module "bcp_lib2" .* which is restricted because jars that are part of the myapex module may only allow these packages: foo.bar. Please jarjar or move code around.`,
+			name:          "Bootclasspath apex jar not satisfying allowed module packages on Q.",
+			expectedError: `module "bcp_lib2" .* which is restricted because jars that are part of the myapex module may only allow these packages: foo.bar with min_sdk < T. Please jarjar or move code around.`,
 			bp: `
 				java_library {
 					name: "bcp_lib1",
@@ -7391,6 +7395,7 @@ func TestApexPermittedPackagesRules(t *testing.T) {
 					permitted_packages: ["foo.bar"],
 					sdk_version: "none",
 					system_modules: "none",
+					min_sdk_version: "29",
 				}
 				java_library {
 					name: "bcp_lib2",
@@ -7399,9 +7404,85 @@ func TestApexPermittedPackagesRules(t *testing.T) {
 					permitted_packages: ["foo.bar", "bar.baz"],
 					sdk_version: "none",
 					system_modules: "none",
+					min_sdk_version: "29",
 				}
 				apex {
 					name: "myapex",
+					min_sdk_version: "29",
+					key: "myapex.key",
+					java_libs: ["bcp_lib1", "bcp_lib2"],
+					updatable: false,
+				}
+			`,
+			bootJars: []string{"bcp_lib1", "bcp_lib2"},
+			modulesPackages: map[string][]string{
+				"myapex": []string{
+					"foo.bar",
+				},
+			},
+		},
+		{
+			name:          "Bootclasspath apex jar not satisfying allowed module packages on R.",
+			expectedError: `module "bcp_lib2" .* which is restricted because jars that are part of the myapex module may only allow these packages: foo.bar with min_sdk < T. Please jarjar or move code around.`,
+			bp: `
+				java_library {
+					name: "bcp_lib1",
+					srcs: ["lib1/src/*.java"],
+					apex_available: ["myapex"],
+					permitted_packages: ["foo.bar"],
+					sdk_version: "none",
+					system_modules: "none",
+					min_sdk_version: "30",
+				}
+				java_library {
+					name: "bcp_lib2",
+					srcs: ["lib2/src/*.java"],
+					apex_available: ["myapex"],
+					permitted_packages: ["foo.bar", "bar.baz"],
+					sdk_version: "none",
+					system_modules: "none",
+					min_sdk_version: "30",
+				}
+				apex {
+					name: "myapex",
+					min_sdk_version: "30",
+					key: "myapex.key",
+					java_libs: ["bcp_lib1", "bcp_lib2"],
+					updatable: false,
+				}
+			`,
+			bootJars: []string{"bcp_lib1", "bcp_lib2"},
+			modulesPackages: map[string][]string{
+				"myapex": []string{
+					"foo.bar",
+				},
+			},
+		},
+		{
+			name:          "Bootclasspath apex jar >= T not satisfying Q/R/S allowed module packages.",
+			expectedError: "",
+			bp: `
+				java_library {
+					name: "bcp_lib1",
+					srcs: ["lib1/src/*.java"],
+					apex_available: ["myapex"],
+					permitted_packages: ["foo.bar"],
+					sdk_version: "none",
+					system_modules: "none",
+					min_sdk_version: "current",
+				}
+				java_library {
+					name: "bcp_lib2",
+					srcs: ["lib2/src/*.java"],
+					apex_available: ["myapex"],
+					permitted_packages: ["foo.bar", "bar.baz"],
+					sdk_version: "none",
+					system_modules: "none",
+					min_sdk_version: "current",
+				}
+				apex {
+					name: "myapex",
+					min_sdk_version: "current",
 					key: "myapex.key",
 					java_libs: ["bcp_lib1", "bcp_lib2"],
 					updatable: false,
@@ -8407,6 +8488,184 @@ func TestAndroidMk_RequiredModules(t *testing.T) {
 	data.Custom(&builder, apexBundle.BaseModuleName(), "TARGET_", "", data)
 	androidMk := builder.String()
 	ensureContains(t, androidMk, "LOCAL_REQUIRED_MODULES += otherapex")
+}
+
+func TestSdkLibraryCanHaveHigherMinSdkVersion(t *testing.T) {
+	preparer := android.GroupFixturePreparers(
+		PrepareForTestWithApexBuildComponents,
+		prepareForTestWithMyapex,
+		java.PrepareForTestWithJavaSdkLibraryFiles,
+		java.PrepareForTestWithJavaDefaultModules,
+		android.PrepareForTestWithAndroidBuildComponents,
+		dexpreopt.FixtureSetApexBootJars("myapex:mybootclasspathlib"),
+		dexpreopt.FixtureSetApexSystemServerJars("myapex:mysystemserverclasspathlib"),
+	)
+
+	// Test java_sdk_library in bootclasspath_fragment may define higher min_sdk_version than the apex
+	t.Run("bootclasspath_fragment jar has higher min_sdk_version than apex", func(t *testing.T) {
+		preparer.RunTestWithBp(t, `
+			apex {
+				name: "myapex",
+				key: "myapex.key",
+				bootclasspath_fragments: ["mybootclasspathfragment"],
+				min_sdk_version: "30",
+				updatable: false,
+			}
+
+			apex_key {
+				name: "myapex.key",
+				public_key: "testkey.avbpubkey",
+				private_key: "testkey.pem",
+			}
+
+			bootclasspath_fragment {
+				name: "mybootclasspathfragment",
+				contents: ["mybootclasspathlib"],
+				apex_available: ["myapex"],
+			}
+
+			java_sdk_library {
+				name: "mybootclasspathlib",
+				srcs: ["mybootclasspathlib.java"],
+				apex_available: ["myapex"],
+				compile_dex: true,
+				unsafe_ignore_missing_latest_api: true,
+				min_sdk_version: "31",
+				static_libs: ["util"],
+			}
+
+			java_library {
+				name: "util",
+                srcs: ["a.java"],
+				apex_available: ["myapex"],
+				min_sdk_version: "31",
+				static_libs: ["another_util"],
+			}
+
+			java_library {
+				name: "another_util",
+                srcs: ["a.java"],
+				min_sdk_version: "31",
+				apex_available: ["myapex"],
+			}
+		`)
+	})
+
+	// Test java_sdk_library in systemserverclasspath_fragment may define higher min_sdk_version than the apex
+	t.Run("systemserverclasspath_fragment jar has higher min_sdk_version than apex", func(t *testing.T) {
+		preparer.RunTestWithBp(t, `
+			apex {
+				name: "myapex",
+				key: "myapex.key",
+				systemserverclasspath_fragments: ["mysystemserverclasspathfragment"],
+				min_sdk_version: "30",
+				updatable: false,
+			}
+
+			apex_key {
+				name: "myapex.key",
+				public_key: "testkey.avbpubkey",
+				private_key: "testkey.pem",
+			}
+
+			systemserverclasspath_fragment {
+				name: "mysystemserverclasspathfragment",
+				contents: ["mysystemserverclasspathlib"],
+				apex_available: ["myapex"],
+			}
+
+			java_sdk_library {
+				name: "mysystemserverclasspathlib",
+				srcs: ["mysystemserverclasspathlib.java"],
+				apex_available: ["myapex"],
+				compile_dex: true,
+				min_sdk_version: "32",
+				unsafe_ignore_missing_latest_api: true,
+				static_libs: ["util"],
+			}
+
+			java_library {
+				name: "util",
+                srcs: ["a.java"],
+				apex_available: ["myapex"],
+				min_sdk_version: "31",
+				static_libs: ["another_util"],
+			}
+
+			java_library {
+				name: "another_util",
+                srcs: ["a.java"],
+				min_sdk_version: "31",
+				apex_available: ["myapex"],
+			}
+		`)
+	})
+
+	t.Run("bootclasspath_fragment jar must set min_sdk_version", func(t *testing.T) {
+		preparer.ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(`module "mybootclasspathlib".*must set min_sdk_version`)).
+			RunTestWithBp(t, `
+				apex {
+					name: "myapex",
+					key: "myapex.key",
+					bootclasspath_fragments: ["mybootclasspathfragment"],
+					min_sdk_version: "30",
+					updatable: false,
+				}
+
+				apex_key {
+					name: "myapex.key",
+					public_key: "testkey.avbpubkey",
+					private_key: "testkey.pem",
+				}
+
+				bootclasspath_fragment {
+					name: "mybootclasspathfragment",
+					contents: ["mybootclasspathlib"],
+					apex_available: ["myapex"],
+				}
+
+				java_sdk_library {
+					name: "mybootclasspathlib",
+					srcs: ["mybootclasspathlib.java"],
+					apex_available: ["myapex"],
+					compile_dex: true,
+					unsafe_ignore_missing_latest_api: true,
+				}
+		`)
+	})
+
+	t.Run("systemserverclasspath_fragment jar must set min_sdk_version", func(t *testing.T) {
+		preparer.ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(`module "mysystemserverclasspathlib".*must set min_sdk_version`)).
+			RunTestWithBp(t, `
+				apex {
+					name: "myapex",
+					key: "myapex.key",
+					systemserverclasspath_fragments: ["mysystemserverclasspathfragment"],
+					min_sdk_version: "30",
+					updatable: false,
+				}
+
+				apex_key {
+					name: "myapex.key",
+					public_key: "testkey.avbpubkey",
+					private_key: "testkey.pem",
+				}
+
+				systemserverclasspath_fragment {
+					name: "mysystemserverclasspathfragment",
+					contents: ["mysystemserverclasspathlib"],
+					apex_available: ["myapex"],
+				}
+
+				java_sdk_library {
+					name: "mysystemserverclasspathlib",
+					srcs: ["mysystemserverclasspathlib.java"],
+					apex_available: ["myapex"],
+					compile_dex: true,
+					unsafe_ignore_missing_latest_api: true,
+				}
+		`)
+	})
 }
 
 func TestMain(m *testing.M) {
