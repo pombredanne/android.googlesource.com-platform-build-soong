@@ -247,12 +247,37 @@ func TestJavaSdkLibrary_DoNotAccessImplWhenItIsNotBuilt(t *testing.T) {
 	}
 }
 
-func TestJavaSdkLibrary_UseSourcesFromAnotherSdkLibrary(t *testing.T) {
+func TestJavaSdkLibrary_AccessOutputFiles(t *testing.T) {
 	android.GroupFixturePreparers(
 		prepareForJavaTest,
 		PrepareForTestWithJavaSdkLibraryFiles,
 		FixtureWithLastReleaseApis("foo"),
 	).RunTestWithBp(t, `
+		java_sdk_library {
+			name: "foo",
+			srcs: ["a.java"],
+			api_packages: ["foo"],
+			annotations_enabled: true,
+			public: {
+				enabled: true,
+			},
+		}
+		java_library {
+			name: "bar",
+			srcs: ["b.java", ":foo{.public.stubs.source}"],
+			java_resources: [":foo{.public.annotations.zip}"],
+		}
+		`)
+}
+
+func TestJavaSdkLibrary_AccessOutputFiles_NoAnnotations(t *testing.T) {
+	android.GroupFixturePreparers(
+		prepareForJavaTest,
+		PrepareForTestWithJavaSdkLibraryFiles,
+		FixtureWithLastReleaseApis("foo"),
+	).
+		ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(`module "bar" variant "android_common": path dependency ":foo{.public.annotations.zip}": annotations.zip not available for api scope public`)).
+		RunTestWithBp(t, `
 		java_sdk_library {
 			name: "foo",
 			srcs: ["a.java"],
@@ -265,6 +290,7 @@ func TestJavaSdkLibrary_UseSourcesFromAnotherSdkLibrary(t *testing.T) {
 		java_library {
 			name: "bar",
 			srcs: ["b.java", ":foo{.public.stubs.source}"],
+			java_resources: [":foo{.public.annotations.zip}"],
 		}
 		`)
 }
@@ -328,6 +354,7 @@ func TestJavaSdkLibraryImport_AccessOutputFiles(t *testing.T) {
 				stub_srcs: ["a.java"],
 				current_api: "api/current.txt",
 				removed_api: "api/removed.txt",
+				annotations: "x/annotations.zip",
 			},
 		}
 
@@ -337,6 +364,7 @@ func TestJavaSdkLibraryImport_AccessOutputFiles(t *testing.T) {
 			java_resources: [
 				":foo{.public.api.txt}",
 				":foo{.public.removed-api.txt}",
+				":foo{.public.annotations.zip}",
 			],
 		}
 		`)
@@ -929,4 +957,88 @@ func TestJavaSdkLibraryDist(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSdkLibrary_CheckMinSdkVersion(t *testing.T) {
+	preparer := android.GroupFixturePreparers(
+		PrepareForTestWithJavaBuildComponents,
+		PrepareForTestWithJavaDefaultModules,
+		PrepareForTestWithJavaSdkLibraryFiles,
+	)
+
+	preparer.RunTestWithBp(t, `
+		java_sdk_library {
+			name: "sdklib",
+            srcs: ["a.java"],
+            static_libs: ["util"],
+            min_sdk_version: "30",
+			unsafe_ignore_missing_latest_api: true,
+        }
+
+		java_library {
+			name: "util",
+			srcs: ["a.java"],
+			min_sdk_version: "30",
+		}
+	`)
+
+	preparer.
+		RunTestWithBp(t, `
+			java_sdk_library {
+				name: "sdklib",
+				srcs: ["a.java"],
+				libs: ["util"],
+				impl_only_libs: ["util"],
+				stub_only_libs: ["util"],
+				stub_only_static_libs: ["util"],
+				min_sdk_version: "30",
+				unsafe_ignore_missing_latest_api: true,
+			}
+
+			java_library {
+				name: "util",
+				srcs: ["a.java"],
+			}
+		`)
+
+	preparer.ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(`module "util".*should support min_sdk_version\(30\)`)).
+		RunTestWithBp(t, `
+			java_sdk_library {
+				name: "sdklib",
+				srcs: ["a.java"],
+				static_libs: ["util"],
+				min_sdk_version: "30",
+				unsafe_ignore_missing_latest_api: true,
+			}
+
+			java_library {
+				name: "util",
+				srcs: ["a.java"],
+				min_sdk_version: "31",
+			}
+		`)
+
+	preparer.ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(`module "another_util".*should support min_sdk_version\(30\)`)).
+		RunTestWithBp(t, `
+			java_sdk_library {
+				name: "sdklib",
+				srcs: ["a.java"],
+				static_libs: ["util"],
+				min_sdk_version: "30",
+				unsafe_ignore_missing_latest_api: true,
+			}
+
+			java_library {
+				name: "util",
+				srcs: ["a.java"],
+				static_libs: ["another_util"],
+				min_sdk_version: "30",
+			}
+
+			java_library {
+				name: "another_util",
+				srcs: ["a.java"],
+				min_sdk_version: "31",
+			}
+		`)
 }
