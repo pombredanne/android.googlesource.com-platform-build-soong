@@ -21,7 +21,9 @@ package java
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
+	"android/soong/bazel"
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
 
@@ -270,6 +272,9 @@ func (j *Module) InstallBypassMake() bool { return true }
 type dependencyTag struct {
 	blueprint.BaseDependencyTag
 	name string
+
+	// True if the dependency is relinked at runtime.
+	runtimeLinked bool
 }
 
 // installDependencyTag is a dependency tag that is annotated to cause the installed files of the
@@ -279,6 +284,15 @@ type installDependencyTag struct {
 	android.InstallAlwaysNeededDependencyTag
 	name string
 }
+
+func (d dependencyTag) LicenseAnnotations() []android.LicenseAnnotation {
+	if d.runtimeLinked {
+		return []android.LicenseAnnotation{android.LicenseAnnotationSharedDependency}
+	}
+	return nil
+}
+
+var _ android.LicenseAnnotationsDependencyTag = dependencyTag{}
 
 type usesLibraryDependencyTag struct {
 	dependencyTag
@@ -296,10 +310,13 @@ type usesLibraryDependencyTag struct {
 
 func makeUsesLibraryDependencyTag(sdkVersion int, optional bool, implicit bool) usesLibraryDependencyTag {
 	return usesLibraryDependencyTag{
-		dependencyTag: dependencyTag{name: fmt.Sprintf("uses-library-%d", sdkVersion)},
-		sdkVersion:    sdkVersion,
-		optional:      optional,
-		implicit:      implicit,
+		dependencyTag: dependencyTag{
+			name:          fmt.Sprintf("uses-library-%d", sdkVersion),
+			runtimeLinked: true,
+		},
+		sdkVersion: sdkVersion,
+		optional:   optional,
+		implicit:   implicit,
 	}
 }
 
@@ -310,22 +327,22 @@ func IsJniDepTag(depTag blueprint.DependencyTag) bool {
 var (
 	dataNativeBinsTag       = dependencyTag{name: "dataNativeBins"}
 	staticLibTag            = dependencyTag{name: "staticlib"}
-	libTag                  = dependencyTag{name: "javalib"}
-	java9LibTag             = dependencyTag{name: "java9lib"}
+	libTag                  = dependencyTag{name: "javalib", runtimeLinked: true}
+	java9LibTag             = dependencyTag{name: "java9lib", runtimeLinked: true}
 	pluginTag               = dependencyTag{name: "plugin"}
 	errorpronePluginTag     = dependencyTag{name: "errorprone-plugin"}
 	exportedPluginTag       = dependencyTag{name: "exported-plugin"}
-	bootClasspathTag        = dependencyTag{name: "bootclasspath"}
-	systemModulesTag        = dependencyTag{name: "system modules"}
+	bootClasspathTag        = dependencyTag{name: "bootclasspath", runtimeLinked: true}
+	systemModulesTag        = dependencyTag{name: "system modules", runtimeLinked: true}
 	frameworkResTag         = dependencyTag{name: "framework-res"}
-	kotlinStdlibTag         = dependencyTag{name: "kotlin-stdlib"}
-	kotlinAnnotationsTag    = dependencyTag{name: "kotlin-annotations"}
+	kotlinStdlibTag         = dependencyTag{name: "kotlin-stdlib", runtimeLinked: true}
+	kotlinAnnotationsTag    = dependencyTag{name: "kotlin-annotations", runtimeLinked: true}
 	kotlinPluginTag         = dependencyTag{name: "kotlin-plugin"}
 	proguardRaiseTag        = dependencyTag{name: "proguard-raise"}
 	certificateTag          = dependencyTag{name: "certificate"}
 	instrumentationForTag   = dependencyTag{name: "instrumentation_for"}
 	extraLintCheckTag       = dependencyTag{name: "extra-lint-check"}
-	jniLibTag               = dependencyTag{name: "jnilib"}
+	jniLibTag               = dependencyTag{name: "jnilib", runtimeLinked: true}
 	syspropPublicStubDepTag = dependencyTag{name: "sysprop public stub"}
 	jniInstallTag           = installDependencyTag{name: "jni install"}
 	binaryInstallTag        = installDependencyTag{name: "binary install"}
@@ -434,6 +451,12 @@ func getJavaVersion(ctx android.ModuleContext, javaVersion string, sdkContext an
 		return normalizeJavaVersion(ctx, javaVersion)
 	} else if ctx.Device() {
 		return defaultJavaLanguageVersion(ctx, sdkContext.SdkVersion(ctx))
+	} else if ctx.Config().IsEnvTrue("EXPERIMENTAL_TARGET_JAVA_VERSION_11") {
+		// Temporary experimental flag to be able to try and build with
+		// java version 11 options.  The flag, if used, just sets Java
+		// 11 as the default version, leaving any components that
+		// target an older version intact.
+		return JAVA_VERSION_11
 	} else {
 		return JAVA_VERSION_9
 	}
@@ -735,6 +758,7 @@ func LibraryFactory() android.Module {
 
 	android.InitApexModule(module)
 	android.InitSdkAwareModule(module)
+	android.InitBazelModule(module)
 	InitJavaModule(module, android.HostAndDeviceSupported)
 	return module
 }
@@ -757,6 +781,7 @@ func LibraryHostFactory() android.Module {
 
 	android.InitApexModule(module)
 	android.InitSdkAwareModule(module)
+	android.InitBazelModule(module)
 	InitJavaModule(module, android.HostSupported)
 	return module
 }
@@ -1207,6 +1232,8 @@ func BinaryFactory() android.Module {
 
 	android.InitAndroidArchModule(module, android.HostAndDeviceSupported, android.MultilibCommonFirst)
 	android.InitDefaultableModule(module)
+	android.InitBazelModule(module)
+
 	return module
 }
 
@@ -1224,6 +1251,7 @@ func BinaryHostFactory() android.Module {
 
 	android.InitAndroidArchModule(module, android.HostSupported, android.MultilibCommonFirst)
 	android.InitDefaultableModule(module)
+	android.InitBazelModule(module)
 	return module
 }
 
@@ -1939,4 +1967,104 @@ func addCLCFromDep(ctx android.ModuleContext, depModule android.Module,
 	} else {
 		clcMap.AddContextMap(dep.ClassLoaderContexts(), depName)
 	}
+}
+
+type javaLibraryAttributes struct {
+	Srcs      bazel.LabelListAttribute
+	Deps      bazel.LabelListAttribute
+	Javacopts bazel.StringListAttribute
+}
+
+func javaLibraryBp2Build(ctx android.TopDownMutatorContext, m *Library) {
+	srcs := bazel.MakeLabelListAttribute(android.BazelLabelForModuleSrcExcludes(ctx, m.properties.Srcs, m.properties.Exclude_srcs))
+	attrs := &javaLibraryAttributes{
+		Srcs: srcs,
+	}
+
+	if m.properties.Javacflags != nil {
+		attrs.Javacopts = bazel.MakeStringListAttribute(m.properties.Javacflags)
+	}
+
+	if m.properties.Libs != nil {
+		attrs.Deps = bazel.MakeLabelListAttribute(android.BazelLabelForModuleDeps(ctx, m.properties.Libs))
+	}
+
+	props := bazel.BazelTargetModuleProperties{
+		Rule_class:        "java_library",
+		Bzl_load_location: "//build/bazel/rules/java:library.bzl",
+	}
+
+	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: m.Name()}, attrs)
+}
+
+type javaBinaryHostAttributes struct {
+	Srcs       bazel.LabelListAttribute
+	Deps       bazel.LabelListAttribute
+	Main_class string
+	Jvm_flags  bazel.StringListAttribute
+}
+
+// JavaBinaryHostBp2Build is for java_binary_host bp2build.
+func javaBinaryHostBp2Build(ctx android.TopDownMutatorContext, m *Binary) {
+	mainClass := ""
+	if m.binaryProperties.Main_class != nil {
+		mainClass = *m.binaryProperties.Main_class
+	}
+	if m.properties.Manifest != nil {
+		mainClassInManifest, err := android.GetMainClassInManifest(ctx.Config(), android.PathForModuleSrc(ctx, *m.properties.Manifest).String())
+		if err != nil {
+			return
+		}
+		mainClass = mainClassInManifest
+	}
+	srcs := bazel.MakeLabelListAttribute(android.BazelLabelForModuleSrcExcludes(ctx, m.properties.Srcs, m.properties.Exclude_srcs))
+	attrs := &javaBinaryHostAttributes{
+		Srcs:       srcs,
+		Main_class: mainClass,
+	}
+
+	// Attribute deps
+	deps := []string{}
+	if m.properties.Static_libs != nil {
+		deps = append(deps, m.properties.Static_libs...)
+	}
+	if m.binaryProperties.Jni_libs != nil {
+		deps = append(deps, m.binaryProperties.Jni_libs...)
+	}
+	if len(deps) > 0 {
+		attrs.Deps = bazel.MakeLabelListAttribute(android.BazelLabelForModuleDeps(ctx, deps))
+	}
+
+	// Attribute jvm_flags
+	if m.binaryProperties.Jni_libs != nil {
+		jniLibPackages := map[string]bool{}
+		for _, jniLibLabel := range android.BazelLabelForModuleDeps(ctx, m.binaryProperties.Jni_libs).Includes {
+			jniLibPackage := jniLibLabel.Label
+			indexOfColon := strings.Index(jniLibLabel.Label, ":")
+			if indexOfColon > 0 {
+				// JNI lib from other package
+				jniLibPackage = jniLibLabel.Label[2:indexOfColon]
+			} else if indexOfColon == 0 {
+				// JNI lib in the same package of java_binary
+				packageOfCurrentModule := m.GetBazelLabel(ctx, m)
+				jniLibPackage = packageOfCurrentModule[2:strings.Index(packageOfCurrentModule, ":")]
+			}
+			if _, inMap := jniLibPackages[jniLibPackage]; !inMap {
+				jniLibPackages[jniLibPackage] = true
+			}
+		}
+		jniLibPaths := []string{}
+		for jniLibPackage, _ := range jniLibPackages {
+			// See cs/f:.*/third_party/bazel/.*java_stub_template.txt for the use of RUNPATH
+			jniLibPaths = append(jniLibPaths, "$${RUNPATH}"+jniLibPackage)
+		}
+		attrs.Jvm_flags = bazel.MakeStringListAttribute([]string{"-Djava.library.path=" + strings.Join(jniLibPaths, ":")})
+	}
+
+	props := bazel.BazelTargetModuleProperties{
+		Rule_class: "java_binary",
+	}
+
+	// Create the BazelTargetModule.
+	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: m.Name()}, attrs)
 }

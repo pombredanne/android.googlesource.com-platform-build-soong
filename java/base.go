@@ -372,6 +372,7 @@ type Module struct {
 	android.DefaultableModuleBase
 	android.ApexModuleBase
 	android.SdkBase
+	android.BazelModuleBase
 
 	// Functionality common to Module and Import.
 	embeddableInModuleAndImport
@@ -1643,8 +1644,7 @@ func (j *Module) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Modu
 }
 
 // Implements android.ApexModule
-func (j *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
-	sdkVersion android.ApiLevel) error {
+func (j *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext, sdkVersion android.ApiLevel) error {
 	sdkSpec := j.MinSdkVersion(ctx)
 	if !sdkSpec.Specified() {
 		return fmt.Errorf("min_sdk_version is not specified")
@@ -1953,3 +1953,17 @@ type ModuleWithStem interface {
 }
 
 var _ ModuleWithStem = (*Module)(nil)
+
+func (j *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
+	switch ctx.ModuleType() {
+	case "java_library", "java_library_host":
+		if lib, ok := ctx.Module().(*Library); ok {
+			javaLibraryBp2Build(ctx, lib)
+		}
+	case "java_binary_host":
+		if binary, ok := ctx.Module().(*Binary); ok {
+			javaBinaryHostBp2Build(ctx, binary)
+		}
+	}
+
+}

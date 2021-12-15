@@ -40,7 +40,6 @@ func runCcLibrarySharedTestCase(t *testing.T, tc bp2buildTestCase) {
 	t.Helper()
 	(&tc).moduleTypeUnderTest = "cc_library_shared"
 	(&tc).moduleTypeUnderTestFactory = cc.LibrarySharedFactory
-	(&tc).moduleTypeUnderTestBp2BuildMutator = cc.CcLibrarySharedBp2Build
 	runBp2BuildTestCase(t, registerCcLibrarySharedModuleTypes, tc)
 }
 
@@ -446,6 +445,21 @@ func TestCcLibrarySharedProto(t *testing.T) {
 			}), makeBazelTarget("cc_library_shared", "foo", attrNameToString{
 				"dynamic_deps":       `[":libprotobuf-cpp-lite"]`,
 				"whole_archive_deps": `[":foo_cc_proto_lite"]`,
+			}),
+		},
+	})
+}
+
+func TestCcLibrarySharedUseVersionLib(t *testing.T) {
+	runCcLibrarySharedTestCase(t, bp2buildTestCase{
+		blueprint: soongCcProtoPreamble + `cc_library_shared {
+        name: "foo",
+        use_version_lib: true,
+        include_build_directory: false,
+}`,
+		expectedBazelTargets: []string{
+			makeBazelTarget("cc_library_shared", "foo", attrNameToString{
+				"use_version_lib": "True",
 			}),
 		},
 	})
