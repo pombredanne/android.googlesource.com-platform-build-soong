@@ -105,11 +105,6 @@ type TestBinaryProperties struct {
 	// Add RunCommandTargetPreparer to stop framework before the test and start it after the test.
 	Disable_framework *bool
 
-	// Add ShippingApiLevelModuleController to auto generated test config. If the device properties
-	// for the shipping api level is less than the test_min_api_level, skip this module.
-	// Deprecated (b/187258404). Use test_options.min_shipping_api_level instead.
-	Test_min_api_level *int64
-
 	// Flag to indicate whether or not to create test config automatically. If AndroidTest.xml
 	// doesn't exist next to the Android.bp, this attribute doesn't need to be set to true
 	// explicitly.
@@ -432,14 +427,6 @@ func (test *testBinary) install(ctx ModuleContext, file android.Path) {
 		var options []tradefed.Option
 		options = append(options, tradefed.Option{Name: "min-api-level", Value: strconv.FormatInt(int64(*test.Properties.Test_options.Min_shipping_api_level), 10)})
 		configs = append(configs, tradefed.Object{"module_controller", "com.android.tradefed.testtype.suite.module.ShippingApiLevelModuleController", options})
-	} else if test.Properties.Test_min_api_level != nil {
-		// TODO: (b/187258404) Remove test.Properties.Test_min_api_level
-		if test.Properties.Test_options.Vsr_min_shipping_api_level != nil {
-			ctx.PropertyErrorf("test_min_api_level", "must not be set at the same time as 'vsr_min_shipping_api_level'.")
-		}
-		var options []tradefed.Option
-		options = append(options, tradefed.Option{Name: "min-api-level", Value: strconv.FormatInt(int64(*test.Properties.Test_min_api_level), 10)})
-		configs = append(configs, tradefed.Object{"module_controller", "com.android.tradefed.testtype.suite.module.ShippingApiLevelModuleController", options})
 	}
 	if test.Properties.Test_options.Vsr_min_shipping_api_level != nil {
 		var options []tradefed.Option
@@ -474,7 +461,7 @@ func (test *testBinary) install(ctx ModuleContext, file android.Path) {
 }
 
 func NewTest(hod android.HostOrDeviceSupported) *Module {
-	module, binary := NewBinary(hod)
+	module, binary := newBinary(hod, false)
 	module.multilib = android.MultilibBoth
 	binary.baseInstaller = NewTestInstaller()
 
@@ -564,6 +551,10 @@ type benchmarkDecorator struct {
 	testConfig android.Path
 }
 
+func (benchmark *benchmarkDecorator) benchmarkBinary() bool {
+	return true
+}
+
 func (benchmark *benchmarkDecorator) linkerInit(ctx BaseModuleContext) {
 	runpath := "../../lib"
 	if ctx.toolchain().Is64Bit() {
@@ -601,7 +592,7 @@ func (benchmark *benchmarkDecorator) install(ctx ModuleContext, file android.Pat
 }
 
 func NewBenchmark(hod android.HostOrDeviceSupported) *Module {
-	module, binary := NewBinary(hod)
+	module, binary := newBinary(hod, false)
 	module.multilib = android.MultilibBoth
 	binary.baseInstaller = NewBaseInstaller("benchmarktest", "benchmarktest64", InstallInData)
 

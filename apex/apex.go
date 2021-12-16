@@ -54,8 +54,6 @@ func registerApexBuildComponents(ctx android.RegistrationContext) {
 	ctx.PreArchMutators(registerPreArchMutators)
 	ctx.PreDepsMutators(RegisterPreDepsMutators)
 	ctx.PostDepsMutators(RegisterPostDepsMutators)
-
-	android.RegisterBp2BuildMutator("apex", ApexBundleBp2Build)
 }
 
 func registerPreArchMutators(ctx android.RegisterMutatorsContext) {
@@ -97,6 +95,14 @@ type apexBundleProperties struct {
 	// bundle. For platform APEXes, this should points to a file under /system/sepolicy Default:
 	// /system/sepolicy/apex/<module_name>_file_contexts.
 	File_contexts *string `android:"path"`
+
+	// Path to the canned fs config file for customizing file's uid/gid/mod/capabilities. The
+	// format is /<path_or_glob> <uid> <gid> <mode> [capabilities=0x<cap>], where path_or_glob is a
+	// path or glob pattern for a file or set of files, uid/gid are numerial values of user ID
+	// and group ID, mode is octal value for the file mode, and cap is hexadecimal value for the
+	// capability. If this property is not set, or a file is missing in the file, default config
+	// is used.
+	Canned_fs_config *string `android:"path"`
 
 	ApexNativeDependencies
 
@@ -3200,15 +3206,16 @@ func createApexPermittedPackagesRules(modules_packages map[string][]string) []an
 			BootclasspathJar().
 			With("apex_available", module_name).
 			WithMatcher("permitted_packages", android.NotInList(module_packages)).
+			WithMatcher("min_sdk_version", android.LessThanSdkVersion("Tiramisu")).
 			Because("jars that are part of the " + module_name +
 				" module may only allow these packages: " + strings.Join(module_packages, ",") +
-				". Please jarjar or move code around.")
+				" with min_sdk < T. Please jarjar or move code around.")
 		rules = append(rules, permittedPackagesRule)
 	}
 	return rules
 }
 
-// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART.
+// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART on Q/R/S.
 // Adding code to the bootclasspath in new packages will cause issues on module update.
 func qModulesPackages() map[string][]string {
 	return map[string][]string{
@@ -3222,7 +3229,7 @@ func qModulesPackages() map[string][]string {
 	}
 }
 
-// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART.
+// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART on R/S.
 // Adding code to the bootclasspath in new packages will cause issues on module update.
 func rModulesPackages() map[string][]string {
 	return map[string][]string{
@@ -3269,76 +3276,66 @@ type bazelApexBundleAttributes struct {
 	Updatable          bazel.BoolAttribute
 	Installable        bazel.BoolAttribute
 	Native_shared_libs bazel.LabelListAttribute
-	Binaries           bazel.StringListAttribute
+	Binaries           bazel.LabelListAttribute
 	Prebuilts          bazel.LabelListAttribute
 }
 
-func ApexBundleBp2Build(ctx android.TopDownMutatorContext) {
-	module, ok := ctx.Module().(*apexBundle)
-	if !ok {
-		// Not an APEX bundle
-		return
-	}
-	if !module.ConvertWithBp2build(ctx) {
-		return
-	}
+// ConvertWithBp2build performs bp2build conversion of an apex
+func (a *apexBundle) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
+	// We do not convert apex_test modules at this time
 	if ctx.ModuleType() != "apex" {
 		return
 	}
 
-	apexBundleBp2BuildInternal(ctx, module)
-}
-
-func apexBundleBp2BuildInternal(ctx android.TopDownMutatorContext, module *apexBundle) {
 	var manifestLabelAttribute bazel.LabelAttribute
-	if module.properties.Manifest != nil {
-		manifestLabelAttribute.SetValue(android.BazelLabelForModuleSrcSingle(ctx, *module.properties.Manifest))
+	if a.properties.Manifest != nil {
+		manifestLabelAttribute.SetValue(android.BazelLabelForModuleSrcSingle(ctx, *a.properties.Manifest))
 	}
 
 	var androidManifestLabelAttribute bazel.LabelAttribute
-	if module.properties.AndroidManifest != nil {
-		androidManifestLabelAttribute.SetValue(android.BazelLabelForModuleSrcSingle(ctx, *module.properties.AndroidManifest))
+	if a.properties.AndroidManifest != nil {
+		androidManifestLabelAttribute.SetValue(android.BazelLabelForModuleSrcSingle(ctx, *a.properties.AndroidManifest))
 	}
 
 	var fileContextsLabelAttribute bazel.LabelAttribute
-	if module.properties.File_contexts != nil {
-		fileContextsLabelAttribute.SetValue(android.BazelLabelForModuleDepSingle(ctx, *module.properties.File_contexts))
+	if a.properties.File_contexts != nil {
+		fileContextsLabelAttribute.SetValue(android.BazelLabelForModuleDepSingle(ctx, *a.properties.File_contexts))
 	}
 
 	var minSdkVersion *string
-	if module.properties.Min_sdk_version != nil {
-		minSdkVersion = module.properties.Min_sdk_version
+	if a.properties.Min_sdk_version != nil {
+		minSdkVersion = a.properties.Min_sdk_version
 	}
 
 	var keyLabelAttribute bazel.LabelAttribute
-	if module.overridableProperties.Key != nil {
-		keyLabelAttribute.SetValue(android.BazelLabelForModuleDepSingle(ctx, *module.overridableProperties.Key))
+	if a.overridableProperties.Key != nil {
+		keyLabelAttribute.SetValue(android.BazelLabelForModuleDepSingle(ctx, *a.overridableProperties.Key))
 	}
 
 	var certificateLabelAttribute bazel.LabelAttribute
-	if module.overridableProperties.Certificate != nil {
-		certificateLabelAttribute.SetValue(android.BazelLabelForModuleDepSingle(ctx, *module.overridableProperties.Certificate))
+	if a.overridableProperties.Certificate != nil {
+		certificateLabelAttribute.SetValue(android.BazelLabelForModuleDepSingle(ctx, *a.overridableProperties.Certificate))
 	}
 
-	nativeSharedLibs := module.properties.ApexNativeDependencies.Native_shared_libs
+	nativeSharedLibs := a.properties.ApexNativeDependencies.Native_shared_libs
 	nativeSharedLibsLabelList := android.BazelLabelForModuleDeps(ctx, nativeSharedLibs)
 	nativeSharedLibsLabelListAttribute := bazel.MakeLabelListAttribute(nativeSharedLibsLabelList)
 
-	prebuilts := module.overridableProperties.Prebuilts
+	prebuilts := a.overridableProperties.Prebuilts
 	prebuiltsLabelList := android.BazelLabelForModuleDeps(ctx, prebuilts)
 	prebuiltsLabelListAttribute := bazel.MakeLabelListAttribute(prebuiltsLabelList)
 
-	binaries := module.properties.ApexNativeDependencies.Binaries
-	binariesStringListAttribute := bazel.MakeStringListAttribute(binaries)
+	binaries := android.BazelLabelForModuleDeps(ctx, a.properties.ApexNativeDependencies.Binaries)
+	binariesLabelListAttribute := bazel.MakeLabelListAttribute(binaries)
 
 	var updatableAttribute bazel.BoolAttribute
-	if module.properties.Updatable != nil {
-		updatableAttribute.Value = module.properties.Updatable
+	if a.properties.Updatable != nil {
+		updatableAttribute.Value = a.properties.Updatable
 	}
 
 	var installableAttribute bazel.BoolAttribute
-	if module.properties.Installable != nil {
-		installableAttribute.Value = module.properties.Installable
+	if a.properties.Installable != nil {
+		installableAttribute.Value = a.properties.Installable
 	}
 
 	attrs := &bazelApexBundleAttributes{
@@ -3351,7 +3348,7 @@ func apexBundleBp2BuildInternal(ctx android.TopDownMutatorContext, module *apexB
 		Updatable:          updatableAttribute,
 		Installable:        installableAttribute,
 		Native_shared_libs: nativeSharedLibsLabelListAttribute,
-		Binaries:           binariesStringListAttribute,
+		Binaries:           binariesLabelListAttribute,
 		Prebuilts:          prebuiltsLabelListAttribute,
 	}
 
@@ -3360,5 +3357,5 @@ func apexBundleBp2BuildInternal(ctx android.TopDownMutatorContext, module *apexB
 		Bzl_load_location: "//build/bazel/rules:apex.bzl",
 	}
 
-	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: module.Name()}, attrs)
+	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: a.Name()}, attrs)
 }

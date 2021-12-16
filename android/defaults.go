@@ -89,10 +89,10 @@ type DefaultableModule interface {
 var _ Defaultable = (*DefaultableModuleBase)(nil)
 
 func InitDefaultableModule(module DefaultableModule) {
-	if module.(Module).base().module == nil {
+	if module.base().module == nil {
 		panic("InitAndroidModule must be called before InitDefaultableModule")
 	}
-	module.setProperties(module.(Module).GetProperties(), module.(Module).base().variableProperties)
+	module.setProperties(module.GetProperties(), module.base().variableProperties)
 
 	module.AddProperties(module.defaults())
 
@@ -173,6 +173,10 @@ func (d *DefaultsModuleBase) productVariableProperties() interface{} {
 func (d *DefaultsModuleBase) GenerateAndroidBuildActions(ctx ModuleContext) {
 }
 
+// ConvertWithBp2build to fulfill Bazelable interface; however, at this time defaults module are
+// *NOT* converted with bp2build
+func (defaultable *DefaultsModuleBase) ConvertWithBp2build(ctx TopDownMutatorContext) {}
+
 func InitDefaultsModule(module DefaultsModule) {
 	commonProperties := &commonProperties{}
 
@@ -208,7 +212,6 @@ func InitDefaultsModule(module DefaultsModule) {
 	// The applicable licenses property for defaults is 'licenses'.
 	setPrimaryLicensesProperty(module, "licenses", &commonProperties.Licenses)
 
-	base.module = module
 }
 
 var _ Defaults = (*DefaultsModuleBase)(nil)
