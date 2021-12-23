@@ -267,8 +267,6 @@ func (j *Module) XrefJavaFiles() android.Paths {
 	return j.kytheFiles
 }
 
-func (j *Module) InstallBypassMake() bool { return true }
-
 type dependencyTag struct {
 	blueprint.BaseDependencyTag
 	name string
@@ -451,7 +449,7 @@ func getJavaVersion(ctx android.ModuleContext, javaVersion string, sdkContext an
 		return normalizeJavaVersion(ctx, javaVersion)
 	} else if ctx.Device() {
 		return defaultJavaLanguageVersion(ctx, sdkContext.SdkVersion(ctx))
-	} else if ctx.Config().IsEnvTrue("EXPERIMENTAL_TARGET_JAVA_VERSION_11") {
+	} else if ctx.Config().TargetsJava11() {
 		// Temporary experimental flag to be able to try and build with
 		// java version 11 options.  The flag, if used, just sets Java
 		// 11 as the default version, leaving any components that

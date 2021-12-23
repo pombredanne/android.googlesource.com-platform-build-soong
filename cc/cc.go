@@ -1385,8 +1385,6 @@ func (c *Module) InstallInRoot() bool {
 	return c.installer != nil && c.installer.installInRoot()
 }
 
-func (c *Module) InstallBypassMake() bool { return true }
-
 type baseModuleContext struct {
 	android.BaseModuleContext
 	moduleContextImpl
@@ -3463,8 +3461,15 @@ func (c *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 			objectBp2Build(ctx, c)
 		}
 	} else if c.CcLibrary() {
-		static := c.BuildStaticVariant()
-		shared := c.BuildSharedVariant()
+		static := false
+		shared := false
+		if library, ok := c.linker.(*libraryDecorator); ok {
+			static = library.MutatedProperties.BuildStatic
+			shared = library.MutatedProperties.BuildShared
+		} else if library, ok := c.linker.(*prebuiltLibraryLinker); ok {
+			static = library.MutatedProperties.BuildStatic
+			shared = library.MutatedProperties.BuildShared
+		}
 
 		if static && shared {
 			if !prebuilt {
@@ -3496,10 +3501,6 @@ func (c *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 type Defaults struct {
 	android.ModuleBase
 	android.DefaultsModuleBase
-	// Included to support setting bazel_module.label for multiple Soong modules to the same Bazel
-	// target. This is primarily useful for modules that were architecture specific and instead are
-	// handled in Bazel as a select().
-	android.BazelModuleBase
 	android.ApexModuleBase
 }
 
@@ -3547,8 +3548,6 @@ func DefaultsFactory(props ...interface{}) android.Module {
 		&prebuiltLinkerProperties{},
 	)
 
-	// Bazel module must be initialized _before_ Defaults to be included in cc_defaults module.
-	android.InitBazelModule(module)
 	android.InitDefaultsModule(module)
 
 	return module
