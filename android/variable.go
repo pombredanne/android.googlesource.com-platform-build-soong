@@ -124,6 +124,8 @@ type variableProperties struct {
 			Shared_libs       []string
 
 			Cmdline []string
+			Srcs         []string
+			Exclude_srcs []string
 		}
 
 		// eng is true for -eng builds, and can be used to turn on additionaly heavyweight debugging
@@ -327,7 +329,8 @@ type productVariables struct {
 
 	NamespacesToExport []string `json:",omitempty"`
 
-	PgoAdditionalProfileDirs []string `json:",omitempty"`
+	AfdoAdditionalProfileDirs []string `json:",omitempty"`
+	PgoAdditionalProfileDirs  []string `json:",omitempty"`
 
 	VndkUseCoreVariant         *bool `json:",omitempty"`
 	VndkSnapshotBuildArtifacts *bool `json:",omitempty"`
@@ -344,13 +347,17 @@ type productVariables struct {
 	RecoverySnapshotDirsIncluded []string `json:",omitempty"`
 	HostFakeSnapshotEnabled      bool     `json:",omitempty"`
 
-	BoardVendorSepolicyDirs      []string `json:",omitempty"`
-	BoardOdmSepolicyDirs         []string `json:",omitempty"`
-	BoardReqdMaskPolicy          []string `json:",omitempty"`
-	BoardPlatVendorPolicy        []string `json:",omitempty"`
-	SystemExtPublicSepolicyDirs  []string `json:",omitempty"`
-	SystemExtPrivateSepolicyDirs []string `json:",omitempty"`
-	BoardSepolicyM4Defs          []string `json:",omitempty"`
+	BoardVendorSepolicyDirs           []string `json:",omitempty"`
+	BoardOdmSepolicyDirs              []string `json:",omitempty"`
+	BoardReqdMaskPolicy               []string `json:",omitempty"`
+	BoardPlatVendorPolicy             []string `json:",omitempty"`
+	BoardSystemExtPublicPrebuiltDirs  []string `json:",omitempty"`
+	BoardSystemExtPrivatePrebuiltDirs []string `json:",omitempty"`
+	BoardProductPublicPrebuiltDirs    []string `json:",omitempty"`
+	BoardProductPrivatePrebuiltDirs   []string `json:",omitempty"`
+	SystemExtPublicSepolicyDirs       []string `json:",omitempty"`
+	SystemExtPrivateSepolicyDirs      []string `json:",omitempty"`
+	BoardSepolicyM4Defs               []string `json:",omitempty"`
 
 	BoardSepolicyVers       *string `json:",omitempty"`
 	PlatformSepolicyVersion *string `json:",omitempty"`
