@@ -124,6 +124,8 @@ type variableProperties struct {
 			Shared_libs       []string
 
 			Cmdline []string
+			Srcs         []string
+			Exclude_srcs []string
 		}
 
 		// eng is true for -eng builds, and can be used to turn on additionaly heavyweight debugging
@@ -327,7 +329,8 @@ type productVariables struct {
 
 	NamespacesToExport []string `json:",omitempty"`
 
-	PgoAdditionalProfileDirs []string `json:",omitempty"`
+	AfdoAdditionalProfileDirs []string `json:",omitempty"`
+	PgoAdditionalProfileDirs  []string `json:",omitempty"`
 
 	VndkUseCoreVariant         *bool `json:",omitempty"`
 	VndkSnapshotBuildArtifacts *bool `json:",omitempty"`
