@@ -413,8 +413,9 @@ type apexBundle struct {
 	isCompressed bool
 
 	// Path of API coverage generate file
-	apisUsedByModuleFile   android.ModuleOutPath
-	apisBackedByModuleFile android.ModuleOutPath
+	nativeApisUsedByModuleFile   android.ModuleOutPath
+	nativeApisBackedByModuleFile android.ModuleOutPath
+	javaApisUsedByModuleFile     android.ModuleOutPath
 }
 
 // apexFileClass represents a type of file that can be included in APEX.
@@ -1631,7 +1632,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	// 1) do some validity checks such as apex_available, min_sdk_version, etc.
 	a.checkApexAvailability(ctx)
 	a.checkUpdatable(ctx)
-	a.checkMinSdkVersion(ctx)
+	a.CheckMinSdkVersion(ctx)
 	a.checkStaticLinkingToStubLibraries(ctx)
 	if len(a.properties.Tests) > 0 && !a.testApex {
 		ctx.PropertyErrorf("tests", "property allowed only in apex_test module type")
@@ -2245,18 +2246,28 @@ func overrideApexFactory() android.Module {
 //
 // TODO(jiyong): move these checks to a separate go file.
 
+var _ android.ModuleWithMinSdkVersionCheck = (*apexBundle)(nil)
+
 // Entures that min_sdk_version of the included modules are equal or less than the min_sdk_version
 // of this apexBundle.
-func (a *apexBundle) checkMinSdkVersion(ctx android.ModuleContext) {
+func (a *apexBundle) CheckMinSdkVersion(ctx android.ModuleContext) {
 	if a.testApex || a.vndkApex {
 		return
 	}
 	// apexBundle::minSdkVersion reports its own errors.
 	minSdkVersion := a.minSdkVersion(ctx)
-	android.CheckMinSdkVersion(a, ctx, minSdkVersion)
+	android.CheckMinSdkVersion(ctx, minSdkVersion, a.WalkPayloadDeps)
 }
 
-func (a *apexBundle) minSdkVersion(ctx android.BaseModuleContext) android.ApiLevel {
+func (a *apexBundle) MinSdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
+	return android.SdkSpec{
+		Kind:     android.SdkNone,
+		ApiLevel: a.minSdkVersion(ctx),
+		Raw:      String(a.properties.Min_sdk_version),
+	}
+}
+
+func (a *apexBundle) minSdkVersion(ctx android.EarlyModuleContext) android.ApiLevel {
 	ver := proptools.String(a.properties.Min_sdk_version)
 	if ver == "" {
 		return android.NoneApiLevel
@@ -3038,15 +3049,16 @@ func createApexPermittedPackagesRules(modules_packages map[string][]string) []an
 			BootclasspathJar().
 			With("apex_available", module_name).
 			WithMatcher("permitted_packages", android.NotInList(module_packages)).
+			WithMatcher("min_sdk_version", android.LessThanSdkVersion("Tiramisu")).
 			Because("jars that are part of the " + module_name +
 				" module may only allow these packages: " + strings.Join(module_packages, ",") +
-				". Please jarjar or move code around.")
+				" with min_sdk < T. Please jarjar or move code around.")
 		rules = append(rules, permittedPackagesRule)
 	}
 	return rules
 }
 
-// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART.
+// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART on Q/R/S.
 // Adding code to the bootclasspath in new packages will cause issues on module update.
 func qModulesPackages() map[string][]string {
 	return map[string][]string{
@@ -3060,7 +3072,7 @@ func qModulesPackages() map[string][]string {
 	}
 }
 
-// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART.
+// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART on R/S.
 // Adding code to the bootclasspath in new packages will cause issues on module update.
 func rModulesPackages() map[string][]string {
 	return map[string][]string{
