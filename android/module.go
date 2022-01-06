@@ -419,7 +419,6 @@ type ModuleContext interface {
 	PackageFile(installPath InstallPath, name string, srcPath Path) PackagingSpec
 
 	CheckbuildFile(srcPath Path)
-	TidyFile(srcPath WritablePath)
 
 	InstallInData() bool
 	InstallInTestcases() bool
@@ -430,7 +429,6 @@ type ModuleContext interface {
 	InstallInRecovery() bool
 	InstallInRoot() bool
 	InstallInVendor() bool
-	InstallBypassMake() bool
 	InstallForceOS() (*OsType, *ArchType)
 
 	RequiredModuleNames() []string
@@ -497,7 +495,6 @@ type Module interface {
 	InstallInRecovery() bool
 	InstallInRoot() bool
 	InstallInVendor() bool
-	InstallBypassMake() bool
 	InstallForceOS() (*OsType, *ArchType)
 	HideFromMake()
 	IsHideFromMake() bool
@@ -872,6 +869,13 @@ type CommonAttributes struct {
 	Data bazel.LabelListAttribute
 }
 
+// constraintAttributes represents Bazel attributes pertaining to build constraints,
+// which make restrict building a Bazel target for some set of platforms.
+type constraintAttributes struct {
+	// Constraint values this target can be built for.
+	Target_compatible_with bazel.LabelListAttribute
+}
+
 type distProperties struct {
 	// configuration to distribute output files from this module to the distribution
 	// directory (default: $OUT/dist, configurable with $DIST_DIR)
@@ -1029,7 +1033,6 @@ func InitAndroidModule(m Module) {
 	initProductVariableModule(m)
 
 	base.generalProperties = m.GetProperties()
-	base.customizableProperties = m.GetProperties()
 
 	// The default_visibility property needs to be checked and parsed by the visibility module during
 	// its checking and parsing phases so make it the primary visibility property.
@@ -1092,7 +1095,8 @@ func InitCommonOSAndroidMultiTargetsArchModule(m Module, hod HostOrDeviceSupport
 	m.base().commonProperties.CreateCommonOSVariant = true
 }
 
-func (attrs *CommonAttributes) fillCommonBp2BuildModuleAttrs(ctx *topDownMutatorContext) {
+func (attrs *CommonAttributes) fillCommonBp2BuildModuleAttrs(ctx *topDownMutatorContext,
+	enabledPropertyOverrides bazel.BoolAttribute) constraintAttributes {
 	// Assert passed-in attributes include Name
 	name := attrs.Name
 	if len(name) == 0 {
@@ -1110,14 +1114,45 @@ func (attrs *CommonAttributes) fillCommonBp2BuildModuleAttrs(ctx *topDownMutator
 
 	required := depsToLabelList(props.Required)
 	archVariantProps := mod.GetArchVariantProperties(ctx, &commonProperties{})
+
+	var enabledProperty bazel.BoolAttribute
+	if props.Enabled != nil {
+		enabledProperty.Value = props.Enabled
+	}
+
 	for axis, configToProps := range archVariantProps {
 		for config, _props := range configToProps {
 			if archProps, ok := _props.(*commonProperties); ok {
 				required.SetSelectValue(axis, config, depsToLabelList(archProps.Required).Value)
+				if archProps.Enabled != nil {
+					enabledProperty.SetSelectValue(axis, config, archProps.Enabled)
+				}
 			}
 		}
 	}
+
+	if enabledPropertyOverrides.Value != nil {
+		enabledProperty.Value = enabledPropertyOverrides.Value
+	}
+	for _, axis := range enabledPropertyOverrides.SortedConfigurationAxes() {
+		configToBools := enabledPropertyOverrides.ConfigurableValues[axis]
+		for cfg, val := range configToBools {
+			enabledProperty.SetSelectValue(axis, cfg, &val)
+		}
+	}
+
 	data.Append(required)
+
+	var err error
+	constraints := constraintAttributes{}
+	constraints.Target_compatible_with, err = enabledProperty.ToLabelListAttribute(
+		bazel.LabelList{[]bazel.Label{bazel.Label{Label: "@platforms//:incompatible"}}, nil},
+		bazel.LabelList{[]bazel.Label{}, nil})
+
+	if err != nil {
+		ctx.ModuleErrorf("Error processing enabled attribute: %s", err)
+	}
+	return constraints
 }
 
 // A ModuleBase object contains the properties that are common to all Android
@@ -1148,7 +1183,7 @@ func (attrs *CommonAttributes) fillCommonBp2BuildModuleAttrs(ctx *topDownMutator
 //         }
 //     }
 //
-//     func NewMyModule() android.Module) {
+//     func NewMyModule() android.Module {
 //         m := &myModule{}
 //         m.AddProperties(&m.properties)
 //         android.InitAndroidModule(m)
@@ -1181,8 +1216,6 @@ type ModuleBase struct {
 	// filled with arch specific values by the arch mutator.
 	archProperties [][]interface{}
 
-	customizableProperties []interface{}
-
 	// Properties specific to the Blueprint to BUILD migration.
 	bazelTargetModuleProperties bazel.BazelTargetModuleProperties
 
@@ -1200,7 +1233,6 @@ type ModuleBase struct {
 	installFiles         InstallPaths
 	installFilesDepSet   *installPathsDepSet
 	checkbuildFiles      Paths
-	tidyFiles            WritablePaths
 	packagingSpecs       []PackagingSpec
 	packagingSpecsDepSet *packagingSpecsDepSet
 	noticeFiles          Paths
@@ -1216,7 +1248,6 @@ type ModuleBase struct {
 	// Only set on the final variant of each module
 	installTarget    WritablePath
 	checkbuildTarget WritablePath
-	tidyTarget       WritablePath
 	blueprintDir     string
 
 	hooks hooks
@@ -1230,14 +1261,19 @@ type ModuleBase struct {
 
 	initRcPaths         Paths
 	vintfFragmentsPaths Paths
+
+	// set of dependency module:location mappings used to populate the license metadata for
+	// apex containers.
+	licenseInstallMap []string
 }
 
 // A struct containing all relevant information about a Bazel target converted via bp2build.
 type bp2buildInfo struct {
-	Dir         string
-	BazelProps  bazel.BazelTargetModuleProperties
-	CommonAttrs CommonAttributes
-	Attrs       interface{}
+	Dir             string
+	BazelProps      bazel.BazelTargetModuleProperties
+	CommonAttrs     CommonAttributes
+	ConstraintAttrs constraintAttributes
+	Attrs           interface{}
 }
 
 // TargetName returns the Bazel target name of a bp2build converted target.
@@ -1263,7 +1299,7 @@ func (b bp2buildInfo) BazelRuleLoadLocation() string {
 
 // BazelAttributes returns the Bazel attributes of a bp2build converted target.
 func (b bp2buildInfo) BazelAttributes() []interface{} {
-	return []interface{}{&b.CommonAttrs, b.Attrs}
+	return []interface{}{&b.CommonAttrs, &b.ConstraintAttrs, b.Attrs}
 }
 
 func (m *ModuleBase) addBp2buildInfo(info bp2buildInfo) {
@@ -1289,7 +1325,7 @@ func (b *baseModuleContext) AddUnconvertedBp2buildDep(dep string) {
 // GetUnconvertedBp2buildDeps returns the list of module names of this module's direct dependencies that
 // were not converted to Bazel.
 func (m *ModuleBase) GetUnconvertedBp2buildDeps() []string {
-	return m.commonProperties.UnconvertedBp2buildDeps
+	return FirstUniqueStrings(m.commonProperties.UnconvertedBp2buildDeps)
 }
 
 func (m *ModuleBase) AddJSONData(d *map[string]interface{}) {
@@ -1300,6 +1336,8 @@ func (m *ModuleBase) ComponentDepsMutator(BottomUpMutatorContext) {}
 
 func (m *ModuleBase) DepsMutator(BottomUpMutatorContext) {}
 
+// AddProperties "registers" the provided props
+// each value in props MUST be a pointer to a struct
 func (m *ModuleBase) AddProperties(props ...interface{}) {
 	m.registerProps = append(m.registerProps, props...)
 }
@@ -1701,10 +1739,6 @@ func (m *ModuleBase) InstallInRoot() bool {
 	return false
 }
 
-func (m *ModuleBase) InstallBypassMake() bool {
-	return false
-}
-
 func (m *ModuleBase) InstallForceOS() (*OsType, *ArchType) {
 	return nil, nil
 }
@@ -1774,20 +1808,24 @@ func (m *ModuleBase) VintfFragments() Paths {
 	return append(Paths{}, m.vintfFragmentsPaths...)
 }
 
+// SetLicenseInstallMap stores the set of dependency module:location mappings for files in an
+// apex container for use when generation the license metadata file.
+func (m *ModuleBase) SetLicenseInstallMap(installMap []string) {
+	m.licenseInstallMap = append(m.licenseInstallMap, installMap...)
+}
+
 func (m *ModuleBase) generateModuleTarget(ctx ModuleContext) {
 	var allInstalledFiles InstallPaths
 	var allCheckbuildFiles Paths
-	var allTidyFiles WritablePaths
 	ctx.VisitAllModuleVariants(func(module Module) {
 		a := module.base()
 		allInstalledFiles = append(allInstalledFiles, a.installFiles...)
-		// A module's -{checkbuild,tidy} phony targets should
+		// A module's -checkbuild phony targets should
 		// not be created if the module is not exported to make.
 		// Those could depend on the build target and fail to compile
 		// for the current build target.
 		if !ctx.Config().KatiEnabled() || !shouldSkipAndroidMkProcessing(a) {
 			allCheckbuildFiles = append(allCheckbuildFiles, a.checkbuildFiles...)
-			allTidyFiles = append(allTidyFiles, a.tidyFiles...)
 		}
 	})
 
@@ -1810,13 +1848,6 @@ func (m *ModuleBase) generateModuleTarget(ctx ModuleContext) {
 		ctx.Phony(name, allCheckbuildFiles...)
 		m.checkbuildTarget = PathForPhony(ctx, name)
 		deps = append(deps, m.checkbuildTarget)
-	}
-
-	if len(allTidyFiles) > 0 {
-		name := namespacePrefix + ctx.ModuleName() + "-tidy"
-		ctx.Phony(name, allTidyFiles.Paths()...)
-		m.tidyTarget = PathForPhony(ctx, name)
-		deps = append(deps, m.tidyTarget)
 	}
 
 	if len(deps) > 0 {
@@ -2027,7 +2058,6 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 
 		m.installFiles = append(m.installFiles, ctx.installFiles...)
 		m.checkbuildFiles = append(m.checkbuildFiles, ctx.checkbuildFiles...)
-		m.tidyFiles = append(m.tidyFiles, ctx.tidyFiles...)
 		m.packagingSpecs = append(m.packagingSpecs, ctx.packagingSpecs...)
 		m.katiInstalls = append(m.katiInstalls, ctx.katiInstalls...)
 		m.katiSymlinks = append(m.katiSymlinks, ctx.katiSymlinks...)
@@ -2048,6 +2078,8 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 
 	m.installFilesDepSet = newInstallPathsDepSet(m.installFiles, dependencyInstallFiles)
 	m.packagingSpecsDepSet = newPackagingSpecsDepSet(m.packagingSpecs, dependencyPackagingSpecs)
+
+	buildLicenseMetadata(ctx)
 
 	m.buildParams = ctx.buildParams
 	m.ruleParams = ctx.ruleParams
@@ -2095,18 +2127,18 @@ func (e *earlyModuleContext) GlobFiles(globPattern string, excludes []string) Pa
 	return GlobFiles(e, globPattern, excludes)
 }
 
-func (b *earlyModuleContext) IsSymlink(path Path) bool {
-	fileInfo, err := b.config.fs.Lstat(path.String())
+func (e *earlyModuleContext) IsSymlink(path Path) bool {
+	fileInfo, err := e.config.fs.Lstat(path.String())
 	if err != nil {
-		b.ModuleErrorf("os.Lstat(%q) failed: %s", path.String(), err)
+		e.ModuleErrorf("os.Lstat(%q) failed: %s", path.String(), err)
 	}
 	return fileInfo.Mode()&os.ModeSymlink == os.ModeSymlink
 }
 
-func (b *earlyModuleContext) Readlink(path Path) string {
-	dest, err := b.config.fs.Readlink(path.String())
+func (e *earlyModuleContext) Readlink(path Path) string {
+	dest, err := e.config.fs.Readlink(path.String())
 	if err != nil {
-		b.ModuleErrorf("os.Readlink(%q) failed: %s", path.String(), err)
+		e.ModuleErrorf("os.Readlink(%q) failed: %s", path.String(), err)
 	}
 	return dest
 }
@@ -2225,7 +2257,6 @@ type moduleContext struct {
 	packagingSpecs  []PackagingSpec
 	installFiles    InstallPaths
 	checkbuildFiles Paths
-	tidyFiles       WritablePaths
 	module          Module
 	phonies         map[string]Paths
 
@@ -2829,10 +2860,6 @@ func (m *moduleContext) InstallInRoot() bool {
 	return m.module.InstallInRoot()
 }
 
-func (m *moduleContext) InstallBypassMake() bool {
-	return m.module.InstallBypassMake()
-}
-
 func (m *moduleContext) InstallForceOS() (*OsType, *ArchType) {
 	return m.module.InstallForceOS()
 }
@@ -2855,12 +2882,6 @@ func (m *moduleContext) skipInstall() bool {
 	// list of namespaces to install in a Soong-only build.
 	if !m.module.base().commonProperties.NamespaceExportedToMake {
 		return true
-	}
-
-	if m.Device() {
-		if m.Config().KatiEnabled() && !m.InstallBypassMake() {
-			return true
-		}
 	}
 
 	return false
@@ -2921,7 +2942,7 @@ func (m *moduleContext) installFile(installPath InstallPath, name string, srcPat
 			orderOnlyDeps = deps
 		}
 
-		if m.Config().KatiEnabled() && m.InstallBypassMake() {
+		if m.Config().KatiEnabled() {
 			// When creating the install rule in Soong but embedding in Make, write the rule to a
 			// makefile instead of directly to the ninja file so that main.mk can add the
 			// dependencies from the `required` property that are hard to resolve in Soong.
@@ -2980,7 +3001,7 @@ func (m *moduleContext) InstallSymlink(installPath InstallPath, name string, src
 	}
 	if !m.skipInstall() {
 
-		if m.Config().KatiEnabled() && m.InstallBypassMake() {
+		if m.Config().KatiEnabled() {
 			// When creating the symlink rule in Soong but embedding in Make, write the rule to a
 			// makefile instead of directly to the ninja file so that main.mk can add the
 			// dependencies from the `required` property that are hard to resolve in Soong.
@@ -3026,7 +3047,7 @@ func (m *moduleContext) InstallAbsoluteSymlink(installPath InstallPath, name str
 	m.module.base().hooks.runInstallHooks(m, nil, fullInstallPath, true)
 
 	if !m.skipInstall() {
-		if m.Config().KatiEnabled() && m.InstallBypassMake() {
+		if m.Config().KatiEnabled() {
 			// When creating the symlink rule in Soong but embedding in Make, write the rule to a
 			// makefile instead of directly to the ninja file so that main.mk can add the
 			// dependencies from the `required` property that are hard to resolve in Soong.
@@ -3061,10 +3082,6 @@ func (m *moduleContext) InstallAbsoluteSymlink(installPath InstallPath, name str
 
 func (m *moduleContext) CheckbuildFile(srcPath Path) {
 	m.checkbuildFiles = append(m.checkbuildFiles, srcPath)
-}
-
-func (m *moduleContext) TidyFile(srcPath WritablePath) {
-	m.tidyFiles = append(m.tidyFiles, srcPath)
 }
 
 func (m *moduleContext) blueprintModuleContext() blueprint.ModuleContext {
@@ -3325,9 +3342,10 @@ func parentDir(dir string) string {
 
 type buildTargetSingleton struct{}
 
-func addAncestors(ctx SingletonContext, dirMap map[string]Paths, mmName func(string) string) []string {
+func AddAncestors(ctx SingletonContext, dirMap map[string]Paths, mmName func(string) string) ([]string, []string) {
 	// Ensure ancestor directories are in dirMap
 	// Make directories build their direct subdirectories
+	// Returns a slice of all directories and a slice of top-level directories.
 	dirs := SortedStringKeys(dirMap)
 	for _, dir := range dirs {
 		dir := parentDir(dir)
@@ -3340,34 +3358,31 @@ func addAncestors(ctx SingletonContext, dirMap map[string]Paths, mmName func(str
 		}
 	}
 	dirs = SortedStringKeys(dirMap)
+	var topDirs []string
 	for _, dir := range dirs {
 		p := parentDir(dir)
 		if p != "." && p != "/" {
 			dirMap[p] = append(dirMap[p], PathForPhony(ctx, mmName(dir)))
+		} else if dir != "." && dir != "/" && dir != "" {
+			topDirs = append(topDirs, dir)
 		}
 	}
-	return SortedStringKeys(dirMap)
+	return SortedStringKeys(dirMap), topDirs
 }
 
 func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 	var checkbuildDeps Paths
-	var tidyDeps Paths
 
 	mmTarget := func(dir string) string {
 		return "MODULES-IN-" + strings.Replace(filepath.Clean(dir), "/", "-", -1)
 	}
-	mmTidyTarget := func(dir string) string {
-		return "tidy-" + strings.Replace(filepath.Clean(dir), "/", "-", -1)
-	}
 
 	modulesInDir := make(map[string]Paths)
-	tidyModulesInDir := make(map[string]Paths)
 
 	ctx.VisitAllModules(func(module Module) {
 		blueprintDir := module.base().blueprintDir
 		installTarget := module.base().installTarget
 		checkbuildTarget := module.base().checkbuildTarget
-		tidyTarget := module.base().tidyTarget
 
 		if checkbuildTarget != nil {
 			checkbuildDeps = append(checkbuildDeps, checkbuildTarget)
@@ -3376,16 +3391,6 @@ func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 
 		if installTarget != nil {
 			modulesInDir[blueprintDir] = append(modulesInDir[blueprintDir], installTarget)
-		}
-
-		if tidyTarget != nil {
-			tidyDeps = append(tidyDeps, tidyTarget)
-			// tidyTarget is in modulesInDir so it will be built with "mm".
-			modulesInDir[blueprintDir] = append(modulesInDir[blueprintDir], tidyTarget)
-			// tidyModulesInDir contains tidyTarget but not checkbuildTarget
-			// or installTarget, so tidy targets in a directory can be built
-			// without other checkbuild or install targets.
-			tidyModulesInDir[blueprintDir] = append(tidyModulesInDir[blueprintDir], tidyTarget)
 		}
 	})
 
@@ -3397,24 +3402,12 @@ func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 	// Create a top-level checkbuild target that depends on all modules
 	ctx.Phony("checkbuild"+suffix, checkbuildDeps...)
 
-	// Create a top-level tidy target that depends on all modules
-	ctx.Phony("tidy"+suffix, tidyDeps...)
-
-	dirs := addAncestors(ctx, tidyModulesInDir, mmTidyTarget)
-
-	// Kati does not generate tidy-* phony targets yet.
-	// Create a tidy-<directory> target that depends on all subdirectories
-	// and modules in the directory.
-	for _, dir := range dirs {
-		ctx.Phony(mmTidyTarget(dir), tidyModulesInDir[dir]...)
-	}
-
 	// Make will generate the MODULES-IN-* targets
 	if ctx.Config().KatiEnabled() {
 		return
 	}
 
-	dirs = addAncestors(ctx, modulesInDir, mmTarget)
+	dirs, _ := AddAncestors(ctx, modulesInDir, mmTarget)
 
 	// Create a MODULES-IN-<directory> target that depends on all modules in a directory, and
 	// depends on the MODULES-IN-* targets of all of its subdirectories that contain Android.bp

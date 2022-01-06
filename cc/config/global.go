@@ -46,7 +46,6 @@ var (
 
 		"-O2",
 		"-g",
-		"-fdebug-info-for-profiling",
 
 		"-fno-strict-aliasing",
 
@@ -125,6 +124,9 @@ var (
 		"-Werror=sequence-point",
 		"-Werror=format-security",
 		"-nostdlibinc",
+
+		// Emit additional debug info for AutoFDO
+		"-fdebug-info-for-profiling",
 	}
 
 	deviceGlobalCppflags = []string{
@@ -222,13 +224,17 @@ var (
 		"-Wno-pessimizing-move",                     // http://b/154270751
 		// New warnings to be fixed after clang-r399163
 		"-Wno-non-c-typedef-for-linkage", // http://b/161304145
-		// New warnings to be fixed after clang-r407598
-		"-Wno-string-concatenation", // http://b/175068488
 		// New warnings to be fixed after clang-r428724
 		"-Wno-align-mismatch", // http://b/193679946
 		// New warnings to be fixed after clang-r433403
 		"-Wno-error=unused-but-set-variable",  // http://b/197240255
 		"-Wno-error=unused-but-set-parameter", // http://b/197240255
+	}
+
+	noOverrideExternalGlobalCflags = []string{
+		// http://b/197240255
+		"-Wno-unused-but-set-variable",
+		"-Wno-unused-but-set-parameter",
 	}
 
 	// Extra cflags for external third-party projects to disable warnings that
@@ -257,6 +263,9 @@ var (
 
 		// http://b/199369603
 		"-Wno-null-pointer-subtraction",
+
+		// http://b/175068488
+		"-Wno-string-concatenation",
 	}
 
 	IllegalFlags = []string{
@@ -270,8 +279,8 @@ var (
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r437112"
-	ClangDefaultShortVersion = "14.0.0"
+	ClangDefaultVersion      = "clang-r437112b"
+	ClangDefaultShortVersion = "14.0.1"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{
@@ -344,6 +353,7 @@ func init() {
 
 	exportStringListStaticVariable("HostGlobalCflags", hostGlobalCflags)
 	exportStringListStaticVariable("NoOverrideGlobalCflags", noOverrideGlobalCflags)
+	exportStringListStaticVariable("NoOverrideExternalGlobalCflags", noOverrideExternalGlobalCflags)
 	exportStringListStaticVariable("CommonGlobalCppflags", commonGlobalCppflags)
 	exportStringListStaticVariable("ExternalCflags", extraExternalCflags)
 

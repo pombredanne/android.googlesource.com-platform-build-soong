@@ -901,6 +901,9 @@ func (mod *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 		bloaty.MeasureSizeForPaths(ctx, mod.compiler.strippedOutputFilePath(), android.OptionalPathForPath(mod.compiler.unstrippedOutputFilePath()))
 
 		mod.docTimestampFile = mod.compiler.rustdoc(ctx, flags, deps)
+		if mod.docTimestampFile.Valid() {
+			ctx.CheckbuildFile(mod.docTimestampFile.Path())
+		}
 
 		// glob exported headers for snapshot, if BOARD_VNDK_VERSION is current or
 		// RECOVERY_SNAPSHOT_VERSION is current.
@@ -969,6 +972,7 @@ type dependencyTag struct {
 	name      string
 	library   bool
 	procMacro bool
+	dynamic   bool
 }
 
 // InstallDepNeeded returns true for rlibs, dylibs, and proc macros so that they or their transitive
@@ -979,10 +983,19 @@ func (d dependencyTag) InstallDepNeeded() bool {
 
 var _ android.InstallNeededDependencyTag = dependencyTag{}
 
+func (d dependencyTag) LicenseAnnotations() []android.LicenseAnnotation {
+	if d.library && d.dynamic {
+		return []android.LicenseAnnotation{android.LicenseAnnotationSharedDependency}
+	}
+	return nil
+}
+
+var _ android.LicenseAnnotationsDependencyTag = dependencyTag{}
+
 var (
 	customBindgenDepTag = dependencyTag{name: "customBindgenTag"}
 	rlibDepTag          = dependencyTag{name: "rlibTag", library: true}
-	dylibDepTag         = dependencyTag{name: "dylib", library: true}
+	dylibDepTag         = dependencyTag{name: "dylib", library: true, dynamic: true}
 	procMacroDepTag     = dependencyTag{name: "procMacro", procMacro: true}
 	testPerSrcDepTag    = dependencyTag{name: "rust_unit_tests"}
 	sourceDepTag        = dependencyTag{name: "source"}
@@ -1300,10 +1313,6 @@ func (mod *Module) InstallInVendorRamdisk() bool {
 
 func (mod *Module) InstallInRecovery() bool {
 	return mod.InRecovery()
-}
-
-func (mod *Module) InstallBypassMake() bool {
-	return true
 }
 
 func linkPathFromFilePath(filepath android.Path) string {

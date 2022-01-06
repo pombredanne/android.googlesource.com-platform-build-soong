@@ -149,7 +149,7 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 		var modulePath string
 		if apexType == flattenedApex {
 			// /system/apex/<name>/{lib|framework|...}
-			modulePath = filepath.Join(a.installDir.ToMakePath().String(), apexBundleName, fi.installDir)
+			modulePath = filepath.Join(a.installDir.String(), apexBundleName, fi.installDir)
 			fmt.Fprintln(w, "LOCAL_MODULE_PATH :=", modulePath)
 			if a.primaryApexType && !symbolFilesNotNeeded {
 				fmt.Fprintln(w, "LOCAL_SOONG_SYMBOL_PATH :=", pathWhenActivated)
@@ -309,19 +309,17 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 	return moduleNames
 }
 
-func (a *apexBundle) writeRequiredModules(w io.Writer, apexBundleName string) {
+func (a *apexBundle) writeRequiredModules(w io.Writer) {
 	var required []string
 	var targetRequired []string
 	var hostRequired []string
 	required = append(required, a.RequiredModuleNames()...)
 	targetRequired = append(targetRequired, a.TargetRequiredModuleNames()...)
 	hostRequired = append(hostRequired, a.HostRequiredModuleNames()...)
-	installMapSet := make(map[string]bool) // set of dependency module:location mappings
 	for _, fi := range a.filesInfo {
 		required = append(required, fi.requiredModuleNames...)
 		targetRequired = append(targetRequired, fi.targetRequiredModuleNames...)
 		hostRequired = append(hostRequired, fi.hostRequiredModuleNames...)
-		installMapSet[a.fullModuleName(apexBundleName, &fi)+":"+fi.installDir+"/"+fi.builtFile.Base()] = true
 	}
 
 	if len(required) > 0 {
@@ -332,11 +330,6 @@ func (a *apexBundle) writeRequiredModules(w io.Writer, apexBundleName string) {
 	}
 	if len(hostRequired) > 0 {
 		fmt.Fprintln(w, "LOCAL_HOST_REQUIRED_MODULES +=", strings.Join(hostRequired, " "))
-	}
-	if len(installMapSet) > 0 {
-		var installs []string
-		installs = append(installs, android.SortedStringKeys(installMapSet)...)
-		fmt.Fprintln(w, "LOCAL_LICENSE_INSTALL_MAP +=", strings.Join(installs, " "))
 	}
 }
 
@@ -359,7 +352,7 @@ func (a *apexBundle) androidMkForType() android.AndroidMkData {
 				if len(moduleNames) > 0 {
 					fmt.Fprintln(w, "LOCAL_REQUIRED_MODULES :=", strings.Join(moduleNames, " "))
 				}
-				a.writeRequiredModules(w, name)
+				a.writeRequiredModules(w)
 				fmt.Fprintln(w, "include $(BUILD_PHONY_PACKAGE)")
 
 			} else {
@@ -369,7 +362,7 @@ func (a *apexBundle) androidMkForType() android.AndroidMkData {
 				data.Entries.WriteLicenseVariables(w)
 				fmt.Fprintln(w, "LOCAL_MODULE_CLASS := ETC") // do we need a new class?
 				fmt.Fprintln(w, "LOCAL_PREBUILT_MODULE_FILE :=", a.outputFile.String())
-				fmt.Fprintln(w, "LOCAL_MODULE_PATH :=", a.installDir.ToMakePath().String())
+				fmt.Fprintln(w, "LOCAL_MODULE_PATH :=", a.installDir.String())
 				stemSuffix := apexType.suffix()
 				if a.isCompressed {
 					stemSuffix = imageCapexSuffix
@@ -401,7 +394,7 @@ func (a *apexBundle) androidMkForType() android.AndroidMkData {
 				if len(a.requiredDeps) > 0 {
 					fmt.Fprintln(w, "LOCAL_REQUIRED_MODULES +=", strings.Join(a.requiredDeps, " "))
 				}
-				a.writeRequiredModules(w, name)
+				a.writeRequiredModules(w)
 
 				if a.mergedNotices.Merged.Valid() {
 					fmt.Fprintln(w, "LOCAL_NOTICE_FILE :=", a.mergedNotices.Merged.Path().String())
@@ -429,7 +422,7 @@ func (a *apexBundle) androidMkForType() android.AndroidMkData {
 				}
 
 				distCoverageFiles(w, "ndk_apis_usedby_apex", a.nativeApisUsedByModuleFile.String())
-				distCoverageFiles(w, "ndk_apis_usedby_apex", a.nativeApisBackedByModuleFile.String())
+				distCoverageFiles(w, "ndk_apis_backedby_apex", a.nativeApisBackedByModuleFile.String())
 				distCoverageFiles(w, "java_apis_used_by_apex", a.javaApisUsedByModuleFile.String())
 			}
 		}}

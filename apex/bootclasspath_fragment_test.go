@@ -16,11 +16,13 @@ package apex
 
 import (
 	"fmt"
+	"path"
 	"sort"
 	"strings"
 	"testing"
 
 	"android/soong/android"
+	"android/soong/dexpreopt"
 	"android/soong/java"
 
 	"github.com/google/blueprint/proptools"
@@ -35,11 +37,14 @@ var prepareForTestWithBootclasspathFragment = android.GroupFixturePreparers(
 )
 
 // Some additional files needed for the art apex.
-var prepareForTestWithArtApex = android.FixtureMergeMockFs(android.MockFS{
-	"com.android.art.avbpubkey":                          nil,
-	"com.android.art.pem":                                nil,
-	"system/sepolicy/apex/com.android.art-file_contexts": nil,
-})
+var prepareForTestWithArtApex = android.GroupFixturePreparers(
+	android.FixtureMergeMockFs(android.MockFS{
+		"com.android.art.avbpubkey":                          nil,
+		"com.android.art.pem":                                nil,
+		"system/sepolicy/apex/com.android.art-file_contexts": nil,
+	}),
+	dexpreopt.FixtureSetBootImageProfiles("art/build/boot/boot-image-profile.txt"),
+)
 
 func TestBootclasspathFragments(t *testing.T) {
 	result := android.GroupFixturePreparers(
@@ -408,6 +413,7 @@ func TestBootclasspathFragmentInArtApex(t *testing.T) {
 		).RunTest(t)
 
 		ensureExactContents(t, result.TestContext, "com.android.art", "android_common_com.android.art_image", []string{
+			"etc/boot-image.prof",
 			"etc/classpaths/bootclasspath.pb",
 			"javalib/arm/boot.art",
 			"javalib/arm/boot.oat",
@@ -437,6 +443,24 @@ func TestBootclasspathFragmentInArtApex(t *testing.T) {
 		checkCopiesToPredefinedLocationForArt(t, result.Config, module, "bar", "foo")
 	})
 
+	t.Run("boot image disable generate profile", func(t *testing.T) {
+		result := android.GroupFixturePreparers(
+			commonPreparer,
+
+			// Configure some libraries in the art bootclasspath_fragment that match the source
+			// bootclasspath_fragment's contents property.
+			java.FixtureConfigureBootJars("com.android.art:foo", "com.android.art:bar"),
+			addSource("foo", "bar"),
+			dexpreopt.FixtureDisableGenerateProfile(true),
+		).RunTest(t)
+
+		files := getFiles(t, result.TestContext, "com.android.art", "android_common_com.android.art_image")
+		for _, file := range files {
+			matched, _ := path.Match("etc/boot-image.prof", file.path)
+			android.AssertBoolEquals(t, "\"etc/boot-image.prof\" should not be in the APEX", matched, false)
+		}
+	})
+
 	t.Run("boot image files with preferred prebuilt", func(t *testing.T) {
 		result := android.GroupFixturePreparers(
 			commonPreparer,
@@ -451,6 +475,7 @@ func TestBootclasspathFragmentInArtApex(t *testing.T) {
 		).RunTest(t)
 
 		ensureExactContents(t, result.TestContext, "com.android.art", "android_common_com.android.art_image", []string{
+			"etc/boot-image.prof",
 			"etc/classpaths/bootclasspath.pb",
 			"javalib/arm/boot.art",
 			"javalib/arm/boot.oat",
@@ -542,7 +567,7 @@ func TestBootclasspathFragmentInArtApex(t *testing.T) {
 }
 
 func TestBootclasspathFragmentInPrebuiltArtApex(t *testing.T) {
-	result := android.GroupFixturePreparers(
+	preparers := android.GroupFixturePreparers(
 		prepareForTestWithBootclasspathFragment,
 		prepareForTestWithArtApex,
 
@@ -553,7 +578,9 @@ func TestBootclasspathFragmentInPrebuiltArtApex(t *testing.T) {
 
 		// Configure some libraries in the art bootclasspath_fragment.
 		java.FixtureConfigureBootJars("com.android.art:foo", "com.android.art:bar"),
-	).RunTestWithBp(t, `
+	)
+
+	bp := `
 		prebuilt_apex {
 			name: "com.android.art",
 			arch: {
@@ -599,22 +626,45 @@ func TestBootclasspathFragmentInPrebuiltArtApex(t *testing.T) {
 				all_flags: "mybootclasspathfragment/all-flags.csv",
 			},
 		}
-	`)
 
-	java.CheckModuleDependencies(t, result.TestContext, "com.android.art", "android_common_com.android.art", []string{
-		`com.android.art.apex.selector`,
-		`prebuilt_mybootclasspathfragment`,
+		// A prebuilt apex with the same apex_name that shouldn't interfere when it isn't enabled.
+		prebuilt_apex {
+			name: "com.mycompany.android.art",
+			apex_name: "com.android.art",
+			%s
+			src: "com.mycompany.android.art.apex",
+			exported_bootclasspath_fragments: ["mybootclasspathfragment"],
+		}
+	`
+
+	t.Run("disabled alternative APEX", func(t *testing.T) {
+		result := preparers.RunTestWithBp(t, fmt.Sprintf(bp, "enabled: false,"))
+
+		java.CheckModuleDependencies(t, result.TestContext, "com.android.art", "android_common_com.android.art", []string{
+			`com.android.art.apex.selector`,
+			`prebuilt_mybootclasspathfragment`,
+		})
+
+		java.CheckModuleDependencies(t, result.TestContext, "mybootclasspathfragment", "android_common_com.android.art", []string{
+			`com.android.art.deapexer`,
+			`dex2oatd`,
+			`prebuilt_bar`,
+			`prebuilt_foo`,
+		})
+
+		module := result.ModuleForTests("mybootclasspathfragment", "android_common_com.android.art")
+		checkCopiesToPredefinedLocationForArt(t, result.Config, module, "bar", "foo")
+
+		// Check that the right deapexer module was chosen for a boot image.
+		param := module.Output("out/soong/test_device/dex_artjars/android/apex/art_boot_images/javalib/arm64/boot.art")
+		android.AssertStringDoesContain(t, "didn't find the expected deapexer in the input path", param.Input.String(), "/com.android.art.deapexer")
 	})
 
-	java.CheckModuleDependencies(t, result.TestContext, "mybootclasspathfragment", "android_common_com.android.art", []string{
-		`com.android.art.deapexer`,
-		`dex2oatd`,
-		`prebuilt_bar`,
-		`prebuilt_foo`,
+	t.Run("enabled alternative APEX", func(t *testing.T) {
+		preparers.ExtendWithErrorHandler(android.FixtureExpectsAtLeastOneErrorMatchingPattern(
+			"Multiple installable prebuilt APEXes provide ambiguous deapexers: com.android.art and com.mycompany.android.art")).
+			RunTestWithBp(t, fmt.Sprintf(bp, ""))
 	})
-
-	module := result.ModuleForTests("mybootclasspathfragment", "android_common_com.android.art")
-	checkCopiesToPredefinedLocationForArt(t, result.Config, module, "bar", "foo")
 }
 
 // checkCopiesToPredefinedLocationForArt checks that the supplied modules are copied to the

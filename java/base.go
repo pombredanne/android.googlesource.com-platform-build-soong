@@ -122,6 +122,14 @@ type CommonProperties struct {
 		Javacflags []string
 	}
 
+	Openjdk11 struct {
+		// List of source files that should only be used when passing -source 1.9 or higher
+		Srcs []string `android:"path"`
+
+		// List of javac flags that should only be used when passing -source 1.9 or higher
+		Javacflags []string
+	}
+
 	// When compiling language level 9+ .java code in packages that are part of
 	// a system module, patch_module names the module that your sources and
 	// dependencies should be patched into. The Android runtime currently
@@ -196,6 +204,10 @@ type DeviceProperties struct {
 	// if not blank, set the minimum version of the sdk that the compiled artifacts will run against.
 	// Defaults to sdk_version if not set. See sdk_version for possible values.
 	Min_sdk_version *string
+
+	// if not blank, set the maximum version of the sdk that the compiled artifacts will run against.
+	// Defaults to empty string "". See sdk_version for possible values.
+	Max_sdk_version *string
 
 	// if not blank, set the targetSdkVersion in the AndroidManifest.xml.
 	// Defaults to sdk_version if not set. See sdk_version for possible values.
@@ -368,6 +380,7 @@ type Module struct {
 	android.DefaultableModuleBase
 	android.ApexModuleBase
 	android.SdkBase
+	android.BazelModuleBase
 
 	// Functionality common to Module and Import.
 	embeddableInModuleAndImport
@@ -460,6 +473,7 @@ type Module struct {
 
 	sdkVersion    android.SdkSpec
 	minSdkVersion android.SdkSpec
+	maxSdkVersion android.SdkSpec
 }
 
 func (j *Module) CheckStableSdkVersion(ctx android.BaseModuleContext) error {
@@ -615,6 +629,13 @@ func (j *Module) MinSdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
 		return android.SdkSpecFrom(ctx, *j.deviceProperties.Min_sdk_version)
 	}
 	return j.SdkVersion(ctx)
+}
+
+func (j *Module) MaxSdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
+	maxSdkVersion := proptools.StringDefault(j.deviceProperties.Max_sdk_version, "")
+	// SdkSpecFrom returns SdkSpecPrivate for this, which may be confusing.
+	// TODO(b/208456999): ideally MaxSdkVersion should be an ApiLevel and not SdkSpec.
+	return android.SdkSpecFrom(ctx, maxSdkVersion)
 }
 
 func (j *Module) MinSdkVersionString() string {
@@ -946,6 +967,10 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	if flags.javaVersion.usesJavaModules() {
 		j.properties.Srcs = append(j.properties.Srcs, j.properties.Openjdk9.Srcs...)
 	}
+	if ctx.Config().TargetsJava11() {
+		j.properties.Srcs = append(j.properties.Srcs, j.properties.Openjdk11.Srcs...)
+	}
+
 	srcFiles := android.PathsForModuleSrcExcludes(ctx, j.properties.Srcs, j.properties.Exclude_srcs)
 	if hasSrcExt(srcFiles.Strings(), ".proto") {
 		flags = protoFlags(ctx, &j.properties, &j.protoProperties, flags)
@@ -1631,8 +1656,7 @@ func (j *Module) DepIsInSameApex(ctx android.BaseModuleContext, dep android.Modu
 }
 
 // Implements android.ApexModule
-func (j *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
-	sdkVersion android.ApiLevel) error {
+func (j *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext, sdkVersion android.ApiLevel) error {
 	sdkSpec := j.MinSdkVersion(ctx)
 	if !sdkSpec.Specified() {
 		return fmt.Errorf("min_sdk_version is not specified")
@@ -1941,3 +1965,17 @@ type ModuleWithStem interface {
 }
 
 var _ ModuleWithStem = (*Module)(nil)
+
+func (j *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
+	switch ctx.ModuleType() {
+	case "java_library", "java_library_host":
+		if lib, ok := ctx.Module().(*Library); ok {
+			javaLibraryBp2Build(ctx, lib)
+		}
+	case "java_binary_host":
+		if binary, ok := ctx.Module().(*Binary); ok {
+			javaBinaryHostBp2Build(ctx, binary)
+		}
+	}
+
+}

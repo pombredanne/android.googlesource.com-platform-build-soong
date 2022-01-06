@@ -64,6 +64,9 @@ func RegisterCCBuildComponents(ctx android.RegistrationContext) {
 
 		ctx.BottomUp("coverage", coverageMutator).Parallel()
 
+		ctx.TopDown("afdo_deps", afdoDepsMutator)
+		ctx.BottomUp("afdo", afdoMutator).Parallel()
+
 		ctx.TopDown("lto_deps", ltoDepsMutator)
 		ctx.BottomUp("lto", ltoMutator).Parallel()
 
@@ -167,6 +170,10 @@ type PathDeps struct {
 
 	// Path to the dynamic linker binary
 	DynamicLinker android.OptionalPath
+
+	// For Darwin builds, the path to the second architecture's output that should
+	// be combined with this architectures's output into a FAT MachO file.
+	DarwinSecondArchOutput android.OptionalPath
 }
 
 // LocalOrGlobalFlags contains flags that need to have values set globally by the build system or locally by the module
@@ -682,6 +689,15 @@ func (d libraryDependencyTag) static() bool {
 	return d.Kind == staticLibraryDependency
 }
 
+func (d libraryDependencyTag) LicenseAnnotations() []android.LicenseAnnotation {
+	if d.shared() {
+		return []android.LicenseAnnotation{android.LicenseAnnotationSharedDependency}
+	}
+	return nil
+}
+
+var _ android.LicenseAnnotationsDependencyTag = libraryDependencyTag{}
+
 // InstallDepNeeded returns true for shared libraries so that shared library dependencies of
 // binaries or other shared libraries are installed as dependencies.
 func (d libraryDependencyTag) InstallDepNeeded() bool {
@@ -773,8 +789,9 @@ type Module struct {
 	Properties       BaseProperties
 
 	// initialize before calling Init
-	hod      android.HostOrDeviceSupported
-	multilib android.Multilib
+	hod       android.HostOrDeviceSupported
+	multilib  android.Multilib
+	bazelable bool
 
 	// Allowable SdkMemberTypes of this module type.
 	sdkMemberTypes []android.SdkMemberType
@@ -796,6 +813,7 @@ type Module struct {
 	sabi     *sabi
 	vndkdep  *vndkdep
 	lto      *lto
+	afdo     *afdo
 	pgo      *pgo
 
 	library libraryInterface
@@ -815,6 +833,10 @@ type Module struct {
 	makeLinkType string
 	// Kythe (source file indexer) paths for this compilation module
 	kytheFiles android.Paths
+	// Object .o file output paths for this compilation module
+	objFiles android.Paths
+	// Tidy .tidy file output paths for this compilation module
+	tidyFiles android.Paths
 
 	// For apex variants, this is set as apex.min_sdk_version
 	apexSdkVersion android.ApiLevel
@@ -1125,6 +1147,9 @@ func (c *Module) Init() android.Module {
 	if c.lto != nil {
 		c.AddProperties(c.lto.props()...)
 	}
+	if c.afdo != nil {
+		c.AddProperties(c.afdo.props()...)
+	}
 	if c.pgo != nil {
 		c.AddProperties(c.pgo.props()...)
 	}
@@ -1133,7 +1158,9 @@ func (c *Module) Init() android.Module {
 	}
 
 	android.InitAndroidArchModule(c, c.hod, c.multilib)
-	android.InitBazelModule(c)
+	if c.bazelable {
+		android.InitBazelModule(c)
+	}
 	android.InitApexModule(c)
 	android.InitSdkAwareModule(c)
 	android.InitDefaultableModule(c)
@@ -1364,8 +1391,6 @@ func (c *Module) isCfiAssemblySupportEnabled() bool {
 func (c *Module) InstallInRoot() bool {
 	return c.installer != nil && c.installer.installInRoot()
 }
-
-func (c *Module) InstallBypassMake() bool { return true }
 
 type baseModuleContext struct {
 	android.BaseModuleContext
@@ -1602,6 +1627,7 @@ func newModule(hod android.HostOrDeviceSupported, multilib android.Multilib) *Mo
 	module.sabi = &sabi{}
 	module.vndkdep = &vndkdep{}
 	module.lto = &lto{}
+	module.afdo = &afdo{}
 	module.pgo = &pgo{}
 	return module
 }
@@ -1713,7 +1739,15 @@ func (c *Module) setSubnameProperty(actx android.ModuleContext) {
 
 // Returns true if Bazel was successfully used for the analysis of this module.
 func (c *Module) maybeGenerateBazelActions(actx android.ModuleContext) bool {
-	bazelModuleLabel := c.GetBazelLabel(actx, c)
+	var bazelModuleLabel string
+	if actx.ModuleType() == "cc_library" && c.static() {
+		// cc_library is a special case in bp2build; two targets are generated -- one for each
+		// of the shared and static variants. The shared variant keeps the module name, but the
+		// static variant uses a different suffixed name.
+		bazelModuleLabel = bazelLabelForStaticModule(actx, c)
+	} else {
+		bazelModuleLabel = c.GetBazelLabel(actx, c)
+	}
 	bazelActionsUsed := false
 	// Mixed builds mode is disabled for modules outside of device OS.
 	// TODO(b/200841190): Support non-device OS in mixed builds.
@@ -1789,6 +1823,9 @@ func (c *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 	if c.lto != nil {
 		flags = c.lto.flags(ctx, flags)
 	}
+	if c.afdo != nil {
+		flags = c.afdo.flags(ctx, flags)
+	}
 	if c.pgo != nil {
 		flags = c.pgo.flags(ctx, flags)
 	}
@@ -1827,6 +1864,8 @@ func (c *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 			return
 		}
 		c.kytheFiles = objs.kytheFiles
+		c.objFiles = objs.objFiles
+		c.tidyFiles = objs.tidyFiles
 	}
 
 	if c.linker != nil {
@@ -1913,6 +1952,9 @@ func (c *Module) begin(ctx BaseModuleContext) {
 	}
 	if c.lto != nil {
 		c.lto.begin(ctx)
+	}
+	if c.afdo != nil {
+		c.afdo.begin(ctx)
 	}
 	if c.pgo != nil {
 		c.pgo.begin(ctx)
@@ -2570,6 +2612,11 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 		depName := ctx.OtherModuleName(dep)
 		depTag := ctx.OtherModuleDependencyTag(dep)
 
+		if depTag == android.DarwinUniversalVariantTag {
+			depPaths.DarwinSecondArchOutput = dep.(*Module).OutputFile()
+			return
+		}
+
 		ccDep, ok := dep.(LinkableInterface)
 		if !ok {
 
@@ -3153,6 +3200,24 @@ func (c *Module) testBinary() bool {
 	return false
 }
 
+func (c *Module) benchmarkBinary() bool {
+	if b, ok := c.linker.(interface {
+		benchmarkBinary() bool
+	}); ok {
+		return b.benchmarkBinary()
+	}
+	return false
+}
+
+func (c *Module) fuzzBinary() bool {
+	if f, ok := c.linker.(interface {
+		fuzzBinary() bool
+	}); ok {
+		return f.fuzzBinary()
+	}
+	return false
+}
+
 // Header returns true if the module is a header-only variant. (See cc/library.go header()).
 func (c *Module) Header() bool {
 	if h, ok := c.linker.(interface {
@@ -3398,16 +3463,58 @@ func (c *Module) AlwaysRequiresPlatformApexVariant() bool {
 
 var _ snapshot.RelativeInstallPath = (*Module)(nil)
 
+// ConvertWithBp2build converts Module to Bazel for bp2build.
+func (c *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
+	prebuilt := c.IsPrebuilt()
+	if c.Binary() {
+		if !prebuilt {
+			binaryBp2build(ctx, c, ctx.ModuleType())
+		}
+	} else if c.Object() {
+		if !prebuilt {
+			objectBp2Build(ctx, c)
+		}
+	} else if c.CcLibrary() {
+		static := false
+		shared := false
+		if library, ok := c.linker.(*libraryDecorator); ok {
+			static = library.MutatedProperties.BuildStatic
+			shared = library.MutatedProperties.BuildShared
+		} else if library, ok := c.linker.(*prebuiltLibraryLinker); ok {
+			static = library.MutatedProperties.BuildStatic
+			shared = library.MutatedProperties.BuildShared
+		}
+
+		if static && shared {
+			if !prebuilt {
+				libraryBp2Build(ctx, c)
+			}
+		} else if !static && !shared {
+			if !prebuilt {
+				libraryHeadersBp2Build(ctx, c)
+			}
+		} else if static {
+			if prebuilt {
+				prebuiltLibraryStaticBp2Build(ctx, c)
+			} else {
+				sharedOrStaticLibraryBp2Build(ctx, c, true)
+			}
+		} else if shared {
+			if prebuilt {
+				prebuiltLibrarySharedBp2Build(ctx, c)
+			} else {
+				sharedOrStaticLibraryBp2Build(ctx, c, false)
+			}
+		}
+	}
+}
+
 //
 // Defaults
 //
 type Defaults struct {
 	android.ModuleBase
 	android.DefaultsModuleBase
-	// Included to support setting bazel_module.label for multiple Soong modules to the same Bazel
-	// target. This is primarily useful for modules that were architecture specific and instead are
-	// handled in Bazel as a select().
-	android.BazelModuleBase
 	android.ApexModuleBase
 }
 
@@ -3448,6 +3555,7 @@ func DefaultsFactory(props ...interface{}) android.Module {
 		&SAbiProperties{},
 		&VndkProperties{},
 		&LTOProperties{},
+		&AfdoProperties{},
 		&PgoProperties{},
 		&android.ProtoProperties{},
 		// RustBindgenProperties is included here so that cc_defaults can be used for rust_bindgen modules.
@@ -3455,8 +3563,6 @@ func DefaultsFactory(props ...interface{}) android.Module {
 		&prebuiltLinkerProperties{},
 	)
 
-	// Bazel module must be initialized _before_ Defaults to be included in cc_defaults module.
-	android.InitBazelModule(module)
 	android.InitDefaultsModule(module)
 
 	return module

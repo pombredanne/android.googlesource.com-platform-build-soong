@@ -390,6 +390,8 @@ endif
 ifeq (,$(filter barbet coral%,$(TARGET_PRODUCT)))
 else ifneq (,$(filter barbet%,$(TARGET_PRODUCT)))
 endif
+ifeq (,$(filter-out sunfish_kasan, $(TARGET_PRODUCT)))
+endif
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
@@ -408,6 +410,8 @@ def init(g, handle):
   if not rblf.filter("barbet coral%", g["TARGET_PRODUCT"]):
     pass
   elif rblf.filter("barbet%", g["TARGET_PRODUCT"]):
+    pass
+  if not rblf.filter_out("sunfish_kasan", g["TARGET_PRODUCT"]):
     pass
 `,
 	},
@@ -629,14 +633,41 @@ def init(g, handle):
 		desc:   "findstring call",
 		mkname: "product.mk",
 		in: `
+result := $(findstring a,a b c)
+result := $(findstring b,x y z)
+`,
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  _result = rblf.findstring("a", "a b c")
+  _result = rblf.findstring("b", "x y z")
+`,
+	},
+	{
+		desc:   "findstring in if statement",
+		mkname: "product.mk",
+		in: `
+ifeq ($(findstring foo,$(PRODUCT_PACKAGES)),)
+endif
 ifneq ($(findstring foo,$(PRODUCT_PACKAGES)),)
+endif
+ifeq ($(findstring foo,$(PRODUCT_PACKAGES)),foo)
+endif
+ifneq ($(findstring foo,$(PRODUCT_PACKAGES)),foo)
 endif
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
+  if (cfg.get("PRODUCT_PACKAGES", [])).find("foo") == -1:
+    pass
   if (cfg.get("PRODUCT_PACKAGES", [])).find("foo") != -1:
+    pass
+  if (cfg.get("PRODUCT_PACKAGES", [])).find("foo") != -1:
+    pass
+  if (cfg.get("PRODUCT_PACKAGES", [])).find("foo") == -1:
     pass
 `,
 	},
@@ -1018,7 +1049,7 @@ def init(g, handle):
   }.get("vendor/%s/cfg.mk" % g["MY_PATH"])
   (_varmod, _varmod_init) = _entry if _entry else (None, None)
   if not _varmod_init:
-    rblf.mkerror("cannot")
+    rblf.mkerror("product.mk", "Cannot find %s" % ("vendor/%s/cfg.mk" % g["MY_PATH"]))
   rblf.inherit(handle, _varmod, _varmod_init)
 `,
 	},
@@ -1042,7 +1073,41 @@ def init(g, handle):
   }.get("%s/cfg.mk" % g["MY_PATH"])
   (_varmod, _varmod_init) = _entry if _entry else (None, None)
   if not _varmod_init:
-    rblf.mkerror("cannot")
+    rblf.mkerror("product.mk", "Cannot find %s" % ("%s/cfg.mk" % g["MY_PATH"]))
+  rblf.inherit(handle, _varmod, _varmod_init)
+`,
+	},
+	{
+		desc:   "Dynamic inherit with duplicated hint",
+		mkname: "product.mk",
+		in: `
+MY_PATH:=foo
+#RBC# include_top vendor/foo1
+$(call inherit-product,$(MY_PATH)/cfg.mk)
+#RBC# include_top vendor/foo1
+$(call inherit-product,$(MY_PATH)/cfg.mk)
+`,
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
+load("//vendor/foo1:cfg.star|init", _cfg_init = "init")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  g["MY_PATH"] = "foo"
+  #RBC# include_top vendor/foo1
+  _entry = {
+    "vendor/foo1/cfg.mk": ("_cfg", _cfg_init),
+  }.get("%s/cfg.mk" % g["MY_PATH"])
+  (_varmod, _varmod_init) = _entry if _entry else (None, None)
+  if not _varmod_init:
+    rblf.mkerror("product.mk", "Cannot find %s" % ("%s/cfg.mk" % g["MY_PATH"]))
+  rblf.inherit(handle, _varmod, _varmod_init)
+  #RBC# include_top vendor/foo1
+  _entry = {
+    "vendor/foo1/cfg.mk": ("_cfg", _cfg_init),
+  }.get("%s/cfg.mk" % g["MY_PATH"])
+  (_varmod, _varmod_init) = _entry if _entry else (None, None)
+  if not _varmod_init:
+    rblf.mkerror("product.mk", "Cannot find %s" % ("%s/cfg.mk" % g["MY_PATH"]))
   rblf.inherit(handle, _varmod, _varmod_init)
 `,
 	},
@@ -1085,6 +1150,95 @@ def init(g, handle):
   cfg = rblf.cfg(handle)
   if rblf.mk2rbc_error("build/product.mk:2", "cannot handle invoking foobar"):
     pass
+`,
+	},
+	{
+		desc:   "if expression",
+		mkname: "product.mk",
+		in: `
+TEST_VAR := foo
+TEST_VAR_LIST := foo
+TEST_VAR_LIST += bar
+TEST_VAR_2 := $(if $(TEST_VAR),bar)
+TEST_VAR_3 := $(if $(TEST_VAR),bar,baz)
+TEST_VAR_3 := $(if $(TEST_VAR),$(TEST_VAR_LIST))
+`,
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  g["TEST_VAR"] = "foo"
+  g["TEST_VAR_LIST"] = ["foo"]
+  g["TEST_VAR_LIST"] += ["bar"]
+  g["TEST_VAR_2"] = ("bar" if g["TEST_VAR"] else "")
+  g["TEST_VAR_3"] = ("bar" if g["TEST_VAR"] else "baz")
+  g["TEST_VAR_3"] = (g["TEST_VAR_LIST"] if g["TEST_VAR"] else [])
+`,
+	},
+	{
+		desc:   "substitution references",
+		mkname: "product.mk",
+		in: `
+SOURCES := foo.c bar.c
+OBJECTS := $(SOURCES:.c=.o)
+OBJECTS2 := $(SOURCES:%.c=%.o)
+`,
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  g["SOURCES"] = "foo.c bar.c"
+  g["OBJECTS"] = rblf.mkpatsubst("%.c", "%.o", g["SOURCES"])
+  g["OBJECTS2"] = rblf.mkpatsubst("%.c", "%.o", g["SOURCES"])
+`,
+	},
+	{
+		desc:   "foreach expressions",
+		mkname: "product.mk",
+		in: `
+BOOT_KERNEL_MODULES := foo.ko bar.ko
+BOOT_KERNEL_MODULES_FILTER := $(foreach m,$(BOOT_KERNEL_MODULES),%/$(m))
+BOOT_KERNEL_MODULES_LIST := foo.ko
+BOOT_KERNEL_MODULES_LIST += bar.ko
+BOOT_KERNEL_MODULES_FILTER_2 := $(foreach m,$(BOOT_KERNEL_MODULES_LIST),%/$(m))
+
+`,
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  g["BOOT_KERNEL_MODULES"] = "foo.ko bar.ko"
+  g["BOOT_KERNEL_MODULES_FILTER"] = ["%%/%s" % m for m in rblf.words(g["BOOT_KERNEL_MODULES"])]
+  g["BOOT_KERNEL_MODULES_LIST"] = ["foo.ko"]
+  g["BOOT_KERNEL_MODULES_LIST"] += ["bar.ko"]
+  g["BOOT_KERNEL_MODULES_FILTER_2"] = ["%%/%s" % m for m in g["BOOT_KERNEL_MODULES_LIST"]]
+`,
+	},
+	{
+		desc:   "List appended to string",
+		mkname: "product.mk",
+		in: `
+NATIVE_BRIDGE_PRODUCT_PACKAGES := \
+    libnative_bridge_vdso.native_bridge \
+    native_bridge_guest_app_process.native_bridge \
+    native_bridge_guest_linker.native_bridge
+
+NATIVE_BRIDGE_MODIFIED_GUEST_LIBS := \
+    libaaudio \
+    libamidi \
+    libandroid \
+    libandroid_runtime
+
+NATIVE_BRIDGE_PRODUCT_PACKAGES += \
+    $(addsuffix .native_bridge,$(NATIVE_BRIDGE_ORIG_GUEST_LIBS))
+`,
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  g["NATIVE_BRIDGE_PRODUCT_PACKAGES"] = "libnative_bridge_vdso.native_bridge      native_bridge_guest_app_process.native_bridge      native_bridge_guest_linker.native_bridge"
+  g["NATIVE_BRIDGE_MODIFIED_GUEST_LIBS"] = "libaaudio      libamidi      libandroid      libandroid_runtime"
+  g["NATIVE_BRIDGE_PRODUCT_PACKAGES"] += " " + " ".join(rblf.addsuffix(".native_bridge", g.get("NATIVE_BRIDGE_ORIG_GUEST_LIBS", "")))
 `,
 	},
 }

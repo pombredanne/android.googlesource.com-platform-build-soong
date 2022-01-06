@@ -43,8 +43,6 @@ func RegisterAppBuildComponents(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("android_app_certificate", AndroidAppCertificateFactory)
 	ctx.RegisterModuleType("override_android_app", OverrideAndroidAppModuleFactory)
 	ctx.RegisterModuleType("override_android_test", OverrideAndroidTestModuleFactory)
-
-	android.RegisterBp2BuildMutator("android_app_certificate", AndroidAppCertificateBp2Build)
 }
 
 // AndroidManifest.xml merging
@@ -139,6 +137,7 @@ type overridableAppProperties struct {
 }
 
 type AndroidApp struct {
+	android.BazelModuleBase
 	Library
 	aapt
 	android.OverridableModuleBase
@@ -291,7 +290,7 @@ func (a *AndroidApp) checkAppSdkVersions(ctx android.ModuleContext) {
 
 		if minSdkVersion, err := a.MinSdkVersion(ctx).EffectiveVersion(ctx); err == nil {
 			a.checkJniLibsSdkVersion(ctx, minSdkVersion)
-			android.CheckMinSdkVersion(a, ctx, minSdkVersion)
+			android.CheckMinSdkVersion(ctx, minSdkVersion, a.WalkPayloadDeps)
 		} else {
 			ctx.PropertyErrorf("min_sdk_version", "%s", err.Error())
 		}
@@ -486,7 +485,7 @@ func (a *AndroidApp) jniBuildActions(jniLibs []jniLib, ctx android.ModuleContext
 		a.jniLibs = jniLibs
 		if a.shouldEmbedJnis(ctx) {
 			jniJarFile = android.PathForModuleOut(ctx, "jnilibs.zip")
-			a.installPathForJNISymbols = a.installPath(ctx).ToMakePath()
+			a.installPathForJNISymbols = a.installPath(ctx)
 			TransformJniLibsToJar(ctx, jniJarFile, jniLibs, a.useEmbeddedNativeLibs(ctx))
 			for _, jni := range jniLibs {
 				if jni.coverageFile.Valid() {
@@ -943,6 +942,7 @@ func AndroidAppFactory() android.Module {
 	android.InitDefaultableModule(module)
 	android.InitOverridableModule(module, &module.appProperties.Overrides)
 	android.InitApexModule(module)
+	android.InitBazelModule(module)
 
 	return module
 }
@@ -1405,23 +1405,11 @@ type bazelAndroidAppCertificateAttributes struct {
 	Certificate string
 }
 
-func AndroidAppCertificateBp2Build(ctx android.TopDownMutatorContext) {
-	module, ok := ctx.Module().(*AndroidAppCertificate)
-	if !ok {
-		// Not an Android app certificate
-		return
-	}
-	if !module.ConvertWithBp2build(ctx) {
-		return
-	}
-	if ctx.ModuleType() != "android_app_certificate" {
-		return
-	}
-
-	androidAppCertificateBp2BuildInternal(ctx, module)
+func (m *AndroidAppCertificate) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
+	androidAppCertificateBp2Build(ctx, m)
 }
 
-func androidAppCertificateBp2BuildInternal(ctx android.TopDownMutatorContext, module *AndroidAppCertificate) {
+func androidAppCertificateBp2Build(ctx android.TopDownMutatorContext, module *AndroidAppCertificate) {
 	var certificate string
 	if module.properties.Certificate != nil {
 		certificate = *module.properties.Certificate
@@ -1437,4 +1425,40 @@ func androidAppCertificateBp2BuildInternal(ctx android.TopDownMutatorContext, mo
 	}
 
 	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: module.Name()}, attrs)
+}
+
+type bazelAndroidAppAttributes struct {
+	Srcs           bazel.LabelListAttribute
+	Manifest       bazel.Label
+	Custom_package *string
+	Resource_files bazel.LabelListAttribute
+}
+
+// ConvertWithBp2build is used to convert android_app to Bazel.
+func (a *AndroidApp) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
+	//TODO(b/209577426): Support multiple arch variants
+	srcs := bazel.MakeLabelListAttribute(android.BazelLabelForModuleSrcExcludes(ctx, a.properties.Srcs, a.properties.Exclude_srcs))
+
+	manifest := proptools.StringDefault(a.aaptProperties.Manifest, "AndroidManifest.xml")
+
+	resourceFiles := bazel.LabelList{
+		Includes: []bazel.Label{},
+	}
+	for _, dir := range android.PathsWithOptionalDefaultForModuleSrc(ctx, a.aaptProperties.Resource_dirs, "res") {
+		files := android.RootToModuleRelativePaths(ctx, androidResourceGlob(ctx, dir))
+		resourceFiles.Includes = append(resourceFiles.Includes, files...)
+	}
+
+	attrs := &bazelAndroidAppAttributes{
+		Srcs:     srcs,
+		Manifest: android.BazelLabelForModuleSrcSingle(ctx, manifest),
+		// TODO(b/209576404): handle package name override by product variable PRODUCT_MANIFEST_PACKAGE_NAME_OVERRIDES
+		Custom_package: a.overridableAppProperties.Package_name,
+		Resource_files: bazel.MakeLabelListAttribute(resourceFiles),
+	}
+	props := bazel.BazelTargetModuleProperties{Rule_class: "android_binary",
+		Bzl_load_location: "@rules_android//rules:rules.bzl"}
+
+	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: a.Name()}, attrs)
+
 }
