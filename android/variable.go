@@ -124,6 +124,7 @@ type variableProperties struct {
 			Shared_libs       []string
 
 			Cmdline []string
+
 			Srcs         []string
 			Exclude_srcs []string
 		}
@@ -362,6 +363,8 @@ type productVariables struct {
 	BoardSepolicyVers       *string `json:",omitempty"`
 	PlatformSepolicyVersion *string `json:",omitempty"`
 	TotSepolicyVersion      *string `json:",omitempty"`
+
+	PlatformSepolicyCompatVersions []string `json:",omitempty"`
 
 	VendorVars map[string]map[string]string `json:",omitempty"`
 
@@ -1028,7 +1031,7 @@ func (m *ModuleBase) setVariableProperties(ctx BottomUpMutatorContext,
 
 	printfIntoProperties(ctx, prefix, productVariablePropertyValue, variableValue)
 
-	err := proptools.AppendMatchingProperties(m.generalProperties,
+	err := proptools.AppendMatchingProperties(m.GetProperties(),
 		productVariablePropertyValue.Addr().Interface(), nil)
 	if err != nil {
 		if propertyErr, ok := err.(*proptools.ExtendPropertyError); ok {
