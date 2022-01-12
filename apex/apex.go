@@ -95,6 +95,14 @@ type apexBundleProperties struct {
 	// /system/sepolicy/apex/<module_name>_file_contexts.
 	File_contexts *string `android:"path"`
 
+	// Path to the canned fs config file for customizing file's uid/gid/mod/capabilities. The
+	// format is /<path_or_glob> <uid> <gid> <mode> [capabilities=0x<cap>], where path_or_glob is a
+	// path or glob pattern for a file or set of files, uid/gid are numerial values of user ID
+	// and group ID, mode is octal value for the file mode, and cap is hexadecimal value for the
+	// capability. If this property is not set, or a file is missing in the file, default config
+	// is used.
+	Canned_fs_config *string `android:"path"`
+
 	ApexNativeDependencies
 
 	Multilib apexMultilibProperties
@@ -3049,15 +3057,16 @@ func createApexPermittedPackagesRules(modules_packages map[string][]string) []an
 			BootclasspathJar().
 			With("apex_available", module_name).
 			WithMatcher("permitted_packages", android.NotInList(module_packages)).
+			WithMatcher("min_sdk_version", android.LessThanSdkVersion("Tiramisu")).
 			Because("jars that are part of the " + module_name +
 				" module may only allow these packages: " + strings.Join(module_packages, ",") +
-				". Please jarjar or move code around.")
+				" with min_sdk < T. Please jarjar or move code around.")
 		rules = append(rules, permittedPackagesRule)
 	}
 	return rules
 }
 
-// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART.
+// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART on Q/R/S.
 // Adding code to the bootclasspath in new packages will cause issues on module update.
 func qModulesPackages() map[string][]string {
 	return map[string][]string{
@@ -3071,7 +3080,7 @@ func qModulesPackages() map[string][]string {
 	}
 }
 
-// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART.
+// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART on R/S.
 // Adding code to the bootclasspath in new packages will cause issues on module update.
 func rModulesPackages() map[string][]string {
 	return map[string][]string{
