@@ -124,6 +124,7 @@ type variableProperties struct {
 			Shared_libs       []string
 
 			Cmdline []string
+
 			Srcs         []string
 			Exclude_srcs []string
 		}
@@ -363,6 +364,8 @@ type productVariables struct {
 	PlatformSepolicyVersion *string `json:",omitempty"`
 	TotSepolicyVersion      *string `json:",omitempty"`
 
+	PlatformSepolicyCompatVersions []string `json:",omitempty"`
+
 	VendorVars map[string]map[string]string `json:",omitempty"`
 
 	Ndk_abis *bool `json:",omitempty"`
@@ -598,10 +601,16 @@ func (p *ProductConfigProperty) SelectKey() string {
 
 	value := p.FullConfig
 	if value == p.Name {
-		value = "enabled"
+		value = ""
 	}
-	// e.g. acme__feature1__enabled, android__board__soc_a
-	return strings.ToLower(strings.Join([]string{p.Namespace, p.Name, value}, "__"))
+
+	// e.g. acme__feature1, android__board__soc_a
+	selectKey := strings.ToLower(strings.Join([]string{p.Namespace, p.Name}, "__"))
+	if value != "" {
+		selectKey = strings.ToLower(strings.Join([]string{selectKey, value}, "__"))
+	}
+
+	return selectKey
 }
 
 // ProductConfigProperties is a map of maps to group property values according
@@ -1028,7 +1037,7 @@ func (m *ModuleBase) setVariableProperties(ctx BottomUpMutatorContext,
 
 	printfIntoProperties(ctx, prefix, productVariablePropertyValue, variableValue)
 
-	err := proptools.AppendMatchingProperties(m.generalProperties,
+	err := proptools.AppendMatchingProperties(m.GetProperties(),
 		productVariablePropertyValue.Addr().Interface(), nil)
 	if err != nil {
 		if propertyErr, ok := err.(*proptools.ExtendPropertyError); ok {

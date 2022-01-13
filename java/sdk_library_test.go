@@ -48,6 +48,7 @@ func TestJavaSdkLibrary(t *testing.T) {
 			name: "bar",
 			srcs: ["a.java", "b.java"],
 			api_packages: ["bar"],
+			exclude_kotlinc_generated_files: true,
 		}
 		java_library {
 			name: "baz",
@@ -161,6 +162,14 @@ func TestJavaSdkLibrary(t *testing.T) {
 		android.AssertDeepEquals(t, "qux exports (required)", []string{"fred", "quuz", "foo", "bar"}, requiredSdkLibs)
 		android.AssertDeepEquals(t, "qux exports (optional)", []string{}, optionalSdkLibs)
 	}
+
+	fooDexJar := result.ModuleForTests("foo", "android_common").Rule("d8")
+	// tests if kotlinc generated files are NOT excluded from output of foo.
+	android.AssertStringDoesNotContain(t, "foo dex", fooDexJar.BuildParams.Args["mergeZipsFlags"], "-stripFile META-INF/*.kotlin_module")
+
+	barDexJar := result.ModuleForTests("bar", "android_common").Rule("d8")
+	// tests if kotlinc generated files are excluded from output of bar.
+	android.AssertStringDoesContain(t, "bar dex", barDexJar.BuildParams.Args["mergeZipsFlags"], "-stripFile META-INF/*.kotlin_module")
 }
 
 func TestJavaSdkLibrary_UpdatableLibrary(t *testing.T) {
@@ -338,7 +347,7 @@ func TestJavaSdkLibrary_UpdatableLibrary_usesNewTag(t *testing.T) {
 `)
 	// test that updatability attributes are passed on correctly
 	fooUpdatable := result.ModuleForTests("foo.xml", "android_common").Rule("java_sdk_xml")
-	android.AssertStringDoesContain(t, "foo.xml java_sdk_xml command", fooUpdatable.RuleParams.Command, `<updatable-library`)
+	android.AssertStringDoesContain(t, "foo.xml java_sdk_xml command", fooUpdatable.RuleParams.Command, `<apex-library`)
 	android.AssertStringDoesNotContain(t, "foo.xml java_sdk_xml command", fooUpdatable.RuleParams.Command, `<library`)
 }
 
