@@ -381,6 +381,9 @@ func libraryBp2Build(ctx android.TopDownMutatorContext, m *Module) {
 			None:                         linkerAttrs.stripNone,
 		},
 		Features: linkerAttrs.features,
+
+		Stubs_symbol_file: compilerAttrs.stubsSymbolFile,
+		Stubs_versions:    compilerAttrs.stubsVersions,
 	}
 
 	staticProps := bazel.BazelTargetModuleProperties{
@@ -1340,7 +1343,7 @@ func (library *libraryDecorator) linkStatic(ctx ModuleContext,
 		}
 	}
 
-	transformObjToStaticLib(ctx, library.objects.objFiles, deps.WholeStaticLibsFromPrebuilts, builderFlags, outputFile, nil, objs.tidyFiles)
+	transformObjToStaticLib(ctx, library.objects.objFiles, deps.WholeStaticLibsFromPrebuilts, builderFlags, outputFile, nil, objs.tidyDepFiles)
 
 	library.coverageOutputFile = transformCoverageFilesToZip(ctx, library.objects, ctx.ModuleName())
 
@@ -1487,7 +1490,7 @@ func (library *libraryDecorator) linkShared(ctx ModuleContext,
 	linkerDeps = append(linkerDeps, deps.LateSharedLibsDeps...)
 	transformObjToDynamicBinary(ctx, objs.objFiles, sharedLibs,
 		deps.StaticLibs, deps.LateStaticLibs, deps.WholeStaticLibs,
-		linkerDeps, deps.CrtBegin, deps.CrtEnd, false, builderFlags, outputFile, implicitOutputs, objs.tidyFiles)
+		linkerDeps, deps.CrtBegin, deps.CrtEnd, false, builderFlags, outputFile, implicitOutputs, objs.tidyDepFiles)
 
 	objs.coverageFiles = append(objs.coverageFiles, deps.StaticLibObjs.coverageFiles...)
 	objs.coverageFiles = append(objs.coverageFiles, deps.WholeStaticLibObjs.coverageFiles...)
@@ -2518,6 +2521,9 @@ func sharedOrStaticLibraryBp2Build(ctx android.TopDownMutatorContext, module *Mo
 			},
 
 			Features: linkerAttrs.features,
+
+			Stubs_symbol_file: compilerAttrs.stubsSymbolFile,
+			Stubs_versions:    compilerAttrs.stubsVersions,
 		}
 	}
 
@@ -2591,4 +2597,7 @@ type bazelCcLibrarySharedAttributes struct {
 	Asflags    bazel.StringListAttribute
 
 	Features bazel.StringListAttribute
+
+	Stubs_symbol_file *string
+	Stubs_versions    bazel.StringListAttribute
 }
