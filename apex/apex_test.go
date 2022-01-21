@@ -623,7 +623,7 @@ func TestDefaults(t *testing.T) {
 			java_libs: ["myjar"],
 			apps: ["AppFoo"],
 			rros: ["rro"],
-			bpfs: ["bpf"],
+			bpfs: ["bpf", "netd_test"],
 			updatable: false,
 		}
 
@@ -676,6 +676,12 @@ func TestDefaults(t *testing.T) {
 			srcs: ["bpf.c", "bpf2.c"],
 		}
 
+		bpf {
+			name: "netd_test",
+			srcs: ["netd_test.c"],
+			sub_dir: "netd",
+		}
+
 	`)
 	ensureExactContents(t, ctx, "myapex", "android_common_myapex_image", []string{
 		"etc/myetc",
@@ -685,6 +691,7 @@ func TestDefaults(t *testing.T) {
 		"overlay/blue/rro.apk",
 		"etc/bpf/bpf.o",
 		"etc/bpf/bpf2.o",
+		"etc/bpf/netd/netd_test.o",
 	})
 }
 
@@ -7457,7 +7464,7 @@ func TestApexPermittedPackagesRules(t *testing.T) {
 		},
 		{
 			name:          "Bootclasspath apex jar not satisfying allowed module packages on Q.",
-			expectedError: `(?s)module "bcp_lib2" .* which is restricted because jars that are part of the myapex module may only allow these packages: foo.bar with min_sdk < T. Please jarjar or move code around.`,
+			expectedError: `(?s)module "bcp_lib2" .* which is restricted because jars that are part of the myapex module may only use these package prefixes: foo.bar with min_sdk < T. Please consider the following alternatives:\n    1. If the offending code is from a statically linked library, consider removing that dependency and using an alternative already in the bootclasspath, or perhaps a shared library.    2. Move the offending code into an allowed package.\n    3. Jarjar the offending code. Please be mindful of the potential system health implications of bundling that code, particularly if the offending jar is part of the bootclasspath.`,
 			bp: `
 				java_library {
 					name: "bcp_lib1",
@@ -7494,7 +7501,7 @@ func TestApexPermittedPackagesRules(t *testing.T) {
 		},
 		{
 			name:          "Bootclasspath apex jar not satisfying allowed module packages on R.",
-			expectedError: `(?s)module "bcp_lib2" .* which is restricted because jars that are part of the myapex module may only allow these packages: foo.bar with min_sdk < T. Please jarjar or move code around.`,
+			expectedError: `(?s)module "bcp_lib2" .* which is restricted because jars that are part of the myapex module may only use these package prefixes: foo.bar with min_sdk < T. Please consider the following alternatives:\n    1. If the offending code is from a statically linked library, consider removing that dependency and using an alternative already in the bootclasspath, or perhaps a shared library.    2. Move the offending code into an allowed package.\n    3. Jarjar the offending code. Please be mindful of the potential system health implications of bundling that code, particularly if the offending jar is part of the bootclasspath.`,
 			bp: `
 				java_library {
 					name: "bcp_lib1",
