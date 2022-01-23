@@ -15,6 +15,8 @@
 package cc
 
 import (
+	"github.com/google/blueprint/proptools"
+
 	"fmt"
 	"io"
 	"path/filepath"
@@ -241,7 +243,7 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 		entries.Class = "SHARED_LIBRARIES"
 		entries.ExtraEntries = append(entries.ExtraEntries, func(_ android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
 			entries.SetString("LOCAL_SOONG_TOC", library.toc().String())
-			if !library.buildStubs() {
+			if !library.buildStubs() && library.unstrippedOutputFile != nil {
 				entries.SetString("LOCAL_SOONG_UNSTRIPPED_BINARY", library.unstrippedOutputFile.String())
 			}
 			if len(library.Properties.Overrides) > 0 {
@@ -532,7 +534,13 @@ func (c *snapshotLibraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entrie
 		c.libraryDecorator.androidMkWriteExportedFlags(entries)
 
 		if c.shared() || c.static() {
-			path, file := filepath.Split(c.path.String())
+			src := c.path.String()
+			// For static libraries which aren't installed, directly use Src to extract filename.
+			// This is safe: generated snapshot modules have a real path as Src, not a module
+			if c.static() {
+				src = proptools.String(c.properties.Src)
+			}
+			path, file := filepath.Split(src)
 			stem, suffix, ext := android.SplitFileExt(file)
 			entries.SetString("LOCAL_BUILT_MODULE_STEM", "$(LOCAL_MODULE)"+ext)
 			entries.SetString("LOCAL_MODULE_SUFFIX", suffix)
