@@ -151,12 +151,6 @@ type apexBundleProperties struct {
 	// Default: true.
 	Installable *bool
 
-	// Whether this APEX can be compressed or not. Setting this property to false means this
-	// APEX will never be compressed. When set to true, APEX will be compressed if other
-	// conditions, e.g, target device needs to support APEX compression, are also fulfilled.
-	// Default: true.
-	Compressible *bool
-
 	// If set true, VNDK libs are considered as stable libs and are not included in this APEX.
 	// Should be only used in non-system apexes (e.g. vendor: true). Default is false.
 	Use_vndk_as_stable *bool
@@ -347,6 +341,12 @@ type overridableProperties struct {
 	// certificate and the private key are provided from the android_app_certificate module
 	// named "module".
 	Certificate *string
+
+	// Whether this APEX can be compressed or not. Setting this property to false means this
+	// APEX will never be compressed. When set to true, APEX will be compressed if other
+	// conditions, e.g., target device needs to support APEX compression, are also fulfilled.
+	// Default: false.
+	Compressible *bool
 }
 
 type apexBundle struct {
@@ -1310,7 +1310,7 @@ func (a *apexBundle) EnableCoverageIfNeeded() {}
 
 var _ android.ApexBundleDepsInfoIntf = (*apexBundle)(nil)
 
-// Implements android.ApexBudleDepsInfoIntf
+// Implements android.ApexBundleDepsInfoIntf
 func (a *apexBundle) Updatable() bool {
 	return proptools.BoolDefault(a.properties.Updatable, true)
 }
@@ -3211,8 +3211,15 @@ func createApexPermittedPackagesRules(modules_packages map[string][]string) []an
 			WithMatcher("permitted_packages", android.NotInList(module_packages)).
 			WithMatcher("min_sdk_version", android.LessThanSdkVersion("Tiramisu")).
 			Because("jars that are part of the " + module_name +
-				" module may only allow these packages: " + strings.Join(module_packages, ",") +
-				" with min_sdk < T. Please jarjar or move code around.")
+				" module may only use these package prefixes: " + strings.Join(module_packages, ",") +
+				" with min_sdk < T. Please consider the following alternatives:\n" +
+				"    1. If the offending code is from a statically linked library, consider " +
+				"removing that dependency and using an alternative already in the " +
+				"bootclasspath, or perhaps a shared library." +
+				"    2. Move the offending code into an allowed package.\n" +
+				"    3. Jarjar the offending code. Please be mindful of the potential system " +
+				"health implications of bundling that code, particularly if the offending jar " +
+				"is part of the bootclasspath.")
 		rules = append(rules, permittedPackagesRule)
 	}
 	return rules
@@ -3282,6 +3289,7 @@ type bazelApexBundleAttributes struct {
 	Prebuilts             bazel.LabelListAttribute
 	Native_shared_libs_32 bazel.LabelListAttribute
 	Native_shared_libs_64 bazel.LabelListAttribute
+	Compressible          bazel.BoolAttribute
 }
 
 type convertedNativeSharedLibs struct {
@@ -3359,6 +3367,11 @@ func (a *apexBundle) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 		installableAttribute.Value = a.properties.Installable
 	}
 
+	var compressibleAttribute bazel.BoolAttribute
+	if a.overridableProperties.Compressible != nil {
+		compressibleAttribute.Value = a.overridableProperties.Compressible
+	}
+
 	attrs := &bazelApexBundleAttributes{
 		Manifest:              manifestLabelAttribute,
 		Android_manifest:      androidManifestLabelAttribute,
@@ -3372,6 +3385,7 @@ func (a *apexBundle) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 		Native_shared_libs_64: nativeSharedLibs.Native_shared_libs_64,
 		Binaries:              binariesLabelListAttribute,
 		Prebuilts:             prebuiltsLabelListAttribute,
+		Compressible:          compressibleAttribute,
 	}
 
 	props := bazel.BazelTargetModuleProperties{
