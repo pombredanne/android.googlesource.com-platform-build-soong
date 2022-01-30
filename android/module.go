@@ -267,7 +267,7 @@ type BaseModuleContext interface {
 	//
 	// The Modules passed to the visit function should not be retained outside of the visit function, they may be
 	// invalidated by future mutators.
-	WalkDeps(visit func(Module, Module) bool)
+	WalkDeps(visit func(child, parent Module) bool)
 
 	// WalkDepsBlueprint calls visit for each transitive dependency, traversing the dependency
 	// tree in top down order.  visit may be called multiple times for the same (child, parent)
@@ -2620,7 +2620,7 @@ func (b *baseModuleContext) validateAndroidModule(module blueprint.Module, tag b
 	}
 
 	if aModule == nil {
-		b.ModuleErrorf("module %q not an android module", b.OtherModuleName(module))
+		b.ModuleErrorf("module %q (%#v) not an android module", b.OtherModuleName(module), tag)
 		return nil
 	}
 
@@ -2742,8 +2742,8 @@ func (b *baseModuleContext) VisitDirectDeps(visit func(Module)) {
 
 func (b *baseModuleContext) VisitDirectDepsWithTag(tag blueprint.DependencyTag, visit func(Module)) {
 	b.bp.VisitDirectDeps(func(module blueprint.Module) {
-		if aModule := b.validateAndroidModule(module, b.bp.OtherModuleDependencyTag(module), b.strictVisitDeps); aModule != nil {
-			if b.bp.OtherModuleDependencyTag(aModule) == tag {
+		if b.bp.OtherModuleDependencyTag(module) == tag {
+			if aModule := b.validateAndroidModule(module, b.bp.OtherModuleDependencyTag(module), b.strictVisitDeps); aModule != nil {
 				visit(aModule)
 			}
 		}

@@ -158,6 +158,10 @@ var fixSteps = []FixStep{
 		Name: "formatFlagProperties",
 		Fix:  runPatchListMod(formatFlagProperties),
 	},
+	{
+		Name: "removeResourcesAndAssetsIfDefault",
+		Fix:  removeResourceAndAssetsIfDefault,
+	},
 }
 
 // for fix that only need to run once
@@ -610,7 +614,11 @@ func (f etcPrebuiltModuleUpdate) update(m *parser.Module, path string) bool {
 }
 
 var localModuleUpdate = map[string][]etcPrebuiltModuleUpdate{
-	"HOST_OUT":    {{prefix: "/etc", modType: "prebuilt_etc_host"}, {prefix: "/usr/share", modType: "prebuilt_usr_share_host"}},
+	"HOST_OUT": {
+		{prefix: "/etc", modType: "prebuilt_etc_host"},
+		{prefix: "/usr/share", modType: "prebuilt_usr_share_host"},
+		{prefix: "", modType: "prebuilt_root_host"},
+	},
 	"PRODUCT_OUT": {{prefix: "/system/etc"}, {prefix: "/vendor/etc", flags: []string{"proprietary"}}},
 	"TARGET_OUT": {{prefix: "/usr/share", modType: "prebuilt_usr_share"}, {prefix: "/fonts", modType: "prebuilt_font"},
 		{prefix: "/etc/firmware", modType: "prebuilt_firmware"}, {prefix: "/vendor/firmware", modType: "prebuilt_firmware", flags: []string{"proprietary"}},
@@ -879,6 +887,24 @@ func removeSoongConfigBoolVariable(f *Fixer) error {
 		return nil
 	})(f)
 
+	return nil
+}
+
+func removeResourceAndAssetsIfDefault(f *Fixer) error {
+	for _, def := range f.tree.Defs {
+		mod, ok := def.(*parser.Module)
+		if !ok {
+			continue
+		}
+		resourceDirList, resourceDirFound := getLiteralListPropertyValue(mod, "resource_dirs")
+		if resourceDirFound && len(resourceDirList) == 1 && resourceDirList[0] == "res" {
+			removeProperty(mod, "resource_dirs")
+		}
+		assetDirList, assetDirFound := getLiteralListPropertyValue(mod, "asset_dirs")
+		if assetDirFound && len(assetDirList) == 1 && assetDirList[0] == "assets" {
+			removeProperty(mod, "asset_dirs")
+		}
+	}
 	return nil
 }
 

@@ -325,6 +325,7 @@ func IsJniDepTag(depTag blueprint.DependencyTag) bool {
 
 var (
 	dataNativeBinsTag       = dependencyTag{name: "dataNativeBins"}
+	dataDeviceBinsTag       = dependencyTag{name: "dataDeviceBins"}
 	staticLibTag            = dependencyTag{name: "staticlib"}
 	libTag                  = dependencyTag{name: "javalib", runtimeLinked: true}
 	java9LibTag             = dependencyTag{name: "java9lib", runtimeLinked: true}
@@ -450,14 +451,8 @@ func getJavaVersion(ctx android.ModuleContext, javaVersion string, sdkContext an
 		return normalizeJavaVersion(ctx, javaVersion)
 	} else if ctx.Device() {
 		return defaultJavaLanguageVersion(ctx, sdkContext.SdkVersion(ctx))
-	} else if ctx.Config().TargetsJava11() {
-		// Temporary experimental flag to be able to try and build with
-		// java version 11 options.  The flag, if used, just sets Java
-		// 11 as the default version, leaving any components that
-		// target an older version intact.
-		return JAVA_VERSION_11
 	} else {
-		return JAVA_VERSION_9
+		return JAVA_VERSION_11
 	}
 }
 
@@ -837,6 +832,9 @@ type testProperties struct {
 type hostTestProperties struct {
 	// list of native binary modules that should be installed alongside the test
 	Data_native_bins []string `android:"arch_variant"`
+
+	// list of device binary modules that should be installed alongside the test
+	Data_device_bins []string `android:"arch_variant"`
 }
 
 type testHelperLibraryProperties struct {
@@ -910,6 +908,11 @@ func (j *TestHost) DepsMutator(ctx android.BottomUpMutatorContext) {
 		}
 	}
 
+	if len(j.testHostProperties.Data_device_bins) > 0 {
+		deviceVariations := ctx.Config().AndroidFirstDeviceTarget.Variations()
+		ctx.AddFarVariationDependencies(deviceVariations, dataDeviceBinsTag, j.testHostProperties.Data_device_bins...)
+	}
+
 	if len(j.testProperties.Jni_libs) > 0 {
 		for _, target := range ctx.MultiTargets() {
 			sharedLibVariations := append(target.Variations(), blueprint.Variation{Mutator: "link", Variation: "shared"})
@@ -924,20 +927,45 @@ func (j *TestHost) AddExtraResource(p android.Path) {
 	j.extraResources = append(j.extraResources, p)
 }
 
+func (j *TestHost) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+	var configs []tradefed.Config
+	if len(j.testHostProperties.Data_device_bins) > 0 {
+		// add Tradefed configuration to push device bins to device for testing
+		remoteDir := filepath.Join("/data/local/tests/unrestricted/", j.Name())
+		options := []tradefed.Option{{Name: "cleanup", Value: "true"}}
+		for _, bin := range j.testHostProperties.Data_device_bins {
+			fullPath := filepath.Join(remoteDir, bin)
+			options = append(options, tradefed.Option{Name: "push-file", Key: bin, Value: fullPath})
+		}
+		configs = append(configs, tradefed.Object{"target_preparer", "com.android.tradefed.targetprep.PushFilePreparer", options})
+	}
+
+	j.Test.generateAndroidBuildActionsWithConfig(ctx, configs)
+}
+
 func (j *Test) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+	j.generateAndroidBuildActionsWithConfig(ctx, nil)
+}
+
+func (j *Test) generateAndroidBuildActionsWithConfig(ctx android.ModuleContext, configs []tradefed.Config) {
 	if j.testProperties.Test_options.Unit_test == nil && ctx.Host() {
 		// TODO(b/): Clean temporary heuristic to avoid unexpected onboarding.
 		defaultUnitTest := !inList("tradefed", j.properties.Libs) && !inList("cts", j.testProperties.Test_suites)
 		j.testProperties.Test_options.Unit_test = proptools.BoolPtr(defaultUnitTest)
 	}
+
 	j.testConfig = tradefed.AutoGenJavaTestConfig(ctx, j.testProperties.Test_config, j.testProperties.Test_config_template,
-		j.testProperties.Test_suites, j.testProperties.Auto_gen_config, j.testProperties.Test_options.Unit_test)
+		j.testProperties.Test_suites, configs, j.testProperties.Auto_gen_config, j.testProperties.Test_options.Unit_test)
 
 	j.data = android.PathsForModuleSrc(ctx, j.testProperties.Data)
 
 	j.extraTestConfigs = android.PathsForModuleSrc(ctx, j.testProperties.Test_options.Extra_test_configs)
 
 	ctx.VisitDirectDepsWithTag(dataNativeBinsTag, func(dep android.Module) {
+		j.data = append(j.data, android.OutputFileForModule(ctx, dep, ""))
+	})
+
+	ctx.VisitDirectDepsWithTag(dataDeviceBinsTag, func(dep android.Module) {
 		j.data = append(j.data, android.OutputFileForModule(ctx, dep, ""))
 	})
 
@@ -973,7 +1001,7 @@ func (j *TestHelperLibrary) GenerateAndroidBuildActions(ctx android.ModuleContex
 
 func (j *JavaTestImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	j.testConfig = tradefed.AutoGenJavaTestConfig(ctx, j.prebuiltTestProperties.Test_config, nil,
-		j.prebuiltTestProperties.Test_suites, nil, nil)
+		j.prebuiltTestProperties.Test_suites, nil, nil, nil)
 
 	j.Import.GenerateAndroidBuildActions(ctx)
 }
@@ -1300,6 +1328,7 @@ type Import struct {
 	android.ModuleBase
 	android.DefaultableModuleBase
 	android.ApexModuleBase
+	android.BazelModuleBase
 	prebuilt android.Prebuilt
 	android.SdkBase
 
@@ -1655,6 +1684,7 @@ func ImportFactory() android.Module {
 	android.InitPrebuiltModule(module, &module.properties.Jars)
 	android.InitApexModule(module)
 	android.InitSdkAwareModule(module)
+	android.InitBazelModule(module)
 	InitJavaModule(module, android.HostAndDeviceSupported)
 	return module
 }
@@ -2072,4 +2102,22 @@ func javaBinaryHostBp2Build(ctx android.TopDownMutatorContext, m *Binary) {
 
 	// Create the BazelTargetModule.
 	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: m.Name()}, attrs)
+}
+
+type bazelJavaImportAttributes struct {
+	Jars bazel.LabelListAttribute
+}
+
+// java_import bp2Build converter.
+func (i *Import) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
+	//TODO(b/209577426): Support multiple arch variants
+	jars := bazel.MakeLabelListAttribute(android.BazelLabelForModuleSrcExcludes(ctx, i.properties.Jars, []string(nil)))
+
+	attrs := &bazelJavaImportAttributes{
+		Jars: jars,
+	}
+	props := bazel.BazelTargetModuleProperties{Rule_class: "java_import"}
+
+	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: android.RemoveOptionalPrebuiltPrefix(i.Name())}, attrs)
+
 }
