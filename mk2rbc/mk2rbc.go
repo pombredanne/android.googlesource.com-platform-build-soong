@@ -829,11 +829,7 @@ func (ctx *parseContext) handleSubConfig(
 			pathPattern = append(pathPattern, chunk)
 		}
 	}
-	if pathPattern[0] == "" {
-		if len(ctx.includeTops) == 0 {
-			ctx.errorf(v, "inherit-product/include statements must not be prefixed with a variable, or must include a #RBC# include_top comment beforehand giving a root directory to search.")
-			return
-		}
+	if pathPattern[0] == "" && len(ctx.includeTops) > 0 {
 		// If pattern starts from the top. restrict it to the directories where
 		// we know inherit-product uses dynamically calculated path.
 		for _, p := range ctx.includeTops {
@@ -849,14 +845,20 @@ func (ctx *parseContext) handleSubConfig(
 		ctx.errorf(v, "there are >%d files matching the pattern, please rewrite it", maxMatchingFiles)
 		return
 	}
-	res := inheritedDynamicModule{*varPath, []*moduleInfo{}, loadAlways}
-	for _, p := range matchingPaths {
-		// A product configuration files discovered dynamically may attempt to inherit
-		// from another one which does not exist in this source tree. Prevent load errors
-		// by always loading the dynamic files as optional.
-		res.candidateModules = append(res.candidateModules, ctx.newDependentModule(p, true))
+	if len(matchingPaths) == 1 {
+		res := inheritedStaticModule{ctx.newDependentModule(matchingPaths[0], loadAlways && ctx.ifNestLevel == 0), loadAlways}
+		processModule(res)
+	} else {
+		needsWarning := pathPattern[0] == "" && len(ctx.includeTops) == 0
+		res := inheritedDynamicModule{*varPath, []*moduleInfo{}, loadAlways, ctx.errorLocation(v), needsWarning}
+		for _, p := range matchingPaths {
+			// A product configuration files discovered dynamically may attempt to inherit
+			// from another one which does not exist in this source tree. Prevent load errors
+			// by always loading the dynamic files as optional.
+			res.candidateModules = append(res.candidateModules, ctx.newDependentModule(p, true))
+		}
+		processModule(res)
 	}
-	processModule(res)
 }
 
 func (ctx *parseContext) findMatchingPaths(pattern []string) []string {
@@ -1003,19 +1005,14 @@ func (ctx *parseContext) processBranch(check *mkparser.Directive) {
 	ctx.popReceiver()
 }
 
-func (ctx *parseContext) newIfDefinedNode(check *mkparser.Directive) (starlarkExpr, bool) {
-	if !check.Args.Const() {
-		return ctx.newBadExpr(check, "ifdef variable ref too complex: %s", check.Args.Dump()), false
-	}
-	v := ctx.addVariable(check.Args.Strings[0])
-	return &variableDefinedExpr{v}, true
-}
-
 func (ctx *parseContext) parseCondition(check *mkparser.Directive) starlarkNode {
 	switch check.Name {
 	case "ifdef", "ifndef", "elifdef", "elifndef":
-		v, ok := ctx.newIfDefinedNode(check)
-		if ok && strings.HasSuffix(check.Name, "ndef") {
+		if !check.Args.Const() {
+			return &exprNode{expr: ctx.newBadExpr(check, "ifdef variable ref too complex: %s", check.Args.Dump())}
+		}
+		v := NewVariableRefExpr(ctx.addVariable(check.Args.Strings[0]), false)
+		if strings.HasSuffix(check.Name, "ndef") {
 			v = &notExpr{v}
 		}
 		return &ifNode{

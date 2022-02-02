@@ -267,7 +267,7 @@ type BaseModuleContext interface {
 	//
 	// The Modules passed to the visit function should not be retained outside of the visit function, they may be
 	// invalidated by future mutators.
-	WalkDeps(visit func(Module, Module) bool)
+	WalkDeps(visit func(child, parent Module) bool)
 
 	// WalkDepsBlueprint calls visit for each transitive dependency, traversing the dependency
 	// tree in top down order.  visit may be called multiple times for the same (child, parent)
@@ -1321,6 +1321,9 @@ type ModuleBase struct {
 	// set of dependency module:location mappings used to populate the license metadata for
 	// apex containers.
 	licenseInstallMap []string
+
+	// The path to the generated license metadata file for the module.
+	licenseMetadataFile WritablePath
 }
 
 // A struct containing all relevant information about a Bazel target converted via bp2build.
@@ -2076,6 +2079,8 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 		variables:         make(map[string]string),
 	}
 
+	m.licenseMetadataFile = PathForModuleOut(ctx, "meta_lic")
+
 	dependencyInstallFiles, dependencyPackagingSpecs := m.computeInstallDeps(ctx)
 	// set m.installFilesDepSet to only the transitive dependencies to be used as the dependencies
 	// of installed files of this module.  It will be replaced by a depset including the installed
@@ -2207,7 +2212,7 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 	m.installFilesDepSet = newInstallPathsDepSet(m.installFiles, dependencyInstallFiles)
 	m.packagingSpecsDepSet = newPackagingSpecsDepSet(m.packagingSpecs, dependencyPackagingSpecs)
 
-	buildLicenseMetadata(ctx)
+	buildLicenseMetadata(ctx, m.licenseMetadataFile)
 
 	m.buildParams = ctx.buildParams
 	m.ruleParams = ctx.ruleParams
