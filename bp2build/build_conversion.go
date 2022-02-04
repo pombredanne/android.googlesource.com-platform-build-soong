@@ -259,7 +259,9 @@ func GenerateBazelTargets(ctx *CodegenContext, generateFilegroups bool) (convers
 
 	// Simple metrics tracking for bp2build
 	metrics := CodegenMetrics{
-		ruleClassCount: make(map[string]uint64),
+		ruleClassCount:           make(map[string]uint64),
+		convertedModuleTypeCount: make(map[string]uint64),
+		totalModuleTypeCount:     make(map[string]uint64),
 	}
 
 	dirs := make(map[string]bool)
@@ -269,6 +271,7 @@ func GenerateBazelTargets(ctx *CodegenContext, generateFilegroups bool) (convers
 	bpCtx := ctx.Context()
 	bpCtx.VisitAllModules(func(m blueprint.Module) {
 		dir := bpCtx.ModuleDir(m)
+		moduleType := bpCtx.ModuleType(m)
 		dirs[dir] = true
 
 		var targets []BazelTarget
@@ -292,7 +295,7 @@ func GenerateBazelTargets(ctx *CodegenContext, generateFilegroups bool) (convers
 				// targets in the same BUILD file (or package).
 
 				// Log the module.
-				metrics.AddConvertedModule(m.Name(), Handcrafted)
+				metrics.AddConvertedModule(m, moduleType, Handcrafted)
 
 				pathToBuildFile := getBazelPackagePath(b)
 				if _, exists := buildFileToAppend[pathToBuildFile]; exists {
@@ -312,13 +315,22 @@ func GenerateBazelTargets(ctx *CodegenContext, generateFilegroups bool) (convers
 				// Handle modules converted to generated targets.
 
 				// Log the module.
-				metrics.AddConvertedModule(m.Name(), Generated)
+				metrics.AddConvertedModule(aModule, moduleType, Generated)
 
 				// Handle modules with unconverted deps. By default, emit a warning.
 				if unconvertedDeps := aModule.GetUnconvertedBp2buildDeps(); len(unconvertedDeps) > 0 {
 					msg := fmt.Sprintf("%q depends on unconverted modules: %s", m.Name(), strings.Join(unconvertedDeps, ", "))
 					if ctx.unconvertedDepMode == warnUnconvertedDeps {
 						metrics.moduleWithUnconvertedDepsMsgs = append(metrics.moduleWithUnconvertedDepsMsgs, msg)
+					} else if ctx.unconvertedDepMode == errorModulesUnconvertedDeps {
+						errs = append(errs, fmt.Errorf(msg))
+						return
+					}
+				}
+				if unconvertedDeps := aModule.GetMissingBp2buildDeps(); len(unconvertedDeps) > 0 {
+					msg := fmt.Sprintf("%q depends on missing modules: %s", m.Name(), strings.Join(unconvertedDeps, ", "))
+					if ctx.unconvertedDepMode == warnUnconvertedDeps {
+						metrics.moduleWithMissingDepsMsgs = append(metrics.moduleWithMissingDepsMsgs, msg)
 					} else if ctx.unconvertedDepMode == errorModulesUnconvertedDeps {
 						errs = append(errs, fmt.Errorf(msg))
 						return
@@ -331,7 +343,7 @@ func GenerateBazelTargets(ctx *CodegenContext, generateFilegroups bool) (convers
 					metrics.IncrementRuleClassCount(t.ruleClass)
 				}
 			} else {
-				metrics.IncrementUnconvertedCount()
+				metrics.AddUnconvertedModule(moduleType)
 				return
 			}
 		case QueryView:

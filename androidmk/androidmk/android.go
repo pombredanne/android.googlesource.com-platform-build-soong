@@ -191,6 +191,7 @@ func init() {
 			// will be removed later by byfix
 			// TODO: does this property matter in the license module?
 			"LOCAL_LICENSE_CONDITIONS": "android_license_conditions",
+			"LOCAL_GENERATED_SOURCES":  "generated_sources",
 		})
 
 	addStandardProperties(bpparser.BoolType,
@@ -229,6 +230,8 @@ func init() {
 			"LOCAL_IS_UNIT_TEST": "unit_test",
 
 			"LOCAL_ENFORCE_USES_LIBRARIES": "enforce_uses_libs",
+
+			"LOCAL_CHECK_ELF_FILES": "check_elf_files",
 		})
 }
 

@@ -485,7 +485,7 @@ func (a *AndroidApp) jniBuildActions(jniLibs []jniLib, ctx android.ModuleContext
 		a.jniLibs = jniLibs
 		if a.shouldEmbedJnis(ctx) {
 			jniJarFile = android.PathForModuleOut(ctx, "jnilibs.zip")
-			a.installPathForJNISymbols = a.installPath(ctx).ToMakePath()
+			a.installPathForJNISymbols = a.installPath(ctx)
 			TransformJniLibsToJar(ctx, jniJarFile, jniLibs, a.useEmbeddedNativeLibs(ctx))
 			for _, jni := range jniLibs {
 				if jni.coverageFile.Valid() {
@@ -621,7 +621,7 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 	a.aapt.useEmbeddedDex = Bool(a.appProperties.Use_embedded_dex)
 
 	// Check if the install APK name needs to be overridden.
-	a.installApkName = ctx.DeviceConfig().OverridePackageNameFor(a.Name())
+	a.installApkName = ctx.DeviceConfig().OverridePackageNameFor(a.Stem())
 
 	if ctx.ModuleName() == "framework-res" {
 		// framework-res.apk is installed as system/framework/framework-res.apk
@@ -1006,6 +1006,7 @@ func (a *AndroidTest) FixTestConfig(ctx android.ModuleContext, testConfig androi
 	command := rule.Command().BuiltTool("test_config_fixer").Input(testConfig).Output(fixedConfig)
 	fixNeeded := false
 
+	// Auto-generated test config uses `ModuleName` as the APK name. So fix it if it is not the case.
 	if ctx.ModuleName() != a.installApkName {
 		fixNeeded = true
 		command.FlagWithArg("--test-file-name ", a.installApkName+".apk")
@@ -1162,7 +1163,10 @@ func (i *OverrideAndroidApp) GenerateAndroidBuildActions(_ android.ModuleContext
 // some of its properties.
 func OverrideAndroidAppModuleFactory() android.Module {
 	m := &OverrideAndroidApp{}
-	m.AddProperties(&overridableAppProperties{})
+	m.AddProperties(
+		&OverridableDeviceProperties{},
+		&overridableAppProperties{},
+	)
 
 	android.InitAndroidMultiTargetsArchModule(m, android.DeviceSupported, android.MultilibCommon)
 	android.InitOverrideModule(m)
@@ -1428,7 +1432,7 @@ func androidAppCertificateBp2Build(ctx android.TopDownMutatorContext, module *An
 }
 
 type bazelAndroidAppAttributes struct {
-	Srcs           bazel.LabelListAttribute
+	*javaLibraryAttributes
 	Manifest       bazel.Label
 	Custom_package *string
 	Resource_files bazel.LabelListAttribute
@@ -1436,8 +1440,7 @@ type bazelAndroidAppAttributes struct {
 
 // ConvertWithBp2build is used to convert android_app to Bazel.
 func (a *AndroidApp) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
-	//TODO(b/209577426): Support multiple arch variants
-	srcs := bazel.MakeLabelListAttribute(android.BazelLabelForModuleSrcExcludes(ctx, a.properties.Srcs, a.properties.Exclude_srcs))
+	libAttrs := a.convertLibraryAttrsBp2Build(ctx)
 
 	manifest := proptools.StringDefault(a.aaptProperties.Manifest, "AndroidManifest.xml")
 
@@ -1450,11 +1453,11 @@ func (a *AndroidApp) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 	}
 
 	attrs := &bazelAndroidAppAttributes{
-		Srcs:     srcs,
-		Manifest: android.BazelLabelForModuleSrcSingle(ctx, manifest),
+		libAttrs,
+		android.BazelLabelForModuleSrcSingle(ctx, manifest),
 		// TODO(b/209576404): handle package name override by product variable PRODUCT_MANIFEST_PACKAGE_NAME_OVERRIDES
-		Custom_package: a.overridableAppProperties.Package_name,
-		Resource_files: bazel.MakeLabelListAttribute(resourceFiles),
+		a.overridableAppProperties.Package_name,
+		bazel.MakeLabelListAttribute(resourceFiles),
 	}
 	props := bazel.BazelTargetModuleProperties{Rule_class: "android_binary",
 		Bzl_load_location: "@rules_android//rules:rules.bzl"}

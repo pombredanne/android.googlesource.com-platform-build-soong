@@ -381,6 +381,9 @@ func libraryBp2Build(ctx android.TopDownMutatorContext, m *Module) {
 			None:                         linkerAttrs.stripNone,
 		},
 		Features: linkerAttrs.features,
+
+		Stubs_symbol_file: compilerAttrs.stubsSymbolFile,
+		Stubs_versions:    compilerAttrs.stubsVersions,
 	}
 
 	staticProps := bazel.BazelTargetModuleProperties{
@@ -392,8 +395,12 @@ func libraryBp2Build(ctx android.TopDownMutatorContext, m *Module) {
 		Bzl_load_location: "//build/bazel/rules:cc_library_shared.bzl",
 	}
 
-	ctx.CreateBazelTargetModule(staticProps, android.CommonAttributes{Name: m.Name() + "_bp2build_cc_library_static"}, staticTargetAttrs)
-	ctx.CreateBazelTargetModule(sharedProps, android.CommonAttributes{Name: m.Name()}, sharedTargetAttrs)
+	ctx.CreateBazelTargetModuleWithRestrictions(staticProps,
+		android.CommonAttributes{Name: m.Name() + "_bp2build_cc_library_static"},
+		staticTargetAttrs, staticAttrs.Enabled)
+	ctx.CreateBazelTargetModuleWithRestrictions(sharedProps,
+		android.CommonAttributes{Name: m.Name()},
+		sharedTargetAttrs, sharedAttrs.Enabled)
 }
 
 // cc_library creates both static and/or shared libraries for a device and/or
@@ -439,6 +446,8 @@ func LibraryHostStaticFactory() android.Module {
 	module, library := NewLibrary(android.HostSupported)
 	library.BuildOnlyStatic()
 	module.sdkMemberTypes = []android.SdkMemberType{staticLibrarySdkMemberType}
+	module.bazelable = true
+	module.bazelHandler = &ccLibraryBazelHandler{module: module}
 	return module.Init()
 }
 
@@ -1334,7 +1343,7 @@ func (library *libraryDecorator) linkStatic(ctx ModuleContext,
 		}
 	}
 
-	transformObjToStaticLib(ctx, library.objects.objFiles, deps.WholeStaticLibsFromPrebuilts, builderFlags, outputFile, nil, objs.tidyFiles)
+	transformObjToStaticLib(ctx, library.objects.objFiles, deps.WholeStaticLibsFromPrebuilts, builderFlags, outputFile, nil, objs.tidyDepFiles)
 
 	library.coverageOutputFile = transformCoverageFilesToZip(ctx, library.objects, ctx.ModuleName())
 
@@ -1481,7 +1490,7 @@ func (library *libraryDecorator) linkShared(ctx ModuleContext,
 	linkerDeps = append(linkerDeps, deps.LateSharedLibsDeps...)
 	transformObjToDynamicBinary(ctx, objs.objFiles, sharedLibs,
 		deps.StaticLibs, deps.LateStaticLibs, deps.WholeStaticLibs,
-		linkerDeps, deps.CrtBegin, deps.CrtEnd, false, builderFlags, outputFile, implicitOutputs, objs.tidyFiles)
+		linkerDeps, deps.CrtBegin, deps.CrtEnd, false, builderFlags, outputFile, implicitOutputs, objs.tidyDepFiles)
 
 	objs.coverageFiles = append(objs.coverageFiles, deps.StaticLibObjs.coverageFiles...)
 	objs.coverageFiles = append(objs.coverageFiles, deps.WholeStaticLibObjs.coverageFiles...)
@@ -2512,6 +2521,9 @@ func sharedOrStaticLibraryBp2Build(ctx android.TopDownMutatorContext, module *Mo
 			},
 
 			Features: linkerAttrs.features,
+
+			Stubs_symbol_file: compilerAttrs.stubsSymbolFile,
+			Stubs_versions:    compilerAttrs.stubsVersions,
 		}
 	}
 
@@ -2585,4 +2597,7 @@ type bazelCcLibrarySharedAttributes struct {
 	Asflags    bazel.StringListAttribute
 
 	Features bazel.StringListAttribute
+
+	Stubs_symbol_file *string
+	Stubs_versions    bazel.StringListAttribute
 }
