@@ -274,6 +274,9 @@ type dependencyTag struct {
 
 	// True if the dependency is relinked at runtime.
 	runtimeLinked bool
+
+	// True if the dependency is a toolchain, for example an annotation processor.
+	toolchain bool
 }
 
 // installDependencyTag is a dependency tag that is annotated to cause the installed files of the
@@ -287,6 +290,8 @@ type installDependencyTag struct {
 func (d dependencyTag) LicenseAnnotations() []android.LicenseAnnotation {
 	if d.runtimeLinked {
 		return []android.LicenseAnnotation{android.LicenseAnnotationSharedDependency}
+	} else if d.toolchain {
+		return []android.LicenseAnnotation{android.LicenseAnnotationToolchain}
 	}
 	return nil
 }
@@ -329,19 +334,19 @@ var (
 	staticLibTag            = dependencyTag{name: "staticlib"}
 	libTag                  = dependencyTag{name: "javalib", runtimeLinked: true}
 	java9LibTag             = dependencyTag{name: "java9lib", runtimeLinked: true}
-	pluginTag               = dependencyTag{name: "plugin"}
-	errorpronePluginTag     = dependencyTag{name: "errorprone-plugin"}
-	exportedPluginTag       = dependencyTag{name: "exported-plugin"}
+	pluginTag               = dependencyTag{name: "plugin", toolchain: true}
+	errorpronePluginTag     = dependencyTag{name: "errorprone-plugin", toolchain: true}
+	exportedPluginTag       = dependencyTag{name: "exported-plugin", toolchain: true}
 	bootClasspathTag        = dependencyTag{name: "bootclasspath", runtimeLinked: true}
 	systemModulesTag        = dependencyTag{name: "system modules", runtimeLinked: true}
 	frameworkResTag         = dependencyTag{name: "framework-res"}
 	kotlinStdlibTag         = dependencyTag{name: "kotlin-stdlib", runtimeLinked: true}
 	kotlinAnnotationsTag    = dependencyTag{name: "kotlin-annotations", runtimeLinked: true}
-	kotlinPluginTag         = dependencyTag{name: "kotlin-plugin"}
+	kotlinPluginTag         = dependencyTag{name: "kotlin-plugin", toolchain: true}
 	proguardRaiseTag        = dependencyTag{name: "proguard-raise"}
 	certificateTag          = dependencyTag{name: "certificate"}
 	instrumentationForTag   = dependencyTag{name: "instrumentation_for"}
-	extraLintCheckTag       = dependencyTag{name: "extra-lint-check"}
+	extraLintCheckTag       = dependencyTag{name: "extra-lint-check", toolchain: true}
 	jniLibTag               = dependencyTag{name: "jnilib", runtimeLinked: true}
 	syspropPublicStubDepTag = dependencyTag{name: "sysprop public stub"}
 	jniInstallTag           = installDependencyTag{name: "jni install"}
@@ -2005,7 +2010,8 @@ type javaLibraryAttributes struct {
 	Javacopts bazel.StringListAttribute
 }
 
-func javaLibraryBp2Build(ctx android.TopDownMutatorContext, m *Library) {
+func (m *Library) convertLibraryAttrsBp2Build(ctx android.TopDownMutatorContext) *javaLibraryAttributes {
+	//TODO(b/209577426): Support multiple arch variants
 	srcs := bazel.MakeLabelListAttribute(android.BazelLabelForModuleSrcExcludes(ctx, m.properties.Srcs, m.properties.Exclude_srcs))
 	attrs := &javaLibraryAttributes{
 		Srcs: srcs,
@@ -2015,9 +2021,21 @@ func javaLibraryBp2Build(ctx android.TopDownMutatorContext, m *Library) {
 		attrs.Javacopts = bazel.MakeStringListAttribute(m.properties.Javacflags)
 	}
 
+	var deps bazel.LabelList
 	if m.properties.Libs != nil {
-		attrs.Deps = bazel.MakeLabelListAttribute(android.BazelLabelForModuleDeps(ctx, m.properties.Libs))
+		deps.Append(android.BazelLabelForModuleDeps(ctx, m.properties.Libs))
 	}
+	if m.properties.Static_libs != nil {
+		//TODO(b/217236083) handle static libs similarly to Soong
+		deps.Append(android.BazelLabelForModuleDeps(ctx, m.properties.Static_libs))
+	}
+	attrs.Deps = bazel.MakeLabelListAttribute(deps)
+
+	return attrs
+}
+
+func javaLibraryBp2Build(ctx android.TopDownMutatorContext, m *Library) {
+	attrs := m.convertLibraryAttrsBp2Build(ctx)
 
 	props := bazel.BazelTargetModuleProperties{
 		Rule_class:        "java_library",
