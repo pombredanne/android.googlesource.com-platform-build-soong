@@ -1153,7 +1153,6 @@ override FOO:=`,
 def init(g, handle):
   cfg = rblf.cfg(handle)
   rblf.mk2rbc_error("product.mk:2", "cannot handle override directive")
-  g["override FOO"] = ""
 `,
 	},
 	{
@@ -1388,7 +1387,6 @@ func TestGood(t *testing.T) {
 				ss, err := Convert(Request{
 					MkFile:         test.mkname,
 					Reader:         bytes.NewBufferString(test.in),
-					RootDir:        ".",
 					OutputSuffix:   ".star",
 					SourceFS:       fs,
 					MakefileFinder: &testMakefileFinder{fs: fs},

@@ -101,7 +101,7 @@ func (i inheritedDynamicModule) entryName() string {
 func (i inheritedDynamicModule) emitSelect(gctx *generationContext) {
 	if i.needsWarning {
 		gctx.newLine()
-		gctx.writef("%s.mkwarning(%q, %q)", baseName, i.location, "Including a path with a non-constant prefix, please convert this to a simple literal to generate cleaner starlark.")
+		gctx.writef("%s.mkwarning(%q, %q)", baseName, i.location, "Including a path with a non-constant prefix, please convert this to a simple literal to generate cleaner starlark. See https://source.android.com/setup/build/bazel/product_config/issues/includes for details.")
 	}
 	gctx.newLine()
 	gctx.writef("_entry = {")
@@ -255,29 +255,17 @@ type switchCase struct {
 	nodes []starlarkNode
 }
 
-func (cb *switchCase) newNode(node starlarkNode) {
-	cb.nodes = append(cb.nodes, node)
-}
-
 func (cb *switchCase) emit(gctx *generationContext) {
 	cb.gate.emit(gctx)
 	gctx.indentLevel++
 	hasStatements := false
-	emitNode := func(node starlarkNode) {
+	for _, node := range cb.nodes {
 		if _, ok := node.(*commentNode); !ok {
 			hasStatements = true
 		}
 		node.emit(gctx)
 	}
-	if len(cb.nodes) > 0 {
-		emitNode(cb.nodes[0])
-		for _, node := range cb.nodes[1:] {
-			emitNode(node)
-		}
-		if !hasStatements {
-			gctx.emitPass()
-		}
-	} else {
+	if !hasStatements {
 		gctx.emitPass()
 	}
 	gctx.indentLevel--
@@ -288,22 +276,8 @@ type switchNode struct {
 	ssCases []*switchCase
 }
 
-func (ssw *switchNode) newNode(node starlarkNode) {
-	switch br := node.(type) {
-	case *switchCase:
-		ssw.ssCases = append(ssw.ssCases, br)
-	default:
-		panic(fmt.Errorf("expected switchCase node, got %t", br))
-	}
-}
-
 func (ssw *switchNode) emit(gctx *generationContext) {
-	if len(ssw.ssCases) == 0 {
-		gctx.emitPass()
-	} else {
-		ssw.ssCases[0].emit(gctx)
-		for _, ssCase := range ssw.ssCases[1:] {
-			ssCase.emit(gctx)
-		}
+	for _, ssCase := range ssw.ssCases {
+		ssCase.emit(gctx)
 	}
 }

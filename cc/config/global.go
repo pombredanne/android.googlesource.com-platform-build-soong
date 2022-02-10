@@ -95,6 +95,9 @@ var (
 		// Nested and array designated initialization is nice to have.
 		"-Wno-c99-designator",
 
+		// Many old files still have GNU designator syntax.
+		"-Wno-gnu-designator",
+
 		// Warnings from clang-12
 		"-Wno-gnu-folding-constant",
 
@@ -139,7 +142,6 @@ var (
 		"-Wl,-z,relro",
 		"-Wl,-z,now",
 		"-Wl,--build-id=md5",
-		"-Wl,--warn-shared-textrel",
 		"-Wl,--fatal-warnings",
 		"-Wl,--no-undefined-version",
 		// TODO: Eventually we should link against a libunwind.a with hidden symbols, and then these
@@ -236,6 +238,8 @@ var (
 		// http://b/197240255
 		"-Wno-unused-but-set-variable",
 		"-Wno-unused-but-set-parameter",
+		// http://b/215753485
+		"-Wno-bitwise-instead-of-logical",
 	}
 
 	// Extra cflags for external third-party projects to disable warnings that
@@ -280,8 +284,8 @@ var (
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r437112b"
-	ClangDefaultShortVersion = "14.0.1"
+	ClangDefaultVersion      = "clang-r445002"
+	ClangDefaultShortVersion = "14.0.2"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{
