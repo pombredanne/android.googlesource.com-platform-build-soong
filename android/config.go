@@ -38,6 +38,7 @@ import (
 	"android/soong/android/soongconfig"
 	"android/soong/bazel"
 	"android/soong/remoteexec"
+	"android/soong/starlark_fmt"
 )
 
 // Bool re-exports proptools.Bool for the android package.
@@ -286,14 +287,12 @@ func saveToBazelConfigFile(config *productVariables, outDir string) error {
 		}
 	}
 
-	//TODO(b/216168792) should use common function to print Starlark code
-	nonArchVariantProductVariablesJson, err := json.MarshalIndent(&nonArchVariantProductVariables, "", "    ")
+	nonArchVariantProductVariablesJson := starlark_fmt.PrintStringList(nonArchVariantProductVariables, 0)
 	if err != nil {
 		return fmt.Errorf("cannot marshal product variable data: %s", err.Error())
 	}
 
-	//TODO(b/216168792) should use common function to print Starlark code
-	archVariantProductVariablesJson, err := json.MarshalIndent(&archVariantProductVariables, "", "    ")
+	archVariantProductVariablesJson := starlark_fmt.PrintStringList(archVariantProductVariables, 0)
 	if err != nil {
 		return fmt.Errorf("cannot marshal arch variant product variable data: %s", err.Error())
 	}
@@ -1982,4 +1981,9 @@ func (c *config) ApexBootJars() ConfiguredJarList {
 
 func (c *config) RBEWrapper() string {
 	return c.GetenvWithDefault("RBE_WRAPPER", remoteexec.DefaultWrapperPath)
+}
+
+// UseHostMusl returns true if the host target has been configured to build against musl libc.
+func (c *config) UseHostMusl() bool {
+	return Bool(c.productVariables.HostMusl)
 }

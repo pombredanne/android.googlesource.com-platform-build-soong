@@ -288,6 +288,8 @@ var (
 		"development/samples/WiFiDirectDemo":                 Bp2BuildDefaultTrue,
 		"development/sdk":                                    Bp2BuildDefaultTrueRecursively,
 		"external/arm-optimized-routines":                    Bp2BuildDefaultTrueRecursively,
+		"external/auto/common":                               Bp2BuildDefaultTrueRecursively,
+		"external/auto/service":                              Bp2BuildDefaultTrueRecursively,
 		"external/boringssl":                                 Bp2BuildDefaultTrueRecursively,
 		"external/bouncycastle":                              Bp2BuildDefaultTrue,
 		"external/brotli":                                    Bp2BuildDefaultTrue,
@@ -300,6 +302,7 @@ var (
 		"external/icu":                                       Bp2BuildDefaultTrueRecursively,
 		"external/icu/android_icu4j":                         Bp2BuildDefaultFalse, // java rules incomplete
 		"external/icu/icu4j":                                 Bp2BuildDefaultFalse, // java rules incomplete
+		"external/javapoet":                                  Bp2BuildDefaultTrueRecursively,
 		"external/jemalloc_new":                              Bp2BuildDefaultTrueRecursively,
 		"external/jsoncpp":                                   Bp2BuildDefaultTrueRecursively,
 		"external/libcap":                                    Bp2BuildDefaultTrueRecursively,
@@ -449,6 +452,9 @@ var (
 
 		"apex_manifest_proto_java", // b/215230097, we don't handle .proto files in java_library srcs attribute
 
+		"libc_musl_sysroot_bionic_arch_headers", // b/218405924, depends on soong_zip
+		"libc_musl_sysroot_bionic_headers",      // b/218405924, depends on soong_zip and generates duplicate srcs
+
 		// python protos
 		"libprotobuf-python",                           // contains .proto sources
 		"conv_linker_config",                           // depends on linker_config_proto, a python lib with proto sources
@@ -497,15 +503,18 @@ var (
 
 		// java deps
 		"android_icu4j_srcgen",          // depends on unconverted modules: currysrc
+		"bin2c_fastdeployagent",         // depends on deployagent, a java binary
 		"currysrc",                      // depends on unconverted modules: currysrc_org.eclipse, guavalib, jopt-simple-4.9
-		"bin2c_fastdeployagent",         // depends on unconverted module: deployagent
-		"timezone-host",                 // depends on unconverted modules: art.module.api.annotations
 		"robolectric-sqlite4java-0.282", // depends on unconverted modules: robolectric-sqlite4java-import, robolectric-sqlite4java-native
-		"truth-prebuilt",                // depends on unconverted modules: asm-7.0, guava
+		"timezone-host",                 // depends on unconverted modules: art.module.api.annotations
 		"truth-host-prebuilt",           // depends on unconverted modules: truth-prebuilt
+		"truth-prebuilt",                // depends on unconverted modules: asm-7.0, guava
 
 		"generated_android_icu4j_resources",      // depends on unconverted modules: android_icu4j_srcgen_binary, soong_zip
 		"generated_android_icu4j_test_resources", // depends on unconverted modules: android_icu4j_srcgen_binary, soong_zip
+
+		"art-script",     // depends on unconverted modules: dalvikvm, dex2oat
+		"dex2oat-script", // depends on unconverted modules: dex2oat
 	}
 
 	// Per-module denylist of cc_library modules to only generate the static
@@ -713,6 +722,7 @@ func GetMainClassInManifest(c Config, filepath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
