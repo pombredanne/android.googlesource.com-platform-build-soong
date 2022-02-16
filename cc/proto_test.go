@@ -51,7 +51,7 @@ func TestProto(t *testing.T) {
 			},
 		}`)
 
-		buildOS := ctx.Config().BuildOS.String()
+		buildOS := android.BuildOs.String()
 
 		proto := ctx.ModuleForTests("libfoo", "android_arm_armv7-a-neon_shared").Output("proto/a.pb.cc")
 		foobar := ctx.ModuleForTests("protoc-gen-foobar", buildOS+"_x86_64")

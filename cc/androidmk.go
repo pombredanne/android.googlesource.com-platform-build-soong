@@ -15,8 +15,6 @@
 package cc
 
 import (
-	"github.com/google/blueprint/proptools"
-
 	"fmt"
 	"io"
 	"path/filepath"
@@ -26,12 +24,12 @@ import (
 )
 
 var (
-	NativeBridgeSuffix  = ".native_bridge"
-	ProductSuffix       = ".product"
+	nativeBridgeSuffix  = ".native_bridge"
+	productSuffix       = ".product"
 	VendorSuffix        = ".vendor"
-	RamdiskSuffix       = ".ramdisk"
+	ramdiskSuffix       = ".ramdisk"
 	VendorRamdiskSuffix = ".vendor_ramdisk"
-	RecoverySuffix      = ".recovery"
+	recoverySuffix      = ".recovery"
 	sdkSuffix           = ".sdk"
 )
 
@@ -82,7 +80,7 @@ func (c *Module) AndroidMkEntries() []android.AndroidMkEntries {
 		// to be installed. And this is breaking some older devices (like marlin)
 		// where system.img is small.
 		Required: c.Properties.AndroidMkRuntimeLibs,
-		Include:  "$(BUILD_SYSTEM)/soong_cc_rust_prebuilt.mk",
+		Include:  "$(BUILD_SYSTEM)/soong_cc_prebuilt.mk",
 
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
 			func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
@@ -107,9 +105,6 @@ func (c *Module) AndroidMkEntries() []android.AndroidMkEntries {
 				}
 				if len(c.Properties.AndroidMkHeaderLibs) > 0 {
 					entries.AddStrings("LOCAL_HEADER_LIBRARIES", c.Properties.AndroidMkHeaderLibs...)
-				}
-				if len(c.Properties.AndroidMkRuntimeLibs) > 0 {
-					entries.AddStrings("LOCAL_RUNTIME_LIBRARIES", c.Properties.AndroidMkRuntimeLibs...)
 				}
 				entries.SetString("LOCAL_SOONG_LINK_TYPE", c.makeLinkType)
 				if c.UseVndk() {
@@ -187,7 +182,7 @@ func makeOverrideModuleNames(ctx AndroidMkContext, overrides []string) []string 
 	if ctx.Target().NativeBridge == android.NativeBridgeEnabled {
 		var result []string
 		for _, override := range overrides {
-			result = append(result, override+NativeBridgeSuffix)
+			result = append(result, override+nativeBridgeSuffix)
 		}
 		return result
 	}
@@ -246,7 +241,7 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 		entries.Class = "SHARED_LIBRARIES"
 		entries.ExtraEntries = append(entries.ExtraEntries, func(_ android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
 			entries.SetString("LOCAL_SOONG_TOC", library.toc().String())
-			if !library.buildStubs() && library.unstrippedOutputFile != nil {
+			if !library.buildStubs() {
 				entries.SetString("LOCAL_SOONG_UNSTRIPPED_BINARY", library.unstrippedOutputFile.String())
 			}
 			if len(library.Properties.Overrides) > 0 {
@@ -268,10 +263,9 @@ func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries 
 		library.androidMkWriteExportedFlags(entries)
 		library.androidMkEntriesWriteAdditionalDependenciesForSourceAbiDiff(entries)
 
-		if entries.OutputFile.Valid() {
-			_, _, ext := android.SplitFileExt(entries.OutputFile.Path().Base())
-			entries.SetString("LOCAL_BUILT_MODULE_STEM", "$(LOCAL_MODULE)"+ext)
-		}
+		_, _, ext := android.SplitFileExt(entries.OutputFile.Path().Base())
+
+		entries.SetString("LOCAL_BUILT_MODULE_STEM", "$(LOCAL_MODULE)"+ext)
 
 		if library.coverageOutputFile.Valid() {
 			entries.SetString("LOCAL_PREBUILT_COVERAGE_ARCHIVE", library.coverageOutputFile.String())
@@ -397,8 +391,6 @@ func (test *testBinary) AndroidMkEntries(ctx AndroidMkContext, entries *android.
 		if Bool(test.Properties.Test_options.Unit_test) {
 			entries.SetBool("LOCAL_IS_UNIT_TEST", true)
 		}
-
-		entries.SetBoolIfTrue("LOCAL_COMPATIBILITY_PER_TESTCASE_DIRECTORY", Bool(test.Properties.Per_testcase_directory))
 	})
 
 	AndroidMkWriteTestData(test.data, entries)
@@ -409,24 +401,24 @@ func (fuzz *fuzzBinary) AndroidMkEntries(ctx AndroidMkContext, entries *android.
 	ctx.subAndroidMk(entries, fuzz.binaryDecorator)
 
 	var fuzzFiles []string
-	for _, d := range fuzz.fuzzPackagedModule.Corpus {
+	for _, d := range fuzz.corpus {
 		fuzzFiles = append(fuzzFiles,
-			filepath.Dir(fuzz.fuzzPackagedModule.CorpusIntermediateDir.String())+":corpus/"+d.Base())
+			filepath.Dir(fuzz.corpusIntermediateDir.String())+":corpus/"+d.Base())
 	}
 
-	for _, d := range fuzz.fuzzPackagedModule.Data {
+	for _, d := range fuzz.data {
 		fuzzFiles = append(fuzzFiles,
-			filepath.Dir(fuzz.fuzzPackagedModule.DataIntermediateDir.String())+":data/"+d.Rel())
+			filepath.Dir(fuzz.dataIntermediateDir.String())+":data/"+d.Rel())
 	}
 
-	if fuzz.fuzzPackagedModule.Dictionary != nil {
+	if fuzz.dictionary != nil {
 		fuzzFiles = append(fuzzFiles,
-			filepath.Dir(fuzz.fuzzPackagedModule.Dictionary.String())+":"+fuzz.fuzzPackagedModule.Dictionary.Base())
+			filepath.Dir(fuzz.dictionary.String())+":"+fuzz.dictionary.Base())
 	}
 
-	if fuzz.fuzzPackagedModule.Config != nil {
+	if fuzz.config != nil {
 		fuzzFiles = append(fuzzFiles,
-			filepath.Dir(fuzz.fuzzPackagedModule.Config.String())+":config.json")
+			filepath.Dir(fuzz.config.String())+":config.json")
 	}
 
 	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
@@ -444,13 +436,26 @@ func (test *testLibrary) AndroidMkEntries(ctx AndroidMkContext, entries *android
 	ctx.subAndroidMk(entries, test.libraryDecorator)
 }
 
+func (library *toolchainLibraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
+	entries.Class = "STATIC_LIBRARIES"
+	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
+		_, suffix, _ := android.SplitFileExt(entries.OutputFile.Path().Base())
+		entries.SetString("LOCAL_MODULE_SUFFIX", suffix)
+	})
+}
+
 func (installer *baseInstaller) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
 	if installer.path == (android.InstallPath{}) {
 		return
 	}
+	// Soong installation is only supported for host modules. Have Make
+	// installation trigger Soong installation.
+	if ctx.Target().Os.Class == android.Host {
+		entries.OutputFile = android.OptionalPathForPath(installer.path)
+	}
 
 	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-		path, file := filepath.Split(installer.path.String())
+		path, file := filepath.Split(installer.path.ToMakePath().String())
 		stem, suffix, _ := android.SplitFileExt(file)
 		entries.SetString("LOCAL_MODULE_SUFFIX", suffix)
 		entries.SetString("LOCAL_MODULE_PATH", path)
@@ -529,13 +534,7 @@ func (c *snapshotLibraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entrie
 		c.libraryDecorator.androidMkWriteExportedFlags(entries)
 
 		if c.shared() || c.static() {
-			src := c.path.String()
-			// For static libraries which aren't installed, directly use Src to extract filename.
-			// This is safe: generated snapshot modules have a real path as Src, not a module
-			if c.static() {
-				src = proptools.String(c.properties.Src)
-			}
-			path, file := filepath.Split(src)
+			path, file := filepath.Split(c.path.ToMakePath().String())
 			stem, suffix, ext := android.SplitFileExt(file)
 			entries.SetString("LOCAL_BUILT_MODULE_STEM", "$(LOCAL_MODULE)"+ext)
 			entries.SetString("LOCAL_MODULE_SUFFIX", suffix)
@@ -586,8 +585,8 @@ func (p *prebuiltLinker) AndroidMkEntries(ctx AndroidMkContext, entries *android
 		if p.properties.Check_elf_files != nil {
 			entries.SetBool("LOCAL_CHECK_ELF_FILES", *p.properties.Check_elf_files)
 		} else {
-			// soong_cc_rust_prebuilt.mk does not include check_elf_file.mk by default
-			// because cc_library_shared and cc_binary use soong_cc_rust_prebuilt.mk as well.
+			// soong_cc_prebuilt.mk does not include check_elf_file.mk by default
+			// because cc_library_shared and cc_binary use soong_cc_prebuilt.mk as well.
 			// In order to turn on prebuilt ABI checker, set `LOCAL_CHECK_ELF_FILES` to
 			// true if `p.properties.Check_elf_files` is not specified.
 			entries.SetBool("LOCAL_CHECK_ELF_FILES", true)
