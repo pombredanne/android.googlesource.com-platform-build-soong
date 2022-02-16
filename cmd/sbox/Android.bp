@@ -19,7 +19,6 @@ package {
 blueprint_go_binary {
     name: "sbox",
     deps: [
-        "golang-protobuf-encoding-prototext",
         "sbox_proto",
         "soong-makedeps",
         "soong-response",
@@ -32,10 +31,7 @@ blueprint_go_binary {
 bootstrap_go_package {
     name: "sbox_proto",
     pkgPath: "android/soong/cmd/sbox/sbox_proto",
-    deps: [
-        "golang-protobuf-reflect-protoreflect",
-        "golang-protobuf-runtime-protoimpl",
-    ],
+    deps: ["golang-protobuf-proto"],
     srcs: [
         "sbox_proto/sbox.pb.go",
     ],

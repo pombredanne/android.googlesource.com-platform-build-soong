@@ -39,7 +39,6 @@ func init() {
 			"misc-*",
 			"performance-*",
 			"portability-*",
-			"-bugprone-easily-swappable-parameters",
 			"-bugprone-narrowing-conversions",
 			"-google-readability*",
 			"-google-runtime-references",
@@ -62,9 +61,8 @@ func init() {
 		}, ",")
 		// clang-analyzer-* checks are too slow to be in the default for WITH_TIDY=1.
 		// nightly builds add CLANG_ANALYZER_CHECKS=1 to run those checks.
-		// The insecureAPI.DeprecatedOrUnsafeBufferHandling warning does not apply to Android.
 		if ctx.Config().IsEnvTrue("CLANG_ANALYZER_CHECKS") {
-			checks += ",clang-analyzer-*,-clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling"
+			checks += ",clang-analyzer-*"
 		}
 		return checks
 	})
@@ -108,7 +106,6 @@ type PathBasedTidyCheck struct {
 
 const tidyDefault = "${config.TidyDefaultGlobalChecks}"
 const tidyExternalVendor = "${config.TidyExternalVendorChecks}"
-const tidyDefaultNoAnalyzer = "${config.TidyDefaultGlobalChecks},-clang-analyzer-*"
 
 // This is a map of local path prefixes to the set of default clang-tidy checks
 // to be used.
@@ -117,7 +114,6 @@ var DefaultLocalTidyChecks = []PathBasedTidyCheck{
 	{"external/", tidyExternalVendor},
 	{"external/google", tidyDefault},
 	{"external/webrtc", tidyDefault},
-	{"external/googletest/", tidyExternalVendor},
 	{"frameworks/compile/mclinker/", tidyExternalVendor},
 	{"hardware/qcom", tidyExternalVendor},
 	{"vendor/", tidyExternalVendor},
@@ -136,25 +132,10 @@ func reverseTidyChecks(in []PathBasedTidyCheck) []PathBasedTidyCheck {
 }
 
 func TidyChecksForDir(dir string) string {
-	dir = dir + "/"
 	for _, pathCheck := range reversedDefaultLocalTidyChecks {
 		if strings.HasPrefix(dir, pathCheck.PathPrefix) {
 			return pathCheck.Checks
 		}
 	}
 	return tidyDefault
-}
-
-func TidyFlagsForSrcFile(srcFile android.Path, flags string) string {
-	// Disable clang-analyzer-* checks globally for generated source files
-	// because some of them are too huge. Local .bp files can add wanted
-	// clang-analyzer checks through the tidy_checks property.
-	// Need to do this patch per source file, because some modules
-	// have both generated and organic source files.
-	if _, ok := srcFile.(android.WritablePath); ok {
-		if strings.Contains(flags, tidyDefault) {
-			return strings.ReplaceAll(flags, tidyDefault, tidyDefaultNoAnalyzer)
-		}
-	}
-	return flags
 }

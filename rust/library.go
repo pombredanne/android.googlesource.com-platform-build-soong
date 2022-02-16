@@ -21,7 +21,6 @@ import (
 
 	"android/soong/android"
 	"android/soong/cc"
-	"android/soong/snapshot"
 )
 
 var (
@@ -100,11 +99,6 @@ type libraryDecorator struct {
 	MutatedProperties LibraryMutatedProperties
 	includeDirs       android.Paths
 	sourceProvider    SourceProvider
-
-	collectedSnapshotHeaders android.Paths
-
-	// table-of-contents file for cdylib crates to optimize out relinking when possible
-	tocFile android.OptionalPath
 }
 
 type libraryInterface interface {
@@ -128,8 +122,7 @@ type libraryInterface interface {
 	setStatic()
 	setSource()
 
-	// libstd linkage functions
-	rlibStd() bool
+	// Set libstd linkage
 	setRlibStd()
 	setDylibStd()
 
@@ -140,16 +133,10 @@ type libraryInterface interface {
 	BuildOnlyDylib()
 	BuildOnlyStatic()
 	BuildOnlyShared()
-
-	toc() android.OptionalPath
 }
 
 func (library *libraryDecorator) nativeCoverage() bool {
 	return true
-}
-
-func (library *libraryDecorator) toc() android.OptionalPath {
-	return library.tocFile
 }
 
 func (library *libraryDecorator) rlib() bool {
@@ -206,10 +193,6 @@ func (library *libraryDecorator) setDylib() {
 	library.MutatedProperties.VariantIsShared = false
 }
 
-func (library *libraryDecorator) rlibStd() bool {
-	return library.MutatedProperties.VariantIsStaticStd
-}
-
 func (library *libraryDecorator) setRlibStd() {
 	library.MutatedProperties.VariantIsStaticStd = true
 }
@@ -237,10 +220,7 @@ func (library *libraryDecorator) setSource() {
 }
 
 func (library *libraryDecorator) autoDep(ctx android.BottomUpMutatorContext) autoDep {
-	if ctx.Module().(*Module).InVendor() {
-		// Vendor modules should statically link libstd.
-		return rlibAutoDep
-	} else if library.preferRlib() {
+	if library.preferRlib() {
 		return rlibAutoDep
 	} else if library.rlib() || library.static() {
 		return rlibAutoDep
@@ -256,10 +236,7 @@ func (library *libraryDecorator) autoDep(ctx android.BottomUpMutatorContext) aut
 }
 
 func (library *libraryDecorator) stdLinkage(ctx *depsContext) RustLinkage {
-	if ctx.RustModule().InVendor() {
-		// Vendor modules should statically link libstd.
-		return RlibLinkage
-	} else if library.static() || library.MutatedProperties.VariantIsStaticStd {
+	if library.static() || library.MutatedProperties.VariantIsStaticStd {
 		return RlibLinkage
 	} else if library.baseCompiler.preferRlib() {
 		return RlibLinkage
@@ -426,16 +403,10 @@ func (library *libraryDecorator) compilerProps() []interface{} {
 func (library *libraryDecorator) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	deps = library.baseCompiler.compilerDeps(ctx, deps)
 
-	if library.dylib() || library.shared() {
-		if ctx.toolchain().Bionic() {
-			deps = bionicDeps(ctx, deps, false)
-			deps.CrtBegin = []string{"crtbegin_so"}
-			deps.CrtEnd = []string{"crtend_so"}
-		} else if ctx.Os() == android.LinuxMusl {
-			deps = muslDeps(ctx, deps, false)
-			deps.CrtBegin = []string{"libc_musl_crtbegin_so"}
-			deps.CrtEnd = []string{"libc_musl_crtend_so"}
-		}
+	if ctx.toolchain().Bionic() && (library.dylib() || library.shared()) {
+		deps = bionicDeps(ctx, deps, false)
+		deps.CrtBegin = "crtbegin_so"
+		deps.CrtEnd = "crtend_so"
 	}
 
 	return deps
@@ -445,25 +416,9 @@ func (library *libraryDecorator) sharedLibFilename(ctx ModuleContext) string {
 	return library.getStem(ctx) + ctx.toolchain().SharedLibSuffix()
 }
 
-func (library *libraryDecorator) cfgFlags(ctx ModuleContext, flags Flags) Flags {
-	flags = library.baseCompiler.cfgFlags(ctx, flags)
-	if library.dylib() {
-		// We need to add a dependency on std in order to link crates as dylibs.
-		// The hack to add this dependency is guarded by the following cfg so
-		// that we don't force a dependency when it isn't needed.
-		library.baseCompiler.Properties.Cfgs = append(library.baseCompiler.Properties.Cfgs, "android_dylib")
-	}
-
-	flags.RustFlags = append(flags.RustFlags, library.baseCompiler.cfgsToFlags()...)
-	flags.RustdocFlags = append(flags.RustdocFlags, library.baseCompiler.cfgsToFlags()...)
-
-	return flags
-}
-
 func (library *libraryDecorator) compilerFlags(ctx ModuleContext, flags Flags) Flags {
-	flags = library.baseCompiler.compilerFlags(ctx, flags)
-
 	flags.RustFlags = append(flags.RustFlags, "-C metadata="+ctx.ModuleName())
+	flags = library.baseCompiler.compilerFlags(ctx, flags)
 	if library.shared() || library.static() {
 		library.includeDirs = append(library.includeDirs, android.PathsForModuleSrc(ctx, library.Properties.Include_dirs)...)
 	}
@@ -475,41 +430,13 @@ func (library *libraryDecorator) compilerFlags(ctx ModuleContext, flags Flags) F
 }
 
 func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) android.Path {
-	var outputFile, ret android.ModuleOutPath
+	var outputFile android.ModuleOutPath
 	var fileName string
 	srcPath := library.srcPath(ctx, deps)
 
 	if library.sourceProvider != nil {
 		deps.srcProviderFiles = append(deps.srcProviderFiles, library.sourceProvider.Srcs()...)
 	}
-
-	// Calculate output filename
-	if library.rlib() {
-		fileName = library.getStem(ctx) + ctx.toolchain().RlibSuffix()
-		outputFile = android.PathForModuleOut(ctx, fileName)
-		ret = outputFile
-	} else if library.dylib() {
-		fileName = library.getStem(ctx) + ctx.toolchain().DylibSuffix()
-		outputFile = android.PathForModuleOut(ctx, fileName)
-		ret = outputFile
-	} else if library.static() {
-		fileName = library.getStem(ctx) + ctx.toolchain().StaticLibSuffix()
-		outputFile = android.PathForModuleOut(ctx, fileName)
-		ret = outputFile
-	} else if library.shared() {
-		fileName = library.sharedLibFilename(ctx)
-		outputFile = android.PathForModuleOut(ctx, fileName)
-		ret = outputFile
-	}
-
-	if !library.rlib() && !library.static() && library.stripper.NeedsStrip(ctx) {
-		strippedOutputFile := outputFile
-		outputFile = android.PathForModuleOut(ctx, "unstripped", fileName)
-		library.stripper.StripExecutableOrSharedLib(ctx, outputFile, strippedOutputFile)
-
-		library.baseCompiler.strippedOutputFile = android.OptionalPathForPath(strippedOutputFile)
-	}
-	library.baseCompiler.unstrippedOutputFile = outputFile
 
 	flags.RustFlags = append(flags.RustFlags, deps.depFlags...)
 	flags.LinkFlags = append(flags.LinkFlags, deps.depLinkFlags...)
@@ -522,15 +449,32 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 		flags.RustFlags = append(flags.RustFlags, "-C prefer-dynamic")
 	}
 
-	// Call the appropriate builder for this library type
 	if library.rlib() {
+		fileName = library.getStem(ctx) + ctx.toolchain().RlibSuffix()
+		outputFile = android.PathForModuleOut(ctx, fileName)
+
 		TransformSrctoRlib(ctx, srcPath, deps, flags, outputFile)
 	} else if library.dylib() {
+		fileName = library.getStem(ctx) + ctx.toolchain().DylibSuffix()
+		outputFile = android.PathForModuleOut(ctx, fileName)
+
 		TransformSrctoDylib(ctx, srcPath, deps, flags, outputFile)
 	} else if library.static() {
+		fileName = library.getStem(ctx) + ctx.toolchain().StaticLibSuffix()
+		outputFile = android.PathForModuleOut(ctx, fileName)
+
 		TransformSrctoStatic(ctx, srcPath, deps, flags, outputFile)
 	} else if library.shared() {
+		fileName = library.sharedLibFilename(ctx)
+		outputFile = android.PathForModuleOut(ctx, fileName)
+
 		TransformSrctoShared(ctx, srcPath, deps, flags, outputFile)
+	}
+
+	if !library.rlib() && !library.static() && library.stripper.NeedsStrip(ctx) {
+		strippedOutputFile := android.PathForModuleOut(ctx, "stripped", fileName)
+		library.stripper.StripExecutableOrSharedLib(ctx, outputFile, strippedOutputFile)
+		library.strippedOutputFile = android.OptionalPathForPath(strippedOutputFile)
 	}
 
 	if library.rlib() || library.dylib() {
@@ -545,16 +489,10 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 	}
 
 	if library.shared() {
-		// Optimize out relinking against shared libraries whose interface hasn't changed by
-		// depending on a table of contents file instead of the library itself.
-		tocFile := outputFile.ReplaceExtension(ctx, flags.Toolchain.SharedLibSuffix()[1:]+".toc")
-		library.tocFile = android.OptionalPathForPath(tocFile)
-		cc.TransformSharedObjectToToc(ctx, outputFile, tocFile)
-
 		ctx.SetProvider(cc.SharedLibraryInfoProvider, cc.SharedLibraryInfo{
-			TableOfContents: android.OptionalPathForPath(tocFile),
-			SharedLibrary:   outputFile,
-			Target:          ctx.Target(),
+			SharedLibrary:           outputFile,
+			UnstrippedSharedLibrary: outputFile,
+			Target:                  ctx.Target(),
 		})
 	}
 
@@ -569,7 +507,7 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 
 	library.flagExporter.setProvider(ctx)
 
-	return ret
+	return outputFile
 }
 
 func (library *libraryDecorator) srcPath(ctx ModuleContext, deps PathDeps) android.Path {
@@ -685,25 +623,6 @@ func LibraryMutator(mctx android.BottomUpMutatorContext) {
 				// Disable dylib Vendor Ramdisk variations until we support these.
 				v.(*Module).Disable()
 			}
-
-			variation := v.(*Module).ModuleBase.ImageVariation().Variation
-			if strings.HasPrefix(variation, cc.VendorVariationPrefix) {
-				// TODO(b/204303985)
-				// Disable vendor dylibs until they are supported
-				v.(*Module).Disable()
-			}
-
-			if strings.HasPrefix(variation, cc.VendorVariationPrefix) &&
-				m.HasVendorVariant() &&
-				!snapshot.IsVendorProprietaryModule(mctx) &&
-				strings.TrimPrefix(variation, cc.VendorVariationPrefix) == mctx.DeviceConfig().VndkVersion() {
-
-				// cc.MutateImage runs before LibraryMutator, so vendor variations which are meant for rlibs only are
-				// produced for Dylibs; however, dylibs should not be enabled for boardVndkVersion for
-				// non-vendor proprietary modules.
-				v.(*Module).Disable()
-			}
-
 		case "source":
 			v.(*Module).compiler.(libraryInterface).setSource()
 			// The source variant does not produce any library.
@@ -740,10 +659,9 @@ func LibstdMutator(mctx android.BottomUpMutatorContext) {
 				dylib := modules[1].(*Module)
 				rlib.compiler.(libraryInterface).setRlibStd()
 				dylib.compiler.(libraryInterface).setDylibStd()
-				if dylib.ModuleBase.ImageVariation().Variation == android.VendorRamdiskVariation ||
-					strings.HasPrefix(dylib.ModuleBase.ImageVariation().Variation, cc.VendorVariationPrefix) {
+				if dylib.ModuleBase.ImageVariation().Variation == android.VendorRamdiskVariation {
 					// TODO(b/165791368)
-					// Disable rlibs that link against dylib-std on vendor and vendor ramdisk variations until those dylib
+					// Disable rlibs that link against dylib-std on vendor ramdisk variations until those dylib
 					// variants are properly supported.
 					dylib.Disable()
 				}
@@ -752,56 +670,4 @@ func LibstdMutator(mctx android.BottomUpMutatorContext) {
 			}
 		}
 	}
-}
-
-func (l *libraryDecorator) snapshotHeaders() android.Paths {
-	if l.collectedSnapshotHeaders == nil {
-		panic("snapshotHeaders() must be called after collectHeadersForSnapshot()")
-	}
-	return l.collectedSnapshotHeaders
-}
-
-// collectHeadersForSnapshot collects all exported headers from library.
-// It globs header files in the source tree for exported include directories,
-// and tracks generated header files separately.
-//
-// This is to be called from GenerateAndroidBuildActions, and then collected
-// header files can be retrieved by snapshotHeaders().
-func (l *libraryDecorator) collectHeadersForSnapshot(ctx android.ModuleContext, deps PathDeps) {
-	ret := android.Paths{}
-
-	// Glob together the headers from the modules include_dirs property
-	for _, path := range android.CopyOfPaths(l.includeDirs) {
-		dir := path.String()
-		globDir := dir + "/**/*"
-		glob, err := ctx.GlobWithDeps(globDir, nil)
-		if err != nil {
-			ctx.ModuleErrorf("glob of %q failed: %s", globDir, err)
-			return
-		}
-
-		for _, header := range glob {
-			// Filter out only the files with extensions that are headers.
-			found := false
-			for _, ext := range cc.HeaderExts {
-				if strings.HasSuffix(header, ext) {
-					found = true
-					break
-				}
-			}
-			if !found {
-				continue
-			}
-			ret = append(ret, android.PathForSource(ctx, header))
-		}
-	}
-
-	// Glob together the headers from C dependencies as well, starting with non-generated headers.
-	ret = append(ret, cc.GlobHeadersForSnapshot(ctx, append(android.CopyOfPaths(deps.depIncludePaths), deps.depSystemIncludePaths...))...)
-
-	// Collect generated headers from C dependencies.
-	ret = append(ret, cc.GlobGeneratedHeadersForSnapshot(ctx, deps.depGeneratedHeaders)...)
-
-	// TODO(185577950): If support for generated headers is added, they need to be collected here as well.
-	l.collectedSnapshotHeaders = ret
 }
