@@ -216,14 +216,13 @@ func (p *parser) parseDirective() bool {
 		// Nothing
 	case "else":
 		p.ignoreSpaces()
-		if p.tok != '\n' && p.tok != '#' {
+		if p.tok != '\n' {
 			d = p.scanner.TokenText()
 			p.accept(scanner.Ident)
 			if d == "ifdef" || d == "ifndef" || d == "ifeq" || d == "ifneq" {
 				d = "el" + d
 				p.ignoreSpaces()
 				expression = p.parseExpression()
-				expression.TrimRightSpaces()
 			} else {
 				p.errorf("expected ifdef/ifndef/ifeq/ifneq, found %s", d)
 			}
