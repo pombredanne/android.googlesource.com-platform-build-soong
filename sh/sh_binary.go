@@ -26,7 +26,6 @@ import (
 	"android/soong/android"
 	"android/soong/bazel"
 	"android/soong/cc"
-	"android/soong/snapshot"
 	"android/soong/tradefed"
 )
 
@@ -42,6 +41,8 @@ func init() {
 	pctx.Import("android/soong/android")
 
 	registerShBuildComponents(android.InitRegistrationContext)
+
+	android.RegisterBp2BuildMutator("sh_binary", ShBinaryBp2Build)
 }
 
 func registerShBuildComponents(ctx android.RegistrationContext) {
@@ -103,12 +104,6 @@ type shBinaryProperties struct {
 	Recovery_available *bool
 }
 
-// Test option struct.
-type TestOptions struct {
-	// If the test is a hostside(no device required) unittest that shall be run during presubmit check.
-	Unit_test *bool
-}
-
 type TestProperties struct {
 	// list of compatibility suites (for example "cts", "vts") that the module should be
 	// installed into.
@@ -148,9 +143,6 @@ type TestProperties struct {
 	// list of device library modules that should be installed alongside the test.
 	// Only available for host sh_test modules.
 	Data_device_libs []string `android:"path,arch_variant"`
-
-	// Test options.
-	Test_options TestOptions
 }
 
 type ShBinary struct {
@@ -194,9 +186,6 @@ func (s *ShBinary) SubDir() string {
 	return proptools.String(s.properties.Sub_dir)
 }
 
-func (s *ShBinary) RelativeInstallPath() string {
-	return s.SubDir()
-}
 func (s *ShBinary) Installable() bool {
 	return s.properties.Installable == nil || proptools.Bool(s.properties.Installable)
 }
@@ -268,25 +257,18 @@ func (s *ShBinary) generateAndroidBuildActions(ctx android.ModuleContext) {
 func (s *ShBinary) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	s.generateAndroidBuildActions(ctx)
 	installDir := android.PathForModuleInstall(ctx, "bin", proptools.String(s.properties.Sub_dir))
-	if !s.Installable() {
-		s.SkipInstall()
-	}
 	s.installedFile = ctx.InstallExecutable(installDir, s.outputFilePath.Base(), s.outputFilePath)
-	for _, symlink := range s.Symlinks() {
-		ctx.InstallSymlink(installDir, symlink, s.installedFile)
-	}
 }
 
 func (s *ShBinary) AndroidMkEntries() []android.AndroidMkEntries {
 	return []android.AndroidMkEntries{android.AndroidMkEntries{
 		Class:      "EXECUTABLES",
 		OutputFile: android.OptionalPathForPath(s.outputFilePath),
-		Include:    "$(BUILD_SYSTEM)/soong_cc_rust_prebuilt.mk",
+		Include:    "$(BUILD_SYSTEM)/soong_cc_prebuilt.mk",
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
 			func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
 				s.customAndroidMkEntries(entries)
 				entries.SetString("LOCAL_MODULE_RELATIVE_PATH", proptools.String(s.properties.Sub_dir))
-				entries.SetBoolIfTrue("LOCAL_UNINSTALLABLE_MODULE", !s.Installable())
 			},
 		},
 	}}
@@ -431,11 +413,11 @@ func (s *ShTest) AndroidMkEntries() []android.AndroidMkEntries {
 	return []android.AndroidMkEntries{android.AndroidMkEntries{
 		Class:      "NATIVE_TESTS",
 		OutputFile: android.OptionalPathForPath(s.outputFilePath),
-		Include:    "$(BUILD_SYSTEM)/soong_cc_rust_prebuilt.mk",
+		Include:    "$(BUILD_SYSTEM)/soong_cc_prebuilt.mk",
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
 			func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
 				s.customAndroidMkEntries(entries)
-				entries.SetPath("LOCAL_MODULE_PATH", s.installDir)
+				entries.SetPath("LOCAL_MODULE_PATH", s.installDir.ToMakePath())
 				entries.AddCompatibilityTestSuites(s.testProperties.Test_suites...)
 				if s.testConfig != nil {
 					entries.SetPath("LOCAL_FULL_TEST_CONFIG", s.testConfig)
@@ -457,9 +439,6 @@ func (s *ShTest) AndroidMkEntries() []android.AndroidMkEntries {
 				for _, relPath := range relPaths {
 					dir := strings.TrimSuffix(s.dataModules[relPath].String(), relPath)
 					entries.AddStrings("LOCAL_TEST_DATA", dir+":"+relPath)
-				}
-				if Bool(s.testProperties.Test_options.Unit_test) {
-					entries.SetBool("LOCAL_IS_UNIT_TEST", true)
 				}
 			},
 		},
@@ -504,19 +483,13 @@ func ShTestHostFactory() android.Module {
 	module := &ShTest{}
 	InitShBinaryModule(&module.ShBinary)
 	module.AddProperties(&module.testProperties)
-	// Default sh_test_host to unit_tests = true
-	if module.testProperties.Test_options.Unit_test == nil {
-		module.testProperties.Test_options.Unit_test = proptools.BoolPtr(true)
-	}
 
 	android.InitAndroidArchModule(module, android.HostSupported, android.MultilibFirst)
 	return module
 }
 
 type bazelShBinaryAttributes struct {
-	Srcs     bazel.LabelListAttribute
-	Filename *string
-	Sub_dir  *string
+	Srcs bazel.LabelListAttribute
 	// Bazel also supports the attributes below, but (so far) these are not required for Bionic
 	// deps
 	// data
@@ -538,34 +511,42 @@ type bazelShBinaryAttributes struct {
 	// visibility
 }
 
-func (m *ShBinary) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
+type bazelShBinary struct {
+	android.BazelTargetModuleBase
+	bazelShBinaryAttributes
+}
+
+func BazelShBinaryFactory() android.Module {
+	module := &bazelShBinary{}
+	module.AddProperties(&module.bazelShBinaryAttributes)
+	android.InitBazelTargetModule(module)
+	return module
+}
+
+func ShBinaryBp2Build(ctx android.TopDownMutatorContext) {
+	m, ok := ctx.Module().(*ShBinary)
+	if !ok || !m.ConvertWithBp2build(ctx) {
+		return
+	}
+
 	srcs := bazel.MakeLabelListAttribute(
 		android.BazelLabelForModuleSrc(ctx, []string{*m.properties.Src}))
 
-	var filename *string
-	if m.properties.Filename != nil {
-		filename = m.properties.Filename
-	}
-
-	var subDir *string
-	if m.properties.Sub_dir != nil {
-		subDir = m.properties.Sub_dir
-	}
-
 	attrs := &bazelShBinaryAttributes{
-		Srcs:     srcs,
-		Filename: filename,
-		Sub_dir:  subDir,
+		Srcs: srcs,
 	}
 
 	props := bazel.BazelTargetModuleProperties{
-		Rule_class:        "sh_binary",
-		Bzl_load_location: "//build/bazel/rules:sh_binary.bzl",
+		Rule_class: "sh_binary",
 	}
 
-	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: m.Name()}, attrs)
+	ctx.CreateBazelTargetModule(BazelShBinaryFactory, m.Name(), props, attrs)
 }
 
-var Bool = proptools.Bool
+func (m *bazelShBinary) Name() string {
+	return m.BaseModuleName()
+}
 
-var _ snapshot.RelativeInstallPath = (*ShBinary)(nil)
+func (m *bazelShBinary) GenerateAndroidBuildActions(ctx android.ModuleContext) {}
+
+var Bool = proptools.Bool
