@@ -377,7 +377,6 @@ func (l *linter) lint(ctx android.ModuleContext) {
 	html := android.PathForModuleOut(ctx, "lint", "lint-report.html")
 	text := android.PathForModuleOut(ctx, "lint", "lint-report.txt")
 	xml := android.PathForModuleOut(ctx, "lint", "lint-report.xml")
-	baseline := android.PathForModuleOut(ctx, "lint", "lint-baseline.xml")
 
 	depSetsBuilder := NewLintDepSetBuilder().Direct(html, text, xml)
 
@@ -447,8 +446,6 @@ func (l *linter) lint(ctx android.ModuleContext) {
 	if lintBaseline.Valid() {
 		cmd.FlagWithInput("--baseline ", lintBaseline.Path())
 	}
-
-	cmd.FlagWithOutput("--write-reference-baseline ", baseline)
 
 	cmd.Text("|| (").Text("if [ -e").Input(text).Text("]; then cat").Input(text).Text("; fi; exit 7)")
 

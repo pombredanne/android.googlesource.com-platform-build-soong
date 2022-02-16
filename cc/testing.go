@@ -15,12 +15,8 @@
 package cc
 
 import (
-	"path/filepath"
-	"testing"
-
 	"android/soong/android"
 	"android/soong/genrule"
-	"android/soong/snapshot"
 )
 
 func RegisterRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
@@ -30,11 +26,11 @@ func RegisterRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
 	RegisterLibraryBuildComponents(ctx)
 	RegisterLibraryHeadersBuildComponents(ctx)
 
+	ctx.RegisterModuleType("toolchain_library", ToolchainLibraryFactory)
 	ctx.RegisterModuleType("cc_benchmark", BenchmarkFactory)
 	ctx.RegisterModuleType("cc_object", ObjectFactory)
-	ctx.RegisterModuleType("cc_genrule", GenRuleFactory)
+	ctx.RegisterModuleType("cc_genrule", genRuleFactory)
 	ctx.RegisterModuleType("ndk_prebuilt_shared_stl", NdkPrebuiltSharedStlFactory)
-	ctx.RegisterModuleType("ndk_prebuilt_static_stl", NdkPrebuiltStaticStlFactory)
 	ctx.RegisterModuleType("ndk_prebuilt_object", NdkPrebuiltObjectFactory)
 	ctx.RegisterModuleType("ndk_library", NdkLibraryFactory)
 }
@@ -44,6 +40,9 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 
 	supportLinuxBionic := false
 	for _, os := range oses {
+		if os == android.Fuchsia {
+			ret += withFuchsiaModules()
+		}
 		if os == android.Windows {
 			ret += withWindowsModules()
 		}
@@ -62,14 +61,41 @@ func GatherRequiredDepsForTest(oses ...android.OsType) string {
 
 func commonDefaultModules() string {
 	return `
-		cc_defaults {
-			name: "toolchain_libs_defaults",
+		toolchain_library {
+			name: "libcompiler_rt-extras",
+			vendor_available: true,
+			vendor_ramdisk_available: true,
+			product_available: true,
+			recovery_available: true,
+			src: "",
+		}
+
+		toolchain_library {
+			name: "libclang_rt.builtins-arm-android",
+			vendor_available: true,
+			vendor_ramdisk_available: true,
+			product_available: true,
+			recovery_available: true,
+			native_bridge_supported: true,
+			src: "",
+		}
+
+		toolchain_library {
+			name: "libclang_rt.builtins-aarch64-android",
+			vendor_available: true,
+			vendor_ramdisk_available: true,
+			product_available: true,
+			recovery_available: true,
+			native_bridge_supported: true,
+			src: "",
+		}
+
+		cc_prebuilt_library_shared {
+			name: "libclang_rt.hwasan-aarch64-android",
+			nocrt: true,
 			vendor_available: true,
 			product_available: true,
 			recovery_available: true,
-			no_libcrt: true,
-			sdk_version: "minimum",
-			nocrt: true,
 			system_shared_libs: [],
 			stl: "none",
 			srcs: [""],
@@ -79,93 +105,87 @@ func commonDefaultModules() string {
 			},
 		}
 
-		cc_prebuilt_library_static {
-			name: "libcompiler_rt-extras",
-			defaults: ["toolchain_libs_defaults"],
-			vendor_ramdisk_available: true,
-		}
-
-		cc_prebuilt_library_static {
-			name: "libclang_rt.builtins-arm-android",
-			defaults: ["toolchain_libs_defaults"],
-			native_bridge_supported: true,
-			vendor_ramdisk_available: true,
-		}
-
-		cc_prebuilt_library_static {
-			name: "libclang_rt.builtins-aarch64-android",
-			defaults: ["toolchain_libs_defaults"],
-			native_bridge_supported: true,
-			vendor_ramdisk_available: true,
-		}
-
-		cc_prebuilt_library_shared {
-			name: "libclang_rt.hwasan-aarch64-android",
-			defaults: ["toolchain_libs_defaults"],
-		}
-
-		cc_prebuilt_library_static {
+		toolchain_library {
 			name: "libclang_rt.builtins-i686-android",
-			defaults: ["toolchain_libs_defaults"],
+			vendor_available: true,
 			vendor_ramdisk_available: true,
+			product_available: true,
+			recovery_available: true,
 			native_bridge_supported: true,
+			src: "",
 		}
 
-		cc_prebuilt_library_static {
+		toolchain_library {
 			name: "libclang_rt.builtins-x86_64-android",
-			defaults: [
-				"linux_bionic_supported",
-				"toolchain_libs_defaults",
-			],
-			native_bridge_supported: true,
+			defaults: ["linux_bionic_supported"],
+			vendor_available: true,
 			vendor_ramdisk_available: true,
+			product_available: true,
+			recovery_available: true,
+			native_bridge_supported: true,
+			src: "",
 		}
 
-		cc_prebuilt_library_static {
+		toolchain_library {
 			name: "libunwind",
-			defaults: [
-				"linux_bionic_supported",
-				"toolchain_libs_defaults",
-			],
+			defaults: ["linux_bionic_supported"],
+			vendor_available: true,
 			vendor_ramdisk_available: true,
+			product_available: true,
+			recovery_available: true,
 			native_bridge_supported: true,
+			src: "",
 		}
 
-		cc_prebuilt_library_static {
+		toolchain_library {
 			name: "libclang_rt.fuzzer-arm-android",
-			defaults: ["toolchain_libs_defaults"],
+			vendor_available: true,
+			product_available: true,
+			recovery_available: true,
+			src: "",
 		}
 
-		cc_prebuilt_library_static {
+		toolchain_library {
 			name: "libclang_rt.fuzzer-aarch64-android",
-			defaults: ["toolchain_libs_defaults"],
+			vendor_available: true,
+			product_available: true,
+			recovery_available: true,
+			src: "",
 		}
 
-		cc_prebuilt_library_static {
+		toolchain_library {
 			name: "libclang_rt.fuzzer-i686-android",
-			defaults: ["toolchain_libs_defaults"],
+			vendor_available: true,
+			product_available: true,
+			recovery_available: true,
+			src: "",
 		}
 
-		cc_prebuilt_library_static {
+		toolchain_library {
 			name: "libclang_rt.fuzzer-x86_64-android",
-			defaults: [
-				"linux_bionic_supported",
-				"toolchain_libs_defaults",
-			],
+			defaults: ["linux_bionic_supported"],
+			vendor_available: true,
+			product_available: true,
+			recovery_available: true,
+			src: "",
 		}
 
-		cc_prebuilt_library_static {
+		toolchain_library {
 			name: "libclang_rt.fuzzer-x86_64",
-			defaults: [
-				"linux_bionic_supported",
-				"toolchain_libs_defaults",
-			],
+			vendor_available: true,
+			product_available: true,
+			recovery_available: true,
+			src: "",
 		}
 
 		// Needed for sanitizer
 		cc_prebuilt_library_shared {
 			name: "libclang_rt.ubsan_standalone-aarch64-android",
-			defaults: ["toolchain_libs_defaults"],
+			vendor_available: true,
+			product_available: true,
+			recovery_available: true,
+			system_shared_libs: [],
+			srcs: [""],
 		}
 
 		cc_library {
@@ -343,7 +363,6 @@ func commonDefaultModules() string {
 			stl: "none",
 			min_sdk_version: "16",
 			crt: true,
-			system_shared_libs: [],
 			apex_available: [
 				"//apex_available:platform",
 				"//apex_available:anyapex",
@@ -353,42 +372,26 @@ func commonDefaultModules() string {
 		cc_object {
 			name: "crtbegin_so",
 			defaults: ["crt_defaults"],
-			srcs: ["crtbegin_so.c"],
-			objs: ["crtbrand"],
 		}
 
 		cc_object {
 			name: "crtbegin_dynamic",
 			defaults: ["crt_defaults"],
-			srcs: ["crtbegin.c"],
-			objs: ["crtbrand"],
 		}
 
 		cc_object {
 			name: "crtbegin_static",
 			defaults: ["crt_defaults"],
-			srcs: ["crtbegin.c"],
-			objs: ["crtbrand"],
 		}
 
 		cc_object {
 			name: "crtend_so",
 			defaults: ["crt_defaults"],
-			srcs: ["crtend_so.c"],
-			objs: ["crtbrand"],
 		}
 
 		cc_object {
 			name: "crtend_android",
 			defaults: ["crt_defaults"],
-			srcs: ["crtend.c"],
-			objs: ["crtbrand"],
-		}
-
-		cc_object {
-			name: "crtbrand",
-			defaults: ["crt_defaults"],
-			srcs: ["crtbrand.c"],
 		}
 
 		cc_library {
@@ -397,7 +400,7 @@ func commonDefaultModules() string {
 
 		cc_library {
 			name: "ndk_libunwind",
-			sdk_version: "minimum",
+			sdk_version: "current",
 			stl: "none",
 			system_shared_libs: [],
 		}
@@ -422,12 +425,6 @@ func commonDefaultModules() string {
 
 		ndk_prebuilt_shared_stl {
 			name: "ndk_libc++_shared",
-			export_include_dirs: ["ndk_libc++_shared"],
-		}
-
-		ndk_prebuilt_static_stl {
-			name: "ndk_libandroid_support",
-			export_include_dirs: ["ndk_libandroid_support"],
 		}
 
 		cc_library_static {
@@ -444,21 +441,12 @@ func commonDefaultModules() string {
 		cc_library_static {
 			name: "note_memtag_heap_sync",
 		}
-
-		cc_library {
-			name: "libc_musl",
-			host_supported: true,
-			no_libcrt: true,
-			nocrt: true,
-			system_shared_libs: [],
-			stl: "none",
-		}
 	`
 }
 
 func withWindowsModules() string {
 	return `
-		cc_prebuilt_library_static {
+		toolchain_library {
 			name: "libwinpthread",
 			host_supported: true,
 			enabled: false,
@@ -467,8 +455,20 @@ func withWindowsModules() string {
 					enabled: true,
 				},
 			},
+			src: "",
+		}
+		`
+}
+
+func withFuchsiaModules() string {
+	return `
+		cc_library {
+			name: "libbioniccompat",
 			stl: "none",
-			srcs:[""],
+		}
+		cc_library {
+			name: "libcompiler_rt",
+			stl: "none",
 		}
 		`
 }
@@ -487,7 +487,7 @@ func withLinuxBionic() string {
 				}
 
 				cc_genrule {
-					name: "host_bionic_linker_script",
+					name: "host_bionic_linker_flags",
 					host_supported: true,
 					device_supported: false,
 					target: {
@@ -498,7 +498,7 @@ func withLinuxBionic() string {
 							enabled: true,
 						},
 					},
-					out: ["linker.script"],
+					out: ["linker.flags"],
 				}
 
 				cc_defaults {
@@ -575,16 +575,9 @@ var PrepareForTestWithCcDefaultModules = android.GroupFixturePreparers(
 
 	// Additional files needed in tests that disallow non-existent source.
 	android.MockFS{
-		"defaults/cc/common/libc.map.txt":           nil,
-		"defaults/cc/common/libdl.map.txt":          nil,
-		"defaults/cc/common/libm.map.txt":           nil,
-		"defaults/cc/common/ndk_libandroid_support": nil,
-		"defaults/cc/common/ndk_libc++_shared":      nil,
-		"defaults/cc/common/crtbegin_so.c":          nil,
-		"defaults/cc/common/crtbegin.c":             nil,
-		"defaults/cc/common/crtend_so.c":            nil,
-		"defaults/cc/common/crtend.c":               nil,
-		"defaults/cc/common/crtbrand.c":             nil,
+		"defaults/cc/common/libc.map.txt":  nil,
+		"defaults/cc/common/libdl.map.txt": nil,
+		"defaults/cc/common/libm.map.txt":  nil,
 	}.AddToFixture(),
 
 	// Place the default cc test modules that are common to all platforms in a location that will not
@@ -619,15 +612,21 @@ var PrepareForTestOnLinuxBionic = android.GroupFixturePreparers(
 	android.FixtureOverrideTextFile(linuxBionicDefaultsPath, withLinuxBionic()),
 )
 
+// The preparer to include if running a cc related test for fuchsia.
+var PrepareForTestOnFuchsia = android.GroupFixturePreparers(
+	// Place the default cc test modules for fuschia in a location that will not conflict with default
+	// test modules defined by other packages.
+	android.FixtureAddTextFile("defaults/cc/fuschia/Android.bp", withFuchsiaModules()),
+	android.PrepareForTestSetDeviceToFuchsia,
+)
+
 // This adds some additional modules and singletons which might negatively impact the performance
 // of tests so they are not included in the PrepareForIntegrationTestWithCc.
 var PrepareForTestWithCcIncludeVndk = android.GroupFixturePreparers(
 	PrepareForIntegrationTestWithCc,
 	android.FixtureRegisterWithContext(func(ctx android.RegistrationContext) {
-		snapshot.VendorSnapshotImageSingleton.Init(ctx)
-		snapshot.RecoverySnapshotImageSingleton.Init(ctx)
-		RegisterVendorSnapshotModules(ctx)
-		RegisterRecoverySnapshotModules(ctx)
+		vendorSnapshotImageSingleton.init(ctx)
+		recoverySnapshotImageSingleton.init(ctx)
 		ctx.RegisterSingletonType("vndk-snapshot", VndkSnapshotSingleton)
 	}),
 )
@@ -651,7 +650,14 @@ func TestConfig(buildDir string, os android.OsType, env map[string]string,
 		mockFS[k] = v
 	}
 
-	return android.TestArchConfig(buildDir, env, bp, mockFS)
+	var config android.Config
+	if os == android.Fuchsia {
+		panic("Fuchsia not supported use test fixture instead")
+	} else {
+		config = android.TestArchConfig(buildDir, env, bp, mockFS)
+	}
+
+	return config
 }
 
 // CreateTestContext is the legacy way of creating a TestContext for testing cc modules.
@@ -668,10 +674,8 @@ func CreateTestContext(config android.Config) *android.TestContext {
 	ctx.RegisterModuleType("filegroup", android.FileGroupFactory)
 	ctx.RegisterModuleType("vndk_prebuilt_shared", VndkPrebuiltSharedFactory)
 
-	snapshot.VendorSnapshotImageSingleton.Init(ctx)
-	snapshot.RecoverySnapshotImageSingleton.Init(ctx)
-	RegisterVendorSnapshotModules(ctx)
-	RegisterRecoverySnapshotModules(ctx)
+	vendorSnapshotImageSingleton.init(ctx)
+	recoverySnapshotImageSingleton.init(ctx)
 	ctx.RegisterSingletonType("vndk-snapshot", VndkSnapshotSingleton)
 	RegisterVndkLibraryTxtTypes(ctx)
 
@@ -680,73 +684,4 @@ func CreateTestContext(config android.Config) *android.TestContext {
 	RegisterRequiredBuildComponentsForTest(ctx)
 
 	return ctx
-}
-
-func checkSnapshotIncludeExclude(t *testing.T, ctx *android.TestContext, singleton android.TestingSingleton, moduleName, snapshotFilename, subDir, variant string, include bool, fake bool) {
-	t.Helper()
-	mod := ctx.ModuleForTests(moduleName, variant)
-	outputFiles := mod.OutputFiles(t, "")
-	if len(outputFiles) != 1 {
-		t.Errorf("%q must have single output\n", moduleName)
-		return
-	}
-	snapshotPath := filepath.Join(subDir, snapshotFilename)
-
-	if include {
-		out := singleton.Output(snapshotPath)
-		if fake {
-			if out.Rule == nil {
-				t.Errorf("Missing rule for module %q output file %q", moduleName, outputFiles[0])
-			}
-		} else {
-			if out.Input.String() != outputFiles[0].String() {
-				t.Errorf("The input of snapshot %q must be %q, but %q", moduleName, out.Input.String(), outputFiles[0])
-			}
-		}
-	} else {
-		out := singleton.MaybeOutput(snapshotPath)
-		if out.Rule != nil {
-			t.Errorf("There must be no rule for module %q output file %q", moduleName, outputFiles[0])
-		}
-	}
-}
-
-func CheckSnapshot(t *testing.T, ctx *android.TestContext, singleton android.TestingSingleton, moduleName, snapshotFilename, subDir, variant string) {
-	t.Helper()
-	checkSnapshotIncludeExclude(t, ctx, singleton, moduleName, snapshotFilename, subDir, variant, true, false)
-}
-
-func CheckSnapshotExclude(t *testing.T, ctx *android.TestContext, singleton android.TestingSingleton, moduleName, snapshotFilename, subDir, variant string) {
-	t.Helper()
-	checkSnapshotIncludeExclude(t, ctx, singleton, moduleName, snapshotFilename, subDir, variant, false, false)
-}
-
-func CheckSnapshotRule(t *testing.T, ctx *android.TestContext, singleton android.TestingSingleton, moduleName, snapshotFilename, subDir, variant string) {
-	t.Helper()
-	checkSnapshotIncludeExclude(t, ctx, singleton, moduleName, snapshotFilename, subDir, variant, true, true)
-}
-
-func AssertExcludeFromVendorSnapshotIs(t *testing.T, ctx *android.TestContext, name string, expected bool, variant string) {
-	t.Helper()
-	m := ctx.ModuleForTests(name, variant).Module().(LinkableInterface)
-	if m.ExcludeFromVendorSnapshot() != expected {
-		t.Errorf("expected %q ExcludeFromVendorSnapshot to be %t", m.String(), expected)
-	}
-}
-
-func GetOutputPaths(ctx *android.TestContext, variant string, moduleNames []string) (paths android.Paths) {
-	for _, moduleName := range moduleNames {
-		module := ctx.ModuleForTests(moduleName, variant).Module().(*Module)
-		output := module.outputFile.Path().RelativeToTop()
-		paths = append(paths, output)
-	}
-	return paths
-}
-
-func AssertExcludeFromRecoverySnapshotIs(t *testing.T, ctx *android.TestContext, name string, expected bool, variant string) {
-	t.Helper()
-	m := ctx.ModuleForTests(name, variant).Module().(LinkableInterface)
-	if m.ExcludeFromRecoverySnapshot() != expected {
-		t.Errorf("expected %q ExcludeFromRecoverySnapshot to be %t", m.String(), expected)
-	}
 }
