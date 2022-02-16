@@ -453,7 +453,7 @@ java_import {
     prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
-    jars: ["java_boot_libs/snapshot/jars/are/invalid/myjavalib.jar"],
+    jars: ["java/myjavalib.jar"],
     permitted_packages: ["pkg.myjavalib"],
 }
 `),
@@ -465,7 +465,7 @@ java_import {
     sdk_member_name: "myjavalib",
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
-    jars: ["java_boot_libs/snapshot/jars/are/invalid/myjavalib.jar"],
+    jars: ["java/myjavalib.jar"],
     permitted_packages: ["pkg.myjavalib"],
 }
 
@@ -474,75 +474,9 @@ module_exports_snapshot {
     visibility: ["//visibility:public"],
     java_boot_libs: ["myexports_myjavalib@current"],
 }
-
 `),
 		checkAllCopyRules(`
-.intermediates/myexports/common_os/empty -> java_boot_libs/snapshot/jars/are/invalid/myjavalib.jar
-`),
-	)
-}
-
-func TestSnapshotWithJavaSystemserverLibrary(t *testing.T) {
-	result := android.GroupFixturePreparers(
-		prepareForSdkTestWithJava,
-		android.FixtureAddFile("aidl", nil),
-		android.FixtureAddFile("resource.txt", nil),
-	).RunTestWithBp(t, `
-		module_exports {
-			name: "myexports",
-			java_systemserver_libs: ["myjavalib"],
-		}
-
-		java_library {
-			name: "myjavalib",
-			srcs: ["Test.java"],
-			java_resources: ["resource.txt"],
-			// The aidl files should not be copied to the snapshot because a java_systemserver_libs member
-			// is not intended to be used for compiling Java, only for accessing the dex implementation
-			// jar.
-			aidl: {
-				export_include_dirs: ["aidl"],
-			},
-			system_modules: "none",
-			sdk_version: "none",
-			compile_dex: true,
-			permitted_packages: ["pkg.myjavalib"],
-		}
-	`)
-
-	CheckSnapshot(t, result, "myexports", "",
-		checkUnversionedAndroidBpContents(`
-// This is auto-generated. DO NOT EDIT.
-
-java_import {
-    name: "myjavalib",
-    prefer: false,
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java_systemserver_libs/snapshot/jars/are/invalid/myjavalib.jar"],
-    permitted_packages: ["pkg.myjavalib"],
-}
-`),
-		checkVersionedAndroidBpContents(`
-// This is auto-generated. DO NOT EDIT.
-
-java_import {
-    name: "myexports_myjavalib@current",
-    sdk_member_name: "myjavalib",
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java_systemserver_libs/snapshot/jars/are/invalid/myjavalib.jar"],
-    permitted_packages: ["pkg.myjavalib"],
-}
-
-module_exports_snapshot {
-    name: "myexports@current",
-    visibility: ["//visibility:public"],
-    java_systemserver_libs: ["myexports_myjavalib@current"],
-}
-`),
-		checkAllCopyRules(`
-.intermediates/myexports/common_os/empty -> java_systemserver_libs/snapshot/jars/are/invalid/myjavalib.jar
+.intermediates/myjavalib/android_common/withres/myjavalib.jar -> java/myjavalib.jar
 `),
 	)
 }
@@ -1424,7 +1358,7 @@ java_sdk_library_import {
 			ctx := android.ModuleInstallPathContextForTesting(result.Config)
 			dexJarBuildPath := func(name string, kind android.SdkKind) string {
 				dep := result.Module(name, "android_common").(java.SdkLibraryDependency)
-				path := dep.SdkApiStubDexJar(ctx, kind).Path()
+				path := dep.SdkApiStubDexJar(ctx, kind)
 				return path.RelativeToTop().String()
 			}
 

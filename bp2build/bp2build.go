@@ -15,12 +15,9 @@
 package bp2build
 
 import (
+	"android/soong/android"
 	"fmt"
 	"os"
-	"strings"
-
-	"android/soong/android"
-	"android/soong/bazel"
 )
 
 // Codegen is the backend of bp2build. The code generator is responsible for
@@ -31,22 +28,14 @@ func Codegen(ctx *CodegenContext) CodegenMetrics {
 	bp2buildDir := android.PathForOutput(ctx, "bp2build")
 	android.RemoveAllOutputDir(bp2buildDir)
 
-	res, errs := GenerateBazelTargets(ctx, true)
-	if len(errs) > 0 {
-		errMsgs := make([]string, len(errs))
-		for i, err := range errs {
-			errMsgs[i] = fmt.Sprintf("%q", err)
-		}
-		fmt.Printf("ERROR: Encountered %d error(s): \nERROR: %s", len(errs), strings.Join(errMsgs, "\n"))
-		os.Exit(1)
-	}
-	bp2buildFiles := CreateBazelFiles(nil, res.buildFileToTargets, ctx.mode)
+	buildToTargets, metrics := GenerateBazelTargets(ctx, true)
+	bp2buildFiles := CreateBazelFiles(nil, buildToTargets, ctx.mode)
 	writeFiles(ctx, bp2buildDir, bp2buildFiles)
 
-	soongInjectionDir := android.PathForOutput(ctx, bazel.SoongInjectionDirName)
-	writeFiles(ctx, soongInjectionDir, CreateSoongInjectionFiles(ctx.Config(), res.metrics))
+	soongInjectionDir := android.PathForOutput(ctx, "soong_injection")
+	writeFiles(ctx, soongInjectionDir, CreateSoongInjectionFiles())
 
-	return res.metrics
+	return metrics
 }
 
 // Get the output directory and create it if it doesn't exist.

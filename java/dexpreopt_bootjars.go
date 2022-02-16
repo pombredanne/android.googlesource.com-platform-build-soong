@@ -16,6 +16,7 @@ package java
 
 import (
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"android/soong/android"
@@ -153,18 +154,9 @@ import (
 // PRODUCT_BOOT_JARS_EXTRA variables. The AOSP makefiles specify some common Framework libraries,
 // but more product-specific libraries can be added in the product makefiles.
 //
-// Each component of the PRODUCT_BOOT_JARS and PRODUCT_BOOT_JARS_EXTRA variables is a
-// colon-separated pair <apex>:<library>, where <apex> is the variant name of a non-updatable APEX,
-// "platform" if the library is a part of the platform in the system partition, or "system_ext" if
-// it's in the system_ext partition.
-//
-// In these variables APEXes are identified by their "variant names", i.e. the names they get
-// mounted as in /apex on device. In Soong modules that is the name set in the "apex_name"
-// properties, which default to the "name" values. For example, many APEXes have both
-// com.android.xxx and com.google.android.xxx modules in Soong, but take the same place
-// /apex/com.android.xxx at runtime. In these cases the variant name is always com.android.xxx,
-// regardless which APEX goes into the product. See also android.ApexInfo.ApexVariationName and
-// apex.apexBundleProperties.Apex_name.
+// Each component of the PRODUCT_BOOT_JARS and PRODUCT_BOOT_JARS_EXTRA variables is either a simple
+// name (if the library is a part of the Platform), or a colon-separated pair <apex, name> (if the
+// library is a part of a non-updatable APEX).
 //
 // A related variable PRODUCT_APEX_BOOT_JARS contains bootclasspath libraries that are in APEXes.
 // They are not included in the boot image. The only exception here are ART jars and core-icu4j.jar
@@ -256,10 +248,6 @@ type bootImageConfig struct {
 	// Subdirectory where the image files on device are installed.
 	installDirOnDevice string
 
-	// Install path of the boot image profile if it needs to be installed in the APEX, or empty if not
-	// needed.
-	profileInstallPathInApex string
-
 	// A list of (location, jar) pairs for the Java modules in this image.
 	modules android.ConfiguredJarList
 
@@ -275,9 +263,6 @@ type bootImageConfig struct {
 
 	// Rules which should be used in make to install the outputs.
 	profileInstalls android.RuleBuilderInstalls
-
-	// Path to the image profile file on host (or empty, if profile is not generated).
-	profilePathOnHost android.Path
 
 	// Target-dependent fields.
 	variants []*bootImageVariant
@@ -313,13 +298,10 @@ type bootImageVariant struct {
 	// This is only set for a variant of an image that extends another image.
 	primaryImagesDeps android.Paths
 
-	// Rules which should be used in make to install the outputs on host.
+	// Rules which should be used in make to install the outputs.
 	installs           android.RuleBuilderInstalls
 	vdexInstalls       android.RuleBuilderInstalls
 	unstrippedInstalls android.RuleBuilderInstalls
-
-	// Rules which should be used in make to install the outputs on device.
-	deviceInstalls android.RuleBuilderInstalls
 }
 
 // Get target-specific boot image variant for the given boot image config and target.
@@ -389,11 +371,6 @@ func (image *bootImageConfig) apexVariants() []*bootImageVariant {
 		}
 	}
 	return variants
-}
-
-// Returns true if the boot image should be installed in the APEX.
-func (image *bootImageConfig) shouldInstallInApex() bool {
-	return strings.HasPrefix(image.installDirOnDevice, "apex/")
 }
 
 // Return boot image locations (as a list of symbolic paths).
@@ -514,21 +491,7 @@ func copyBootJarsToPredefinedLocations(ctx android.ModuleContext, srcBootDexJars
 		dst := dstBootJarsByModule[name]
 
 		if src == nil {
-			// A dex boot jar should be provided by the source java module. It needs to be installable or
-			// have compile_dex=true - cf. assignments to java.Module.dexJarFile.
-			//
-			// However, the source java module may be either replaced or overridden (using prefer:true) by
-			// a prebuilt java module with the same name. In that case the dex boot jar needs to be
-			// provided by the corresponding prebuilt APEX module. That APEX is the one that refers
-			// through a exported_(boot|systemserver)classpath_fragments property to a
-			// prebuilt_(boot|systemserver)classpath_fragment module, which in turn lists the prebuilt
-			// java module in the contents property. If that chain is broken then this dependency will
-			// fail.
-			if !ctx.Config().AllowMissingDependencies() {
-				ctx.ModuleErrorf("module %s does not provide a dex boot jar (see comment next to this message in Soong for details)", name)
-			} else {
-				ctx.AddMissingDependencies([]string{name})
-			}
+			ctx.ModuleErrorf("module %s does not provide a dex boot jar", name)
 		} else if dst == nil {
 			ctx.ModuleErrorf("module %s is not part of the boot configuration", name)
 		} else {
@@ -551,14 +514,14 @@ func buildBootImageVariantsForAndroidOs(ctx android.ModuleContext, image *bootIm
 }
 
 // buildBootImageVariantsForBuildOs generates rules to build the boot image variants for the
-// config.BuildOS OsType, i.e. the type of OS on which the build is being running.
+// android.BuildOs OsType, i.e. the type of OS on which the build is being running.
 //
 // The files need to be generated into their predefined location because they are used from there
 // both within Soong and outside, e.g. for ART based host side testing and also for use by some
 // cloud based tools. However, they are not needed by callers of this function and so the paths do
 // not need to be returned from this func, unlike the buildBootImageVariantsForAndroidOs func.
 func buildBootImageVariantsForBuildOs(ctx android.ModuleContext, image *bootImageConfig, profile android.WritablePath) {
-	buildBootImageForOsType(ctx, image, profile, ctx.Config().BuildOS)
+	buildBootImageForOsType(ctx, image, profile, android.BuildOs)
 }
 
 // buildBootImageForOsType takes a bootImageConfig, a profile file and an android.OsType
@@ -650,6 +613,7 @@ func buildBootImageVariant(ctx android.ModuleContext, image *bootImageVariant, p
 		Flag("--runtime-arg").FlagWithArg("-Xmx", global.Dex2oatImageXmx)
 
 	if profile != nil {
+		cmd.FlagWithArg("--compiler-filter=", "speed-profile")
 		cmd.FlagWithInput("--profile-file=", profile)
 	}
 
@@ -718,7 +682,6 @@ func buildBootImageVariant(ctx android.ModuleContext, image *bootImageVariant, p
 
 	var vdexInstalls android.RuleBuilderInstalls
 	var unstrippedInstalls android.RuleBuilderInstalls
-	var deviceInstalls android.RuleBuilderInstalls
 
 	for _, artOrOat := range image.moduleFiles(ctx, outputDir, ".art", ".oat") {
 		cmd.ImplicitOutput(artOrOat)
@@ -744,21 +707,12 @@ func buildBootImageVariant(ctx android.ModuleContext, image *bootImageVariant, p
 			android.RuleBuilderInstall{unstrippedOat, filepath.Join(installDir, unstrippedOat.Base())})
 	}
 
-	if image.installDirOnHost != image.installDirOnDevice && !image.shouldInstallInApex() && !ctx.Config().UnbundledBuild() {
-		installDirOnDevice := filepath.Join("/", image.installDirOnDevice, arch.String())
-		for _, file := range image.moduleFiles(ctx, outputDir, ".art", ".oat", ".vdex") {
-			deviceInstalls = append(deviceInstalls,
-				android.RuleBuilderInstall{file, filepath.Join(installDirOnDevice, file.Base())})
-		}
-	}
-
 	rule.Build(image.name+"JarsDexpreopt_"+image.target.String(), "dexpreopt "+image.name+" jars "+arch.String())
 
 	// save output and installed files for makevars
 	image.installs = rule.Installs()
 	image.vdexInstalls = vdexInstalls
 	image.unstrippedInstalls = unstrippedInstalls
-	image.deviceInstalls = deviceInstalls
 }
 
 const failureMessage = `ERROR: Dex2oat failed to compile a boot image.
@@ -804,14 +758,11 @@ func bootImageProfileRule(ctx android.ModuleContext, image *bootImageConfig) and
 		FlagForEachArg("--dex-location=", image.getAnyAndroidVariant().dexLocationsDeps).
 		FlagWithOutput("--reference-profile-file=", profile)
 
-	if image == defaultBootImageConfig(ctx) {
-		rule.Install(profile, "/system/etc/boot-image.prof")
-		image.profileInstalls = append(image.profileInstalls, rule.Installs()...)
-	}
+	rule.Install(profile, "/system/etc/boot-image.prof")
 
 	rule.Build("bootJarsProfile", "profile boot jars")
 
-	image.profilePathOnHost = profile
+	image.profileInstalls = append(image.profileInstalls, rule.Installs()...)
 
 	return profile
 }
@@ -846,6 +797,40 @@ func bootFrameworkProfileRule(ctx android.ModuleContext, image *bootImageConfig)
 	image.profileInstalls = append(image.profileInstalls, rule.Installs()...)
 
 	return profile
+}
+
+// generateUpdatableBcpPackagesRule generates the rule to create the updatable-bcp-packages.txt file
+// and returns a path to the generated file.
+func generateUpdatableBcpPackagesRule(ctx android.ModuleContext, image *bootImageConfig, apexModules []android.Module) android.WritablePath {
+	// Collect `permitted_packages` for updatable boot jars.
+	var updatablePackages []string
+	for _, module := range apexModules {
+		if j, ok := module.(PermittedPackagesForUpdatableBootJars); ok {
+			pp := j.PermittedPackagesForUpdatableBootJars()
+			if len(pp) > 0 {
+				updatablePackages = append(updatablePackages, pp...)
+			} else {
+				ctx.OtherModuleErrorf(module, "Missing permitted_packages")
+			}
+		}
+	}
+
+	// Sort updatable packages to ensure deterministic ordering.
+	sort.Strings(updatablePackages)
+
+	updatableBcpPackagesName := "updatable-bcp-packages.txt"
+	updatableBcpPackages := image.dir.Join(ctx, updatableBcpPackagesName)
+
+	// WriteFileRule automatically adds the last end-of-line.
+	android.WriteFileRule(ctx, updatableBcpPackages, strings.Join(updatablePackages, "\n"))
+
+	rule := android.NewRuleBuilder(pctx, ctx)
+	rule.Install(updatableBcpPackages, "/system/etc/"+updatableBcpPackagesName)
+	// TODO: Rename `profileInstalls` to `extraInstalls`?
+	// Maybe even move the field out of the bootImageConfig into some higher level type?
+	image.profileInstalls = append(image.profileInstalls, rule.Installs()...)
+
+	return updatableBcpPackages
 }
 
 func dumpOatRules(ctx android.ModuleContext, image *bootImageConfig) {

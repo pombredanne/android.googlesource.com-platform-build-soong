@@ -15,13 +15,13 @@
 package android
 
 import (
-	"strings"
-
 	"android/soong/bazel"
+	"strings"
 )
 
 func init() {
 	RegisterModuleType("filegroup", FileGroupFactory)
+	RegisterBp2BuildMutator("filegroup", FilegroupBp2Build)
 }
 
 var PrepareForTestWithFilegroup = FixtureRegisterWithContext(func(ctx RegistrationContext) {
@@ -33,41 +33,39 @@ type bazelFilegroupAttributes struct {
 	Srcs bazel.LabelListAttribute
 }
 
-// ConvertWithBp2build performs bp2build conversion of filegroup
-func (fg *fileGroup) ConvertWithBp2build(ctx TopDownMutatorContext) {
-	srcs := bazel.MakeLabelListAttribute(
-		BazelLabelForModuleSrcExcludes(ctx, fg.properties.Srcs, fg.properties.Exclude_srcs))
+type bazelFilegroup struct {
+	BazelTargetModuleBase
+	bazelFilegroupAttributes
+}
 
-	// For Bazel compatibility, don't generate the filegroup if there is only 1
-	// source file, and that the source file is named the same as the module
-	// itself. In Bazel, eponymous filegroups like this would be an error.
-	//
-	// Instead, dependents on this single-file filegroup can just depend
-	// on the file target, instead of rule target, directly.
-	//
-	// You may ask: what if a filegroup has multiple files, and one of them
-	// shares the name? The answer: we haven't seen that in the wild, and
-	// should lock Soong itself down to prevent the behavior. For now,
-	// we raise an error if bp2build sees this problem.
-	for _, f := range srcs.Value.Includes {
-		if f.Label == fg.Name() {
-			if len(srcs.Value.Includes) > 1 {
-				ctx.ModuleErrorf("filegroup '%s' cannot contain a file with the same name", fg.Name())
-			}
-			return
-		}
+func BazelFileGroupFactory() Module {
+	module := &bazelFilegroup{}
+	module.AddProperties(&module.bazelFilegroupAttributes)
+	InitBazelTargetModule(module)
+	return module
+}
+
+func (bfg *bazelFilegroup) Name() string {
+	return bfg.BaseModuleName()
+}
+
+func (bfg *bazelFilegroup) GenerateAndroidBuildActions(ctx ModuleContext) {}
+
+func FilegroupBp2Build(ctx TopDownMutatorContext) {
+	fg, ok := ctx.Module().(*fileGroup)
+	if !ok || !fg.ConvertWithBp2build(ctx) {
+		return
 	}
 
+	srcs := bazel.MakeLabelListAttribute(
+		BazelLabelForModuleSrcExcludes(ctx, fg.properties.Srcs, fg.properties.Exclude_srcs))
 	attrs := &bazelFilegroupAttributes{
 		Srcs: srcs,
 	}
 
-	props := bazel.BazelTargetModuleProperties{
-		Rule_class:        "filegroup",
-		Bzl_load_location: "//build/bazel/rules:filegroup.bzl",
-	}
+	props := bazel.BazelTargetModuleProperties{Rule_class: "filegroup"}
 
-	ctx.CreateBazelTargetModule(props, CommonAttributes{Name: fg.Name()}, attrs)
+	ctx.CreateBazelTargetModule(BazelFileGroupFactory, fg.Name(), props, attrs)
 }
 
 type fileGroupProperties struct {
@@ -107,24 +105,15 @@ func FileGroupFactory() Module {
 	return module
 }
 
-func (fg *fileGroup) maybeGenerateBazelBuildActions(ctx ModuleContext) {
+func (fg *fileGroup) generateBazelBuildActions(ctx ModuleContext) bool {
 	if !fg.MixedBuildsEnabled(ctx) {
-		return
-	}
-
-	archVariant := ctx.Arch().ArchType
-	osVariant := ctx.Os()
-	if len(fg.Srcs()) == 1 && fg.Srcs()[0].Base() == fg.Name() {
-		// This will be a regular file target, not filegroup, in Bazel.
-		// See FilegroupBp2Build for more information.
-		archVariant = Common
-		osVariant = CommonOS
+		return false
 	}
 
 	bazelCtx := ctx.Config().BazelContext
-	filePaths, ok := bazelCtx.GetOutputFiles(fg.GetBazelLabel(ctx, fg), configKey{archVariant, osVariant})
+	filePaths, ok := bazelCtx.GetOutputFiles(fg.GetBazelLabel(ctx, fg), ctx.Arch().ArchType)
 	if !ok {
-		return
+		return false
 	}
 
 	bazelOuts := make(Paths, 0, len(filePaths))
@@ -134,15 +123,19 @@ func (fg *fileGroup) maybeGenerateBazelBuildActions(ctx ModuleContext) {
 	}
 
 	fg.srcs = bazelOuts
+
+	return true
 }
 
 func (fg *fileGroup) GenerateAndroidBuildActions(ctx ModuleContext) {
+	if fg.generateBazelBuildActions(ctx) {
+		return
+	}
+
 	fg.srcs = PathsForModuleSrcExcludes(ctx, fg.properties.Srcs, fg.properties.Exclude_srcs)
 	if fg.properties.Path != nil {
 		fg.srcs = PathsWithModuleSrcSubDir(ctx, fg.srcs, String(fg.properties.Path))
 	}
-
-	fg.maybeGenerateBazelBuildActions(ctx)
 }
 
 func (fg *fileGroup) Srcs() Paths {
