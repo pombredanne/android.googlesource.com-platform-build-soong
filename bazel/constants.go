@@ -18,10 +18,6 @@ const (
 
 	// Run bazel as a ninja executer
 	BazelNinjaExecRunName = RunName("bazel-ninja-exec")
-
-	SoongInjectionDirName = "soong_injection"
-
-	GeneratedBazelFileWarning = "# GENERATED FOR BAZEL FROM SOONG. DO NOT EDIT"
 )
 
 // String returns the name of the run.

@@ -65,10 +65,10 @@ func (l *loadHookContext) moduleFactories() map[string]blueprint.ModuleFactory {
 	return l.bp.ModuleFactories()
 }
 
-func (l *loadHookContext) appendPrependHelper(props []interface{},
-	extendFn func([]interface{}, interface{}, proptools.ExtendPropertyFilterFunc) error) {
+func (l *loadHookContext) AppendProperties(props ...interface{}) {
 	for _, p := range props {
-		err := extendFn(l.Module().base().GetProperties(), p, nil)
+		err := proptools.AppendMatchingProperties(l.Module().base().customizableProperties,
+			p, nil)
 		if err != nil {
 			if propertyErr, ok := err.(*proptools.ExtendPropertyError); ok {
 				l.PropertyErrorf(propertyErr.Property, "%s", propertyErr.Err.Error())
@@ -78,12 +78,19 @@ func (l *loadHookContext) appendPrependHelper(props []interface{},
 		}
 	}
 }
-func (l *loadHookContext) AppendProperties(props ...interface{}) {
-	l.appendPrependHelper(props, proptools.AppendMatchingProperties)
-}
 
 func (l *loadHookContext) PrependProperties(props ...interface{}) {
-	l.appendPrependHelper(props, proptools.PrependMatchingProperties)
+	for _, p := range props {
+		err := proptools.PrependMatchingProperties(l.Module().base().customizableProperties,
+			p, nil)
+		if err != nil {
+			if propertyErr, ok := err.(*proptools.ExtendPropertyError); ok {
+				l.PropertyErrorf(propertyErr.Property, "%s", propertyErr.Err.Error())
+			} else {
+				panic(err)
+			}
+		}
+	}
 }
 
 func (l *loadHookContext) CreateModule(factory ModuleFactory, props ...interface{}) Module {

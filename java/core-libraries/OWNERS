@@ -1,3 +1,0 @@
-include platform/external/icu:/OWNERS
-include platform/external/conscrypt:/OWNERS
-include platform/libcore:/OWNERS

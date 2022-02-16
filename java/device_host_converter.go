@@ -118,7 +118,7 @@ func (d *DeviceHostConverter) GenerateAndroidBuildActions(ctx android.ModuleCont
 		TransformJarsToJar(ctx, outputFile, "combine", d.implementationAndResourceJars,
 			android.OptionalPath{}, false, nil, nil)
 		d.combinedImplementationJar = outputFile
-	} else if len(d.implementationAndResourceJars) == 1 {
+	} else {
 		d.combinedImplementationJar = d.implementationAndResourceJars[0]
 	}
 
@@ -127,7 +127,7 @@ func (d *DeviceHostConverter) GenerateAndroidBuildActions(ctx android.ModuleCont
 		TransformJarsToJar(ctx, outputFile, "turbine combine", d.headerJars,
 			android.OptionalPath{}, false, nil, []string{"META-INF/TRANSITIVE"})
 		d.combinedHeaderJar = outputFile
-	} else if len(d.headerJars) == 1 {
+	} else {
 		d.combinedHeaderJar = d.headerJars[0]
 	}
 
@@ -174,9 +174,7 @@ func (d *DeviceHostConverter) AndroidMk() android.AndroidMkData {
 	return android.AndroidMkData{
 		Class:      "JAVA_LIBRARIES",
 		OutputFile: android.OptionalPathForPath(d.combinedImplementationJar),
-		// Make does not support Windows Java modules
-		Disabled: d.Os() == android.Windows,
-		Include:  "$(BUILD_SYSTEM)/soong_java_prebuilt.mk",
+		Include:    "$(BUILD_SYSTEM)/soong_java_prebuilt.mk",
 		Extra: []android.AndroidMkExtraFunc{
 			func(w io.Writer, outputFile android.Path) {
 				fmt.Fprintln(w, "LOCAL_UNINSTALLABLE_MODULE := true")
