@@ -25,6 +25,7 @@ func init() {
 	// Register sdk member types.
 	android.RegisterSdkMemberType(headersLibrarySdkMemberType)
 
+	android.RegisterBp2BuildMutator("cc_library_headers", CcLibraryHeadersBp2Build)
 }
 
 var headersLibrarySdkMemberType = &librarySdkMemberType{
@@ -32,11 +33,6 @@ var headersLibrarySdkMemberType = &librarySdkMemberType{
 		PropertyName:    "native_header_libs",
 		SupportsSdk:     true,
 		HostOsDependent: true,
-		Traits: []android.SdkMemberTrait{
-			nativeBridgeSdkTrait,
-			ramdiskImageRequiredSdkTrait,
-			recoveryImageRequiredSdkTrait,
-		},
 	},
 	prebuiltModuleType: "cc_prebuilt_library_headers",
 	noOutputFiles:      true,
@@ -48,15 +44,15 @@ func RegisterLibraryHeadersBuildComponents(ctx android.RegistrationContext) {
 }
 
 type libraryHeaderBazelHander struct {
-	android.BazelHandler
+	bazelHandler
 
 	module  *Module
 	library *libraryDecorator
 }
 
-func (h *libraryHeaderBazelHander) GenerateBazelBuildActions(ctx android.ModuleContext, label string) bool {
+func (h *libraryHeaderBazelHander) generateBazelBuildActions(ctx android.ModuleContext, label string) bool {
 	bazelCtx := ctx.Config().BazelContext
-	ccInfo, ok, err := bazelCtx.GetCcInfo(label, android.GetConfigKey(ctx))
+	ccInfo, ok, err := bazelCtx.GetCcInfo(label, ctx.Arch().ArchType)
 	if err != nil {
 		ctx.ModuleErrorf("Error getting Bazel CcInfo: %s", err)
 		return false
@@ -77,7 +73,13 @@ func (h *libraryHeaderBazelHander) GenerateBazelBuildActions(ctx android.ModuleC
 	// HeaderLibraryInfo is an empty struct to indicate to dependencies that this is a header library
 	ctx.SetProvider(HeaderLibraryInfoProvider, HeaderLibraryInfo{})
 
-	h.library.setFlagExporterInfoFromCcInfo(ctx, ccInfo)
+	flagExporterInfo := flagExporterInfoFromCcInfo(ctx, ccInfo)
+	// Store flag info to be passed along to androimk
+	// TODO(b/184387147): Androidmk should be done in Bazel, not Soong.
+	h.library.flagExporterInfo = &flagExporterInfo
+	// flag exporters consolidates properties like includes, flags, dependencies that should be
+	// exported from this module to other modules
+	ctx.SetProvider(FlagExporterInfoProvider, flagExporterInfo)
 
 	// Dependencies on this library will expect collectedSnapshotHeaders to be set, otherwise
 	// validation will fail. For now, set this to an empty list.
@@ -95,49 +97,71 @@ func LibraryHeaderFactory() android.Module {
 	module, library := NewLibrary(android.HostAndDeviceSupported)
 	library.HeaderOnly()
 	module.sdkMemberTypes = []android.SdkMemberType{headersLibrarySdkMemberType}
-	module.bazelable = true
 	module.bazelHandler = &libraryHeaderBazelHander{module: module, library: library}
 	return module.Init()
 }
 
 // cc_prebuilt_library_headers is a prebuilt version of cc_library_headers
 func prebuiltLibraryHeaderFactory() android.Module {
-	module, library := NewPrebuiltLibrary(android.HostAndDeviceSupported, "")
+	module, library := NewPrebuiltLibrary(android.HostAndDeviceSupported)
 	library.HeaderOnly()
-	module.bazelable = true
-	module.bazelHandler = &ccLibraryBazelHandler{module: module}
 	return module.Init()
 }
 
 type bazelCcLibraryHeadersAttributes struct {
-	Hdrs                     bazel.LabelListAttribute
-	Export_includes          bazel.StringListAttribute
-	Export_absolute_includes bazel.StringListAttribute
-	Export_system_includes   bazel.StringListAttribute
-	Deps                     bazel.LabelListAttribute
-	Implementation_deps      bazel.LabelListAttribute
-	System_dynamic_deps      bazel.LabelListAttribute
+	Copts    bazel.StringListAttribute
+	Hdrs     bazel.LabelListAttribute
+	Includes bazel.StringListAttribute
+	Deps     bazel.LabelListAttribute
 }
 
-func libraryHeadersBp2Build(ctx android.TopDownMutatorContext, module *Module) {
-	baseAttributes := bp2BuildParseBaseProps(ctx, module)
-	exportedIncludes := bp2BuildParseExportedIncludes(ctx, module, baseAttributes.includes)
-	linkerAttrs := baseAttributes.linkerAttributes
+type bazelCcLibraryHeaders struct {
+	android.BazelTargetModuleBase
+	bazelCcLibraryHeadersAttributes
+}
+
+func BazelCcLibraryHeadersFactory() android.Module {
+	module := &bazelCcLibraryHeaders{}
+	module.AddProperties(&module.bazelCcLibraryHeadersAttributes)
+	android.InitBazelTargetModule(module)
+	return module
+}
+
+func CcLibraryHeadersBp2Build(ctx android.TopDownMutatorContext) {
+	module, ok := ctx.Module().(*Module)
+	if !ok {
+		// Not a cc module
+		return
+	}
+
+	if !module.ConvertWithBp2build(ctx) {
+		return
+	}
+
+	if ctx.ModuleType() != "cc_library_headers" {
+		return
+	}
+
+	exportedIncludes := bp2BuildParseExportedIncludes(ctx, module)
+	compilerAttrs := bp2BuildParseCompilerProps(ctx, module)
+	linkerAttrs := bp2BuildParseLinkerProps(ctx, module)
 
 	attrs := &bazelCcLibraryHeadersAttributes{
-		Export_includes:          exportedIncludes.Includes,
-		Export_absolute_includes: exportedIncludes.AbsoluteIncludes,
-		Export_system_includes:   exportedIncludes.SystemIncludes,
-		Implementation_deps:      linkerAttrs.implementationDeps,
-		Deps:                     linkerAttrs.deps,
-		System_dynamic_deps:      linkerAttrs.systemDynamicDeps,
-		Hdrs:                     baseAttributes.hdrs,
+		Copts:    compilerAttrs.copts,
+		Includes: exportedIncludes,
+		Deps:     linkerAttrs.deps,
 	}
 
 	props := bazel.BazelTargetModuleProperties{
 		Rule_class:        "cc_library_headers",
-		Bzl_load_location: "//build/bazel/rules/cc:cc_library_headers.bzl",
+		Bzl_load_location: "//build/bazel/rules:cc_library_headers.bzl",
 	}
 
-	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: module.Name()}, attrs)
+	ctx.CreateBazelTargetModule(BazelCcLibraryHeadersFactory, module.Name(), props, attrs)
 }
+
+func (m *bazelCcLibraryHeaders) Name() string {
+	return m.BaseModuleName()
+}
+
+func (m *bazelCcLibraryHeaders) GenerateAndroidBuildActions(ctx android.ModuleContext) {}

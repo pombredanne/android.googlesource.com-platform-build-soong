@@ -155,13 +155,6 @@ type CommonProperties struct {
 
 		// List of java_plugin modules that provide extra errorprone checks.
 		Extra_check_modules []string
-
-		// This property can be in 3 states. When set to true, errorprone will
-		// be run during the regular build. When set to false, errorprone will
-		// never be run. When unset, errorprone will be run when the RUN_ERROR_PRONE
-		// environment variable is true. Setting this to false will improve build
-		// performance more than adding -XepDisableAllChecks in javacflags.
-		Enabled *bool
 	}
 
 	Proto struct {
@@ -184,17 +177,12 @@ type CommonProperties struct {
 // Properties that are specific to device modules. Host module factories should not add these when
 // constructing a new module.
 type DeviceProperties struct {
-	// If not blank, set to the version of the sdk to compile against.
+	// if not blank, set to the version of the sdk to compile against.
 	// Defaults to compiling against the current platform.
-	// Values are of one of the following forms:
-	// 1) numerical API level or "current"
-	// 2) An SDK kind with an API level: "<sdk kind>_<API level>". See
-	// build/soong/android/sdk_version.go for the complete and up to date list of
-	// SDK kinds. If the SDK kind value is empty, it will be set to public.
 	Sdk_version *string
 
 	// if not blank, set the minimum version of the sdk that the compiled artifacts will run against.
-	// Defaults to sdk_version if not set. See sdk_version for possible values.
+	// Defaults to sdk_version if not set.
 	Min_sdk_version *string
 
 	// if not blank, set the maximum version of the sdk that the compiled artifacts will run against.
@@ -202,7 +190,7 @@ type DeviceProperties struct {
 	Max_sdk_version *string
 
 	// if not blank, set the targetSdkVersion in the AndroidManifest.xml.
-	// Defaults to sdk_version if not set. See sdk_version for possible values.
+	// Defaults to sdk_version if not set.
 	Target_sdk_version *string
 
 	// Whether to compile against the platform APIs instead of an SDK.
@@ -245,6 +233,9 @@ type DeviceProperties struct {
 	// otherwise provides defaults libraries to add to the bootclasspath.
 	System_modules *string
 
+	// set the name of the output
+	Stem *string
+
 	IsSDKLibrary bool `blueprint:"mutated"`
 
 	// If true, generate the signature file of APK Signing Scheme V4, along side the signed APK file.
@@ -254,15 +245,6 @@ type DeviceProperties struct {
 	// Only for libraries created by a sysprop_library module, SyspropPublicStub is the name of the
 	// public stubs library.
 	SyspropPublicStub string `blueprint:"mutated"`
-}
-
-// Device properties that can be overridden by overriding module (e.g. override_android_app)
-type OverridableDeviceProperties struct {
-	// set the name of the output. If not set, `name` is used.
-	// To override a module with this property set, overriding module might need to set this as well.
-	// Otherwise, both the overridden and the overriding modules will have the same output name, which
-	// can cause the duplicate output error.
-	Stem *string
 }
 
 // Functionality common to Module and Import
@@ -291,94 +273,12 @@ func (e *embeddableInModuleAndImport) depIsInSameApex(ctx android.BaseModuleCont
 	return false
 }
 
-// OptionalDexJarPath can be either unset, hold a valid path to a dex jar file,
-// or an invalid path describing the reason it is invalid.
-//
-// It is unset if a dex jar isn't applicable, i.e. no build rule has been
-// requested to create one.
-//
-// If a dex jar has been requested to be built then it is set, and it may be
-// either a valid android.Path, or invalid with a reason message. The latter
-// happens if the source that should produce the dex file isn't able to.
-//
-// E.g. it is invalid with a reason message if there is a prebuilt APEX that
-// could produce the dex jar through a deapexer module, but the APEX isn't
-// installable so doing so wouldn't be safe.
-type OptionalDexJarPath struct {
-	isSet bool
-	path  android.OptionalPath
-}
-
-// IsSet returns true if a path has been set, either invalid or valid.
-func (o OptionalDexJarPath) IsSet() bool {
-	return o.isSet
-}
-
-// Valid returns true if there is a path that is valid.
-func (o OptionalDexJarPath) Valid() bool {
-	return o.isSet && o.path.Valid()
-}
-
-// Path returns the valid path, or panics if it's either not set or is invalid.
-func (o OptionalDexJarPath) Path() android.Path {
-	if !o.isSet {
-		panic("path isn't set")
-	}
-	return o.path.Path()
-}
-
-// PathOrNil returns the path if it's set and valid, or else nil.
-func (o OptionalDexJarPath) PathOrNil() android.Path {
-	if o.Valid() {
-		return o.Path()
-	}
-	return nil
-}
-
-// InvalidReason returns the reason for an invalid path, which is never "". It
-// returns "" for an unset or valid path.
-func (o OptionalDexJarPath) InvalidReason() string {
-	if !o.isSet {
-		return ""
-	}
-	return o.path.InvalidReason()
-}
-
-func (o OptionalDexJarPath) String() string {
-	if !o.isSet {
-		return "<unset>"
-	}
-	return o.path.String()
-}
-
-// makeUnsetDexJarPath returns an unset OptionalDexJarPath.
-func makeUnsetDexJarPath() OptionalDexJarPath {
-	return OptionalDexJarPath{isSet: false}
-}
-
-// makeDexJarPathFromOptionalPath returns an OptionalDexJarPath that is set with
-// the given OptionalPath, which may be valid or invalid.
-func makeDexJarPathFromOptionalPath(path android.OptionalPath) OptionalDexJarPath {
-	return OptionalDexJarPath{isSet: true, path: path}
-}
-
-// makeDexJarPathFromPath returns an OptionalDexJarPath that is set with the
-// valid given path. It returns an unset OptionalDexJarPath if the given path is
-// nil.
-func makeDexJarPathFromPath(path android.Path) OptionalDexJarPath {
-	if path == nil {
-		return makeUnsetDexJarPath()
-	}
-	return makeDexJarPathFromOptionalPath(android.OptionalPathForPath(path))
-}
-
 // Module contains the properties and members used by all java module types
 type Module struct {
 	android.ModuleBase
 	android.DefaultableModuleBase
 	android.ApexModuleBase
 	android.SdkBase
-	android.BazelModuleBase
 
 	// Functionality common to Module and Import.
 	embeddableInModuleAndImport
@@ -386,8 +286,6 @@ type Module struct {
 	properties       CommonProperties
 	protoProperties  android.ProtoProperties
 	deviceProperties DeviceProperties
-
-	overridableDeviceProperties OverridableDeviceProperties
 
 	// jar file containing header classes including static library dependencies, suitable for
 	// inserting into the bootclasspath/classpath of another compile
@@ -409,7 +307,7 @@ type Module struct {
 	implementationAndResourcesJar android.Path
 
 	// output file containing classes.dex and resources
-	dexJarFile OptionalDexJarPath
+	dexJarFile android.Path
 
 	// output file containing uninstrumented classes that will be instrumented by jacoco
 	jacocoReportClassesFile android.Path
@@ -424,9 +322,6 @@ type Module struct {
 
 	// installed file for binary dependency
 	installFile android.Path
-
-	// installed file for hostdex copy
-	hostdexInstallFile android.InstallPath
 
 	// list of .java files and srcjars that was passed to javac
 	compiledJavaSrcs android.Paths
@@ -453,6 +348,9 @@ type Module struct {
 
 	// expanded Jarjar_rules
 	expandJarjarRules android.Path
+
+	// list of additional targets for checkbuild
+	additionalCheckedModules android.Paths
 
 	// Extra files generated by the module type to be added as java resources.
 	extraResources android.Paths
@@ -482,7 +380,7 @@ func (j *Module) CheckStableSdkVersion(ctx android.BaseModuleContext) error {
 		return nil
 	}
 	if sdkVersion.Kind == android.SdkCorePlatform {
-		if useLegacyCorePlatformApi(ctx, j.BaseModuleName()) {
+		if useLegacyCorePlatformApiByName(j.BaseModuleName()) {
 			return fmt.Errorf("non stable SDK %v - uses legacy core platform", sdkVersion)
 		} else {
 			// Treat stable core platform as stable.
@@ -524,9 +422,9 @@ func (j *Module) checkPlatformAPI(ctx android.ModuleContext) {
 		usePlatformAPI := proptools.Bool(j.deviceProperties.Platform_apis)
 		sdkVersionSpecified := sc.SdkVersion(ctx).Specified()
 		if usePlatformAPI && sdkVersionSpecified {
-			ctx.PropertyErrorf("platform_apis", "This module has conflicting settings. sdk_version is not empty, which means this module cannot use platform APIs. However platform_apis is set to true.")
+			ctx.PropertyErrorf("platform_apis", "platform_apis must be false when sdk_version is not empty.")
 		} else if !usePlatformAPI && !sdkVersionSpecified {
-			ctx.PropertyErrorf("platform_apis", "This module has conflicting settings. sdk_version is empty, which means that this module is build against platform APIs. However platform_apis is not set to true")
+			ctx.PropertyErrorf("platform_apis", "platform_apis must be true when sdk_version is empty.")
 		}
 
 	}
@@ -544,7 +442,6 @@ func (j *Module) addHostAndDeviceProperties() {
 	j.addHostProperties()
 	j.AddProperties(
 		&j.deviceProperties,
-		&j.overridableDeviceProperties,
 		&j.dexer.dexProperties,
 		&j.dexpreoptProperties,
 		&j.linter.properties,
@@ -713,10 +610,7 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 		if dep != nil {
 			if component, ok := dep.(SdkLibraryComponentDependency); ok {
 				if lib := component.OptionalSdkLibraryImplementation(); lib != nil {
-					// Add library as optional if it's one of the optional compatibility libs.
-					optional := android.InList(*lib, dexpreopt.OptionalCompatUsesLibs)
-					tag := makeUsesLibraryDependencyTag(dexpreopt.AnySdkVersion, optional, true)
-					ctx.AddVariationDependencies(nil, tag, *lib)
+					ctx.AddVariationDependencies(nil, usesLibTag, *lib)
 				}
 			}
 		}
@@ -750,11 +644,6 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 		}
 	} else if j.shouldInstrumentStatic(ctx) {
 		ctx.AddVariationDependencies(nil, staticLibTag, "jacocoagent")
-	}
-
-	if j.useCompose() {
-		ctx.AddVariationDependencies(ctx.Config().BuildOSCommonTarget.Variations(), kotlinPluginTag,
-			"androidx.compose.compiler_compiler-hosted")
 	}
 }
 
@@ -814,9 +703,6 @@ func (j *Module) aidlFlags(ctx android.ModuleContext, aidlPreprocess android.Opt
 		flags = append(flags, "--transaction_names")
 	}
 
-	aidlMinSdkVersion := j.MinSdkVersion(ctx).ApiLevel.String()
-	flags = append(flags, "--min_sdk_version="+aidlMinSdkVersion)
-
 	return strings.Join(flags, " "), deps
 }
 
@@ -827,8 +713,7 @@ func (j *Module) collectBuilderFlags(ctx android.ModuleContext, deps deps) javaB
 	// javaVersion flag.
 	flags.javaVersion = getJavaVersion(ctx, String(j.properties.Java_version), android.SdkContext(j))
 
-	epEnabled := j.properties.Errorprone.Enabled
-	if (ctx.Config().RunErrorProne() && epEnabled == nil) || Bool(epEnabled) {
+	if ctx.Config().RunErrorProne() {
 		if config.ErrorProneClasspath == nil && ctx.Config().TestProductVariables == nil {
 			ctx.ModuleErrorf("cannot build with Error Prone, missing external/error_prone?")
 		}
@@ -907,7 +792,7 @@ func (j *Module) collectJavacFlags(
 			// Manually specify build directory in case it is not under the repo root.
 			// (javac doesn't seem to expand into symbolic links when searching for patch-module targets, so
 			// just adding a symlink under the root doesn't help.)
-			patchPaths := []string{".", ctx.Config().SoongOutDir()}
+			patchPaths := []string{".", ctx.Config().BuildDir()}
 
 			// b/150878007
 			//
@@ -968,7 +853,6 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	if flags.javaVersion.usesJavaModules() {
 		j.properties.Srcs = append(j.properties.Srcs, j.properties.Openjdk9.Srcs...)
 	}
-
 	srcFiles := android.PathsForModuleSrcExcludes(ctx, j.properties.Srcs, j.properties.Exclude_srcs)
 	if hasSrcExt(srcFiles.Strings(), ".proto") {
 		flags = protoFlags(ctx, &j.properties, &j.protoProperties, flags)
@@ -990,7 +874,6 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	if aaptSrcJar != nil {
 		srcJars = append(srcJars, aaptSrcJar)
 	}
-	srcFiles = srcFiles.FilterOutByExt(".srcjar")
 
 	if j.properties.Jarjar_rules != nil {
 		j.expandJarjarRules = android.PathForModuleSrc(ctx, *j.properties.Jarjar_rules)
@@ -1018,8 +901,8 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		kotlincFlags := j.properties.Kotlincflags
 		CheckKotlincFlags(ctx, kotlincFlags)
 
-		// Workaround for KT-46512
-		kotlincFlags = append(kotlincFlags, "-Xsam-conversions=class")
+		// Dogfood the JVM_IR backend.
+		kotlincFlags = append(kotlincFlags, "-Xuse-ir")
 
 		// If there are kotlin files, compile them first but pass all the kotlin and java files
 		// kotlinc will use the java files to resolve types referenced by the kotlin files, but
@@ -1028,12 +911,6 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		if ctx.Device() {
 			kotlincFlags = append(kotlincFlags, "-no-jdk")
 		}
-
-		for _, plugin := range deps.kotlinPlugins {
-			kotlincFlags = append(kotlincFlags, "-Xplugin="+plugin.String())
-		}
-		flags.kotlincDeps = append(flags.kotlincDeps, deps.kotlinPlugins...)
-
 		if len(kotlincFlags) > 0 {
 			// optimization.
 			ctx.Variable(pctx, "kotlincFlags", strings.Join(kotlincFlags, " "))
@@ -1089,7 +966,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	j.compiledSrcJars = srcJars
 
 	enableSharding := false
-	var headerJarFileWithoutDepsOrJarjar android.Path
+	var headerJarFileWithoutJarjar android.Path
 	if ctx.Device() && !ctx.Config().IsEnvFalse("TURBINE_ENABLED") && !deps.disableTurbine {
 		if j.properties.Javac_shard_size != nil && *(j.properties.Javac_shard_size) > 0 {
 			enableSharding = true
@@ -1099,7 +976,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 			// allow for the use of annotation processors that do function correctly
 			// with sharding enabled. See: b/77284273.
 		}
-		headerJarFileWithoutDepsOrJarjar, j.headerJarFile =
+		headerJarFileWithoutJarjar, j.headerJarFile =
 			j.compileJavaHeader(ctx, uniqueSrcFiles, srcJars, deps, flags, jarName, kotlinJars)
 		if ctx.Failed() {
 			return
@@ -1107,30 +984,19 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	}
 	if len(uniqueSrcFiles) > 0 || len(srcJars) > 0 {
 		var extraJarDeps android.Paths
-		if Bool(j.properties.Errorprone.Enabled) {
-			// If error-prone is enabled, enable errorprone flags on the regular
-			// build.
-			flags = enableErrorproneFlags(flags)
-		} else if ctx.Config().RunErrorProne() && j.properties.Errorprone.Enabled == nil {
-			// Otherwise, if the RUN_ERROR_PRONE environment variable is set, create
-			// a new jar file just for compiling with the errorprone compiler to.
-			// This is because we don't want to cause the java files to get completely
-			// rebuilt every time the state of the RUN_ERROR_PRONE variable changes.
-			// We also don't want to run this if errorprone is enabled by default for
-			// this module, or else we could have duplicated errorprone messages.
-			errorproneFlags := enableErrorproneFlags(flags)
+		if ctx.Config().RunErrorProne() {
+			// If error-prone is enabled, add an additional rule to compile the java files into
+			// a separate set of classes (so that they don't overwrite the normal ones and require
+			// a rebuild when error-prone is turned off).
+			// TODO(ccross): Once we always compile with javac9 we may be able to conditionally
+			//    enable error-prone without affecting the output class files.
 			errorprone := android.PathForModuleOut(ctx, "errorprone", jarName)
-
-			transformJavaToClasses(ctx, errorprone, -1, uniqueSrcFiles, srcJars, errorproneFlags, nil,
-				"errorprone", "errorprone")
-
+			RunErrorProne(ctx, errorprone, uniqueSrcFiles, srcJars, flags)
 			extraJarDeps = append(extraJarDeps, errorprone)
 		}
 
 		if enableSharding {
-			if headerJarFileWithoutDepsOrJarjar != nil {
-				flags.classpath = append(classpath{headerJarFileWithoutDepsOrJarjar}, flags.classpath...)
-			}
+			flags.classpath = append(flags.classpath, headerJarFileWithoutJarjar)
 			shardSize := int(*(j.properties.Javac_shard_size))
 			var shardSrcs []android.Paths
 			if len(uniqueSrcFiles) > 0 {
@@ -1373,7 +1239,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 			}
 			// Dex compilation
 			var dexOutputFile android.OutputPath
-			dexOutputFile = j.dexer.compileDex(ctx, flags, j.MinSdkVersion(ctx), implementationAndResourcesJar, jarName)
+			dexOutputFile = j.dexer.compileDex(ctx, flags, j.MinSdkVersion(ctx), outputFile, jarName)
 			if ctx.Failed() {
 				return
 			}
@@ -1394,13 +1260,12 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 			}
 
 			// Initialize the hiddenapi structure.
-
-			j.initHiddenAPI(ctx, makeDexJarPathFromPath(dexOutputFile), j.implementationJarFile, j.dexProperties.Uncompress_dex)
+			j.initHiddenAPI(ctx, dexOutputFile, j.implementationJarFile, j.dexProperties.Uncompress_dex)
 
 			// Encode hidden API flags in dex file, if needed.
 			dexOutputFile = j.hiddenAPIEncodeDex(ctx, dexOutputFile)
 
-			j.dexJarFile = makeDexJarPathFromPath(dexOutputFile)
+			j.dexJarFile = dexOutputFile
 
 			// Dexpreopting
 			j.dexpreopt(ctx, dexOutputFile)
@@ -1410,7 +1275,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 			// There is no code to compile into a dex jar, make sure the resources are propagated
 			// to the APK if this is an app.
 			outputFile = implementationAndResourcesJar
-			j.dexJarFile = makeDexJarPathFromPath(j.resourceJar)
+			j.dexJarFile = j.resourceJar
 		}
 
 		if ctx.Failed() {
@@ -1466,25 +1331,6 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	j.outputFile = outputFile.WithoutRel()
 }
 
-func (j *Module) useCompose() bool {
-	return android.InList("androidx.compose.runtime_runtime", j.properties.Static_libs)
-}
-
-// Returns a copy of the supplied flags, but with all the errorprone-related
-// fields copied to the regular build's fields.
-func enableErrorproneFlags(flags javaBuilderFlags) javaBuilderFlags {
-	flags.processorPath = append(flags.errorProneProcessorPath, flags.processorPath...)
-
-	if len(flags.errorProneExtraJavacFlags) > 0 {
-		if len(flags.javacFlags) > 0 {
-			flags.javacFlags += " " + flags.errorProneExtraJavacFlags
-		} else {
-			flags.javacFlags = flags.errorProneExtraJavacFlags
-		}
-	}
-	return flags
-}
-
 func (j *Module) compileJavaClasses(ctx android.ModuleContext, jarName string, idx int,
 	srcFiles, srcJars android.Paths, flags javaBuilderFlags, extraJarDeps android.Paths) android.WritablePath {
 
@@ -1533,7 +1379,7 @@ func CheckKotlincFlags(ctx android.ModuleContext, flags []string) {
 
 func (j *Module) compileJavaHeader(ctx android.ModuleContext, srcFiles, srcJars android.Paths,
 	deps deps, flags javaBuilderFlags, jarName string,
-	extraJars android.Paths) (headerJar, jarjarAndDepsHeaderJar android.Path) {
+	extraJars android.Paths) (headerJar, jarjarHeaderJar android.Path) {
 
 	var jars android.Paths
 	if len(srcFiles) > 0 || len(srcJars) > 0 {
@@ -1544,7 +1390,6 @@ func (j *Module) compileJavaHeader(ctx android.ModuleContext, srcFiles, srcJars 
 			return nil, nil
 		}
 		jars = append(jars, turbineJar)
-		headerJar = turbineJar
 	}
 
 	jars = append(jars, extraJars...)
@@ -1558,19 +1403,20 @@ func (j *Module) compileJavaHeader(ctx android.ModuleContext, srcFiles, srcJars 
 	combinedJar := android.PathForModuleOut(ctx, "turbine-combined", jarName)
 	TransformJarsToJar(ctx, combinedJar, "for turbine", jars, android.OptionalPath{},
 		false, nil, []string{"META-INF/TRANSITIVE"})
-	jarjarAndDepsHeaderJar = combinedJar
+	headerJar = combinedJar
+	jarjarHeaderJar = combinedJar
 
 	if j.expandJarjarRules != nil {
 		// Transform classes.jar into classes-jarjar.jar
 		jarjarFile := android.PathForModuleOut(ctx, "turbine-jarjar", jarName)
-		TransformJarJar(ctx, jarjarFile, jarjarAndDepsHeaderJar, j.expandJarjarRules)
-		jarjarAndDepsHeaderJar = jarjarFile
+		TransformJarJar(ctx, jarjarFile, headerJar, j.expandJarjarRules)
+		jarjarHeaderJar = jarjarFile
 		if ctx.Failed() {
 			return nil, nil
 		}
 	}
 
-	return headerJar, jarjarAndDepsHeaderJar
+	return headerJar, jarjarHeaderJar
 }
 
 func (j *Module) instrument(ctx android.ModuleContext, flags javaBuilderFlags,
@@ -1600,7 +1446,7 @@ func (j *Module) ImplementationJars() android.Paths {
 	return android.Paths{j.implementationJarFile}
 }
 
-func (j *Module) DexJarBuildPath() OptionalDexJarPath {
+func (j *Module) DexJarBuildPath() android.Path {
 	return j.dexJarFile
 }
 
@@ -1662,14 +1508,18 @@ func (j *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext, sdkVersi
 	if sdkSpec.Kind == android.SdkCore {
 		return nil
 	}
-	if sdkSpec.ApiLevel.GreaterThan(sdkVersion) {
-		return fmt.Errorf("newer SDK(%v)", sdkSpec.ApiLevel)
+	ver, err := sdkSpec.EffectiveVersion(ctx)
+	if err != nil {
+		return err
+	}
+	if ver.GreaterThan(sdkVersion) {
+		return fmt.Errorf("newer SDK(%v)", ver)
 	}
 	return nil
 }
 
 func (j *Module) Stem() string {
-	return proptools.StringDefault(j.overridableDeviceProperties.Stem, j.Name())
+	return proptools.StringDefault(j.deviceProperties.Stem, j.Name())
 }
 
 func (j *Module) JacocoReportClassesFile() android.Path {
@@ -1899,8 +1749,6 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 				deps.kotlinStdlib = append(deps.kotlinStdlib, dep.HeaderJars...)
 			case kotlinAnnotationsTag:
 				deps.kotlinAnnotations = dep.HeaderJars
-			case kotlinPluginTag:
-				deps.kotlinPlugins = append(deps.kotlinPlugins, dep.ImplementationAndResourcesJars...)
 			case syspropPublicStubDepTag:
 				// This is a sysprop implementation library, forward the JavaInfoProvider from
 				// the corresponding sysprop public stub library as SyspropPublicStubInfoProvider.
@@ -1934,9 +1782,6 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 				sm := module.(SystemModulesProvider)
 				outputDir, outputDeps := sm.OutputDirAndDeps()
 				deps.systemModules = &systemModules{outputDir, outputDeps}
-
-			case instrumentationForTag:
-				ctx.PropertyErrorf("instrumentation_for", "dependency %q of type %q does not provide JavaInfo so is unsuitable for use with this property", ctx.OtherModuleName(module), ctx.OtherModuleType(module))
 			}
 		}
 
@@ -1966,16 +1811,3 @@ type ModuleWithStem interface {
 }
 
 var _ ModuleWithStem = (*Module)(nil)
-
-func (j *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
-	switch ctx.ModuleType() {
-	case "java_library", "java_library_host", "java_library_static":
-		if lib, ok := ctx.Module().(*Library); ok {
-			javaLibraryBp2Build(ctx, lib)
-		}
-	case "java_binary_host":
-		if binary, ok := ctx.Module().(*Binary); ok {
-			javaBinaryHostBp2Build(ctx, binary)
-		}
-	}
-}

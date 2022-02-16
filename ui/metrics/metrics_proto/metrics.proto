@@ -15,7 +15,7 @@
 syntax = "proto2";
 
 package soong_build_metrics;
-option go_package = "android/soong/ui/metrics/metrics_proto";
+option go_package = "soong_metrics_proto";
 
 message MetricsBase {
   // Timestamp generated when the build starts.
@@ -116,17 +116,6 @@ message BuildConfig {
   optional bool use_rbe = 2;
 
   optional bool force_use_goma = 3;
-
-  // Whether the Bazel is acting as the Ninja executor for this build.
-  optional bool bazel_as_ninja = 4;
-
-  // Whether build is occurring in a mixed build mode, where Bazel maintains the
-  // definition and build of some modules in cooperation with Soong.
-  optional bool bazel_mixed_build = 5;
-
-  // These are the targets soong passes to ninja, these targets include special
-  // targets such as droid as well as the regular build targets.
-  repeated string targets = 6;
 }
 
 message SystemResourceInfo {
@@ -139,7 +128,7 @@ message SystemResourceInfo {
 
 message PerfInfo {
   // The description for the phase/action/part while the tool running.
-  optional string description = 1;
+  optional string desc = 1;
 
   // The name for the running phase/action/part.
   optional string name = 2;
