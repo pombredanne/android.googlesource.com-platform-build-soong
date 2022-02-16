@@ -20,7 +20,6 @@ import (
 	"testing"
 
 	"android/soong/android"
-
 	"github.com/google/blueprint/proptools"
 )
 
@@ -307,7 +306,7 @@ func TestHiddenAPIEncoding_JavaSdkLibrary(t *testing.T) {
 		android.AssertStringEquals(t, "encode embedded java_library", unencodedDexJar, actualUnencodedDexJar.String())
 
 		// Make sure that the encoded dex jar is the exported one.
-		exportedDexJar := moduleForTests.Module().(UsesLibraryDependency).DexJarBuildPath().Path()
+		exportedDexJar := moduleForTests.Module().(UsesLibraryDependency).DexJarBuildPath()
 		android.AssertPathRelativeToTopEquals(t, "encode embedded java_library", encodedDexJar, exportedDexJar)
 	}
 

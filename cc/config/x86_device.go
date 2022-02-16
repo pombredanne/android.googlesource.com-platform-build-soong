@@ -15,27 +15,30 @@
 package config
 
 import (
-	"fmt"
 	"strings"
 
 	"android/soong/android"
 )
 
 var (
-	x86Cflags = []string{
+	x86Cflags = []string{}
+
+	x86ClangCflags = append(x86Cflags, []string{
 		"-msse3",
 
 		// -mstackrealign is needed to realign stack in native code
 		// that could be called from JNI, so that movaps instruction
 		// will work on assumed stack aligned local variables.
 		"-mstackrealign",
-	}
+	}...)
 
 	x86Cppflags = []string{}
 
 	x86Ldflags = []string{
 		"-Wl,--hash-style=gnu",
 	}
+
+	x86Lldflags = ClangFilterUnknownLldflags(x86Ldflags)
 
 	x86ArchVariantCflags = map[string][]string{
 		"": []string{
@@ -46,27 +49,35 @@ var (
 		},
 		"atom": []string{
 			"-march=atom",
+			"-mfpmath=sse",
 		},
 		"broadwell": []string{
 			"-march=broadwell",
+			"-mfpmath=sse",
 		},
 		"haswell": []string{
 			"-march=core-avx2",
+			"-mfpmath=sse",
 		},
 		"ivybridge": []string{
 			"-march=core-avx-i",
+			"-mfpmath=sse",
 		},
 		"sandybridge": []string{
 			"-march=corei7",
+			"-mfpmath=sse",
 		},
 		"silvermont": []string{
 			"-march=slm",
+			"-mfpmath=sse",
 		},
 		"skylake": []string{
 			"-march=skylake",
+			"-mfpmath=sse",
 		},
 		"stoneyridge": []string{
 			"-march=bdver4",
+			"-mfpmath=sse",
 		},
 	}
 
@@ -98,36 +109,33 @@ func init() {
 	pctx.SourcePathVariable("X86GccRoot",
 		"prebuilts/gcc/${HostPrebuiltTag}/x86/x86_64-linux-android-${x86GccVersion}")
 
-	exportStringListStaticVariable("X86ToolchainCflags", []string{"-m32"})
-	exportStringListStaticVariable("X86ToolchainLdflags", []string{"-m32"})
+	pctx.StaticVariable("X86ToolchainCflags", "-m32")
+	pctx.StaticVariable("X86ToolchainLdflags", "-m32")
 
-	exportStringListStaticVariable("X86Ldflags", x86Ldflags)
-	exportStringListStaticVariable("X86Lldflags", x86Ldflags)
+	pctx.StaticVariable("X86Ldflags", strings.Join(x86Ldflags, " "))
+	pctx.StaticVariable("X86Lldflags", strings.Join(x86Lldflags, " "))
 
 	// Clang cflags
-	exportStringListStaticVariable("X86Cflags", x86Cflags)
-	exportStringListStaticVariable("X86Cppflags", x86Cppflags)
+	pctx.StaticVariable("X86ClangCflags", strings.Join(ClangFilterUnknownCflags(x86ClangCflags), " "))
+	pctx.StaticVariable("X86ClangLdflags", strings.Join(ClangFilterUnknownCflags(x86Ldflags), " "))
+	pctx.StaticVariable("X86ClangLldflags", strings.Join(ClangFilterUnknownCflags(x86Lldflags), " "))
+	pctx.StaticVariable("X86ClangCppflags", strings.Join(ClangFilterUnknownCflags(x86Cppflags), " "))
 
 	// Yasm flags
-	exportStringListStaticVariable("X86YasmFlags", []string{
-		"-f elf32",
-		"-m x86",
-	})
+	pctx.StaticVariable("X86YasmFlags", "-f elf32 -m x86")
 
 	// Extended cflags
-	exportedStringListDictVars.Set("X86ArchVariantCflags", x86ArchVariantCflags)
-	exportedStringListDictVars.Set("X86ArchFeatureCflags", x86ArchFeatureCflags)
 
 	// Architecture variant cflags
 	for variant, cflags := range x86ArchVariantCflags {
-		pctx.StaticVariable("X86"+variant+"VariantCflags", strings.Join(cflags, " "))
+		pctx.StaticVariable("X86"+variant+"VariantClangCflags",
+			strings.Join(ClangFilterUnknownCflags(cflags), " "))
 	}
 }
 
 type toolchainX86 struct {
-	toolchainBionic
 	toolchain32Bit
-	toolchainCflags string
+	toolchainClangCflags string
 }
 
 func (t *toolchainX86) Name() string {
@@ -154,27 +162,27 @@ func (t *toolchainX86) ClangTriple() string {
 	return "i686-linux-android"
 }
 
-func (t *toolchainX86) ToolchainLdflags() string {
+func (t *toolchainX86) ToolchainClangLdflags() string {
 	return "${config.X86ToolchainLdflags}"
 }
 
-func (t *toolchainX86) ToolchainCflags() string {
-	return t.toolchainCflags
+func (t *toolchainX86) ToolchainClangCflags() string {
+	return t.toolchainClangCflags
 }
 
-func (t *toolchainX86) Cflags() string {
-	return "${config.X86Cflags}"
+func (t *toolchainX86) ClangCflags() string {
+	return "${config.X86ClangCflags}"
 }
 
-func (t *toolchainX86) Cppflags() string {
-	return "${config.X86Cppflags}"
+func (t *toolchainX86) ClangCppflags() string {
+	return "${config.X86ClangCppflags}"
 }
 
-func (t *toolchainX86) Ldflags() string {
+func (t *toolchainX86) ClangLdflags() string {
 	return "${config.X86Ldflags}"
 }
 
-func (t *toolchainX86) Lldflags() string {
+func (t *toolchainX86) ClangLldflags() string {
 	return "${config.X86Lldflags}"
 }
 
@@ -187,22 +195,17 @@ func (toolchainX86) LibclangRuntimeLibraryArch() string {
 }
 
 func x86ToolchainFactory(arch android.Arch) Toolchain {
-	// Error now rather than having a confusing Ninja error
-	if _, ok := x86ArchVariantCflags[arch.ArchVariant]; !ok {
-		panic(fmt.Sprintf("Unknown x86 architecture version: %q", arch.ArchVariant))
-	}
-
-	toolchainCflags := []string{
+	toolchainClangCflags := []string{
 		"${config.X86ToolchainCflags}",
-		"${config.X86" + arch.ArchVariant + "VariantCflags}",
+		"${config.X86" + arch.ArchVariant + "VariantClangCflags}",
 	}
 
 	for _, feature := range arch.ArchFeatures {
-		toolchainCflags = append(toolchainCflags, x86ArchFeatureCflags[feature]...)
+		toolchainClangCflags = append(toolchainClangCflags, x86ArchFeatureCflags[feature]...)
 	}
 
 	return &toolchainX86{
-		toolchainCflags: strings.Join(toolchainCflags, " "),
+		toolchainClangCflags: strings.Join(toolchainClangCflags, " "),
 	}
 }
 
