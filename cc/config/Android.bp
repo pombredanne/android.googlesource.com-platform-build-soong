@@ -8,6 +8,7 @@ bootstrap_go_package {
     deps: [
         "soong-android",
         "soong-remoteexec",
+        "soong-starlark-format",
     ],
     srcs: [
         "bp2build.go",
@@ -17,14 +18,14 @@ bootstrap_go_package {
         "toolchain.go",
         "vndk.go",
 
+        "bionic.go",
+
         "arm_device.go",
         "arm64_device.go",
-        "arm64_fuchsia_device.go",
         "x86_device.go",
         "x86_64_device.go",
-        "x86_64_fuchsia_device.go",
 
-        "x86_darwin_host.go",
+        "darwin_host.go",
         "x86_linux_host.go",
         "x86_linux_bionic_host.go",
         "x86_windows_host.go",

@@ -177,6 +177,10 @@ var FirstPackedRelocationsVersion = uncheckedFinalApiLevel(23)
 // libandroid_support.
 var FirstNonLibAndroidSupportVersion = uncheckedFinalApiLevel(21)
 
+// LastWithoutModuleLibCoreSystemModules is the last API level where prebuilts/sdk does not contain
+// a core-for-system-modules.jar for the module-lib API scope.
+var LastWithoutModuleLibCoreSystemModules = uncheckedFinalApiLevel(31)
+
 // If the `raw` input is the codename of an API level has been finalized, this
 // function returns the API level number associated with that API level. If the
 // input is *not* a finalized codename, the input is returned unmodified.
@@ -242,6 +246,27 @@ func ApiLevelFromUserWithConfig(config Config, raw string) (ApiLevel, error) {
 	return apiLevel, nil
 }
 
+// ApiLevelForTest returns an ApiLevel constructed from the supplied raw string.
+//
+// This only supports "current" and numeric levels, code names are not supported.
+func ApiLevelForTest(raw string) ApiLevel {
+	if raw == "" {
+		panic("API level string must be non-empty")
+	}
+
+	if raw == "current" {
+		return FutureApiLevel
+	}
+
+	asInt, err := strconv.Atoi(raw)
+	if err != nil {
+		panic(fmt.Errorf("%q could not be parsed as an integer and is not a recognized codename", raw))
+	}
+
+	apiLevel := uncheckedFinalApiLevel(asInt)
+	return apiLevel
+}
+
 // Converts an API level string `raw` into an ApiLevel in the same method as
 // `ApiLevelFromUser`, but the input is assumed to have no errors and any errors
 // will panic instead of returning an error.
@@ -296,6 +321,7 @@ func getFinalCodenamesMap(config Config) map[string]int {
 			"Q":     29,
 			"R":     30,
 			"S":     31,
+			"S-V2":  32,
 		}
 
 		// TODO: Differentiate "current" and "future".
@@ -319,7 +345,7 @@ func getFinalCodenamesMap(config Config) map[string]int {
 
 var apiLevelsMapKey = NewOnceKey("ApiLevelsMap")
 
-func getApiLevelsMap(config Config) map[string]int {
+func GetApiLevelsMap(config Config) map[string]int {
 	return config.Once(apiLevelsMapKey, func() interface{} {
 		apiLevelsMap := map[string]int{
 			"G":     9,
@@ -339,6 +365,7 @@ func getApiLevelsMap(config Config) map[string]int {
 			"Q":     29,
 			"R":     30,
 			"S":     31,
+			"S-V2":  32,
 		}
 		for i, codename := range config.PlatformVersionActiveCodenames() {
 			apiLevelsMap[codename] = previewAPILevelBase + i
@@ -349,7 +376,7 @@ func getApiLevelsMap(config Config) map[string]int {
 }
 
 func (a *apiLevelsSingleton) GenerateBuildActions(ctx SingletonContext) {
-	apiLevelsMap := getApiLevelsMap(ctx.Config())
+	apiLevelsMap := GetApiLevelsMap(ctx.Config())
 	apiLevelsJson := GetApiLevelsJson(ctx)
 	createApiLevelsJson(ctx, apiLevelsJson, apiLevelsMap)
 }
