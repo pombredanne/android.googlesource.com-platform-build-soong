@@ -120,14 +120,14 @@ var (
 		"extractMatchingApks",
 		blueprint.RuleParams{
 			Command: `rm -rf "$out" && ` +
-				`${config.ExtractApksCmd} -o "${out}" -allow-prereleased=${allow-prereleased} ` +
+				`${config.ExtractApksCmd} -o "${out}" -zip "${zip}" -allow-prereleased=${allow-prereleased} ` +
 				`-sdk-version=${sdk-version} -abis=${abis} ` +
 				`--screen-densities=${screen-densities} --stem=${stem} ` +
 				`-apkcerts=${apkcerts} -partition=${partition} ` +
 				`${in}`,
 			CommandDeps: []string{"${config.ExtractApksCmd}"},
 		},
-		"abis", "allow-prereleased", "screen-densities", "sdk-version", "stem", "apkcerts", "partition")
+		"abis", "allow-prereleased", "screen-densities", "sdk-version", "stem", "apkcerts", "partition", "zip")
 
 	turbine, turbineRE = pctx.RemoteStaticRules("turbine",
 		blueprint.RuleParams{
@@ -263,6 +263,7 @@ type javaBuilderFlags struct {
 
 	kotlincFlags     string
 	kotlincClasspath classpath
+	kotlincDeps      android.Paths
 
 	proto android.ProtoFlags
 }
@@ -277,23 +278,6 @@ func TransformJavaToClasses(ctx android.ModuleContext, outputFile android.Writab
 	}
 
 	transformJavaToClasses(ctx, outputFile, shardIdx, srcFiles, srcJars, flags, deps, "javac", desc)
-}
-
-func RunErrorProne(ctx android.ModuleContext, outputFile android.WritablePath,
-	srcFiles, srcJars android.Paths, flags javaBuilderFlags) {
-
-	flags.processorPath = append(flags.errorProneProcessorPath, flags.processorPath...)
-
-	if len(flags.errorProneExtraJavacFlags) > 0 {
-		if len(flags.javacFlags) > 0 {
-			flags.javacFlags += " " + flags.errorProneExtraJavacFlags
-		} else {
-			flags.javacFlags = flags.errorProneExtraJavacFlags
-		}
-	}
-
-	transformJavaToClasses(ctx, outputFile, -1, srcFiles, srcJars, flags, nil,
-		"errorprone", "errorprone")
 }
 
 // Emits the rule to generate Xref input file (.kzip file) for the given set of source files and source jars
