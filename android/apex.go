@@ -54,6 +54,10 @@ type ApexInfo struct {
 	// True if this module comes from an updatable apexBundle.
 	Updatable bool
 
+	// True if this module can use private platform APIs. Only non-updatable APEX can set this
+	// to true.
+	UsePlatformApis bool
+
 	// The list of SDK modules that the containing apexBundle depends on.
 	RequiredSdks SdkRefs
 
@@ -87,15 +91,30 @@ type ApexInfo struct {
 
 var ApexInfoProvider = blueprint.NewMutatorProvider(ApexInfo{}, "apex")
 
+func (i ApexInfo) AddJSONData(d *map[string]interface{}) {
+	(*d)["Apex"] = map[string]interface{}{
+		"ApexVariationName": i.ApexVariationName,
+		"MinSdkVersion":     i.MinSdkVersion,
+		"InApexModules":     i.InApexModules,
+		"InApexVariants":    i.InApexVariants,
+		"ForPrebuiltApex":   i.ForPrebuiltApex,
+	}
+}
+
 // mergedName gives the name of the alias variation that will be used when multiple apex variations
 // of a module can be deduped into one variation. For example, if libfoo is included in both apex.a
 // and apex.b, and if the two APEXes have the same min_sdk_version (say 29), then libfoo doesn't
 // have to be built twice, but only once. In that case, the two apex variations apex.a and apex.b
-// are configured to have the same alias variation named apex29.
+// are configured to have the same alias variation named apex29. Whether platform APIs is allowed
+// or not also matters; if two APEXes don't have the same allowance, they get different names and
+// thus wouldn't be merged.
 func (i ApexInfo) mergedName(ctx PathContext) string {
 	name := "apex" + strconv.Itoa(i.MinSdkVersion.FinalOrFutureInt())
 	for _, sdk := range i.RequiredSdks {
 		name += "_" + sdk.Name + "_" + sdk.Version
+	}
+	if i.UsePlatformApis {
+		name += "_private"
 	}
 	return name
 }
@@ -527,6 +546,10 @@ func mergeApexVariations(ctx PathContext, apexInfos []ApexInfo) (merged []ApexIn
 			merged[index].InApexModules = append(merged[index].InApexModules, apexInfo.InApexModules...)
 			merged[index].ApexContents = append(merged[index].ApexContents, apexInfo.ApexContents...)
 			merged[index].Updatable = merged[index].Updatable || apexInfo.Updatable
+			if merged[index].UsePlatformApis != apexInfo.UsePlatformApis {
+				panic(fmt.Errorf("variants having different UsePlatformApis can't be merged"))
+			}
+			merged[index].UsePlatformApis = apexInfo.UsePlatformApis
 		} else {
 			seen[mergedName] = len(merged)
 			apexInfo.ApexVariationName = mergedName
@@ -831,7 +854,6 @@ var minSdkVersionAllowlist = func(apiMap map[string]int) map[string]ApiLevel {
 	}
 	return list
 }(map[string]int{
-	"adbd":                                                     30,
 	"android.net.ipsec.ike":                                    30,
 	"androidx.annotation_annotation-nodeps":                    29,
 	"androidx.arch.core_core-common-nodeps":                    29,
@@ -856,24 +878,8 @@ var minSdkVersionAllowlist = func(apiMap map[string]int) map[string]ApiLevel {
 	"kotlinx-coroutines-android-nodeps":                        30,
 	"kotlinx-coroutines-core":                                  28,
 	"kotlinx-coroutines-core-nodeps":                           30,
-	"libadb_crypto":                                            30,
-	"libadb_pairing_auth":                                      30,
-	"libadb_pairing_connection":                                30,
-	"libadb_pairing_server":                                    30,
-	"libadb_protos":                                            30,
-	"libadb_tls_connection":                                    30,
-	"libadbconnection_client":                                  30,
-	"libadbconnection_server":                                  30,
-	"libadbd_core":                                             30,
-	"libadbd_services":                                         30,
-	"libadbd":                                                  30,
-	"libapp_processes_protos_lite":                             30,
-	"libasyncio":                                               30,
 	"libbrotli":                                                30,
-	"libbuildversion":                                          30,
 	"libcrypto_static":                                         30,
-	"libcrypto_utils":                                          30,
-	"libdiagnose_usb":                                          30,
 	"libeigen":                                                 30,
 	"liblz4":                                                   30,
 	"libmdnssd":                                                30,
@@ -883,7 +889,6 @@ var minSdkVersionAllowlist = func(apiMap map[string]int) map[string]ApiLevel {
 	"libprocpartition":                                         30,
 	"libprotobuf-java-lite":                                    30,
 	"libprotoutil":                                             30,
-	"libsync":                                                  30,
 	"libtextclassifier_hash_headers":                           30,
 	"libtextclassifier_hash_static":                            30,
 	"libtflite_kernel_utils":                                   30,
