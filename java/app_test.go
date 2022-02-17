@@ -144,14 +144,14 @@ func TestPlatformAPIs(t *testing.T) {
 		}
 	`)
 
-	testJavaError(t, "platform_apis must be true when sdk_version is empty.", `
+	testJavaError(t, "This module has conflicting settings. sdk_version is empty, which means that this module is build against platform APIs. However platform_apis is not set to true", `
 		android_app {
 			name: "bar",
 			srcs: ["b.java"],
 		}
 	`)
 
-	testJavaError(t, "platform_apis must be false when sdk_version is not empty.", `
+	testJavaError(t, "This module has conflicting settings. sdk_version is not empty, which means this module cannot use platform APIs. However platform_apis is set to true.", `
 		android_app {
 			name: "bar",
 			srcs: ["b.java"],
@@ -1485,11 +1485,11 @@ func TestJNISDK(t *testing.T) {
 
 func TestCertificates(t *testing.T) {
 	testCases := []struct {
-		name                string
-		bp                  string
-		certificateOverride string
-		expectedLineage     string
-		expectedCertificate string
+		name                     string
+		bp                       string
+		certificateOverride      string
+		expectedCertSigningFlags string
+		expectedCertificate      string
 	}{
 		{
 			name: "default",
@@ -1500,9 +1500,9 @@ func TestCertificates(t *testing.T) {
 					sdk_version: "current",
 				}
 			`,
-			certificateOverride: "",
-			expectedLineage:     "",
-			expectedCertificate: "build/make/target/product/security/testkey.x509.pem build/make/target/product/security/testkey.pk8",
+			certificateOverride:      "",
+			expectedCertSigningFlags: "",
+			expectedCertificate:      "build/make/target/product/security/testkey.x509.pem build/make/target/product/security/testkey.pk8",
 		},
 		{
 			name: "module certificate property",
@@ -1519,9 +1519,9 @@ func TestCertificates(t *testing.T) {
 					certificate: "cert/new_cert",
 				}
 			`,
-			certificateOverride: "",
-			expectedLineage:     "",
-			expectedCertificate: "cert/new_cert.x509.pem cert/new_cert.pk8",
+			certificateOverride:      "",
+			expectedCertSigningFlags: "",
+			expectedCertificate:      "cert/new_cert.x509.pem cert/new_cert.pk8",
 		},
 		{
 			name: "path certificate property",
@@ -1533,9 +1533,9 @@ func TestCertificates(t *testing.T) {
 					sdk_version: "current",
 				}
 			`,
-			certificateOverride: "",
-			expectedLineage:     "",
-			expectedCertificate: "build/make/target/product/security/expiredkey.x509.pem build/make/target/product/security/expiredkey.pk8",
+			certificateOverride:      "",
+			expectedCertSigningFlags: "",
+			expectedCertificate:      "build/make/target/product/security/expiredkey.x509.pem build/make/target/product/security/expiredkey.pk8",
 		},
 		{
 			name: "certificate overrides",
@@ -1552,18 +1552,19 @@ func TestCertificates(t *testing.T) {
 					certificate: "cert/new_cert",
 				}
 			`,
-			certificateOverride: "foo:new_certificate",
-			expectedLineage:     "",
-			expectedCertificate: "cert/new_cert.x509.pem cert/new_cert.pk8",
+			certificateOverride:      "foo:new_certificate",
+			expectedCertSigningFlags: "",
+			expectedCertificate:      "cert/new_cert.x509.pem cert/new_cert.pk8",
 		},
 		{
-			name: "certificate lineage",
+			name: "certificate signing flags",
 			bp: `
 				android_app {
 					name: "foo",
 					srcs: ["a.java"],
 					certificate: ":new_certificate",
 					lineage: "lineage.bin",
+					rotationMinSdkVersion: "32",
 					sdk_version: "current",
 				}
 
@@ -1572,18 +1573,19 @@ func TestCertificates(t *testing.T) {
 					certificate: "cert/new_cert",
 				}
 			`,
-			certificateOverride: "",
-			expectedLineage:     "--lineage lineage.bin",
-			expectedCertificate: "cert/new_cert.x509.pem cert/new_cert.pk8",
+			certificateOverride:      "",
+			expectedCertSigningFlags: "--lineage lineage.bin --rotation-min-sdk-version 32",
+			expectedCertificate:      "cert/new_cert.x509.pem cert/new_cert.pk8",
 		},
 		{
-			name: "lineage from filegroup",
+			name: "cert signing flags from filegroup",
 			bp: `
 				android_app {
 					name: "foo",
 					srcs: ["a.java"],
 					certificate: ":new_certificate",
 					lineage: ":lineage_bin",
+					rotationMinSdkVersion: "32",
 					sdk_version: "current",
 				}
 
@@ -1597,9 +1599,9 @@ func TestCertificates(t *testing.T) {
 					srcs: ["lineage.bin"],
 				}
 			`,
-			certificateOverride: "",
-			expectedLineage:     "--lineage lineage.bin",
-			expectedCertificate: "cert/new_cert.x509.pem cert/new_cert.pk8",
+			certificateOverride:      "",
+			expectedCertSigningFlags: "--lineage lineage.bin --rotation-min-sdk-version 32",
+			expectedCertificate:      "cert/new_cert.x509.pem cert/new_cert.pk8",
 		},
 	}
 
@@ -1620,8 +1622,8 @@ func TestCertificates(t *testing.T) {
 			signCertificateFlags := signapk.Args["certificates"]
 			android.AssertStringEquals(t, "certificates flags", test.expectedCertificate, signCertificateFlags)
 
-			signFlags := signapk.Args["flags"]
-			android.AssertStringEquals(t, "signing flags", test.expectedLineage, signFlags)
+			certSigningFlags := signapk.Args["flags"]
+			android.AssertStringEquals(t, "cert signing flags", test.expectedCertSigningFlags, certSigningFlags)
 		})
 	}
 }
@@ -1707,7 +1709,7 @@ func TestPackageNameOverride(t *testing.T) {
 			},
 		},
 		{
-			name: "overridden",
+			name: "overridden via PRODUCT_PACKAGE_NAME_OVERRIDES",
 			bp: `
 				android_app {
 					name: "foo",
@@ -1718,6 +1720,22 @@ func TestPackageNameOverride(t *testing.T) {
 			packageNameOverride: "foo:bar",
 			expected: []string{
 				// The package apk should be still be the original name for test dependencies.
+				"out/soong/.intermediates/foo/android_common/bar.apk",
+				"out/soong/target/product/test_device/system/app/bar/bar.apk",
+			},
+		},
+		{
+			name: "overridden via stem",
+			bp: `
+				android_app {
+					name: "foo",
+					srcs: ["a.java"],
+					sdk_version: "current",
+					stem: "bar",
+				}
+			`,
+			packageNameOverride: "",
+			expected: []string{
 				"out/soong/.intermediates/foo/android_common/bar.apk",
 				"out/soong/target/product/test_device/system/app/bar/bar.apk",
 			},
@@ -1737,7 +1755,7 @@ func TestPackageNameOverride(t *testing.T) {
 
 			foo := result.ModuleForTests("foo", "android_common")
 
-			outSoongDir := result.Config.BuildDir()
+			outSoongDir := result.Config.SoongOutDir()
 
 			outputs := foo.AllOutputs()
 			outputMap := make(map[string]bool)
@@ -1800,6 +1818,7 @@ func TestOverrideAndroidApp(t *testing.T) {
 			base: "foo",
 			certificate: ":new_certificate",
 			lineage: "lineage.bin",
+			rotationMinSdkVersion: "32",
 			logging_parent: "bah",
 		}
 
@@ -1845,89 +1864,89 @@ func TestOverrideAndroidApp(t *testing.T) {
 		`)
 
 	expectedVariants := []struct {
-		name            string
-		moduleName      string
-		variantName     string
-		apkName         string
-		apkPath         string
-		certFlag        string
-		lineageFlag     string
-		overrides       []string
-		packageFlag     string
-		renameResources bool
-		logging_parent  string
+		name             string
+		moduleName       string
+		variantName      string
+		apkName          string
+		apkPath          string
+		certFlag         string
+		certSigningFlags string
+		overrides        []string
+		packageFlag      string
+		renameResources  bool
+		logging_parent   string
 	}{
 		{
-			name:            "foo",
-			moduleName:      "foo",
-			variantName:     "android_common",
-			apkPath:         "out/soong/target/product/test_device/system/app/foo/foo.apk",
-			certFlag:        "build/make/target/product/security/expiredkey.x509.pem build/make/target/product/security/expiredkey.pk8",
-			lineageFlag:     "",
-			overrides:       []string{"qux"},
-			packageFlag:     "",
-			renameResources: false,
-			logging_parent:  "",
+			name:             "foo",
+			moduleName:       "foo",
+			variantName:      "android_common",
+			apkPath:          "out/soong/target/product/test_device/system/app/foo/foo.apk",
+			certFlag:         "build/make/target/product/security/expiredkey.x509.pem build/make/target/product/security/expiredkey.pk8",
+			certSigningFlags: "",
+			overrides:        []string{"qux"},
+			packageFlag:      "",
+			renameResources:  false,
+			logging_parent:   "",
 		},
 		{
-			name:            "foo",
-			moduleName:      "bar",
-			variantName:     "android_common_bar",
-			apkPath:         "out/soong/target/product/test_device/system/app/bar/bar.apk",
-			certFlag:        "cert/new_cert.x509.pem cert/new_cert.pk8",
-			lineageFlag:     "--lineage lineage.bin",
-			overrides:       []string{"qux", "foo"},
-			packageFlag:     "",
-			renameResources: false,
-			logging_parent:  "bah",
+			name:             "foo",
+			moduleName:       "bar",
+			variantName:      "android_common_bar",
+			apkPath:          "out/soong/target/product/test_device/system/app/bar/bar.apk",
+			certFlag:         "cert/new_cert.x509.pem cert/new_cert.pk8",
+			certSigningFlags: "--lineage lineage.bin --rotation-min-sdk-version 32",
+			overrides:        []string{"qux", "foo"},
+			packageFlag:      "",
+			renameResources:  false,
+			logging_parent:   "bah",
 		},
 		{
-			name:            "foo",
-			moduleName:      "baz",
-			variantName:     "android_common_baz",
-			apkPath:         "out/soong/target/product/test_device/system/app/baz/baz.apk",
-			certFlag:        "build/make/target/product/security/expiredkey.x509.pem build/make/target/product/security/expiredkey.pk8",
-			lineageFlag:     "",
-			overrides:       []string{"qux", "foo"},
-			packageFlag:     "org.dandroid.bp",
-			renameResources: true,
-			logging_parent:  "",
+			name:             "foo",
+			moduleName:       "baz",
+			variantName:      "android_common_baz",
+			apkPath:          "out/soong/target/product/test_device/system/app/baz/baz.apk",
+			certFlag:         "build/make/target/product/security/expiredkey.x509.pem build/make/target/product/security/expiredkey.pk8",
+			certSigningFlags: "",
+			overrides:        []string{"qux", "foo"},
+			packageFlag:      "org.dandroid.bp",
+			renameResources:  true,
+			logging_parent:   "",
 		},
 		{
-			name:            "foo",
-			moduleName:      "baz_no_rename_resources",
-			variantName:     "android_common_baz_no_rename_resources",
-			apkPath:         "out/soong/target/product/test_device/system/app/baz_no_rename_resources/baz_no_rename_resources.apk",
-			certFlag:        "build/make/target/product/security/expiredkey.x509.pem build/make/target/product/security/expiredkey.pk8",
-			lineageFlag:     "",
-			overrides:       []string{"qux", "foo"},
-			packageFlag:     "org.dandroid.bp",
-			renameResources: false,
-			logging_parent:  "",
+			name:             "foo",
+			moduleName:       "baz_no_rename_resources",
+			variantName:      "android_common_baz_no_rename_resources",
+			apkPath:          "out/soong/target/product/test_device/system/app/baz_no_rename_resources/baz_no_rename_resources.apk",
+			certFlag:         "build/make/target/product/security/expiredkey.x509.pem build/make/target/product/security/expiredkey.pk8",
+			certSigningFlags: "",
+			overrides:        []string{"qux", "foo"},
+			packageFlag:      "org.dandroid.bp",
+			renameResources:  false,
+			logging_parent:   "",
 		},
 		{
-			name:            "foo_no_rename_resources",
-			moduleName:      "baz_base_no_rename_resources",
-			variantName:     "android_common_baz_base_no_rename_resources",
-			apkPath:         "out/soong/target/product/test_device/system/app/baz_base_no_rename_resources/baz_base_no_rename_resources.apk",
-			certFlag:        "build/make/target/product/security/expiredkey.x509.pem build/make/target/product/security/expiredkey.pk8",
-			lineageFlag:     "",
-			overrides:       []string{"qux", "foo_no_rename_resources"},
-			packageFlag:     "org.dandroid.bp",
-			renameResources: false,
-			logging_parent:  "",
+			name:             "foo_no_rename_resources",
+			moduleName:       "baz_base_no_rename_resources",
+			variantName:      "android_common_baz_base_no_rename_resources",
+			apkPath:          "out/soong/target/product/test_device/system/app/baz_base_no_rename_resources/baz_base_no_rename_resources.apk",
+			certFlag:         "build/make/target/product/security/expiredkey.x509.pem build/make/target/product/security/expiredkey.pk8",
+			certSigningFlags: "",
+			overrides:        []string{"qux", "foo_no_rename_resources"},
+			packageFlag:      "org.dandroid.bp",
+			renameResources:  false,
+			logging_parent:   "",
 		},
 		{
-			name:            "foo_no_rename_resources",
-			moduleName:      "baz_override_base_rename_resources",
-			variantName:     "android_common_baz_override_base_rename_resources",
-			apkPath:         "out/soong/target/product/test_device/system/app/baz_override_base_rename_resources/baz_override_base_rename_resources.apk",
-			certFlag:        "build/make/target/product/security/expiredkey.x509.pem build/make/target/product/security/expiredkey.pk8",
-			lineageFlag:     "",
-			overrides:       []string{"qux", "foo_no_rename_resources"},
-			packageFlag:     "org.dandroid.bp",
-			renameResources: true,
-			logging_parent:  "",
+			name:             "foo_no_rename_resources",
+			moduleName:       "baz_override_base_rename_resources",
+			variantName:      "android_common_baz_override_base_rename_resources",
+			apkPath:          "out/soong/target/product/test_device/system/app/baz_override_base_rename_resources/baz_override_base_rename_resources.apk",
+			certFlag:         "build/make/target/product/security/expiredkey.x509.pem build/make/target/product/security/expiredkey.pk8",
+			certSigningFlags: "",
+			overrides:        []string{"qux", "foo_no_rename_resources"},
+			packageFlag:      "org.dandroid.bp",
+			renameResources:  true,
+			logging_parent:   "",
 		},
 	}
 	for _, expected := range expectedVariants {
@@ -1941,9 +1960,9 @@ func TestOverrideAndroidApp(t *testing.T) {
 		certFlag := signapk.Args["certificates"]
 		android.AssertStringEquals(t, "certificates flags", expected.certFlag, certFlag)
 
-		// Check the lineage flags
-		lineageFlag := signapk.Args["flags"]
-		android.AssertStringEquals(t, "signing flags", expected.lineageFlag, lineageFlag)
+		// Check the cert signing flags
+		certSigningFlags := signapk.Args["flags"]
+		android.AssertStringEquals(t, "cert signing flags", expected.certSigningFlags, certSigningFlags)
 
 		// Check if the overrides field values are correctly aggregated.
 		mod := variant.Module().(*AndroidApp)
@@ -1962,6 +1981,80 @@ func TestOverrideAndroidApp(t *testing.T) {
 			expectedPackage = ""
 		}
 		checkAapt2LinkFlag(t, aapt2Flags, "rename-resources-package", expectedPackage)
+	}
+}
+
+func TestOverrideAndroidAppStem(t *testing.T) {
+	ctx, _ := testJava(t, `
+		android_app {
+			name: "foo",
+			srcs: ["a.java"],
+			sdk_version: "current",
+		}
+		override_android_app {
+			name: "bar",
+			base: "foo",
+		}
+		override_android_app {
+			name: "baz",
+			base: "foo",
+			stem: "baz_stem",
+		}
+		android_app {
+			name: "foo2",
+			srcs: ["a.java"],
+			sdk_version: "current",
+			stem: "foo2_stem",
+		}
+		override_android_app {
+			name: "bar2",
+			base: "foo2",
+		}
+		override_android_app {
+			name: "baz2",
+			base: "foo2",
+			stem: "baz2_stem",
+		}
+	`)
+	for _, expected := range []struct {
+		moduleName  string
+		variantName string
+		apkPath     string
+	}{
+		{
+			moduleName:  "foo",
+			variantName: "android_common",
+			apkPath:     "out/soong/target/product/test_device/system/app/foo/foo.apk",
+		},
+		{
+			moduleName:  "foo",
+			variantName: "android_common_bar",
+			apkPath:     "out/soong/target/product/test_device/system/app/bar/bar.apk",
+		},
+		{
+			moduleName:  "foo",
+			variantName: "android_common_baz",
+			apkPath:     "out/soong/target/product/test_device/system/app/baz_stem/baz_stem.apk",
+		},
+		{
+			moduleName:  "foo2",
+			variantName: "android_common",
+			apkPath:     "out/soong/target/product/test_device/system/app/foo2_stem/foo2_stem.apk",
+		},
+		{
+			moduleName:  "foo2",
+			variantName: "android_common_bar2",
+			// Note that this may cause the duplicate output error.
+			apkPath: "out/soong/target/product/test_device/system/app/foo2_stem/foo2_stem.apk",
+		},
+		{
+			moduleName:  "foo2",
+			variantName: "android_common_baz2",
+			apkPath:     "out/soong/target/product/test_device/system/app/baz2_stem/baz2_stem.apk",
+		},
+	} {
+		variant := ctx.ModuleForTests(expected.moduleName, expected.variantName)
+		variant.Output(expected.apkPath)
 	}
 }
 
@@ -2168,8 +2261,31 @@ func TestAndroidTest_FixTestConfig(t *testing.T) {
 				t.Errorf("test_config_fixer was not expected to run, but did: %q", params.RuleParams.Command)
 			}
 		}
-
 	}
+}
+
+func TestInstrumentationTargetPrebuilt(t *testing.T) {
+	bp := `
+		android_app_import {
+			name: "foo",
+			apk: "foo.apk",
+			presigned: true,
+		}
+
+		android_test {
+			name: "bar",
+			srcs: ["a.java"],
+			instrumentation_for: "foo",
+			sdk_version: "current",
+		}
+		`
+
+	android.GroupFixturePreparers(
+		PrepareForTestWithJavaDefaultModules,
+	).ExtendWithErrorHandler(
+		android.FixtureExpectsAtLeastOneErrorMatchingPattern(
+			"instrumentation_for: dependency \"foo\" of type \"android_app_import\" does not provide JavaInfo so is unsuitable for use with this property")).
+		RunTestWithBp(t, bp)
 }
 
 func TestStl(t *testing.T) {
@@ -2285,6 +2401,49 @@ func TestUsesLibraries(t *testing.T) {
 			sdk_version: "current",
 		}
 
+		java_library {
+			name: "runtime-required-x",
+			srcs: ["a.java"],
+			installable: true,
+			sdk_version: "current",
+		}
+
+		java_library {
+			name: "runtime-optional-x",
+			srcs: ["a.java"],
+			installable: true,
+			sdk_version: "current",
+		}
+
+		android_library {
+			name: "static-x",
+			uses_libs: ["runtime-required-x"],
+			optional_uses_libs: ["runtime-optional-x"],
+			sdk_version: "current",
+		}
+
+		java_library {
+			name: "runtime-required-y",
+			srcs: ["a.java"],
+			installable: true,
+			sdk_version: "current",
+		}
+
+		java_library {
+			name: "runtime-optional-y",
+			srcs: ["a.java"],
+			installable: true,
+			sdk_version: "current",
+		}
+
+		java_library {
+			name: "static-y",
+			srcs: ["a.java"],
+			uses_libs: ["runtime-required-y"],
+			optional_uses_libs: ["runtime-optional-y"],
+			sdk_version: "current",
+		}
+
 		// A library that has to use "provides_uses_lib", because:
 		//    - it is not an SDK library
 		//    - its library name is different from its module name
@@ -2307,6 +2466,8 @@ func TestUsesLibraries(t *testing.T) {
 				// statically linked component libraries should not pull their SDK libraries,
 				// so "fred" should not be added to class loader context
 				"fred.stubs",
+				"static-x",
+				"static-y",
 			],
 			uses_libs: [
 				"foo",
@@ -2353,11 +2514,8 @@ func TestUsesLibraries(t *testing.T) {
 	expectManifestFixerArgs := `--extract-native-libs=true ` +
 		`--uses-library qux ` +
 		`--uses-library quuz ` +
-		`--uses-library foo ` + // TODO(b/132357300): "foo" should not be passed to manifest_fixer
-		`--uses-library com.non.sdk.lib ` + // TODO(b/132357300): "com.non.sdk.lib" should not be passed to manifest_fixer
-		`--uses-library bar ` + // TODO(b/132357300): "bar" should not be passed to manifest_fixer
 		`--uses-library runtime-library`
-	android.AssertStringEquals(t, "manifest_fixer args", expectManifestFixerArgs, actualManifestFixerArgs)
+	android.AssertStringDoesContain(t, "manifest_fixer args", actualManifestFixerArgs, expectManifestFixerArgs)
 
 	// Test that all libraries are verified (library order matters).
 	verifyCmd := app.Rule("verify_uses_libraries").RuleParams.Command
@@ -2366,8 +2524,12 @@ func TestUsesLibraries(t *testing.T) {
 		`--uses-library qux ` +
 		`--uses-library quuz ` +
 		`--uses-library runtime-library ` +
+		`--uses-library runtime-required-x ` +
+		`--uses-library runtime-required-y ` +
 		`--optional-uses-library bar ` +
-		`--optional-uses-library baz `
+		`--optional-uses-library baz ` +
+		`--optional-uses-library runtime-optional-x ` +
+		`--optional-uses-library runtime-optional-y `
 	android.AssertStringDoesContain(t, "verify cmd args", verifyCmd, verifyArgs)
 
 	// Test that all libraries are verified for an APK (library order matters).
@@ -2387,7 +2549,11 @@ func TestUsesLibraries(t *testing.T) {
 		`PCL[/system/framework/foo.jar]#` +
 		`PCL[/system/framework/non-sdk-lib.jar]#` +
 		`PCL[/system/framework/bar.jar]#` +
-		`PCL[/system/framework/runtime-library.jar]`
+		`PCL[/system/framework/runtime-library.jar]#` +
+		`PCL[/system/framework/runtime-required-x.jar]#` +
+		`PCL[/system/framework/runtime-optional-x.jar]#` +
+		`PCL[/system/framework/runtime-required-y.jar]#` +
+		`PCL[/system/framework/runtime-optional-y.jar] `
 	android.AssertStringDoesContain(t, "dexpreopt app cmd args", cmd, w)
 
 	// Test conditional context for target SDK version 28.
@@ -2821,5 +2987,78 @@ func TestExportedProguardFlagFiles(t *testing.T) {
 
 	if !hasLib1Proguard {
 		t.Errorf("App does not use library proguard config")
+	}
+}
+
+func TestTargetSdkVersionManifestFixer(t *testing.T) {
+	platform_sdk_codename := "Tiramisu"
+	testCases := []struct {
+		name                     string
+		targetSdkVersionInBp     string
+		targetSdkVersionExpected string
+		unbundledBuild           bool
+	}{
+		{
+			name:                     "Non-Unbundled build: Android.bp has targetSdkVersion",
+			targetSdkVersionInBp:     "30",
+			targetSdkVersionExpected: "30",
+			unbundledBuild:           false,
+		},
+		{
+			name:                     "Unbundled build: Android.bp has targetSdkVersion",
+			targetSdkVersionInBp:     "30",
+			targetSdkVersionExpected: "30",
+			unbundledBuild:           true,
+		},
+		{
+			name:                     "Non-Unbundled build: Android.bp has targetSdkVersion equal to platform_sdk_codename",
+			targetSdkVersionInBp:     platform_sdk_codename,
+			targetSdkVersionExpected: platform_sdk_codename,
+			unbundledBuild:           false,
+		},
+		{
+			name:                     "Unbundled build: Android.bp has targetSdkVersion equal to platform_sdk_codename",
+			targetSdkVersionInBp:     platform_sdk_codename,
+			targetSdkVersionExpected: "10000",
+			unbundledBuild:           true,
+		},
+
+		{
+			name:                     "Non-Unbundled build: Android.bp has no targetSdkVersion",
+			targetSdkVersionExpected: platform_sdk_codename,
+			unbundledBuild:           false,
+		},
+		{
+			name:                     "Unbundled build: Android.bp has no targetSdkVersion",
+			targetSdkVersionExpected: "10000",
+			unbundledBuild:           true,
+		},
+	}
+	for _, testCase := range testCases {
+		bp := fmt.Sprintf(`
+			android_app {
+				name: "foo",
+				sdk_version: "current",
+				target_sdk_version: "%v",
+			}
+			`, testCase.targetSdkVersionInBp)
+		fixture := android.GroupFixturePreparers(
+			prepareForJavaTest,
+			android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+				// explicitly set platform_sdk_codename to make the test deterministic
+				variables.Platform_sdk_codename = &platform_sdk_codename
+				variables.Platform_version_active_codenames = []string{platform_sdk_codename}
+				// create a non-empty list if unbundledBuild==true
+				if testCase.unbundledBuild {
+					variables.Unbundled_build_apps = []string{"apex_a", "apex_b"}
+				}
+			}),
+		)
+
+		result := fixture.RunTestWithBp(t, bp)
+		foo := result.ModuleForTests("foo", "android_common")
+
+		manifestFixerArgs := foo.Output("manifest_fixer/AndroidManifest.xml").Args["args"]
+		android.AssertStringDoesContain(t, testCase.name, manifestFixerArgs, "--targetSdkVersion  "+testCase.targetSdkVersionExpected)
 	}
 }
