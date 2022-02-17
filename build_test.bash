@@ -49,8 +49,14 @@ case $(uname) in
 esac
 
 echo
+echo "Free disk space:"
+# Ignore df errors because it errors out on gvfsd file systems
+# but still displays most of the useful info we need
+df -h || true
+
+echo
 echo "Running Bazel smoke test..."
-"${TOP}/tools/bazel" --batch --max_idle_secs=1 info
+STANDALONE_BAZEL=true "${TOP}/tools/bazel" --batch --max_idle_secs=1 info
 
 echo
 echo "Running Soong test..."
