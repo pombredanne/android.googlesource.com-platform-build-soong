@@ -145,6 +145,8 @@ type StaticOrSharedProperties struct {
 
 	Tidy_disabled_srcs []string `android:"path,arch_variant"`
 
+	Tidy_timeout_srcs []string `android:"path,arch_variant"`
+
 	Sanitized Sanitized `android:"arch_variant"`
 
 	Cflags []string `android:"arch_variant"`
@@ -586,7 +588,8 @@ type libraryDecorator struct {
 	stripper         Stripper
 
 	// For whole_static_libs
-	objects Objects
+	objects                      Objects
+	wholeStaticLibsFromPrebuilts android.Paths
 
 	// Uses the module's name if empty, but can be overridden. Does not include
 	// shlib suffix.
@@ -1078,11 +1081,13 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 		srcs := android.PathsForModuleSrc(ctx, library.StaticProperties.Static.Srcs)
 		objs = objs.Append(compileObjs(ctx, buildFlags, android.DeviceStaticLibrary, srcs,
 			android.PathsForModuleSrc(ctx, library.StaticProperties.Static.Tidy_disabled_srcs),
+			android.PathsForModuleSrc(ctx, library.StaticProperties.Static.Tidy_timeout_srcs),
 			library.baseCompiler.pathDeps, library.baseCompiler.cFlagsDeps))
 	} else if library.shared() {
 		srcs := android.PathsForModuleSrc(ctx, library.SharedProperties.Shared.Srcs)
 		objs = objs.Append(compileObjs(ctx, buildFlags, android.DeviceSharedLibrary, srcs,
 			android.PathsForModuleSrc(ctx, library.SharedProperties.Shared.Tidy_disabled_srcs),
+			android.PathsForModuleSrc(ctx, library.SharedProperties.Shared.Tidy_timeout_srcs),
 			library.baseCompiler.pathDeps, library.baseCompiler.cFlagsDeps))
 	}
 
@@ -1343,6 +1348,7 @@ func (library *libraryDecorator) linkStatic(ctx ModuleContext,
 
 	library.objects = deps.WholeStaticLibObjs.Copy()
 	library.objects = library.objects.Append(objs)
+	library.wholeStaticLibsFromPrebuilts = android.CopyOfPaths(deps.WholeStaticLibsFromPrebuilts)
 
 	fileName := ctx.ModuleName() + staticLibraryExtension
 	outputFile := android.PathForModuleOut(ctx, fileName)
@@ -1368,9 +1374,10 @@ func (library *libraryDecorator) linkStatic(ctx ModuleContext,
 
 	if library.static() {
 		ctx.SetProvider(StaticLibraryInfoProvider, StaticLibraryInfo{
-			StaticLibrary: outputFile,
-			ReuseObjects:  library.reuseObjects,
-			Objects:       library.objects,
+			StaticLibrary:                outputFile,
+			ReuseObjects:                 library.reuseObjects,
+			Objects:                      library.objects,
+			WholeStaticLibsFromPrebuilts: library.wholeStaticLibsFromPrebuilts,
 
 			TransitiveStaticLibrariesForOrdering: android.NewDepSetBuilder(android.TOPOLOGICAL).
 				Direct(outputFile).

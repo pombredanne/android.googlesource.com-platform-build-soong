@@ -459,21 +459,25 @@ func (a Objects) Append(b Objects) Objects {
 }
 
 // Generate rules for compiling multiple .c, .cpp, or .S files to individual .o files
-func transformSourceToObj(ctx ModuleContext, subdir string, srcFiles, noTidySrcs android.Paths,
+func transformSourceToObj(ctx ModuleContext, subdir string, srcFiles, noTidySrcs, timeoutTidySrcs android.Paths,
 	flags builderFlags, pathDeps android.Paths, cFlagsDeps android.Paths) Objects {
 	// Source files are one-to-one with tidy, coverage, or kythe files, if enabled.
 	objFiles := make(android.Paths, len(srcFiles))
 	var tidyFiles android.Paths
-	noTidySrcsMap := make(map[android.Path]bool)
+	noTidySrcsMap := make(map[string]bool)
 	var tidyVars string
 	if flags.tidy {
 		tidyFiles = make(android.Paths, 0, len(srcFiles))
 		for _, path := range noTidySrcs {
-			noTidySrcsMap[path] = true
+			noTidySrcsMap[path.String()] = true
 		}
 		tidyTimeout := ctx.Config().Getenv("TIDY_TIMEOUT")
 		if len(tidyTimeout) > 0 {
 			tidyVars += "TIDY_TIMEOUT=" + tidyTimeout + " "
+			// add timeoutTidySrcs into noTidySrcsMap if TIDY_TIMEOUT is set
+			for _, path := range timeoutTidySrcs {
+				noTidySrcsMap[path.String()] = true
+			}
 		}
 	}
 	var coverageFiles android.Paths
@@ -675,7 +679,7 @@ func transformSourceToObj(ctx ModuleContext, subdir string, srcFiles, noTidySrcs
 		}
 
 		//  Even with tidy, some src file could be skipped by noTidySrcsMap.
-		if tidy && !noTidySrcsMap[srcFile] {
+		if tidy && !noTidySrcsMap[srcFile.String()] {
 			tidyFile := android.ObjPathWithExt(ctx, subdir, srcFile, "tidy")
 			tidyDepFile := android.ObjPathWithExt(ctx, subdir, srcFile, "tidy.dep")
 			tidyFiles = append(tidyFiles, tidyFile)
