@@ -47,6 +47,7 @@ var (
 		"-D_LIBCPP_HAS_MUSL_LIBC",
 		"-DANDROID_HOST_MUSL",
 		"-nostdlibinc",
+		"--sysroot /dev/null",
 	}
 
 	linuxLdflags = []string{
@@ -65,6 +66,7 @@ var (
 	linuxMuslLdflags = []string{
 		"-nostdlib",
 		"-lgcc", "-lgcc_eh",
+		"--sysroot /dev/null",
 	}
 
 	// Extended cflags
@@ -194,20 +196,12 @@ func (t *toolchainLinux) IncludeFlags() string {
 	return ""
 }
 
-func (t *toolchainLinuxX86) ClangTriple() string {
-	return "i686-linux-gnu"
-}
-
 func (t *toolchainLinuxX86) Cflags() string {
 	return "${config.LinuxCflags} ${config.LinuxX86Cflags}"
 }
 
 func (t *toolchainLinuxX86) Cppflags() string {
 	return ""
-}
-
-func (t *toolchainLinuxX8664) ClangTriple() string {
-	return "x86_64-linux-gnu"
 }
 
 func (t *toolchainLinuxX8664) Cflags() string {
@@ -283,6 +277,10 @@ type toolchainLinuxGlibcX8664 struct {
 	toolchainGlibc
 }
 
+func (t *toolchainLinuxGlibcX86) ClangTriple() string {
+	return "i686-linux-gnu"
+}
+
 func (t *toolchainLinuxGlibcX86) Cflags() string {
 	return t.toolchainLinuxX86.Cflags() + " " + t.toolchainGlibc.Cflags()
 }
@@ -293,6 +291,10 @@ func (t *toolchainLinuxGlibcX86) Ldflags() string {
 
 func (t *toolchainLinuxGlibcX86) Lldflags() string {
 	return t.toolchainLinuxX86.Lldflags() + " " + t.toolchainGlibc.Lldflags()
+}
+
+func (t *toolchainLinuxGlibcX8664) ClangTriple() string {
+	return "x86_64-linux-gnu"
 }
 
 func (t *toolchainLinuxGlibcX8664) Cflags() string {
@@ -356,6 +358,10 @@ type toolchainLinuxMuslX8664 struct {
 	toolchainMusl
 }
 
+func (t *toolchainLinuxMuslX86) ClangTriple() string {
+	return "i686-linux-musl"
+}
+
 func (t *toolchainLinuxMuslX86) Cflags() string {
 	return t.toolchainLinuxX86.Cflags() + " " + t.toolchainMusl.Cflags()
 }
@@ -366,6 +372,10 @@ func (t *toolchainLinuxMuslX86) Ldflags() string {
 
 func (t *toolchainLinuxMuslX86) Lldflags() string {
 	return t.toolchainLinuxX86.Lldflags() + " " + t.toolchainMusl.Lldflags()
+}
+
+func (t *toolchainLinuxMuslX8664) ClangTriple() string {
+	return "x86_64-linux-musl"
 }
 
 func (t *toolchainLinuxMuslX8664) Cflags() string {

@@ -32,7 +32,7 @@ import (
 	"github.com/google/blueprint/pathtools"
 )
 
-// LibraryProperties is a collection of properties shared by cc library rules.
+// LibraryProperties is a collection of properties shared by cc library rules/cc.
 type LibraryProperties struct {
 	// local file name to pass to the linker as -unexported_symbols_list
 	Unexported_symbols_list *string `android:"path,arch_variant"`
@@ -144,6 +144,8 @@ type StaticOrSharedProperties struct {
 	Srcs []string `android:"path,arch_variant"`
 
 	Tidy_disabled_srcs []string `android:"path,arch_variant"`
+
+	Tidy_timeout_srcs []string `android:"path,arch_variant"`
 
 	Sanitized Sanitized `android:"arch_variant"`
 
@@ -403,11 +405,11 @@ func libraryBp2Build(ctx android.TopDownMutatorContext, m *Module) {
 
 	staticProps := bazel.BazelTargetModuleProperties{
 		Rule_class:        "cc_library_static",
-		Bzl_load_location: "//build/bazel/rules:cc_library_static.bzl",
+		Bzl_load_location: "//build/bazel/rules/cc:cc_library_static.bzl",
 	}
 	sharedProps := bazel.BazelTargetModuleProperties{
 		Rule_class:        "cc_library_shared",
-		Bzl_load_location: "//build/bazel/rules:cc_library_shared.bzl",
+		Bzl_load_location: "//build/bazel/rules/cc:cc_library_shared.bzl",
 	}
 
 	ctx.CreateBazelTargetModuleWithRestrictions(staticProps,
@@ -586,7 +588,8 @@ type libraryDecorator struct {
 	stripper         Stripper
 
 	// For whole_static_libs
-	objects Objects
+	objects                      Objects
+	wholeStaticLibsFromPrebuilts android.Paths
 
 	// Uses the module's name if empty, but can be overridden. Does not include
 	// shlib suffix.
@@ -1078,11 +1081,13 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 		srcs := android.PathsForModuleSrc(ctx, library.StaticProperties.Static.Srcs)
 		objs = objs.Append(compileObjs(ctx, buildFlags, android.DeviceStaticLibrary, srcs,
 			android.PathsForModuleSrc(ctx, library.StaticProperties.Static.Tidy_disabled_srcs),
+			android.PathsForModuleSrc(ctx, library.StaticProperties.Static.Tidy_timeout_srcs),
 			library.baseCompiler.pathDeps, library.baseCompiler.cFlagsDeps))
 	} else if library.shared() {
 		srcs := android.PathsForModuleSrc(ctx, library.SharedProperties.Shared.Srcs)
 		objs = objs.Append(compileObjs(ctx, buildFlags, android.DeviceSharedLibrary, srcs,
 			android.PathsForModuleSrc(ctx, library.SharedProperties.Shared.Tidy_disabled_srcs),
+			android.PathsForModuleSrc(ctx, library.SharedProperties.Shared.Tidy_timeout_srcs),
 			library.baseCompiler.pathDeps, library.baseCompiler.cFlagsDeps))
 	}
 
@@ -1343,6 +1348,7 @@ func (library *libraryDecorator) linkStatic(ctx ModuleContext,
 
 	library.objects = deps.WholeStaticLibObjs.Copy()
 	library.objects = library.objects.Append(objs)
+	library.wholeStaticLibsFromPrebuilts = android.CopyOfPaths(deps.WholeStaticLibsFromPrebuilts)
 
 	fileName := ctx.ModuleName() + staticLibraryExtension
 	outputFile := android.PathForModuleOut(ctx, fileName)
@@ -1368,9 +1374,10 @@ func (library *libraryDecorator) linkStatic(ctx ModuleContext,
 
 	if library.static() {
 		ctx.SetProvider(StaticLibraryInfoProvider, StaticLibraryInfo{
-			StaticLibrary: outputFile,
-			ReuseObjects:  library.reuseObjects,
-			Objects:       library.objects,
+			StaticLibrary:                outputFile,
+			ReuseObjects:                 library.reuseObjects,
+			Objects:                      library.objects,
+			WholeStaticLibsFromPrebuilts: library.wholeStaticLibsFromPrebuilts,
 
 			TransitiveStaticLibrariesForOrdering: android.NewDepSetBuilder(android.TOPOLOGICAL).
 				Direct(outputFile).
@@ -2552,7 +2559,7 @@ func sharedOrStaticLibraryBp2Build(ctx android.TopDownMutatorContext, module *Mo
 	}
 	props := bazel.BazelTargetModuleProperties{
 		Rule_class:        modType,
-		Bzl_load_location: fmt.Sprintf("//build/bazel/rules:%s.bzl", modType),
+		Bzl_load_location: fmt.Sprintf("//build/bazel/rules/cc:%s.bzl", modType),
 	}
 
 	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: module.Name()}, attrs)
