@@ -829,7 +829,7 @@ func createArchPropTypeDesc(props reflect.Type) []archPropTypeDesc {
 	const maxArchTypeNameSize = 500
 
 	// Convert the type to a new set of types that contains only the arch-specific properties
-	// (those that are tagged with `android:"arch_specific"`), and sharded into multiple types
+	// (those that are tagged with `android:"arch_variant"`), and sharded into multiple types
 	// to keep the runtime-generated names under the limit.
 	propShards, _ := proptools.FilterPropertyStructSharded(props, maxArchTypeNameSize, filterArchStruct)
 
@@ -863,6 +863,10 @@ func createArchPropTypeDesc(props reflect.Type) []archPropTypeDesc {
 			for _, archVariant := range archVariants[arch] {
 				archVariant := variantReplacer.Replace(archVariant)
 				variants = append(variants, proptools.FieldNameForProperty(archVariant))
+			}
+			for _, cpuVariant := range cpuVariants[arch] {
+				cpuVariant := variantReplacer.Replace(cpuVariant)
+				variants = append(variants, proptools.FieldNameForProperty(cpuVariant))
 			}
 			for _, feature := range archFeatures[arch] {
 				feature := variantReplacer.Replace(feature)
@@ -1739,6 +1743,18 @@ func decodeArch(os OsType, arch string, archVariant, cpuVariant *string, abi []s
 	// Convert generic CPU variants into the empty string.
 	if a.CpuVariant == a.ArchType.Name || a.CpuVariant == "generic" {
 		a.CpuVariant = ""
+	}
+
+	if a.ArchVariant != "" {
+		if validArchVariants := archVariants[archType]; !InList(a.ArchVariant, validArchVariants) {
+			return Arch{}, fmt.Errorf("[%q] unknown arch variant %q, support variants: %q", archType, a.ArchVariant, validArchVariants)
+		}
+	}
+
+	if a.CpuVariant != "" {
+		if validCpuVariants := cpuVariants[archType]; !InList(a.CpuVariant, validCpuVariants) {
+			return Arch{}, fmt.Errorf("[%q] unknown cpu variant %q, support variants: %q", archType, a.CpuVariant, validCpuVariants)
+		}
 	}
 
 	// Filter empty ABIs out of the list.
