@@ -379,6 +379,11 @@ var (
 		"tools/platform-compat/java/android/compat":          Bp2BuildDefaultTrueRecursively,
 	}
 
+	// Per-module allowlist to always opt modules in of both bp2build and mixed builds.
+	bp2buildModuleAlwaysConvertList = []string{
+		"junit-params-assertj-core",
+	}
+
 	// Per-module denylist to always opt modules out of both bp2build and mixed builds.
 	bp2buildModuleDoNotConvertList = []string{
 		"libnativehelper_compat_libc", // Broken compile: implicit declaration of function 'strerror_r' is invalid in C99
@@ -494,10 +499,11 @@ var (
 		// go deps:
 		"apex-protos",                                                                                // depends on soong_zip, a go binary
 		"generated_android_icu4j_src_files", "generated_android_icu4j_test_files", "icu4c_test_data", // depends on unconverted modules: soong_zip
-		"host_bionic_linker_asm",         // depends on extract_linker, a go binary.
-		"host_bionic_linker_script",      // depends on extract_linker, a go binary.
-		"robolectric-sqlite4java-native", // depends on soong_zip, a go binary
-		"robolectric_tzdata",             // depends on soong_zip, a go binary
+		"host_bionic_linker_asm",                                                  // depends on extract_linker, a go binary.
+		"host_bionic_linker_script",                                               // depends on extract_linker, a go binary.
+		"robolectric-sqlite4java-native",                                          // depends on soong_zip, a go binary
+		"robolectric_tzdata",                                                      // depends on soong_zip, a go binary
+		"libc_musl_sysroot_libc++_headers", "libc_musl_sysroot_libc++abi_headers", // depends on soong_zip, zip2zip
 
 		"android_icu4j_srcgen_binary", // Bazel build error: deps not allowed without srcs; move to runtime_deps
 		"core-icu4j-for-host",         // Bazel build error: deps not allowed without srcs; move to runtime_deps
@@ -569,11 +575,16 @@ var (
 
 	// Used for quicker lookups
 	bp2buildModuleDoNotConvert  = map[string]bool{}
+	bp2buildModuleAlwaysConvert = map[string]bool{}
 	bp2buildCcLibraryStaticOnly = map[string]bool{}
 	mixedBuildsDisabled         = map[string]bool{}
 )
 
 func init() {
+	for _, moduleName := range bp2buildModuleAlwaysConvertList {
+		bp2buildModuleAlwaysConvert[moduleName] = true
+	}
+
 	for _, moduleName := range bp2buildModuleDoNotConvertList {
 		bp2buildModuleDoNotConvert[moduleName] = true
 	}
@@ -649,7 +660,14 @@ func (b *BazelModuleBase) ShouldConvertWithBp2build(ctx BazelConversionContext) 
 }
 
 func (b *BazelModuleBase) shouldConvertWithBp2build(ctx BazelConversionContext, module blueprint.Module) bool {
-	if bp2buildModuleDoNotConvert[module.Name()] {
+	moduleNameNoPrefix := RemoveOptionalPrebuiltPrefix(module.Name())
+	alwaysConvert := bp2buildModuleAlwaysConvert[moduleNameNoPrefix]
+
+	if bp2buildModuleDoNotConvert[moduleNameNoPrefix] {
+		if alwaysConvert {
+			ctx.(BaseModuleContext).ModuleErrorf("a module cannot be in bp2buildModuleDoNotConvert" +
+				" and also be in bp2buildModuleAlwaysConvert")
+		}
 		return false
 	}
 
@@ -663,12 +681,17 @@ func (b *BazelModuleBase) shouldConvertWithBp2build(ctx BazelConversionContext, 
 	// This is a tristate value: true, false, or unset.
 	propValue := b.bazelProperties.Bazel_module.Bp2build_available
 	if bp2buildDefaultTrueRecursively(packagePath, config) {
+		if alwaysConvert {
+			ctx.(BaseModuleContext).ModuleErrorf("a module cannot be in a directory marked Bp2BuildDefaultTrue" +
+				" or Bp2BuildDefaultTrueRecursively and also be in bp2buildModuleAlwaysConvert")
+		}
+
 		// Allow modules to explicitly opt-out.
 		return proptools.BoolDefault(propValue, true)
 	}
 
 	// Allow modules to explicitly opt-in.
-	return proptools.BoolDefault(propValue, false)
+	return proptools.BoolDefault(propValue, alwaysConvert)
 }
 
 // bp2buildDefaultTrueRecursively checks that the package contains a prefix from the
