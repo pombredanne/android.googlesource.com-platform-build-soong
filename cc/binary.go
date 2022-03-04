@@ -70,6 +70,7 @@ func RegisterBinaryBuildComponents(ctx android.RegistrationContext) {
 // cc_binary produces a binary that is runnable on a device.
 func BinaryFactory() android.Module {
 	module, _ := newBinary(android.HostAndDeviceSupported, true)
+	module.bazelHandler = &ccBinaryBazelHandler{module: module}
 	return module.Init()
 }
 
@@ -440,6 +441,16 @@ func (binary *binaryDecorator) link(ctx ModuleContext,
 
 	// Need to determine symlinks early since some targets (ie APEX) need this
 	// information but will not call 'install'
+	binary.setSymlinkList(ctx)
+
+	return ret
+}
+
+func (binary *binaryDecorator) unstrippedOutputFilePath() android.Path {
+	return binary.unstrippedOutputFile
+}
+
+func (binary *binaryDecorator) setSymlinkList(ctx ModuleContext) {
 	for _, symlink := range binary.Properties.Symlinks {
 		binary.symlinks = append(binary.symlinks,
 			symlink+String(binary.Properties.Suffix)+ctx.toolchain().ExecutableSuffix())
@@ -456,12 +467,6 @@ func (binary *binaryDecorator) link(ctx ModuleContext,
 			binary.preferredArchSymlink = symlinkName
 		}
 	}
-
-	return ret
-}
-
-func (binary *binaryDecorator) unstrippedOutputFilePath() android.Path {
-	return binary.unstrippedOutputFile
 }
 
 func (binary *binaryDecorator) symlinkList() []string {
@@ -556,6 +561,28 @@ func (binary *binaryDecorator) verifyHostBionicLinker(ctx ModuleContext, in, lin
 	})
 }
 
+type ccBinaryBazelHandler struct {
+	android.BazelHandler
+
+	module *Module
+}
+
+func (handler *ccBinaryBazelHandler) GenerateBazelBuildActions(ctx android.ModuleContext, label string) bool {
+	bazelCtx := ctx.Config().BazelContext
+	filePaths, ok := bazelCtx.GetOutputFiles(label, android.GetConfigKey(ctx))
+	if ok {
+		if len(filePaths) != 1 {
+			ctx.ModuleErrorf("expected exactly one output file for '%s', but got %s", label, filePaths)
+			return false
+		}
+		outputFilePath := android.PathForBazelOut(ctx, filePaths[0])
+		handler.module.outputFile = android.OptionalPathForPath(outputFilePath)
+		// TODO(b/220164721): We need to decide if we should return the stripped as the unstripped.
+		handler.module.linker.(*binaryDecorator).unstrippedOutputFile = outputFilePath
+	}
+	return ok
+}
+
 func binaryBp2build(ctx android.TopDownMutatorContext, m *Module, typ string) {
 	baseAttrs := bp2BuildParseBaseProps(ctx, m)
 	binaryLinkerAttrs := bp2buildBinaryLinkerProps(ctx, m)
@@ -607,7 +634,7 @@ func binaryBp2build(ctx android.TopDownMutatorContext, m *Module, typ string) {
 
 	ctx.CreateBazelTargetModule(bazel.BazelTargetModuleProperties{
 		Rule_class:        "cc_binary",
-		Bzl_load_location: "//build/bazel/rules:cc_binary.bzl",
+		Bzl_load_location: "//build/bazel/rules/cc:cc_binary.bzl",
 	},
 		android.CommonAttributes{Name: m.Name()},
 		attrs)
