@@ -520,7 +520,7 @@ func NewConfig(moduleListFile string, runGoTests bool, outDir, soongOutDir strin
 	}
 
 	if archConfig != nil {
-		androidTargets, err := decodeArchSettings(Android, archConfig)
+		androidTargets, err := decodeAndroidArchSettings(archConfig)
 		if err != nil {
 			return Config{}, err
 		}
@@ -1254,6 +1254,10 @@ func (c *deviceConfig) NativeCoverageEnabled() bool {
 
 func (c *deviceConfig) ClangCoverageEnabled() bool {
 	return Bool(c.config.productVariables.ClangCoverage)
+}
+
+func (c *deviceConfig) ClangCoverageContinuousMode() bool {
+	return Bool(c.config.productVariables.ClangCoverageContinuousMode)
 }
 
 func (c *deviceConfig) GcovCoverageEnabled() bool {
