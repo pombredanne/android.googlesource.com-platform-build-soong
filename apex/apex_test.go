@@ -1415,13 +1415,14 @@ func TestRuntimeApexShouldInstallHwasanIfLibcDependsOnIt(t *testing.T) {
 		}
 
 		cc_prebuilt_library_shared {
-			name: "libclang_rt.hwasan-aarch64-android",
+			name: "libclang_rt.hwasan",
 			no_libcrt: true,
 			nocrt: true,
 			stl: "none",
 			system_shared_libs: [],
 			srcs: [""],
 			stubs: { versions: ["1"] },
+			stem: "libclang_rt.hwasan-aarch64-android",
 
 			sanitize: {
 				never: true,
@@ -1434,7 +1435,7 @@ func TestRuntimeApexShouldInstallHwasanIfLibcDependsOnIt(t *testing.T) {
 		"lib64/bionic/libclang_rt.hwasan-aarch64-android.so",
 	})
 
-	hwasan := ctx.ModuleForTests("libclang_rt.hwasan-aarch64-android", "android_arm64_armv8-a_shared")
+	hwasan := ctx.ModuleForTests("libclang_rt.hwasan", "android_arm64_armv8-a_shared")
 
 	installed := hwasan.Description("install libclang_rt.hwasan")
 	ensureContains(t, installed.Output.String(), "/system/lib64/bootstrap/libclang_rt.hwasan-aarch64-android.so")
@@ -1462,13 +1463,14 @@ func TestRuntimeApexShouldInstallHwasanIfHwaddressSanitized(t *testing.T) {
 		}
 
 		cc_prebuilt_library_shared {
-			name: "libclang_rt.hwasan-aarch64-android",
+			name: "libclang_rt.hwasan",
 			no_libcrt: true,
 			nocrt: true,
 			stl: "none",
 			system_shared_libs: [],
 			srcs: [""],
 			stubs: { versions: ["1"] },
+			stem: "libclang_rt.hwasan-aarch64-android",
 
 			sanitize: {
 				never: true,
@@ -1482,7 +1484,7 @@ func TestRuntimeApexShouldInstallHwasanIfHwaddressSanitized(t *testing.T) {
 		"lib64/bionic/libclang_rt.hwasan-aarch64-android.so",
 	})
 
-	hwasan := ctx.ModuleForTests("libclang_rt.hwasan-aarch64-android", "android_arm64_armv8-a_shared")
+	hwasan := ctx.ModuleForTests("libclang_rt.hwasan", "android_arm64_armv8-a_shared")
 
 	installed := hwasan.Description("install libclang_rt.hwasan")
 	ensureContains(t, installed.Output.String(), "/system/lib64/bootstrap/libclang_rt.hwasan-aarch64-android.so")
@@ -6091,6 +6093,9 @@ func TestOverrideApex(t *testing.T) {
 			apps: ["app"],
 			bpfs: ["bpf"],
 			prebuilts: ["myetc"],
+			bootclasspath_fragments: ["mybootclasspath_fragment"],
+			systemserverclasspath_fragments: ["mysystemserverclasspath_fragment"],
+			java_libs: ["myjava_library"],
 			overrides: ["oldapex"],
 			updatable: false,
 		}
@@ -6101,6 +6106,9 @@ func TestOverrideApex(t *testing.T) {
 			apps: ["override_app"],
 			bpfs: ["override_bpf"],
 			prebuilts: ["override_myetc"],
+			bootclasspath_fragments: ["override_bootclasspath_fragment"],
+			systemserverclasspath_fragments: ["override_systemserverclasspath_fragment"],
+			java_libs: ["override_java_library"],
 			overrides: ["unknownapex"],
 			logging_parent: "com.foo.bar",
 			package_name: "test.overridden.package",
@@ -6159,6 +6167,72 @@ func TestOverrideApex(t *testing.T) {
 			name: "override_myetc",
 			src: "override_myprebuilt",
 		}
+
+		java_library {
+			name: "bcplib",
+			srcs: ["a.java"],
+			compile_dex: true,
+			apex_available: ["myapex"],
+			permitted_packages: ["bcp.lib"],
+		}
+
+		bootclasspath_fragment {
+			name: "mybootclasspath_fragment",
+			contents: ["bcplib"],
+			apex_available: ["myapex"],
+		}
+
+		java_library {
+			name: "override_bcplib",
+			srcs: ["a.java"],
+			compile_dex: true,
+			apex_available: ["myapex"],
+			permitted_packages: ["override.bcp.lib"],
+		}
+
+		bootclasspath_fragment {
+			name: "override_bootclasspath_fragment",
+			contents: ["override_bcplib"],
+			apex_available: ["myapex"],
+		}
+
+		java_library {
+			name: "systemserverlib",
+			srcs: ["a.java"],
+			apex_available: ["myapex"],
+		}
+
+		systemserverclasspath_fragment {
+			name: "mysystemserverclasspath_fragment",
+			standalone_contents: ["systemserverlib"],
+			apex_available: ["myapex"],
+		}
+
+		java_library {
+			name: "override_systemserverlib",
+			srcs: ["a.java"],
+			apex_available: ["myapex"],
+		}
+
+		systemserverclasspath_fragment {
+			name: "override_systemserverclasspath_fragment",
+			standalone_contents: ["override_systemserverlib"],
+			apex_available: ["myapex"],
+		}
+
+		java_library {
+			name: "myjava_library",
+			srcs: ["a.java"],
+			compile_dex: true,
+			apex_available: ["myapex"],
+		}
+
+		java_library {
+			name: "override_java_library",
+			srcs: ["a.java"],
+			compile_dex: true,
+			apex_available: ["myapex"],
+		}
 	`, withManifestPackageNameOverrides([]string{"myapex:com.android.myapex"}))
 
 	originalVariant := ctx.ModuleForTests("myapex", "android_common_myapex_image").Module().(android.OverridableModule)
@@ -6193,6 +6267,13 @@ func TestOverrideApex(t *testing.T) {
 		t.Errorf("override_myapex should have logging parent (com.foo.bar), but was %q.", apexBundle.overridableProperties.Logging_parent)
 	}
 
+	android.AssertArrayString(t, "Bootclasspath_fragments does not match",
+		[]string{"override_bootclasspath_fragment"}, apexBundle.overridableProperties.Bootclasspath_fragments)
+	android.AssertArrayString(t, "Systemserverclasspath_fragments does not match",
+		[]string{"override_systemserverclasspath_fragment"}, apexBundle.overridableProperties.Systemserverclasspath_fragments)
+	android.AssertArrayString(t, "Java_libs does not match",
+		[]string{"override_java_library"}, apexBundle.overridableProperties.Java_libs)
+
 	optFlags := apexRule.Args["opt_flags"]
 	ensureContains(t, optFlags, "--override_apk_package_name test.overridden.package")
 	ensureContains(t, optFlags, "--pubkey testkey2.avbpubkey")
@@ -6207,12 +6288,18 @@ func TestOverrideApex(t *testing.T) {
 	ensureContains(t, androidMk, "LOCAL_MODULE := override_app.override_myapex")
 	ensureContains(t, androidMk, "LOCAL_MODULE := override_bpf.o.override_myapex")
 	ensureContains(t, androidMk, "LOCAL_MODULE := apex_manifest.pb.override_myapex")
+	ensureContains(t, androidMk, "LOCAL_MODULE := override_bcplib.override_myapex")
+	ensureContains(t, androidMk, "LOCAL_MODULE := override_systemserverlib.override_myapex")
+	ensureContains(t, androidMk, "LOCAL_MODULE := override_java_library.override_myapex")
 	ensureContains(t, androidMk, "LOCAL_MODULE_STEM := override_myapex.apex")
 	ensureContains(t, androidMk, "LOCAL_OVERRIDES_MODULES := unknownapex myapex")
 	ensureNotContains(t, androidMk, "LOCAL_MODULE := app.myapex")
 	ensureNotContains(t, androidMk, "LOCAL_MODULE := bpf.myapex")
 	ensureNotContains(t, androidMk, "LOCAL_MODULE := override_app.myapex")
 	ensureNotContains(t, androidMk, "LOCAL_MODULE := apex_manifest.pb.myapex")
+	ensureNotContains(t, androidMk, "LOCAL_MODULE := override_bcplib.myapex")
+	ensureNotContains(t, androidMk, "LOCAL_MODULE := override_systemserverlib.myapex")
+	ensureNotContains(t, androidMk, "LOCAL_MODULE := override_java_library.pb.myapex")
 	ensureNotContains(t, androidMk, "LOCAL_MODULE_STEM := myapex.apex")
 }
 

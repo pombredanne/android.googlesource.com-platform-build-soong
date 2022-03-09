@@ -465,17 +465,17 @@ func newParseContext(ss *StarlarkScript, nodes []mkparser.Node) *parseContext {
 	return ctx
 }
 
-func (ctx *parseContext) lastAssignment(name string) *assignmentNode {
+func (ctx *parseContext) lastAssignment(v variable) *assignmentNode {
 	for va := ctx.varAssignments; va != nil; va = va.outer {
-		if v, ok := va.vars[name]; ok {
+		if v, ok := va.vars[v.name()]; ok {
 			return v
 		}
 	}
 	return nil
 }
 
-func (ctx *parseContext) setLastAssignment(name string, asgn *assignmentNode) {
-	ctx.varAssignments.vars[name] = asgn
+func (ctx *parseContext) setLastAssignment(v variable, asgn *assignmentNode) {
+	ctx.varAssignments.vars[v.name()] = asgn
 }
 
 func (ctx *parseContext) pushVarAssignments() {
@@ -532,7 +532,7 @@ func (ctx *parseContext) handleAssignment(a *mkparser.Assignment) []starlarkNode
 	if lhs == nil {
 		return []starlarkNode{ctx.newBadNode(a, "unknown variable %s", name)}
 	}
-	_, isTraced := ctx.tracedVariables[name]
+	_, isTraced := ctx.tracedVariables[lhs.name()]
 	asgn := &assignmentNode{lhs: lhs, mkValue: a.Value, isTraced: isTraced, location: ctx.errorLocation(a)}
 	if lhs.valueType() == starlarkTypeUnknown {
 		// Try to divine variable type from the RHS
@@ -565,8 +565,8 @@ func (ctx *parseContext) handleAssignment(a *mkparser.Assignment) []starlarkNode
 		}
 	}
 
-	asgn.previous = ctx.lastAssignment(name)
-	ctx.setLastAssignment(name, asgn)
+	asgn.previous = ctx.lastAssignment(lhs)
+	ctx.setLastAssignment(lhs, asgn)
 	switch a.Type {
 	case "=", ":=":
 		asgn.flavor = asgnSet
@@ -807,20 +807,16 @@ func (ctx *parseContext) handleSubConfig(
 	if len(matchingPaths) > maxMatchingFiles {
 		return []starlarkNode{ctx.newBadNode(v, "there are >%d files matching the pattern, please rewrite it", maxMatchingFiles)}
 	}
-	if len(matchingPaths) == 1 {
-		res := inheritedStaticModule{ctx.newDependentModule(matchingPaths[0], loadAlways && ctx.ifNestLevel == 0), loadAlways}
-		return []starlarkNode{processModule(res)}
-	} else {
-		needsWarning := pathPattern[0] == "" && len(ctx.includeTops) == 0
-		res := inheritedDynamicModule{*varPath, []*moduleInfo{}, loadAlways, ctx.errorLocation(v), needsWarning}
-		for _, p := range matchingPaths {
-			// A product configuration files discovered dynamically may attempt to inherit
-			// from another one which does not exist in this source tree. Prevent load errors
-			// by always loading the dynamic files as optional.
-			res.candidateModules = append(res.candidateModules, ctx.newDependentModule(p, true))
-		}
-		return []starlarkNode{processModule(res)}
+
+	needsWarning := pathPattern[0] == "" && len(ctx.includeTops) == 0
+	res := inheritedDynamicModule{*varPath, []*moduleInfo{}, loadAlways, ctx.errorLocation(v), needsWarning}
+	for _, p := range matchingPaths {
+		// A product configuration files discovered dynamically may attempt to inherit
+		// from another one which does not exist in this source tree. Prevent load errors
+		// by always loading the dynamic files as optional.
+		res.candidateModules = append(res.candidateModules, ctx.newDependentModule(p, true))
 	}
+	return []starlarkNode{processModule(res)}
 }
 
 func (ctx *parseContext) findMatchingPaths(pattern []string) []string {
@@ -1272,12 +1268,12 @@ func (ctx *parseContext) parseReference(node mkparser.Node, ref *mkparser.MakeSt
 				args: []starlarkExpr{
 					&stringLiteralExpr{literal: substParts[0]},
 					&stringLiteralExpr{literal: substParts[1]},
-					NewVariableRefExpr(v, ctx.lastAssignment(v.name()) != nil),
+					NewVariableRefExpr(v, ctx.lastAssignment(v) != nil),
 				},
 			}
 		}
 		if v := ctx.addVariable(refDump); v != nil {
-			return NewVariableRefExpr(v, ctx.lastAssignment(v.name()) != nil)
+			return NewVariableRefExpr(v, ctx.lastAssignment(v) != nil)
 		}
 		return ctx.newBadExpr(node, "unknown variable %s", refDump)
 	}
