@@ -50,15 +50,12 @@ const (
 	soongNsPrefix = "SOONG_CONFIG_"
 
 	// And here are the functions and variables:
-	cfnGetCfg          = baseName + ".cfg"
-	cfnMain            = baseName + ".product_configuration"
-	cfnBoardMain       = baseName + ".board_configuration"
-	cfnPrintVars       = baseName + ".printvars"
-	cfnWarning         = baseName + ".warning"
-	cfnLocalAppend     = baseName + ".local_append"
-	cfnLocalSetDefault = baseName + ".local_set_default"
-	cfnInherit         = baseName + ".inherit"
-	cfnSetListDefault  = baseName + ".setdefault"
+	cfnGetCfg         = baseName + ".cfg"
+	cfnMain           = baseName + ".product_configuration"
+	cfnBoardMain      = baseName + ".board_configuration"
+	cfnPrintVars      = baseName + ".printvars"
+	cfnInherit        = baseName + ".inherit"
+	cfnSetListDefault = baseName + ".setdefault"
 )
 
 const (
@@ -465,17 +462,17 @@ func newParseContext(ss *StarlarkScript, nodes []mkparser.Node) *parseContext {
 	return ctx
 }
 
-func (ctx *parseContext) lastAssignment(name string) *assignmentNode {
+func (ctx *parseContext) lastAssignment(v variable) *assignmentNode {
 	for va := ctx.varAssignments; va != nil; va = va.outer {
-		if v, ok := va.vars[name]; ok {
+		if v, ok := va.vars[v.name()]; ok {
 			return v
 		}
 	}
 	return nil
 }
 
-func (ctx *parseContext) setLastAssignment(name string, asgn *assignmentNode) {
-	ctx.varAssignments.vars[name] = asgn
+func (ctx *parseContext) setLastAssignment(v variable, asgn *assignmentNode) {
+	ctx.varAssignments.vars[v.name()] = asgn
 }
 
 func (ctx *parseContext) pushVarAssignments() {
@@ -532,7 +529,7 @@ func (ctx *parseContext) handleAssignment(a *mkparser.Assignment) []starlarkNode
 	if lhs == nil {
 		return []starlarkNode{ctx.newBadNode(a, "unknown variable %s", name)}
 	}
-	_, isTraced := ctx.tracedVariables[name]
+	_, isTraced := ctx.tracedVariables[lhs.name()]
 	asgn := &assignmentNode{lhs: lhs, mkValue: a.Value, isTraced: isTraced, location: ctx.errorLocation(a)}
 	if lhs.valueType() == starlarkTypeUnknown {
 		// Try to divine variable type from the RHS
@@ -565,17 +562,13 @@ func (ctx *parseContext) handleAssignment(a *mkparser.Assignment) []starlarkNode
 		}
 	}
 
-	asgn.previous = ctx.lastAssignment(name)
-	ctx.setLastAssignment(name, asgn)
+	asgn.previous = ctx.lastAssignment(lhs)
+	ctx.setLastAssignment(lhs, asgn)
 	switch a.Type {
 	case "=", ":=":
 		asgn.flavor = asgnSet
 	case "+=":
-		if asgn.previous == nil && !asgn.lhs.isPreset() {
-			asgn.flavor = asgnMaybeAppend
-		} else {
-			asgn.flavor = asgnAppend
-		}
+		asgn.flavor = asgnAppend
 	case "?=":
 		asgn.flavor = asgnMaybeSet
 	default:
@@ -1268,12 +1261,12 @@ func (ctx *parseContext) parseReference(node mkparser.Node, ref *mkparser.MakeSt
 				args: []starlarkExpr{
 					&stringLiteralExpr{literal: substParts[0]},
 					&stringLiteralExpr{literal: substParts[1]},
-					NewVariableRefExpr(v, ctx.lastAssignment(v.name()) != nil),
+					NewVariableRefExpr(v, ctx.lastAssignment(v) != nil),
 				},
 			}
 		}
 		if v := ctx.addVariable(refDump); v != nil {
-			return NewVariableRefExpr(v, ctx.lastAssignment(v.name()) != nil)
+			return NewVariableRefExpr(v, ctx.lastAssignment(v) != nil)
 		}
 		return ctx.newBadExpr(node, "unknown variable %s", refDump)
 	}
