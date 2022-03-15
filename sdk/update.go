@@ -22,6 +22,7 @@ import (
 
 	"android/soong/apex"
 	"android/soong/cc"
+
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
 
@@ -48,6 +49,19 @@ import (
 //     SOONG_SDK_SNAPSHOT_VERSION=<number> will generate versioned prebuilts and a versioned
 //     snapshot module only. The zip file containing the generated snapshot will be
 //     <sdk-name>-<number>.zip.
+//
+// SOONG_SDK_SNAPSHOT_TARGET_BUILD_RELEASE
+//     This allows the target build release (i.e. the release version of the build within which
+//     the snapshot will be used) of the snapshot to be specified. If unspecified then it defaults
+//     to the current build release version. Otherwise, it must be the name of one of the build
+//     releases defined in nameToBuildRelease, e.g. S, T, etc..
+//
+//     The generated snapshot must only be used in the specified target release. If the target
+//     build release is not the current build release then the generated Android.bp file not be
+//     checked for compatibility.
+//
+//     e.g. if setting SOONG_SDK_SNAPSHOT_TARGET_BUILD_RELEASE=S will cause the generated snapshot
+//     to be compatible with S.
 //
 
 var pctx = android.NewPackageContext("android/soong/sdk")
@@ -318,6 +332,14 @@ func (s *sdk) buildSnapshot(ctx android.ModuleContext, sdkVariants []*sdk) andro
 		snapshotZipFileSuffix = "-" + version
 	}
 
+	currentBuildRelease := latestBuildRelease()
+	targetBuildReleaseEnv := config.GetenvWithDefault("SOONG_SDK_SNAPSHOT_TARGET_BUILD_RELEASE", currentBuildRelease.name)
+	targetBuildRelease, err := nameToRelease(targetBuildReleaseEnv)
+	if err != nil {
+		ctx.ModuleErrorf("invalid SOONG_SDK_SNAPSHOT_TARGET_BUILD_RELEASE: %s", err)
+		targetBuildRelease = currentBuildRelease
+	}
+
 	builder := &snapshotBuilder{
 		ctx:                   ctx,
 		sdk:                   s,
@@ -329,6 +351,7 @@ func (s *sdk) buildSnapshot(ctx android.ModuleContext, sdkVariants []*sdk) andro
 		prebuiltModules:       make(map[string]*bpModule),
 		allMembersByName:      allMembersByName,
 		exportedMembersByName: exportedMembersByName,
+		targetBuildRelease:    targetBuildRelease,
 	}
 	s.builderForTests = builder
 
@@ -401,7 +424,11 @@ be unnecessary as every module in the sdk already has its own licenses property.
 	generateBpContents(&bp.generatedContents, bpFile)
 
 	contents := bp.content.String()
-	syntaxCheckSnapshotBpFile(ctx, contents)
+	// If the snapshot is being generated for the current build release then check the syntax to make
+	// sure that it is compatible.
+	if targetBuildRelease == currentBuildRelease {
+		syntaxCheckSnapshotBpFile(ctx, contents)
+	}
 
 	bp.build(pctx, ctx, nil)
 
@@ -938,6 +965,9 @@ type snapshotBuilder struct {
 
 	// The set of exported members by name.
 	exportedMembersByName map[string]struct{}
+
+	// The target build release for which the snapshot is to be generated.
+	targetBuildRelease *buildRelease
 }
 
 func (s *snapshotBuilder) CopyToSnapshot(src android.Path, dest string) {
@@ -1302,6 +1332,16 @@ func newOsTypeSpecificInfo(ctx android.SdkMemberContext, osType android.OsType, 
 	return osInfo
 }
 
+func (osInfo *osTypeSpecificInfo) pruneUnsupportedProperties(pruner *propertyPruner) {
+	if len(osInfo.archInfos) == 0 {
+		pruner.pruneProperties(osInfo.Properties)
+	} else {
+		for _, archInfo := range osInfo.archInfos {
+			archInfo.pruneUnsupportedProperties(pruner)
+		}
+	}
+}
+
 // Optimize the properties by extracting common properties from arch type specific
 // properties into os type specific properties.
 func (osInfo *osTypeSpecificInfo) optimizeProperties(ctx *memberContext, commonValueExtractor *commonValueExtractor) {
@@ -1411,7 +1451,7 @@ type archTypeSpecificInfo struct {
 	archType android.ArchType
 	osType   android.OsType
 
-	linkInfos []*linkTypeSpecificInfo
+	imageVariantInfos []*imageVariantSpecificInfo
 }
 
 var _ propertiesContainer = (*archTypeSpecificInfo)(nil)
@@ -1430,17 +1470,17 @@ func newArchSpecificInfo(ctx android.SdkMemberContext, archType android.ArchType
 	if len(archVariants) == 1 {
 		archInfo.Properties.PopulateFromVariant(ctx, archVariants[0])
 	} else {
-		// There is more than one variant for this arch type which must be differentiated
-		// by link type.
-		for _, linkVariant := range archVariants {
-			linkType := getLinkType(linkVariant)
-			if linkType == "" {
-				panic(fmt.Errorf("expected one arch specific variant as it is not identified by link type but found %d", len(archVariants)))
-			} else {
-				linkInfo := newLinkSpecificInfo(ctx, linkType, variantPropertiesFactory, linkVariant)
+		// Group the variants by image type.
+		variantsByImage := make(map[string][]android.Module)
+		for _, variant := range archVariants {
+			image := variant.ImageVariation().Variation
+			variantsByImage[image] = append(variantsByImage[image], variant)
+		}
 
-				archInfo.linkInfos = append(archInfo.linkInfos, linkInfo)
-			}
+		// Create the image variant info in a fixed order.
+		for _, imageVariantName := range android.SortedStringKeys(variantsByImage) {
+			variants := variantsByImage[imageVariantName]
+			archInfo.imageVariantInfos = append(archInfo.imageVariantInfos, newImageVariantSpecificInfo(ctx, imageVariantName, variantPropertiesFactory, variants))
 		}
 	}
 
@@ -1471,14 +1511,29 @@ func getLinkType(variant android.Module) string {
 	return linkType
 }
 
+func (archInfo *archTypeSpecificInfo) pruneUnsupportedProperties(pruner *propertyPruner) {
+	if len(archInfo.imageVariantInfos) == 0 {
+		pruner.pruneProperties(archInfo.Properties)
+	} else {
+		for _, imageVariantInfo := range archInfo.imageVariantInfos {
+			imageVariantInfo.pruneUnsupportedProperties(pruner)
+		}
+	}
+}
+
 // Optimize the properties by extracting common properties from link type specific
 // properties into arch type specific properties.
 func (archInfo *archTypeSpecificInfo) optimizeProperties(ctx *memberContext, commonValueExtractor *commonValueExtractor) {
-	if len(archInfo.linkInfos) == 0 {
+	if len(archInfo.imageVariantInfos) == 0 {
 		return
 	}
 
-	extractCommonProperties(ctx.sdkMemberContext, commonValueExtractor, archInfo.Properties, archInfo.linkInfos)
+	// Optimize the image variant properties first.
+	for _, imageVariantInfo := range archInfo.imageVariantInfos {
+		imageVariantInfo.optimizeProperties(ctx, commonValueExtractor)
+	}
+
+	extractCommonProperties(ctx.sdkMemberContext, commonValueExtractor, archInfo.Properties, archInfo.imageVariantInfos)
 }
 
 // Add the properties for an arch type to a property set.
@@ -1491,14 +1546,112 @@ func (archInfo *archTypeSpecificInfo) addToPropertySet(ctx *memberContext, archP
 	}
 	addSdkMemberPropertiesToSet(ctx, archInfo.Properties, archTypePropertySet)
 
-	for _, linkInfo := range archInfo.linkInfos {
-		linkPropertySet := archTypePropertySet.AddPropertySet(linkInfo.linkType)
-		addSdkMemberPropertiesToSet(ctx, linkInfo.Properties, linkPropertySet)
+	for _, imageVariantInfo := range archInfo.imageVariantInfos {
+		imageVariantInfo.addToPropertySet(ctx, archTypePropertySet)
 	}
+}
+
+// getPropertySetContents returns the string representation of the contents of a property set, after
+// recursively pruning any empty nested property sets.
+func getPropertySetContents(propertySet android.BpPropertySet) string {
+	set := propertySet.(*bpPropertySet)
+	set.transformContents(pruneEmptySetTransformer{})
+	if len(set.properties) != 0 {
+		contents := &generatedContents{}
+		contents.Indent()
+		outputPropertySet(contents, set)
+		setAsString := contents.content.String()
+		return setAsString
+	}
+	return ""
 }
 
 func (archInfo *archTypeSpecificInfo) String() string {
 	return fmt.Sprintf("ArchType{%s}", archInfo.archType)
+}
+
+type imageVariantSpecificInfo struct {
+	baseInfo
+
+	imageVariant string
+
+	linkInfos []*linkTypeSpecificInfo
+}
+
+func newImageVariantSpecificInfo(ctx android.SdkMemberContext, imageVariant string, variantPropertiesFactory variantPropertiesFactoryFunc, imageVariants []android.Module) *imageVariantSpecificInfo {
+
+	// Create an image variant specific info into which the variant properties can be copied.
+	imageInfo := &imageVariantSpecificInfo{imageVariant: imageVariant}
+
+	// Create the properties into which the image variant specific properties will be added.
+	imageInfo.Properties = variantPropertiesFactory()
+
+	if len(imageVariants) == 1 {
+		imageInfo.Properties.PopulateFromVariant(ctx, imageVariants[0])
+	} else {
+		// There is more than one variant for this image variant which must be differentiated by link
+		// type.
+		for _, linkVariant := range imageVariants {
+			linkType := getLinkType(linkVariant)
+			if linkType == "" {
+				panic(fmt.Errorf("expected one arch specific variant as it is not identified by link type but found %d", len(imageVariants)))
+			} else {
+				linkInfo := newLinkSpecificInfo(ctx, linkType, variantPropertiesFactory, linkVariant)
+
+				imageInfo.linkInfos = append(imageInfo.linkInfos, linkInfo)
+			}
+		}
+	}
+
+	return imageInfo
+}
+
+func (imageInfo *imageVariantSpecificInfo) pruneUnsupportedProperties(pruner *propertyPruner) {
+	if len(imageInfo.linkInfos) == 0 {
+		pruner.pruneProperties(imageInfo.Properties)
+	} else {
+		for _, linkInfo := range imageInfo.linkInfos {
+			linkInfo.pruneUnsupportedProperties(pruner)
+		}
+	}
+}
+
+// Optimize the properties by extracting common properties from link type specific
+// properties into arch type specific properties.
+func (imageInfo *imageVariantSpecificInfo) optimizeProperties(ctx *memberContext, commonValueExtractor *commonValueExtractor) {
+	if len(imageInfo.linkInfos) == 0 {
+		return
+	}
+
+	extractCommonProperties(ctx.sdkMemberContext, commonValueExtractor, imageInfo.Properties, imageInfo.linkInfos)
+}
+
+// Add the properties for an arch type to a property set.
+func (imageInfo *imageVariantSpecificInfo) addToPropertySet(ctx *memberContext, propertySet android.BpPropertySet) {
+	if imageInfo.imageVariant != android.CoreVariation {
+		propertySet = propertySet.AddPropertySet(imageInfo.imageVariant)
+	}
+
+	addSdkMemberPropertiesToSet(ctx, imageInfo.Properties, propertySet)
+
+	for _, linkInfo := range imageInfo.linkInfos {
+		linkInfo.addToPropertySet(ctx, propertySet)
+	}
+
+	// If this is for a non-core image variant then make sure that the property set does not contain
+	// any properties as providing non-core image variant specific properties for prebuilts is not
+	// currently supported.
+	if imageInfo.imageVariant != android.CoreVariation {
+		propertySetContents := getPropertySetContents(propertySet)
+		if propertySetContents != "" {
+			ctx.SdkModuleContext().ModuleErrorf("Image variant %q of sdk member %q has properties distinct from other variants; this is not yet supported. The properties are:\n%s",
+				imageInfo.imageVariant, ctx.name, propertySetContents)
+		}
+	}
+}
+
+func (imageInfo *imageVariantSpecificInfo) String() string {
+	return imageInfo.imageVariant
 }
 
 type linkTypeSpecificInfo struct {
@@ -1522,6 +1675,15 @@ func newLinkSpecificInfo(ctx android.SdkMemberContext, linkType string, variantP
 	}
 	linkInfo.Properties.PopulateFromVariant(ctx, linkVariant)
 	return linkInfo
+}
+
+func (l *linkTypeSpecificInfo) addToPropertySet(ctx *memberContext, propertySet android.BpPropertySet) {
+	linkPropertySet := propertySet.AddPropertySet(l.linkType)
+	addSdkMemberPropertiesToSet(ctx, l.Properties, linkPropertySet)
+}
+
+func (l *linkTypeSpecificInfo) pruneUnsupportedProperties(pruner *propertyPruner) {
+	pruner.pruneProperties(l.Properties)
 }
 
 func (l *linkTypeSpecificInfo) String() string {
@@ -1556,12 +1718,13 @@ func (s *sdk) createMemberSnapshot(ctx *memberContext, member *sdkMember, bpModu
 	memberType := member.memberType
 
 	// Do not add the prefer property if the member snapshot module is a source module type.
+	config := ctx.sdkMemberContext.Config()
 	if !memberType.UsesSourceModuleTypeInSnapshot() {
 		// Set the prefer based on the environment variable. This is a temporary work around to allow a
 		// snapshot to be created that sets prefer: true.
 		// TODO(b/174997203): Remove once the ability to select the modules to prefer can be done
 		//  dynamically at build time not at snapshot generation time.
-		prefer := ctx.sdkMemberContext.Config().IsEnvTrue("SOONG_SDK_SNAPSHOT_PREFER")
+		prefer := config.IsEnvTrue("SOONG_SDK_SNAPSHOT_PREFER")
 
 		// Set prefer. Setting this to false is not strictly required as that is the default but it does
 		// provide a convenient hook to post-process the generated Android.bp file, e.g. in tests to
@@ -1592,6 +1755,11 @@ func (s *sdk) createMemberSnapshot(ctx *memberContext, member *sdkMember, bpModu
 	commonProperties := variantPropertiesFactory()
 	commonProperties.Base().Os = android.CommonOS
 
+	// Create a property pruner that will prune any properties unsupported by the target build
+	// release.
+	targetBuildRelease := ctx.builder.targetBuildRelease
+	unsupportedPropertyPruner := newPropertyPrunerByBuildRelease(commonProperties, targetBuildRelease)
+
 	// Create common value extractor that can be used to optimize the properties.
 	commonValueExtractor := newCommonValueExtractor(commonProperties)
 
@@ -1605,6 +1773,8 @@ func (s *sdk) createMemberSnapshot(ctx *memberContext, member *sdkMember, bpModu
 		// Add the os specific properties to a list of os type specific yet architecture
 		// independent properties structs.
 		osSpecificPropertiesContainers = append(osSpecificPropertiesContainers, osInfo)
+
+		osInfo.pruneUnsupportedProperties(unsupportedPropertyPruner)
 
 		// Optimize the properties across all the variants for a specific os type.
 		osInfo.optimizeProperties(ctx, commonValueExtractor)

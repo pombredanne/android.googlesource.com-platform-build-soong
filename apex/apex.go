@@ -1572,8 +1572,8 @@ func apexFileForRuntimeResourceOverlay(ctx android.BaseModuleContext, rro java.R
 	return af
 }
 
-func apexFileForBpfProgram(ctx android.BaseModuleContext, builtFile android.Path, bpfProgram bpf.BpfModule) apexFile {
-	dirInApex := filepath.Join("etc", "bpf")
+func apexFileForBpfProgram(ctx android.BaseModuleContext, builtFile android.Path, apex_sub_dir string, bpfProgram bpf.BpfModule) apexFile {
+	dirInApex := filepath.Join("etc", "bpf", apex_sub_dir)
 	return newApexFile(ctx, builtFile, builtFile.Base(), dirInApex, etc, bpfProgram)
 }
 
@@ -1772,8 +1772,9 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			case bpfTag:
 				if bpfProgram, ok := child.(bpf.BpfModule); ok {
 					filesToCopy, _ := bpfProgram.OutputFiles("")
+					apex_sub_dir := bpfProgram.SubDir()
 					for _, bpfFile := range filesToCopy {
-						filesInfo = append(filesInfo, apexFileForBpfProgram(ctx, bpfFile, bpfProgram))
+						filesInfo = append(filesInfo, apexFileForBpfProgram(ctx, bpfFile, apex_sub_dir, bpfProgram))
 					}
 				} else {
 					ctx.PropertyErrorf("bpfs", "%q is not a bpf module", depName)
@@ -2347,6 +2348,12 @@ func (a *apexBundle) checkUpdatable(ctx android.ModuleContext) {
 func (a *apexBundle) checkClasspathFragments(ctx android.ModuleContext) {
 	ctx.VisitDirectDeps(func(module android.Module) {
 		if tag := ctx.OtherModuleDependencyTag(module); tag == bcpfTag || tag == sscpfTag {
+			if tag == sscpfTag {
+				sscpf := module.(*java.SystemServerClasspathModule)
+				if sscpf.ShouldIgnore() {
+					return
+				}
+			}
 			info := ctx.OtherModuleProvider(module, java.ClasspathFragmentProtoContentInfoProvider).(java.ClasspathFragmentProtoContentInfo)
 			if !info.ClasspathFragmentProtoGenerated {
 				ctx.OtherModuleErrorf(module, "is included in updatable apex %v, it must not set generate_classpaths_proto to false", ctx.ModuleName())
