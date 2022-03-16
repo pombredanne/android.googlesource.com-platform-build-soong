@@ -2011,8 +2011,16 @@ type javaLibraryAttributes struct {
 }
 
 func (m *Library) convertLibraryAttrsBp2Build(ctx android.TopDownMutatorContext) *javaLibraryAttributes {
-	//TODO(b/209577426): Support multiple arch variants
-	srcs := bazel.MakeLabelListAttribute(android.BazelLabelForModuleSrcExcludes(ctx, m.properties.Srcs, m.properties.Exclude_srcs))
+	var srcs bazel.LabelListAttribute
+	archVariantProps := m.GetArchVariantProperties(ctx, &CommonProperties{})
+	for axis, configToProps := range archVariantProps {
+		for config, _props := range configToProps {
+			if archProps, ok := _props.(*CommonProperties); ok {
+				archSrcs := android.BazelLabelForModuleSrcExcludes(ctx, archProps.Srcs, archProps.Exclude_srcs)
+				srcs.SetSelectValue(axis, config, archSrcs)
+			}
+		}
+	}
 
 	javaSrcPartition := "java"
 	protoSrcPartition := "proto"
@@ -2030,6 +2038,11 @@ func (m *Library) convertLibraryAttrsBp2Build(ctx android.TopDownMutatorContext)
 	}
 
 	var deps bazel.LabelList
+	sdkVersion := m.SdkVersion(ctx)
+	if sdkVersion.Kind == android.SdkPublic && sdkVersion.ApiLevel == android.FutureApiLevel {
+		// TODO(b/220869005) remove forced dependency on current public android.jar
+		deps.Add(&bazel.Label{Label: "//prebuilts/sdk:public_current_android_sdk_java_import"})
+	}
 	if m.properties.Libs != nil {
 		deps.Append(android.BazelLabelForModuleDeps(ctx, m.properties.Libs))
 	}
