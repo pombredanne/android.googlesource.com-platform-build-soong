@@ -16,134 +16,67 @@ package config
 
 import (
 	"testing"
-
-	"android/soong/android"
 )
 
 func TestExpandVars(t *testing.T) {
-	android_arm64_config := android.TestConfig("out", nil, "", nil)
-	android_arm64_config.BuildOS = android.Android
-	android_arm64_config.BuildArch = android.Arm64
-
 	testCases := []struct {
-		description     string
-		config          android.Config
-		stringScope     exportedStringVariables
-		stringListScope exportedStringListVariables
-		configVars      exportedConfigDependingVariables
-		toExpand        string
-		expectedValues  []string
+		description    string
+		exportedVars   map[string]variableValue
+		toExpand       string
+		expectedValues []string
 	}{
 		{
-			description:    "no expansion for non-interpolated value",
-			toExpand:       "foo",
-			expectedValues: []string{"foo"},
-		},
-		{
-			description: "single level expansion for string var",
-			stringScope: exportedStringVariables{
-				"foo": "bar",
+			description: "single level expansion",
+			exportedVars: map[string]variableValue{
+				"foo": variableValue([]string{"bar"}),
 			},
 			toExpand:       "${foo}",
 			expectedValues: []string{"bar"},
-		},
-		{
-			description: "single level expansion with short-name for string var",
-			stringScope: exportedStringVariables{
-				"foo": "bar",
-			},
-			toExpand:       "${config.foo}",
-			expectedValues: []string{"bar"},
-		},
-		{
-			description: "single level expansion string list var",
-			stringListScope: exportedStringListVariables{
-				"foo": []string{"bar"},
-			},
-			toExpand:       "${foo}",
-			expectedValues: []string{"bar"},
-		},
-		{
-			description: "mixed level expansion for string list var",
-			stringScope: exportedStringVariables{
-				"foo": "${bar}",
-				"qux": "hello",
-			},
-			stringListScope: exportedStringListVariables{
-				"bar": []string{"baz", "${qux}"},
-			},
-			toExpand:       "${foo}",
-			expectedValues: []string{"baz hello"},
 		},
 		{
 			description: "double level expansion",
-			stringListScope: exportedStringListVariables{
-				"foo": []string{"${bar}"},
-				"bar": []string{"baz"},
+			exportedVars: map[string]variableValue{
+				"foo": variableValue([]string{"${bar}"}),
+				"bar": variableValue([]string{"baz"}),
 			},
 			toExpand:       "${foo}",
 			expectedValues: []string{"baz"},
 		},
 		{
 			description: "double level expansion with a literal",
-			stringListScope: exportedStringListVariables{
-				"a": []string{"${b}", "c"},
-				"b": []string{"d"},
+			exportedVars: map[string]variableValue{
+				"a": variableValue([]string{"${b}", "c"}),
+				"b": variableValue([]string{"d"}),
 			},
 			toExpand:       "${a}",
-			expectedValues: []string{"d c"},
+			expectedValues: []string{"d", "c"},
 		},
 		{
 			description: "double level expansion, with two variables in a string",
-			stringListScope: exportedStringListVariables{
-				"a": []string{"${b} ${c}"},
-				"b": []string{"d"},
-				"c": []string{"e"},
+			exportedVars: map[string]variableValue{
+				"a": variableValue([]string{"${b} ${c}"}),
+				"b": variableValue([]string{"d"}),
+				"c": variableValue([]string{"e"}),
 			},
 			toExpand:       "${a}",
-			expectedValues: []string{"d e"},
+			expectedValues: []string{"d", "e"},
 		},
 		{
 			description: "triple level expansion with two variables in a string",
-			stringListScope: exportedStringListVariables{
-				"a": []string{"${b} ${c}"},
-				"b": []string{"${c}", "${d}"},
-				"c": []string{"${d}"},
-				"d": []string{"foo"},
+			exportedVars: map[string]variableValue{
+				"a": variableValue([]string{"${b} ${c}"}),
+				"b": variableValue([]string{"${c}", "${d}"}),
+				"c": variableValue([]string{"${d}"}),
+				"d": variableValue([]string{"foo"}),
 			},
 			toExpand:       "${a}",
-			expectedValues: []string{"foo foo foo"},
-		},
-		{
-			description: "expansion with config depending vars",
-			configVars: exportedConfigDependingVariables{
-				"a": func(c android.Config) string { return c.BuildOS.String() },
-				"b": func(c android.Config) string { return c.BuildArch.String() },
-			},
-			config:         android_arm64_config,
-			toExpand:       "${a}-${b}",
-			expectedValues: []string{"android-arm64"},
-		},
-		{
-			description: "double level multi type expansion",
-			stringListScope: exportedStringListVariables{
-				"platform": []string{"${os}-${arch}"},
-				"const":    []string{"const"},
-			},
-			configVars: exportedConfigDependingVariables{
-				"os":   func(c android.Config) string { return c.BuildOS.String() },
-				"arch": func(c android.Config) string { return c.BuildArch.String() },
-				"foo":  func(c android.Config) string { return "foo" },
-			},
-			config:         android_arm64_config,
-			toExpand:       "${const}/${platform}/${foo}",
-			expectedValues: []string{"const/android-arm64/foo"},
+			expectedValues: []string{"foo", "foo", "foo"},
 		},
 	}
 
 	for _, testCase := range testCases {
 		t.Run(testCase.description, func(t *testing.T) {
-			output, _ := expandVar(testCase.config, testCase.toExpand, testCase.stringScope, testCase.stringListScope, testCase.configVars)
+			output := expandVar(testCase.toExpand, testCase.exportedVars)
 			if len(output) != len(testCase.expectedValues) {
 				t.Errorf("Expected %d values, got %d", len(testCase.expectedValues), len(output))
 			}
@@ -152,172 +85,6 @@ func TestExpandVars(t *testing.T) {
 				if actual != expectedValue {
 					t.Errorf("Actual value '%s' doesn't match expected value '%s'", actual, expectedValue)
 				}
-			}
-		})
-	}
-}
-
-func TestBazelToolchainVars(t *testing.T) {
-	testCases := []struct {
-		name        string
-		config      android.Config
-		vars        []bazelVarExporter
-		expectedOut string
-	}{
-		{
-			name: "exports strings",
-			vars: []bazelVarExporter{
-				exportedStringVariables{
-					"a": "b",
-					"c": "d",
-				},
-			},
-			expectedOut: `# GENERATED FOR BAZEL FROM SOONG. DO NOT EDIT.
-
-_a = "b"
-
-_c = "d"
-
-constants = struct(
-    a = _a,
-    c = _c,
-)`,
-		},
-		{
-			name: "exports string lists",
-			vars: []bazelVarExporter{
-				exportedStringListVariables{
-					"a": []string{"b1", "b2"},
-					"c": []string{"d1", "d2"},
-				},
-			},
-			expectedOut: `# GENERATED FOR BAZEL FROM SOONG. DO NOT EDIT.
-
-_a = [
-    "b1",
-    "b2",
-]
-
-_c = [
-    "d1",
-    "d2",
-]
-
-constants = struct(
-    a = _a,
-    c = _c,
-)`,
-		},
-		{
-			name: "exports string lists dicts",
-			vars: []bazelVarExporter{
-				exportedStringListDictVariables{
-					"a": map[string][]string{"b1": []string{"b2"}},
-					"c": map[string][]string{"d1": []string{"d2"}},
-				},
-			},
-			expectedOut: `# GENERATED FOR BAZEL FROM SOONG. DO NOT EDIT.
-
-_a = {
-    "b1": ["b2"],
-}
-
-_c = {
-    "d1": ["d2"],
-}
-
-constants = struct(
-    a = _a,
-    c = _c,
-)`,
-		},
-		{
-			name: "exports dict with var refs",
-			vars: []bazelVarExporter{
-				exportedVariableReferenceDictVariables{
-					"a": map[string]string{"b1": "${b2}"},
-					"c": map[string]string{"d1": "${config.d2}"},
-				},
-			},
-			expectedOut: `# GENERATED FOR BAZEL FROM SOONG. DO NOT EDIT.
-
-_a = {
-    "b1": _b2,
-}
-
-_c = {
-    "d1": _d2,
-}
-
-constants = struct(
-    a = _a,
-    c = _c,
-)`,
-		},
-		{
-			name: "sorts across types with variable references last",
-			vars: []bazelVarExporter{
-				exportedStringVariables{
-					"b": "b-val",
-					"d": "d-val",
-				},
-				exportedStringListVariables{
-					"c": []string{"c-val"},
-					"e": []string{"e-val"},
-				},
-				exportedStringListDictVariables{
-					"a": map[string][]string{"a1": []string{"a2"}},
-					"f": map[string][]string{"f1": []string{"f2"}},
-				},
-				exportedVariableReferenceDictVariables{
-					"aa": map[string]string{"b1": "${b}"},
-					"cc": map[string]string{"d1": "${config.d}"},
-				},
-			},
-			expectedOut: `# GENERATED FOR BAZEL FROM SOONG. DO NOT EDIT.
-
-_a = {
-    "a1": ["a2"],
-}
-
-_b = "b-val"
-
-_c = ["c-val"]
-
-_d = "d-val"
-
-_e = ["e-val"]
-
-_f = {
-    "f1": ["f2"],
-}
-
-_aa = {
-    "b1": _b,
-}
-
-_cc = {
-    "d1": _d,
-}
-
-constants = struct(
-    a = _a,
-    b = _b,
-    c = _c,
-    d = _d,
-    e = _e,
-    f = _f,
-    aa = _aa,
-    cc = _cc,
-)`,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			out := bazelToolchainVars(tc.config, tc.vars...)
-			if out != tc.expectedOut {
-				t.Errorf("Expected \n%s, got \n%s", tc.expectedOut, out)
 			}
 		})
 	}

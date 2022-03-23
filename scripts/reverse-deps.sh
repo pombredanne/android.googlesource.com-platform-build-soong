@@ -67,9 +67,6 @@ function getDeps() {
       $0 ~ /^\S\S*:$/ {
         inoutput = 0
       }
-      $1 == "validations:" {
-        inoutput = 0
-      }
       inoutput != 0 {
         print gensub(/^\s*/, "", "g")" "depth
       }

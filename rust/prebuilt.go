@@ -32,8 +32,6 @@ type PrebuiltProperties struct {
 }
 
 type prebuiltLibraryDecorator struct {
-	android.Prebuilt
-
 	*libraryDecorator
 	Properties PrebuiltProperties
 }
@@ -56,13 +54,6 @@ func PrebuiltRlibFactory() android.Module {
 	return module.Init()
 }
 
-func addSrcSupplier(module android.PrebuiltInterface, prebuilt *prebuiltLibraryDecorator) {
-	srcsSupplier := func(_ android.BaseModuleContext, _ android.Module) []string {
-		return prebuilt.prebuiltSrcs()
-	}
-	android.InitPrebuiltModuleWithSrcSupplier(module, srcsSupplier, "srcs")
-}
-
 func NewPrebuiltLibrary(hod android.HostOrDeviceSupported) (*Module, *prebuiltLibraryDecorator) {
 	module, library := NewRustLibrary(hod)
 	library.BuildOnlyRust()
@@ -71,9 +62,6 @@ func NewPrebuiltLibrary(hod android.HostOrDeviceSupported) (*Module, *prebuiltLi
 		libraryDecorator: library,
 	}
 	module.compiler = prebuilt
-
-	addSrcSupplier(module, prebuilt)
-
 	return module, prebuilt
 }
 
@@ -85,9 +73,6 @@ func NewPrebuiltDylib(hod android.HostOrDeviceSupported) (*Module, *prebuiltLibr
 		libraryDecorator: library,
 	}
 	module.compiler = prebuilt
-
-	addSrcSupplier(module, prebuilt)
-
 	return module, prebuilt
 }
 
@@ -99,9 +84,6 @@ func NewPrebuiltRlib(hod android.HostOrDeviceSupported) (*Module, *prebuiltLibra
 		libraryDecorator: library,
 	}
 	module.compiler = prebuilt
-
-	addSrcSupplier(module, prebuilt)
-
 	return module, prebuilt
 }
 
@@ -118,7 +100,6 @@ func (prebuilt *prebuiltLibraryDecorator) compile(ctx ModuleContext, flags Flags
 	if len(paths) > 0 {
 		ctx.PropertyErrorf("srcs", "prebuilt libraries can only have one entry in srcs (the prebuilt path)")
 	}
-	prebuilt.baseCompiler.unstrippedOutputFile = srcPath
 	return srcPath
 }
 
@@ -147,8 +128,4 @@ func (prebuilt *prebuiltLibraryDecorator) prebuiltSrcs() []string {
 	}
 
 	return srcs
-}
-
-func (prebuilt *prebuiltLibraryDecorator) prebuilt() *android.Prebuilt {
-	return &prebuilt.Prebuilt
 }
