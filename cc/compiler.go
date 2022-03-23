@@ -39,12 +39,6 @@ type BaseCompilerProperties struct {
 	// or filegroup using the syntax ":module".
 	Srcs []string `android:"path,arch_variant"`
 
-	// list of source files that should not be compiled with clang-tidy.
-	Tidy_disabled_srcs []string `android:"path,arch_variant"`
-
-	// list of source files that should not be compiled by clang-tidy when TIDY_TIMEOUT is set.
-	Tidy_timeout_srcs []string `android:"path,arch_variant"`
-
 	// list of source files that should not be used to build the C/C++ module.
 	// This is most useful in the arch/multilib variants to remove non-common files
 	Exclude_srcs []string `android:"path,arch_variant"`
@@ -98,7 +92,7 @@ type BaseCompilerProperties struct {
 
 	// list of generated headers to add to the include path. These are the names
 	// of genrule modules.
-	Generated_headers []string `android:"arch_variant,variant_prepend"`
+	Generated_headers []string `android:"arch_variant"`
 
 	// pass -frtti instead of -fno-rtti
 	Rtti *bool
@@ -212,6 +206,15 @@ type BaseCompilerProperties struct {
 
 	// Build and link with OpenMP
 	Openmp *bool `android:"arch_variant"`
+
+	// Deprecated.
+	// Adds __ANDROID_APEX_<APEX_MODULE_NAME>__ macro defined for apex variants in addition to __ANDROID_APEX__
+	Use_apex_name_macro *bool
+
+	// Adds two macros for apex variants in addition to __ANDROID_APEX__
+	// * __ANDROID_APEX_COM_ANDROID_FOO__
+	// * __ANDROID_APEX_NAME__="com.android.foo"
+	UseApexNameMacro bool `blueprint:"mutated"`
 }
 
 func NewBaseCompiler() *baseCompiler {
@@ -258,12 +261,8 @@ func (compiler *baseCompiler) compilerProps() []interface{} {
 	return []interface{}{&compiler.Properties, &compiler.Proto}
 }
 
-func includeBuildDirectory(prop *bool) bool {
-	return proptools.BoolDefault(prop, true)
-}
-
 func (compiler *baseCompiler) includeBuildDirectory() bool {
-	return includeBuildDirectory(compiler.Properties.Include_build_directory)
+	return proptools.BoolDefault(compiler.Properties.Include_build_directory, true)
 }
 
 func (compiler *baseCompiler) compilerInit(ctx BaseModuleContext) {}
@@ -285,6 +284,10 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	return deps
 }
 
+func (compiler *baseCompiler) useApexNameMacro() bool {
+	return Bool(compiler.Properties.Use_apex_name_macro) || compiler.Properties.UseApexNameMacro
+}
+
 // Return true if the module is in the WarningAllowedProjects.
 func warningsAreAllowed(subdir string) bool {
 	subdir += "/"
@@ -293,38 +296,6 @@ func warningsAreAllowed(subdir string) bool {
 
 func addToModuleList(ctx ModuleContext, key android.OnceKey, module string) {
 	getNamedMapForConfig(ctx.Config(), key).Store(module, true)
-}
-
-func maybeReplaceGnuToC(gnuExtensions *bool, cStd string, cppStd string) (string, string) {
-	if gnuExtensions != nil && *gnuExtensions == false {
-		cStd = gnuToCReplacer.Replace(cStd)
-		cppStd = gnuToCReplacer.Replace(cppStd)
-	}
-	return cStd, cppStd
-}
-
-func parseCppStd(cppStdPtr *string) string {
-	cppStd := String(cppStdPtr)
-	switch cppStd {
-	case "":
-		return config.CppStdVersion
-	case "experimental":
-		return config.ExperimentalCppStdVersion
-	default:
-		return cppStd
-	}
-}
-
-func parseCStd(cStdPtr *string) string {
-	cStd := String(cStdPtr)
-	switch cStd {
-	case "":
-		return config.CStdVersion
-	case "experimental":
-		return config.ExperimentalCStdVersion
-	default:
-		return cStd
-	}
 }
 
 // Create a Flags struct that collects the compile flags from global values,
@@ -406,12 +377,12 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_RECOVERY__")
 	}
 
-	if ctx.inRecovery() || ctx.inRamdisk() || ctx.inVendorRamdisk() {
-		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_RAMDISK__")
-	}
-
 	if ctx.apexVariationName() != "" {
 		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX__")
+		if compiler.useApexNameMacro() {
+			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX_"+makeDefineString(ctx.apexVariationName())+"__")
+			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX_NAME__='\""+ctx.apexVariationName()+"\"'")
+		}
 		if ctx.Device() {
 			flags.Global.CommonFlags = append(flags.Global.CommonFlags,
 				fmt.Sprintf("-D__ANDROID_APEX_MIN_SDK_VERSION__=%d",
@@ -427,7 +398,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	if flags.RequiredInstructionSet != "" {
 		instructionSet = flags.RequiredInstructionSet
 	}
-	instructionSetFlags, err := tc.InstructionSetFlags(instructionSet)
+	instructionSetFlags, err := tc.ClangInstructionSetFlags(instructionSet)
 	if err != nil {
 		ctx.ModuleErrorf("%s", err)
 	}
@@ -457,9 +428,11 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		}
 	}
 
-	flags.Global.CFlags = append(flags.Global.CFlags, target)
-	flags.Global.AsFlags = append(flags.Global.AsFlags, target)
-	flags.Global.LdFlags = append(flags.Global.LdFlags, target)
+	gccPrefix := "-B" + config.ToolPath(tc)
+
+	flags.Global.CFlags = append(flags.Global.CFlags, target, gccPrefix)
+	flags.Global.AsFlags = append(flags.Global.AsFlags, target, gccPrefix)
+	flags.Global.LdFlags = append(flags.Global.LdFlags, target, gccPrefix)
 
 	hod := "Host"
 	if ctx.Os().Class == android.Device {
@@ -470,15 +443,15 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	flags.Global.ConlyFlags = append([]string{"${config.CommonGlobalConlyflags}"}, flags.Global.ConlyFlags...)
 	flags.Global.CppFlags = append([]string{fmt.Sprintf("${config.%sGlobalCppflags}", hod)}, flags.Global.CppFlags...)
 
-	flags.Global.AsFlags = append(flags.Global.AsFlags, tc.Asflags())
-	flags.Global.CppFlags = append([]string{"${config.CommonGlobalCppflags}"}, flags.Global.CppFlags...)
+	flags.Global.AsFlags = append(flags.Global.AsFlags, tc.ClangAsflags())
+	flags.Global.CppFlags = append([]string{"${config.CommonClangGlobalCppflags}"}, flags.Global.CppFlags...)
 	flags.Global.CommonFlags = append(flags.Global.CommonFlags,
-		tc.Cflags(),
-		"${config.CommonGlobalCflags}",
-		fmt.Sprintf("${config.%sGlobalCflags}", hod))
+		tc.ClangCflags(),
+		"${config.CommonClangGlobalCflags}",
+		fmt.Sprintf("${config.%sClangGlobalCflags}", hod))
 
-	if android.IsThirdPartyPath(modulePath) {
-		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "${config.ExternalCflags}")
+	if isThirdParty(modulePath) {
+		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "${config.ClangExternalCflags}")
 	}
 
 	if tc.Bionic() {
@@ -491,16 +464,31 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 
 	flags.Global.AsFlags = append(flags.Global.AsFlags, "-D__ASSEMBLY__")
 
-	flags.Global.CppFlags = append(flags.Global.CppFlags, tc.Cppflags())
+	flags.Global.CppFlags = append(flags.Global.CppFlags, tc.ClangCppflags())
 
 	flags.Global.YasmFlags = append(flags.Global.YasmFlags, tc.YasmFlags())
 
-	flags.Global.CommonFlags = append(flags.Global.CommonFlags, tc.ToolchainCflags())
+	flags.Global.CommonFlags = append(flags.Global.CommonFlags, tc.ToolchainClangCflags())
 
-	cStd := parseCStd(compiler.Properties.C_std)
-	cppStd := parseCppStd(compiler.Properties.Cpp_std)
+	cStd := config.CStdVersion
+	if String(compiler.Properties.C_std) == "experimental" {
+		cStd = config.ExperimentalCStdVersion
+	} else if String(compiler.Properties.C_std) != "" {
+		cStd = String(compiler.Properties.C_std)
+	}
 
-	cStd, cppStd = maybeReplaceGnuToC(compiler.Properties.Gnu_extensions, cStd, cppStd)
+	cppStd := String(compiler.Properties.Cpp_std)
+	switch String(compiler.Properties.Cpp_std) {
+	case "":
+		cppStd = config.CppStdVersion
+	case "experimental":
+		cppStd = config.ExperimentalCppStdVersion
+	}
+
+	if compiler.Properties.Gnu_extensions != nil && *compiler.Properties.Gnu_extensions == false {
+		cStd = gnuToCReplacer.Replace(cStd)
+		cppStd = gnuToCReplacer.Replace(cppStd)
+	}
 
 	flags.Local.ConlyFlags = append([]string{"-std=" + cStd}, flags.Local.ConlyFlags...)
 	flags.Local.CppFlags = append([]string{"-std=" + cppStd}, flags.Local.CppFlags...)
@@ -549,6 +537,11 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 			"-I"+android.PathForModuleGen(ctx, "yacc", ctx.ModuleDir()).String())
 	}
 
+	if compiler.hasSrcExt(".mc") {
+		flags.Local.CommonFlags = append(flags.Local.CommonFlags,
+			"-I"+android.PathForModuleGen(ctx, "windmc", ctx.ModuleDir()).String())
+	}
+
 	if compiler.hasSrcExt(".aidl") {
 		flags.aidlFlags = append(flags.aidlFlags, compiler.Properties.Aidl.Flags...)
 		if len(compiler.Properties.Aidl.Local_include_dirs) > 0 {
@@ -563,12 +556,6 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		if Bool(compiler.Properties.Aidl.Generate_traces) {
 			flags.aidlFlags = append(flags.aidlFlags, "-t")
 		}
-
-		aidlMinSdkVersion := ctx.minSdkVersion()
-		if aidlMinSdkVersion == "" {
-			aidlMinSdkVersion = "platform_apis"
-		}
-		flags.aidlFlags = append(flags.aidlFlags, "--min_sdk_version="+aidlMinSdkVersion)
 
 		flags.Local.CommonFlags = append(flags.Local.CommonFlags,
 			"-I"+android.PathForModuleGen(ctx, "aidl").String())
@@ -630,6 +617,10 @@ func (compiler *baseCompiler) hasSrcExt(ext string) bool {
 	return false
 }
 
+func (compiler *baseCompiler) uniqueApexVariations() bool {
+	return compiler.useApexNameMacro()
+}
+
 var invalidDefineCharRegex = regexp.MustCompile("[^a-zA-Z0-9_]")
 
 // makeDefineString transforms a name of an APEX module into a value to be used as value for C define
@@ -642,9 +633,9 @@ var gnuToCReplacer = strings.NewReplacer("gnu", "c")
 
 func ndkPathDeps(ctx ModuleContext) android.Paths {
 	if ctx.Module().(*Module).IsSdkVariant() {
-		// The NDK sysroot timestamp file depends on all the NDK sysroot header files
-		// for compiling src to obj files.
-		return android.Paths{getNdkHeadersTimestampFile(ctx)}
+		// The NDK sysroot timestamp file depends on all the NDK sysroot files
+		// (headers and libraries).
+		return android.Paths{getNdkBaseTimestampFile(ctx)}
 	}
 	return nil
 }
@@ -668,10 +659,7 @@ func (compiler *baseCompiler) compile(ctx ModuleContext, flags Flags, deps PathD
 	compiler.srcs = srcs
 
 	// Compile files listed in c.Properties.Srcs into objects
-	objs := compileObjs(ctx, buildFlags, "", srcs,
-		android.PathsForModuleSrc(ctx, compiler.Properties.Tidy_disabled_srcs),
-		android.PathsForModuleSrc(ctx, compiler.Properties.Tidy_timeout_srcs),
-		pathDeps, compiler.cFlagsDeps)
+	objs := compileObjs(ctx, buildFlags, "", srcs, pathDeps, compiler.cFlagsDeps)
 
 	if ctx.Failed() {
 		return Objects{}
@@ -681,10 +669,31 @@ func (compiler *baseCompiler) compile(ctx ModuleContext, flags Flags, deps PathD
 }
 
 // Compile a list of source files into objects a specified subdirectory
-func compileObjs(ctx ModuleContext, flags builderFlags, subdir string,
-	srcFiles, noTidySrcs, timeoutTidySrcs, pathDeps android.Paths, cFlagsDeps android.Paths) Objects {
+func compileObjs(ctx android.ModuleContext, flags builderFlags,
+	subdir string, srcFiles, pathDeps android.Paths, cFlagsDeps android.Paths) Objects {
 
-	return transformSourceToObj(ctx, subdir, srcFiles, noTidySrcs, timeoutTidySrcs, flags, pathDeps, cFlagsDeps)
+	return transformSourceToObj(ctx, subdir, srcFiles, flags, pathDeps, cFlagsDeps)
+}
+
+var thirdPartyDirPrefixExceptions = []*regexp.Regexp{
+	regexp.MustCompile("^vendor/[^/]*google[^/]*/"),
+	regexp.MustCompile("^hardware/google/"),
+	regexp.MustCompile("^hardware/interfaces/"),
+	regexp.MustCompile("^hardware/libhardware[^/]*/"),
+	regexp.MustCompile("^hardware/ril/"),
+}
+
+func isThirdParty(path string) bool {
+	thirdPartyDirPrefixes := []string{"external/", "vendor/", "hardware/"}
+
+	if android.HasAnyPrefix(path, thirdPartyDirPrefixes) {
+		for _, prefix := range thirdPartyDirPrefixExceptions {
+			if prefix.MatchString(path) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // Properties for rust_bindgen related to generating rust bindings.
