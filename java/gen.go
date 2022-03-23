@@ -44,7 +44,7 @@ var (
 		})
 )
 
-func genAidl(ctx android.ModuleContext, aidlFiles android.Paths, aidlGlobalFlags string, aidlIndividualFlags map[string]string, deps android.Paths) android.Paths {
+func genAidl(ctx android.ModuleContext, aidlFiles android.Paths, aidlFlags string, deps android.Paths) android.Paths {
 	// Shard aidl files into groups of 50 to avoid having to recompile all of them if one changes and to avoid
 	// hitting command line length limits.
 	shards := android.ShardPaths(aidlFiles, 50)
@@ -61,17 +61,15 @@ func genAidl(ctx android.ModuleContext, aidlFiles android.Paths, aidlGlobalFlags
 
 		rule.Command().Text("rm -rf").Flag(outDir.String())
 		rule.Command().Text("mkdir -p").Flag(outDir.String())
-		rule.Command().Text("FLAGS=' " + aidlGlobalFlags + "'")
+		rule.Command().Text("FLAGS=' " + aidlFlags + "'")
 
 		for _, aidlFile := range shard {
-			localFlag := aidlIndividualFlags[aidlFile.String()]
 			depFile := srcJarFile.InSameDir(ctx, aidlFile.String()+".d")
 			javaFile := outDir.Join(ctx, pathtools.ReplaceExtension(aidlFile.String(), "java"))
 			rule.Command().
 				Tool(ctx.Config().HostToolPath(ctx, "aidl")).
 				FlagWithDepFile("-d", depFile).
 				Flag("$FLAGS").
-				Flag(localFlag).
 				Input(aidlFile).
 				Output(javaFile).
 				Implicits(deps)
@@ -161,14 +159,7 @@ func (j *Module) genSources(ctx android.ModuleContext, srcFiles android.Paths,
 
 	// Process all aidl files together to support sharding them into one or more rules that produce srcjars.
 	if len(aidlSrcs) > 0 {
-		individualFlags := make(map[string]string)
-		for _, aidlSrc := range aidlSrcs {
-			flags := j.individualAidlFlags(ctx, aidlSrc)
-			if flags != "" {
-				individualFlags[aidlSrc.String()] = flags
-			}
-		}
-		srcJarFiles := genAidl(ctx, aidlSrcs, flags.aidlFlags+aidlIncludeFlags, individualFlags, flags.aidlDeps)
+		srcJarFiles := genAidl(ctx, aidlSrcs, flags.aidlFlags+aidlIncludeFlags, flags.aidlDeps)
 		outSrcFiles = append(outSrcFiles, srcJarFiles...)
 	}
 

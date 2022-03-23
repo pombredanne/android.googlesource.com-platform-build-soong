@@ -30,10 +30,10 @@ import (
 	"syscall"
 	"time"
 
-	soong_metrics_proto "android/soong/ui/metrics/metrics_proto"
+	"android/soong/ui/metrics/metrics_proto"
 	"android/soong/ui/tracer"
 
-	"google.golang.org/protobuf/proto"
+	"github.com/golang/protobuf/proto"
 )
 
 // _now wraps the time.Now() function. _now is declared for unit testing purpose.
@@ -69,7 +69,7 @@ func newEvent(name, desc string) *event {
 func (e event) perfInfo() soong_metrics_proto.PerfInfo {
 	realTime := uint64(_now().Sub(e.start).Nanoseconds())
 	return soong_metrics_proto.PerfInfo{
-		Description:           proto.String(e.desc),
+		Desc:                  proto.String(e.desc),
 		Name:                  proto.String(e.name),
 		StartTime:             proto.Uint64(uint64(e.start.UnixNano())),
 		RealTime:              proto.Uint64(realTime),

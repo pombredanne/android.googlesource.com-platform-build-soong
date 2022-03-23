@@ -32,7 +32,7 @@ func dexpreoptTargets(ctx android.PathContext) []android.Target {
 		}
 	}
 	// We may also need the images on host in order to run host-based tests.
-	for _, target := range ctx.Config().Targets[ctx.Config().BuildOS] {
+	for _, target := range ctx.Config().Targets[android.BuildOs] {
 		targets = append(targets, target)
 	}
 
@@ -41,59 +41,50 @@ func dexpreoptTargets(ctx android.PathContext) []android.Target {
 
 var (
 	bootImageConfigKey     = android.NewOnceKey("bootImageConfig")
-	bootImageConfigRawKey  = android.NewOnceKey("bootImageConfigRaw")
 	artBootImageName       = "art"
 	frameworkBootImageName = "boot"
 )
 
-func genBootImageConfigRaw(ctx android.PathContext) map[string]*bootImageConfig {
-	return ctx.Config().Once(bootImageConfigRawKey, func() interface{} {
+// Construct the global boot image configs.
+func genBootImageConfigs(ctx android.PathContext) map[string]*bootImageConfig {
+	return ctx.Config().Once(bootImageConfigKey, func() interface{} {
+
 		global := dexpreopt.GetGlobalConfig(ctx)
+		targets := dexpreoptTargets(ctx)
+		deviceDir := android.PathForOutput(ctx, ctx.Config().DeviceName())
 
 		artModules := global.ArtApexJars
 		frameworkModules := global.BootJars.RemoveList(artModules)
 
+		artDirOnHost := "apex/art_boot_images/javalib"
+		artDirOnDevice := "apex/com.android.art/javalib"
+		frameworkSubdir := "system/framework"
+
 		// ART config for the primary boot image in the ART apex.
 		// It includes the Core Libraries.
 		artCfg := bootImageConfig{
-			name:                     artBootImageName,
-			stem:                     "boot",
-			installDirOnHost:         "apex/art_boot_images/javalib",
-			installDirOnDevice:       "system/framework",
-			profileInstallPathInApex: "etc/boot-image.prof",
-			modules:                  artModules,
-			preloadedClassesFile:     "art/build/boot/preloaded-classes",
+			name:               artBootImageName,
+			stem:               "boot",
+			installDirOnHost:   artDirOnHost,
+			installDirOnDevice: artDirOnDevice,
+			modules:            artModules,
 		}
 
 		// Framework config for the boot image extension.
 		// It includes framework libraries and depends on the ART config.
-		frameworkSubdir := "system/framework"
 		frameworkCfg := bootImageConfig{
-			extends:              &artCfg,
-			name:                 frameworkBootImageName,
-			stem:                 "boot",
-			installDirOnHost:     frameworkSubdir,
-			installDirOnDevice:   frameworkSubdir,
-			modules:              frameworkModules,
-			preloadedClassesFile: "frameworks/base/config/preloaded-classes",
+			extends:            &artCfg,
+			name:               frameworkBootImageName,
+			stem:               "boot",
+			installDirOnHost:   frameworkSubdir,
+			installDirOnDevice: frameworkSubdir,
+			modules:            frameworkModules,
 		}
 
-		return map[string]*bootImageConfig{
+		configs := map[string]*bootImageConfig{
 			artBootImageName:       &artCfg,
 			frameworkBootImageName: &frameworkCfg,
 		}
-	}).(map[string]*bootImageConfig)
-}
-
-// Construct the global boot image configs.
-func genBootImageConfigs(ctx android.PathContext) map[string]*bootImageConfig {
-	return ctx.Config().Once(bootImageConfigKey, func() interface{} {
-		targets := dexpreoptTargets(ctx)
-		deviceDir := android.PathForOutput(ctx, ctx.Config().DeviceName())
-
-		configs := genBootImageConfigRaw(ctx)
-		artCfg := configs[artBootImageName]
-		frameworkCfg := configs[frameworkBootImageName]
 
 		// common to all configs
 		for _, c := range configs {
