@@ -108,15 +108,6 @@ type apexBundleProperties struct {
 
 	Multilib apexMultilibProperties
 
-	// List of bootclasspath fragments that are embedded inside this APEX bundle.
-	Bootclasspath_fragments []string
-
-	// List of systemserverclasspath fragments that are embedded inside this APEX bundle.
-	Systemserverclasspath_fragments []string
-
-	// List of java libraries that are embedded inside this APEX bundle.
-	Java_libs []string
-
 	// List of sh binaries that are embedded inside this APEX bundle.
 	Sh_binaries []string
 
@@ -316,6 +307,15 @@ type overridableProperties struct {
 	// List of BPF programs inside this APEX bundle.
 	Bpfs []string
 
+	// List of bootclasspath fragments that are embedded inside this APEX bundle.
+	Bootclasspath_fragments []string
+
+	// List of systemserverclasspath fragments that are embedded inside this APEX bundle.
+	Systemserverclasspath_fragments []string
+
+	// List of java libraries that are embedded inside this APEX bundle.
+	Java_libs []string
+
 	// Names of modules to be overridden. Listed modules can only be other binaries (in Make or
 	// Soong). This does not completely prevent installation of the overridden binaries, but if
 	// both binaries would be installed by default (in PRODUCT_PACKAGES) the other binary will
@@ -416,7 +416,11 @@ type apexBundle struct {
 	mergedNotices android.NoticeOutputs
 
 	// The built APEX file. This is the main product.
+	// Could be .apex or .capex
 	outputFile android.WritablePath
+
+	// The built uncompressed .apex file.
+	outputApexFile android.WritablePath
 
 	// The built APEX file in app bundle format. This file is not directly installed to the
 	// device. For an APEX, multiple app bundles are created each of which is for a specific ABI
@@ -783,9 +787,6 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 
 	// Common-arch dependencies come next
 	commonVariation := ctx.Config().AndroidCommonTarget.Variations()
-	ctx.AddFarVariationDependencies(commonVariation, bcpfTag, a.properties.Bootclasspath_fragments...)
-	ctx.AddFarVariationDependencies(commonVariation, sscpfTag, a.properties.Systemserverclasspath_fragments...)
-	ctx.AddFarVariationDependencies(commonVariation, javaLibTag, a.properties.Java_libs...)
 	ctx.AddFarVariationDependencies(commonVariation, fsTag, a.properties.Filesystems...)
 	ctx.AddFarVariationDependencies(commonVariation, compatConfigTag, a.properties.Compat_configs...)
 
@@ -813,6 +814,9 @@ func (a *apexBundle) OverridablePropertiesDepsMutator(ctx android.BottomUpMutato
 	ctx.AddFarVariationDependencies(commonVariation, androidAppTag, a.overridableProperties.Apps...)
 	ctx.AddFarVariationDependencies(commonVariation, bpfTag, a.overridableProperties.Bpfs...)
 	ctx.AddFarVariationDependencies(commonVariation, rroTag, a.overridableProperties.Rros...)
+	ctx.AddFarVariationDependencies(commonVariation, bcpfTag, a.overridableProperties.Bootclasspath_fragments...)
+	ctx.AddFarVariationDependencies(commonVariation, sscpfTag, a.overridableProperties.Systemserverclasspath_fragments...)
+	ctx.AddFarVariationDependencies(commonVariation, javaLibTag, a.overridableProperties.Java_libs...)
 	if prebuilts := a.overridableProperties.Prebuilts; len(prebuilts) > 0 {
 		// For prebuilt_etc, use the first variant (64 on 64/32bit device, 32 on 32bit device)
 		// regardless of the TARGET_PREFER_* setting. See b/144532908
@@ -888,9 +892,18 @@ func (a *apexBundle) ApexInfoMutator(mctx android.TopDownMutatorContext) {
 	// APEX, but shared across APEXes via the VNDK APEX.
 	useVndk := a.SocSpecific() || a.DeviceSpecific() || (a.ProductSpecific() && mctx.Config().EnforceProductPartitionInterface())
 	excludeVndkLibs := useVndk && proptools.Bool(a.properties.Use_vndk_as_stable)
-	if !useVndk && proptools.Bool(a.properties.Use_vndk_as_stable) {
-		mctx.PropertyErrorf("use_vndk_as_stable", "not supported for system/system_ext APEXes")
-		return
+	if proptools.Bool(a.properties.Use_vndk_as_stable) {
+		if !useVndk {
+			mctx.PropertyErrorf("use_vndk_as_stable", "not supported for system/system_ext APEXes")
+		}
+		mctx.VisitDirectDepsWithTag(sharedLibTag, func(dep android.Module) {
+			if c, ok := dep.(*cc.Module); ok && c.IsVndk() {
+				mctx.PropertyErrorf("use_vndk_as_stable", "Trying to include a VNDK library(%s) while use_vndk_as_stable is true.", dep.Name())
+			}
+		})
+		if mctx.Failed() {
+			return
+		}
 	}
 
 	continueApexDepsWalk := func(child, parent android.Module) bool {
@@ -1275,6 +1288,12 @@ func (a *apexBundle) OutputFiles(tag string) (android.Paths, error) {
 	case "", android.DefaultDistTag:
 		// This is the default dist path.
 		return android.Paths{a.outputFile}, nil
+	case imageApexSuffix:
+		// uncompressed one
+		if a.outputApexFile != nil {
+			return android.Paths{a.outputApexFile}, nil
+		}
+		fallthrough
 	default:
 		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
 	}
@@ -1396,7 +1415,7 @@ func (a *apexBundle) AddSanitizerDependencies(ctx android.BottomUpMutatorContext
 		for _, target := range ctx.MultiTargets() {
 			if target.Arch.ArchType.Multilib == "lib64" {
 				addDependenciesForNativeModules(ctx, ApexNativeDependencies{
-					Native_shared_libs: []string{"libclang_rt.hwasan-aarch64-android"},
+					Native_shared_libs: []string{"libclang_rt.hwasan"},
 					Tests:              nil,
 					Jni_libs:           nil,
 					Binaries:           nil,
@@ -1736,6 +1755,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 					fi := apexFileForRustLibrary(ctx, r)
 					fi.isJniLib = isJniLib
 					filesInfo = append(filesInfo, fi)
+					return true // track transitive dependencies
 				} else {
 					propertyName := "native_shared_libs"
 					if isJniLib {
@@ -2575,9 +2595,9 @@ func isStaticExecutableAllowed(apex string, exec string) bool {
 
 // Collect information for opening IDE project files in java/jdeps.go.
 func (a *apexBundle) IDEInfo(dpInfo *android.IdeInfo) {
-	dpInfo.Deps = append(dpInfo.Deps, a.properties.Java_libs...)
-	dpInfo.Deps = append(dpInfo.Deps, a.properties.Bootclasspath_fragments...)
-	dpInfo.Deps = append(dpInfo.Deps, a.properties.Systemserverclasspath_fragments...)
+	dpInfo.Deps = append(dpInfo.Deps, a.overridableProperties.Java_libs...)
+	dpInfo.Deps = append(dpInfo.Deps, a.overridableProperties.Bootclasspath_fragments...)
+	dpInfo.Deps = append(dpInfo.Deps, a.overridableProperties.Systemserverclasspath_fragments...)
 	dpInfo.Paths = append(dpInfo.Paths, a.modulePaths...)
 }
 

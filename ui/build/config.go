@@ -15,8 +15,12 @@
 package build
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -28,6 +32,14 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	smpb "android/soong/ui/metrics/metrics_proto"
+)
+
+const (
+	envConfigDir = "vendor/google/tools/soong_config"
+	jsonSuffix   = "json"
+
+	configFetcher         = "vendor/google/tools/soong/expconfigfetcher"
+	envConfigFetchTimeout = 10 * time.Second
 )
 
 type Config struct{ *configImpl }
@@ -50,6 +62,7 @@ type configImpl struct {
 	jsonModuleGraph bool
 	bp2build        bool
 	queryview       bool
+	reportMkMetrics bool // Collect and report mk2bp migration progress metrics.
 	soongDocs       bool
 	skipConfig      bool
 	skipKati        bool
@@ -128,6 +141,85 @@ func checkTopDir(ctx Context) {
 	}
 }
 
+// fetchEnvConfig optionally fetches environment config from an
+// experiments system to control Soong features dynamically.
+func fetchEnvConfig(ctx Context, config *configImpl, envConfigName string) error {
+	s, err := os.Stat(configFetcher)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if s.Mode()&0111 == 0 {
+		return fmt.Errorf("configuration fetcher binary %v is not executable: %v", configFetcher, s.Mode())
+	}
+
+	configExists := false
+	outConfigFilePath := filepath.Join(config.OutDir(), envConfigName+jsonSuffix)
+	if _, err := os.Stat(outConfigFilePath); err == nil {
+		configExists = true
+	}
+
+	tCtx, cancel := context.WithTimeout(ctx, envConfigFetchTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(tCtx, configFetcher, "-output_config_dir", config.OutDir())
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	// If a config file already exists, return immediately and run the config file
+	// fetch in the background. Otherwise, wait for the config file to be fetched.
+	if configExists {
+		go cmd.Wait()
+		return nil
+	}
+	if err := cmd.Wait(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func loadEnvConfig(ctx Context, config *configImpl) error {
+	bc := os.Getenv("ANDROID_BUILD_ENVIRONMENT_CONFIG")
+	if bc == "" {
+		return nil
+	}
+
+	if err := fetchEnvConfig(ctx, config, bc); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to fetch config file: %v\n", err)
+	}
+
+	configDirs := []string{
+		config.OutDir(),
+		os.Getenv("ANDROID_BUILD_ENVIRONMENT_CONFIG_DIR"),
+		envConfigDir,
+	}
+	for _, dir := range configDirs {
+		cfgFile := filepath.Join(os.Getenv("TOP"), dir, fmt.Sprintf("%s.%s", bc, jsonSuffix))
+		envVarsJSON, err := ioutil.ReadFile(cfgFile)
+		if err != nil {
+			continue
+		}
+		ctx.Verbosef("Loading config file %v\n", cfgFile)
+		var envVars map[string]map[string]string
+		if err := json.Unmarshal(envVarsJSON, &envVars); err != nil {
+			fmt.Fprintf(os.Stderr, "Env vars config file %s did not parse correctly: %s", cfgFile, err.Error())
+			continue
+		}
+		for k, v := range envVars["env"] {
+			if os.Getenv(k) != "" {
+				continue
+			}
+			config.environ.Set(k, v)
+		}
+		ctx.Verbosef("Finished loading config file %v\n", cfgFile)
+		break
+	}
+
+	return nil
+}
+
 func NewConfig(ctx Context, args ...string) Config {
 	ret := &configImpl{
 		environ:       OsEnvironment(),
@@ -155,6 +247,12 @@ func NewConfig(ctx Context, args ...string) Config {
 			}
 		}
 		ret.environ.Set("OUT_DIR", outDir)
+	}
+
+	// loadEnvConfig needs to know what the OUT_DIR is, so it should
+	// be called after we determine the appropriate out directory.
+	if err := loadEnvConfig(ctx, ret); err != nil {
+		ctx.Fatalln("Failed to parse env config files: %v", err)
 	}
 
 	if distDir, ok := ret.environ.Get("DIST_DIR"); ok {
@@ -270,9 +368,13 @@ func NewConfig(ctx Context, args ...string) Config {
 	java8Home := filepath.Join("prebuilts/jdk/jdk8", ret.HostPrebuiltTag())
 	java9Home := filepath.Join("prebuilts/jdk/jdk9", ret.HostPrebuiltTag())
 	java11Home := filepath.Join("prebuilts/jdk/jdk11", ret.HostPrebuiltTag())
+	java17Home := filepath.Join("prebuilts/jdk/jdk17", ret.HostPrebuiltTag())
 	javaHome := func() string {
 		if override, ok := ret.environ.Get("OVERRIDE_ANDROID_JAVA_HOME"); ok {
 			return override
+		}
+		if ret.environ.IsEnvTrue("EXPERIMENTAL_USE_OPENJDK17_TOOLCHAIN") {
+			return java17Home
 		}
 		if toolchain11, ok := ret.environ.Get("EXPERIMENTAL_USE_OPENJDK11_TOOLCHAIN"); ok && toolchain11 != "true" {
 			ctx.Fatalln("The environment variable EXPERIMENTAL_USE_OPENJDK11_TOOLCHAIN is no longer supported. An OpenJDK 11 toolchain is now the global default.")
@@ -614,6 +716,8 @@ func (c *configImpl) parseArgs(ctx Context, args []string) {
 			c.skipConfig = true
 		} else if arg == "--skip-soong-tests" {
 			c.skipSoongTests = true
+		} else if arg == "--mk-metrics" {
+			c.reportMkMetrics = true
 		} else if len(arg) > 0 && arg[0] == '-' {
 			parseArgNum := func(def int) int {
 				if len(arg) > 2 {
@@ -818,6 +922,10 @@ func (c *configImpl) ModuleGraphFile() string {
 	return shared.JoinPath(c.SoongOutDir(), "module-graph.json")
 }
 
+func (c *configImpl) ModuleActionsFile() string {
+	return shared.JoinPath(c.SoongOutDir(), "module-actions.json")
+}
+
 func (c *configImpl) TempDir() string {
 	return shared.TempDirForOutDir(c.SoongOutDir())
 }
@@ -988,7 +1096,7 @@ func (c *configImpl) StartGoma() bool {
 }
 
 func (c *configImpl) UseRBE() bool {
-	if v, ok := c.environ.Get("USE_RBE"); ok {
+	if v, ok := c.Environment().Get("USE_RBE"); ok {
 		v = strings.TrimSpace(v)
 		if v != "" && v != "false" {
 			return true
@@ -1083,7 +1191,12 @@ func (c *configImpl) rbeReproxy() string {
 }
 
 func (c *configImpl) rbeAuth() (string, string) {
-	credFlags := []string{"use_application_default_credentials", "use_gce_credentials", "credential_file"}
+	credFlags := []string{
+		"use_application_default_credentials",
+		"use_gce_credentials",
+		"credential_file",
+		"use_google_prod_creds",
+	}
 	for _, cf := range credFlags {
 		for _, f := range []string{"RBE_" + cf, "FLAG_" + cf} {
 			if v, ok := c.environ.Get(f); ok {
@@ -1278,6 +1391,11 @@ func (c *configImpl) LogsDir() string {
 // where the bazel profiles are located.
 func (c *configImpl) BazelMetricsDir() string {
 	return filepath.Join(c.LogsDir(), "bazel_metrics")
+}
+
+// MkFileMetrics returns the file path for make-related metrics.
+func (c *configImpl) MkMetrics() string {
+	return filepath.Join(c.LogsDir(), "mk_metrics.pb")
 }
 
 func (c *configImpl) SetEmptyNinjaFile(v bool) {

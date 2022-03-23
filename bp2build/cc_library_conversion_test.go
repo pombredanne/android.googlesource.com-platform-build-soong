@@ -115,6 +115,8 @@ cc_library {
         },
     },
     include_build_directory: false,
+    sdk_version: "current",
+    min_sdk_version: "29",
 }
 `,
 		expectedBazelTargets: makeCcLibraryTargets("foo-lib", attrNameToString{
@@ -140,6 +142,8 @@ cc_library {
         "//build/bazel/platforms/os:linux_bionic": ["bionic.cpp"],
         "//conditions:default": [],
     })`,
+      "sdk_version": `"current"`,
+      "min_sdk_version": `"29"`,
 		}),
 	})
 }
@@ -1287,6 +1291,7 @@ func makeCcLibraryTargets(name string, attrs attrNameToString) []string {
 		"strip":                    true,
 		"stubs_symbol_file":        true,
 		"stubs_versions":           true,
+		"inject_bssl_hash":         true,
 	}
 	sharedAttrs := attrNameToString{}
 	staticAttrs := attrNameToString{}
@@ -1822,6 +1827,33 @@ cc_library {
 	)
 }
 
+func TestLibcryptoHashInjection(t *testing.T) {
+	runCcLibraryTestCase(t, bp2buildTestCase{
+		description:                "cc_library - libcrypto hash injection",
+		moduleTypeUnderTest:        "cc_library",
+		moduleTypeUnderTestFactory: cc.LibraryFactory,
+		filesystem:                 map[string]string{},
+		blueprint: soongCcLibraryPreamble + `
+cc_library {
+    name: "libcrypto",
+    target: {
+        android: {
+            inject_bssl_hash: true,
+        },
+    },
+    include_build_directory: false,
+}
+`,
+		expectedBazelTargets: makeCcLibraryTargets("libcrypto", attrNameToString{
+			"inject_bssl_hash": `select({
+        "//build/bazel/platforms/os:android": True,
+        "//conditions:default": None,
+    })`,
+		}),
+	},
+	)
+}
+
 func TestCcLibraryCppStdWithGnuExtensions_ConvertsToFeatureAttr(t *testing.T) {
 	type testCase struct {
 		cpp_std        string
@@ -1970,8 +2002,7 @@ func TestCcLibraryProtoSimple(t *testing.T) {
 }`,
 		expectedBazelTargets: []string{
 			makeBazelTarget("proto_library", "foo_proto", attrNameToString{
-				"srcs":                `["foo.proto"]`,
-				"strip_import_prefix": `""`,
+				"srcs": `["foo.proto"]`,
 			}), makeBazelTarget("cc_lite_proto_library", "foo_cc_proto_lite", attrNameToString{
 				"deps": `[":foo_proto"]`,
 			}), makeBazelTarget("cc_library_static", "foo_bp2build_cc_library_static", attrNameToString{
@@ -1996,7 +2027,8 @@ func TestCcLibraryProtoNoCanonicalPathFromRoot(t *testing.T) {
 }`,
 		expectedBazelTargets: []string{
 			makeBazelTarget("proto_library", "foo_proto", attrNameToString{
-				"srcs": `["foo.proto"]`,
+				"srcs":                `["foo.proto"]`,
+				"strip_import_prefix": `""`,
 			}), makeBazelTarget("cc_lite_proto_library", "foo_cc_proto_lite", attrNameToString{
 				"deps": `[":foo_proto"]`,
 			}), makeBazelTarget("cc_library_static", "foo_bp2build_cc_library_static", attrNameToString{
@@ -2021,8 +2053,7 @@ func TestCcLibraryProtoExplicitCanonicalPathFromRoot(t *testing.T) {
 }`,
 		expectedBazelTargets: []string{
 			makeBazelTarget("proto_library", "foo_proto", attrNameToString{
-				"srcs":                `["foo.proto"]`,
-				"strip_import_prefix": `""`,
+				"srcs": `["foo.proto"]`,
 			}), makeBazelTarget("cc_lite_proto_library", "foo_cc_proto_lite", attrNameToString{
 				"deps": `[":foo_proto"]`,
 			}), makeBazelTarget("cc_library_static", "foo_bp2build_cc_library_static", attrNameToString{
@@ -2043,7 +2074,6 @@ func TestCcLibraryProtoFull(t *testing.T) {
 	name: "foo",
 	srcs: ["foo.proto"],
 	proto: {
-		canonical_path_from_root: false,
 		type: "full",
 	},
 	include_build_directory: false,
@@ -2071,7 +2101,6 @@ func TestCcLibraryProtoLite(t *testing.T) {
 	name: "foo",
 	srcs: ["foo.proto"],
 	proto: {
-		canonical_path_from_root: false,
 		type: "lite",
 	},
 	include_build_directory: false,
@@ -2099,7 +2128,6 @@ func TestCcLibraryProtoExportHeaders(t *testing.T) {
 	name: "foo",
 	srcs: ["foo.proto"],
 	proto: {
-		canonical_path_from_root: false,
 		export_proto_headers: true,
 	},
 	include_build_directory: false,
@@ -2133,7 +2161,6 @@ cc_library {
 	name: "a",
 	srcs: [":a_fg_proto"],
 	proto: {
-		canonical_path_from_root: false,
 		export_proto_headers: true,
 	},
 	include_build_directory: false,
@@ -2143,7 +2170,6 @@ cc_library {
 	name: "b",
 	srcs: [":b_protos"],
 	proto: {
-		canonical_path_from_root: false,
 		export_proto_headers: true,
 	},
 	include_build_directory: false,
@@ -2153,7 +2179,6 @@ cc_library {
 	name: "c",
 	srcs: [":c-proto-srcs"],
 	proto: {
-		canonical_path_from_root: false,
 		export_proto_headers: true,
 	},
 	include_build_directory: false,
@@ -2163,7 +2188,6 @@ cc_library {
 	name: "d",
 	srcs: [":proto-srcs-d"],
 	proto: {
-		canonical_path_from_root: false,
 		export_proto_headers: true,
 	},
 	include_build_directory: false,
@@ -2408,4 +2432,19 @@ cc_library {
 		}),
 	},
 	)
+}
+
+func TestCcLibraryEscapeLdflags(t *testing.T) {
+	runCcLibraryTestCase(t, bp2buildTestCase{
+		moduleTypeUnderTest:        "cc_library",
+		moduleTypeUnderTestFactory: cc.LibraryFactory,
+		blueprint: soongCcProtoPreamble + `cc_library {
+	name: "foo",
+	ldflags: ["-Wl,--rpath,${ORIGIN}"],
+	include_build_directory: false,
+}`,
+		expectedBazelTargets: makeCcLibraryTargets("foo", attrNameToString{
+			"linkopts": `["-Wl,--rpath,$${ORIGIN}"]`,
+		}),
+	})
 }

@@ -22,6 +22,7 @@ import (
 
 var CovLibraryName = "libprofile-clang-extras"
 
+// Add '%c' to default specifier after we resolve http://b/210012154
 const profileInstrFlag = "-fprofile-instr-generate=/data/misc/trace/clang-%p-%m.profraw"
 
 type coverage struct {
@@ -57,19 +58,12 @@ func (cov *coverage) flags(ctx ModuleContext, flags Flags, deps PathDeps) (Flags
 		flags.RustFlags = append(flags.RustFlags,
 			"-Z instrument-coverage", "-g")
 		flags.LinkFlags = append(flags.LinkFlags,
-			profileInstrFlag, "-g", coverage.OutputFile().Path().String(), "-Wl,--wrap,open",
-			// Upstream LLVM change 6d2d3bd0a6 made
-			// -z,start-stop-gc the default.  It drops metadata
-			// sections like __llvm_prf_data unless they are marked
-			// SHF_GNU_RETAIN.  https://reviews.llvm.org/D97448
-			// marks generated sections, including __llvm_prf_data
-			// as SHF_GNU_RETAIN.  However this change is not in
-			// the Rust toolchain.  Since we link Rust libs with
-			// new lld, we should use nostart-stop-gc until the
-			// Rust toolchain updates past D97448.
-			"-Wl,-z,nostart-stop-gc",
-		)
+			profileInstrFlag, "-g", coverage.OutputFile().Path().String(), "-Wl,--wrap,open")
 		deps.StaticLibs = append(deps.StaticLibs, coverage.OutputFile().Path())
+		if cc.EnableContinuousCoverage(ctx) {
+			flags.RustFlags = append(flags.RustFlags, "-C llvm-args=--runtime-counter-relocation")
+			flags.LinkFlags = append(flags.LinkFlags, "-Wl,-mllvm,-runtime-counter-relocation")
+		}
 	}
 
 	return flags, deps

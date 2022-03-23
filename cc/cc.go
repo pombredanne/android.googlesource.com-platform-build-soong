@@ -505,6 +505,7 @@ type ModuleContextIntf interface {
 	selectedStl() string
 	baseModuleName() string
 	getVndkExtendsModuleName() string
+	isAfdoCompile() bool
 	isPgoCompile() bool
 	isNDKStubLibrary() bool
 	useClangLld(actx ModuleContext) bool
@@ -1259,6 +1260,13 @@ func (c *Module) IsVndk() bool {
 	return false
 }
 
+func (c *Module) isAfdoCompile() bool {
+	if afdo := c.afdo; afdo != nil {
+		return afdo.Properties.AfdoTarget != nil
+	}
+	return false
+}
+
 func (c *Module) isPgoCompile() bool {
 	if pgo := c.pgo; pgo != nil {
 		return pgo.Properties.PgoCompile
@@ -1375,7 +1383,7 @@ func isBionic(name string) bool {
 }
 
 func InstallToBootstrap(name string, config android.Config) bool {
-	if name == "libclang_rt.hwasan-aarch64-android" {
+	if name == "libclang_rt.hwasan" {
 		return true
 	}
 	return isBionic(name)
@@ -1534,6 +1542,10 @@ func (ctx *moduleContextImpl) IsVndkPrivate() bool {
 
 func (ctx *moduleContextImpl) isVndk() bool {
 	return ctx.mod.IsVndk()
+}
+
+func (ctx *moduleContextImpl) isAfdoCompile() bool {
+	return ctx.mod.isAfdoCompile()
 }
 
 func (ctx *moduleContextImpl) isPgoCompile() bool {
@@ -1751,7 +1763,7 @@ func (c *Module) setSubnameProperty(actx android.ModuleContext) {
 // Returns true if Bazel was successfully used for the analysis of this module.
 func (c *Module) maybeGenerateBazelActions(actx android.ModuleContext) bool {
 	var bazelModuleLabel string
-	if actx.ModuleType() == "cc_library" && c.static() {
+	if c.typ() == fullLibrary && c.static() {
 		// cc_library is a special case in bp2build; two targets are generated -- one for each
 		// of the shared and static variants. The shared variant keeps the module name, but the
 		// static variant uses a different suffixed name.
@@ -1759,6 +1771,7 @@ func (c *Module) maybeGenerateBazelActions(actx android.ModuleContext) bool {
 	} else {
 		bazelModuleLabel = c.GetBazelLabel(actx, c)
 	}
+
 	bazelActionsUsed := false
 	// Mixed builds mode is disabled for modules outside of device OS.
 	// TODO(b/200841190): Support non-device OS in mixed builds.
@@ -2794,6 +2807,8 @@ func (c *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 						// dependency.
 						depPaths.WholeStaticLibsFromPrebuilts = append(depPaths.WholeStaticLibsFromPrebuilts, linkFile.Path())
 					}
+					depPaths.WholeStaticLibsFromPrebuilts = append(depPaths.WholeStaticLibsFromPrebuilts,
+						staticLibraryInfo.WholeStaticLibsFromPrebuilts...)
 				} else {
 					switch libDepTag.Order {
 					case earlyLibraryDependency:
@@ -3464,19 +3479,33 @@ func (c *Module) AlwaysRequiresPlatformApexVariant() bool {
 	return c.IsStubs() || c.Target().NativeBridge == android.NativeBridgeEnabled
 }
 
+// Overrides android.ApexModuleBase.UniqueApexVariations
+func (c *Module) UniqueApexVariations() bool {
+	// When a vendor APEX needs a VNDK lib in it (use_vndk_as_stable: false), it should be a unique
+	// APEX variation. Otherwise, another vendor APEX with use_vndk_as_stable:true may use a wrong
+	// variation of the VNDK lib because APEX variations are merged/grouped.
+	return c.UseVndk() && c.IsVndk()
+}
+
 var _ snapshot.RelativeInstallPath = (*Module)(nil)
 
-// ConvertWithBp2build converts Module to Bazel for bp2build.
-func (c *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
-	prebuilt := c.IsPrebuilt()
+type moduleType int
+
+const (
+	unknownType moduleType = iota
+	binary
+	object
+	fullLibrary
+	staticLibrary
+	sharedLibrary
+	headerLibrary
+)
+
+func (c *Module) typ() moduleType {
 	if c.Binary() {
-		if !prebuilt {
-			binaryBp2build(ctx, c, ctx.ModuleType())
-		}
+		return binary
 	} else if c.Object() {
-		if !prebuilt {
-			objectBp2Build(ctx, c)
-		}
+		return object
 	} else if c.CcLibrary() {
 		static := false
 		shared := false
@@ -3487,25 +3516,48 @@ func (c *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 			static = library.MutatedProperties.BuildStatic
 			shared = library.MutatedProperties.BuildShared
 		}
-
 		if static && shared {
-			if !prebuilt {
-				libraryBp2Build(ctx, c)
-			}
+			return fullLibrary
 		} else if !static && !shared {
-			libraryHeadersBp2Build(ctx, c)
+			return headerLibrary
 		} else if static {
-			if prebuilt {
-				prebuiltLibraryStaticBp2Build(ctx, c)
-			} else {
-				sharedOrStaticLibraryBp2Build(ctx, c, true)
-			}
-		} else if shared {
-			if prebuilt {
-				prebuiltLibrarySharedBp2Build(ctx, c)
-			} else {
-				sharedOrStaticLibraryBp2Build(ctx, c, false)
-			}
+			return staticLibrary
+		}
+		return sharedLibrary
+	}
+	return unknownType
+}
+
+// ConvertWithBp2build converts Module to Bazel for bp2build.
+func (c *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
+	prebuilt := c.IsPrebuilt()
+	switch c.typ() {
+	case binary:
+		if !prebuilt {
+			binaryBp2build(ctx, c, ctx.ModuleType())
+		}
+	case object:
+		if !prebuilt {
+			objectBp2Build(ctx, c)
+		}
+	case fullLibrary:
+		if !prebuilt {
+			libraryBp2Build(ctx, c)
+		}
+	case headerLibrary:
+		libraryHeadersBp2Build(ctx, c)
+	case staticLibrary:
+
+		if prebuilt {
+			prebuiltLibraryStaticBp2Build(ctx, c)
+		} else {
+			sharedOrStaticLibraryBp2Build(ctx, c, true)
+		}
+	case sharedLibrary:
+		if prebuilt {
+			prebuiltLibrarySharedBp2Build(ctx, c)
+		} else {
+			sharedOrStaticLibraryBp2Build(ctx, c, false)
 		}
 	}
 }

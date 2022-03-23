@@ -16,11 +16,13 @@ package android
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"text/scanner"
 
@@ -267,7 +269,7 @@ type BaseModuleContext interface {
 	//
 	// The Modules passed to the visit function should not be retained outside of the visit function, they may be
 	// invalidated by future mutators.
-	WalkDeps(visit func(Module, Module) bool)
+	WalkDeps(visit func(child, parent Module) bool)
 
 	// WalkDepsBlueprint calls visit for each transitive dependency, traversing the dependency
 	// tree in top down order.  visit may be called multiple times for the same (child, parent)
@@ -454,6 +456,10 @@ type ModuleContext interface {
 	// GetMissingDependencies returns the list of dependencies that were passed to AddDependencies or related methods,
 	// but do not exist.
 	GetMissingDependencies() []string
+
+	// LicenseMetadataFile returns the path where the license metadata for this module will be
+	// generated.
+	LicenseMetadataFile() Path
 }
 
 type Module interface {
@@ -616,6 +622,53 @@ type Dist struct {
 	Tag *string `android:"arch_variant"`
 }
 
+// NamedPath associates a path with a name. e.g. a license text path with a package name
+type NamedPath struct {
+	Path Path
+	Name string
+}
+
+// String returns an escaped string representing the `NamedPath`.
+func (p NamedPath) String() string {
+	if len(p.Name) > 0 {
+		return p.Path.String() + ":" + url.QueryEscape(p.Name)
+	}
+	return p.Path.String()
+}
+
+// NamedPaths describes a list of paths each associated with a name.
+type NamedPaths []NamedPath
+
+// Strings returns a list of escaped strings representing each `NamedPath` in the list.
+func (l NamedPaths) Strings() []string {
+	result := make([]string, 0, len(l))
+	for _, p := range l {
+		result = append(result, p.String())
+	}
+	return result
+}
+
+// SortedUniqueNamedPaths modifies `l` in place to return the sorted unique subset.
+func SortedUniqueNamedPaths(l NamedPaths) NamedPaths {
+	if len(l) == 0 {
+		return l
+	}
+	sort.Slice(l, func(i, j int) bool {
+		return l[i].String() < l[j].String()
+	})
+	k := 0
+	for i := 1; i < len(l); i++ {
+		if l[i].String() == l[k].String() {
+			continue
+		}
+		k++
+		if k < i {
+			l[k] = l[i]
+		}
+	}
+	return l[:k+1]
+}
+
 type nameProperties struct {
 	// The name of the module.  Must be unique across all modules.
 	Name *string
@@ -684,7 +737,7 @@ type commonProperties struct {
 	// Override of module name when reporting licenses
 	Effective_package_name *string `blueprint:"mutated"`
 	// Notice files
-	Effective_license_text Paths `blueprint:"mutated"`
+	Effective_license_text NamedPaths `blueprint:"mutated"`
 	// License names
 	Effective_license_kinds []string `blueprint:"mutated"`
 	// License conditions
@@ -1165,6 +1218,11 @@ func (attrs *CommonAttributes) fillCommonBp2BuildModuleAttrs(ctx *topDownMutator
 		productConfigEnabledLabels, nil,
 	})
 
+	moduleSupportsDevice := mod.commonProperties.HostOrDeviceSupported&deviceSupported == deviceSupported
+	if mod.commonProperties.HostOrDeviceSupported != NeitherHostNorDeviceSupported && !moduleSupportsDevice {
+		enabledProperty.SetSelectValue(bazel.OsConfigurationAxis, Android.Name, proptools.BoolPtr(false))
+	}
+
 	platformEnabledAttribute, err := enabledProperty.ToLabelListAttribute(
 		bazel.LabelList{[]bazel.Label{bazel.Label{Label: "@platforms//:incompatible"}}, nil},
 		bazel.LabelList{[]bazel.Label{}, nil})
@@ -1321,6 +1379,9 @@ type ModuleBase struct {
 	// set of dependency module:location mappings used to populate the license metadata for
 	// apex containers.
 	licenseInstallMap []string
+
+	// The path to the generated license metadata file for the module.
+	licenseMetadataFile WritablePath
 }
 
 // A struct containing all relevant information about a Bazel target converted via bp2build.
@@ -1793,7 +1854,11 @@ func (m *ModuleBase) ExportedToMake() bool {
 }
 
 func (m *ModuleBase) EffectiveLicenseFiles() Paths {
-	return m.commonProperties.Effective_license_text
+	result := make(Paths, 0, len(m.commonProperties.Effective_license_text))
+	for _, p := range m.commonProperties.Effective_license_text {
+		result = append(result, p.Path)
+	}
+	return result
 }
 
 // computeInstallDeps finds the installed paths of all dependencies that have a dependency
@@ -2076,6 +2141,8 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 		variables:         make(map[string]string),
 	}
 
+	m.licenseMetadataFile = PathForModuleOut(ctx, "meta_lic")
+
 	dependencyInstallFiles, dependencyPackagingSpecs := m.computeInstallDeps(ctx)
 	// set m.installFilesDepSet to only the transitive dependencies to be used as the dependencies
 	// of installed files of this module.  It will be replaced by a depset including the installed
@@ -2207,7 +2274,7 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 	m.installFilesDepSet = newInstallPathsDepSet(m.installFiles, dependencyInstallFiles)
 	m.packagingSpecsDepSet = newPackagingSpecsDepSet(m.packagingSpecs, dependencyPackagingSpecs)
 
-	buildLicenseMetadata(ctx)
+	buildLicenseMetadata(ctx, m.licenseMetadataFile)
 
 	m.buildParams = ctx.buildParams
 	m.ruleParams = ctx.ruleParams
@@ -3214,6 +3281,10 @@ func (m *moduleContext) CheckbuildFile(srcPath Path) {
 
 func (m *moduleContext) blueprintModuleContext() blueprint.ModuleContext {
 	return m.bp
+}
+
+func (m *moduleContext) LicenseMetadataFile() Path {
+	return m.module.base().licenseMetadataFile
 }
 
 // SrcIsModule decodes module references in the format ":unqualified-name" or "//namespace:name"

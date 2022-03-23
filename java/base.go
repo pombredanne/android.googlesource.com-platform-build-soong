@@ -227,6 +227,12 @@ type DeviceProperties struct {
 		// whether to generate Binder#GetTransaction name method.
 		Generate_get_transaction_name *bool
 
+		// whether all interfaces should be annotated with required permissions.
+		Enforce_permissions *bool
+
+		// allowlist for interfaces that (temporarily) do not require annotation for permissions.
+		Enforce_permissions_exceptions []string `android:"path"`
+
 		// list of flags that will be passed to the AIDL compiler
 		Flags []string
 	}
@@ -418,7 +424,8 @@ type Module struct {
 	outputFile       android.Path
 	extraOutputFiles android.Paths
 
-	exportAidlIncludeDirs android.Paths
+	exportAidlIncludeDirs     android.Paths
+	ignoredAidlPermissionList android.Paths
 
 	logtagsSrcs android.Paths
 
@@ -474,6 +481,8 @@ type Module struct {
 	sdkVersion    android.SdkSpec
 	minSdkVersion android.SdkSpec
 	maxSdkVersion android.SdkSpec
+
+	sourceExtensions []string
 }
 
 func (j *Module) CheckStableSdkVersion(ctx android.BaseModuleContext) error {
@@ -772,6 +781,17 @@ func (j *Module) hasSrcExt(ext string) bool {
 	return hasSrcExt(j.properties.Srcs, ext)
 }
 
+func (j *Module) individualAidlFlags(ctx android.ModuleContext, aidlFile android.Path) string {
+	var flags string
+
+	if Bool(j.deviceProperties.Aidl.Enforce_permissions) {
+		if !android.InList(aidlFile.String(), j.ignoredAidlPermissionList.Strings()) {
+			flags = "-Wmissing-permission-annotation -Werror"
+		}
+	}
+	return flags
+}
+
 func (j *Module) aidlFlags(ctx android.ModuleContext, aidlPreprocess android.OptionalPath,
 	aidlIncludeDirs android.Paths) (string, android.Paths) {
 
@@ -814,6 +834,11 @@ func (j *Module) aidlFlags(ctx android.ModuleContext, aidlPreprocess android.Opt
 		flags = append(flags, "--transaction_names")
 	}
 
+	if Bool(j.deviceProperties.Aidl.Enforce_permissions) {
+		exceptions := j.deviceProperties.Aidl.Enforce_permissions_exceptions
+		j.ignoredAidlPermissionList = android.PathsForModuleSrcExcludes(ctx, exceptions, nil)
+	}
+
 	aidlMinSdkVersion := j.MinSdkVersion(ctx).ApiLevel.String()
 	flags = append(flags, "--min_sdk_version="+aidlMinSdkVersion)
 
@@ -839,7 +864,7 @@ func (j *Module) collectBuilderFlags(ctx android.ModuleContext, deps deps) javaB
 		}
 		errorProneFlags = append(errorProneFlags, j.properties.Errorprone.Javacflags...)
 
-		flags.errorProneExtraJavacFlags = "${config.ErrorProneFlags} " +
+		flags.errorProneExtraJavacFlags = "${config.ErrorProneHeapFlags} ${config.ErrorProneFlags} " +
 			"'" + strings.Join(errorProneFlags, " ") + "'"
 		flags.errorProneProcessorPath = classpath(android.PathsForSource(ctx, config.ErrorProneClasspath))
 	}
@@ -847,6 +872,7 @@ func (j *Module) collectBuilderFlags(ctx android.ModuleContext, deps deps) javaB
 	// classpath
 	flags.bootClasspath = append(flags.bootClasspath, deps.bootClasspath...)
 	flags.classpath = append(flags.classpath, deps.classpath...)
+	flags.dexClasspath = append(flags.dexClasspath, deps.dexClasspath...)
 	flags.java9Classpath = append(flags.java9Classpath, deps.java9Classpath...)
 	flags.processorPath = append(flags.processorPath, deps.processorPath...)
 	flags.errorProneProcessorPath = append(flags.errorProneProcessorPath, deps.errorProneProcessorPath...)
@@ -959,6 +985,14 @@ func (j *Module) collectJavacFlags(
 	return flags
 }
 
+func (j *Module) AddJSONData(d *map[string]interface{}) {
+	(&j.ModuleBase).AddJSONData(d)
+	(*d)["Java"] = map[string]interface{}{
+		"SourceExtensions": j.sourceExtensions,
+	}
+
+}
+
 func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	j.exportAidlIncludeDirs = android.PathsForModuleSrc(ctx, j.deviceProperties.Aidl.Export_include_dirs)
 
@@ -970,6 +1004,12 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	}
 
 	srcFiles := android.PathsForModuleSrcExcludes(ctx, j.properties.Srcs, j.properties.Exclude_srcs)
+	j.sourceExtensions = []string{}
+	for _, ext := range []string{".kt", ".proto", ".aidl", ".java", ".logtags"} {
+		if hasSrcExt(srcFiles.Strings(), ext) {
+			j.sourceExtensions = append(j.sourceExtensions, ext)
+		}
+	}
 	if hasSrcExt(srcFiles.Strings(), ".proto") {
 		flags = protoFlags(ctx, &j.properties, &j.protoProperties, flags)
 	}
@@ -1051,6 +1091,8 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		flags.classpath = append(flags.classpath, deps.kotlinStdlib...)
 		flags.classpath = append(flags.classpath, deps.kotlinAnnotations...)
 
+		flags.dexClasspath = append(flags.dexClasspath, deps.kotlinAnnotations...)
+
 		flags.kotlincClasspath = append(flags.kotlincClasspath, flags.bootClasspath...)
 		flags.kotlincClasspath = append(flags.kotlincClasspath, flags.classpath...)
 
@@ -1079,6 +1121,8 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		// Jar kotlin classes into the final jar after javac
 		if BoolDefault(j.properties.Static_kotlin_stdlib, true) {
 			kotlinJars = append(kotlinJars, deps.kotlinStdlib...)
+		} else {
+			flags.dexClasspath = append(flags.dexClasspath, deps.kotlinStdlib...)
 		}
 	}
 
@@ -1803,6 +1847,7 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 		} else if sdkDep.useFiles {
 			// sdkDep.jar is actually equivalent to turbine header.jar.
 			deps.classpath = append(deps.classpath, sdkDep.jars...)
+			deps.dexClasspath = append(deps.dexClasspath, sdkDep.jars...)
 			deps.aidlPreprocess = sdkDep.aidl
 		} else {
 			deps.aidlPreprocess = sdkDep.aidl
@@ -1827,7 +1872,9 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 		if dep, ok := module.(SdkLibraryDependency); ok {
 			switch tag {
 			case libTag:
-				deps.classpath = append(deps.classpath, dep.SdkHeaderJars(ctx, j.SdkVersion(ctx))...)
+				depHeaderJars := dep.SdkHeaderJars(ctx, j.SdkVersion(ctx))
+				deps.classpath = append(deps.classpath, depHeaderJars...)
+				deps.dexClasspath = append(deps.dexClasspath, depHeaderJars...)
 			case staticLibTag:
 				ctx.ModuleErrorf("dependency on java_sdk_library %q can only be in libs", otherName)
 			}
@@ -1846,6 +1893,7 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 				deps.bootClasspath = append(deps.bootClasspath, dep.HeaderJars...)
 			case libTag, instrumentationForTag:
 				deps.classpath = append(deps.classpath, dep.HeaderJars...)
+				deps.dexClasspath = append(deps.dexClasspath, dep.HeaderJars...)
 				deps.aidlIncludeDirs = append(deps.aidlIncludeDirs, dep.AidlIncludeDirs...)
 				addPlugins(&deps, dep.ExportedPlugins, dep.ExportedPluginClasses...)
 				deps.disableTurbine = deps.disableTurbine || dep.ExportedPluginDisableTurbine
@@ -1913,6 +1961,7 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			case libTag:
 				checkProducesJars(ctx, dep)
 				deps.classpath = append(deps.classpath, dep.Srcs()...)
+				deps.dexClasspath = append(deps.classpath, dep.Srcs()...)
 			case staticLibTag:
 				checkProducesJars(ctx, dep)
 				deps.classpath = append(deps.classpath, dep.Srcs()...)
@@ -1969,7 +2018,7 @@ var _ ModuleWithStem = (*Module)(nil)
 
 func (j *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 	switch ctx.ModuleType() {
-	case "java_library", "java_library_host":
+	case "java_library", "java_library_host", "java_library_static":
 		if lib, ok := ctx.Module().(*Library); ok {
 			javaLibraryBp2Build(ctx, lib)
 		}
@@ -1978,5 +2027,4 @@ func (j *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 			javaBinaryHostBp2Build(ctx, binary)
 		}
 	}
-
 }

@@ -28,12 +28,15 @@ func CreateSoongInjectionFiles(cfg android.Config, metrics CodegenMetrics) []Baz
 
 	files = append(files, newFile("product_config", "soong_config_variables.bzl", cfg.Bp2buildSoongConfigDefinitions.String()))
 
+	files = append(files, newFile("product_config", "arch_configuration.bzl", android.StarlarkArchConfigurations()))
+
 	apiLevelsContent, err := json.Marshal(android.GetApiLevelsMap(cfg))
 	if err != nil {
 		panic(err)
 	}
 	files = append(files, newFile("api_levels", GeneratedBuildFileName, `exports_files(["api_levels.json"])`))
 	files = append(files, newFile("api_levels", "api_levels.json", string(apiLevelsContent)))
+	files = append(files, newFile("api_levels", "api_levels.bzl", android.StarlarkApiLevelConfigs(cfg)))
 
 	return files
 }

@@ -65,6 +65,10 @@ def init(g, handle):
 PRODUCT_NAME := Pixel 3
 PRODUCT_MODEL :=
 local_var = foo
+local-var-with-dashes := bar
+$(warning local-var-with-dashes: $(local-var-with-dashes))
+GLOBAL-VAR-WITH-DASHES := baz
+$(warning GLOBAL-VAR-WITH-DASHES: $(GLOBAL-VAR-WITH-DASHES))
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
@@ -73,6 +77,10 @@ def init(g, handle):
   cfg["PRODUCT_NAME"] = "Pixel 3"
   cfg["PRODUCT_MODEL"] = ""
   _local_var = "foo"
+  _local_var_with_dashes = "bar"
+  rblf.mkwarning("pixel3.mk", "local-var-with-dashes: %s" % _local_var_with_dashes)
+  g["GLOBAL-VAR-WITH-DASHES"] = "baz"
+  rblf.mkwarning("pixel3.mk", "GLOBAL-VAR-WITH-DASHES: %s" % g["GLOBAL-VAR-WITH-DASHES"])
 `,
 	},
 	{
@@ -131,7 +139,7 @@ load(":part1.star|init", _part1_init = "init")
 def init(g, handle):
   cfg = rblf.cfg(handle)
   rblf.inherit(handle, "part", _part_init)
-  if g.get("PRODUCT_NAME") != None:
+  if cfg.get("PRODUCT_NAME", ""):
     if not _part1_init:
       rblf.mkerror("product.mk", "Cannot find %s" % (":part1.star"))
     rblf.inherit(handle, "part1", _part1_init)
@@ -174,7 +182,7 @@ load(":part1.star|init", _part1_init = "init")
 def init(g, handle):
   cfg = rblf.cfg(handle)
   _part_init(g, handle)
-  if g.get("PRODUCT_NAME") != None:
+  if cfg.get("PRODUCT_NAME", ""):
     if not _part1_init:
       rblf.mkerror("product.mk", "Cannot find %s" % (":part1.star"))
     _part1_init(g, handle)
@@ -231,7 +239,7 @@ endif
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
-  if g.get("PRODUCT_NAME") != None:
+  if cfg.get("PRODUCT_NAME", ""):
     cfg["PRODUCT_NAME"] = "gizmo"
   else:
     pass
@@ -246,6 +254,8 @@ def init(g, handle):
 		in: `
 $(warning this is the warning)
 $(warning)
+$(warning # this warning starts with a pound)
+$(warning this warning has a # in the middle)
 $(info this is the info)
 $(error this is the error)
 PRODUCT_NAME:=$(shell echo *)
@@ -256,6 +266,8 @@ def init(g, handle):
   cfg = rblf.cfg(handle)
   rblf.mkwarning("product.mk", "this is the warning")
   rblf.mkwarning("product.mk", "")
+  rblf.mkwarning("product.mk", "# this warning starts with a pound")
+  rblf.mkwarning("product.mk", "this warning has a # in the middle")
   rblf.mkinfo("product.mk", "this is the info")
   rblf.mkerror("product.mk", "this is the error")
   cfg["PRODUCT_NAME"] = rblf.shell("echo *")
@@ -275,7 +287,7 @@ endif
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
-  if g.get("PRODUCT_NAME") != None:
+  if cfg.get("PRODUCT_NAME", ""):
     # Comment
     pass
   else:
@@ -296,7 +308,7 @@ endif
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
-  if not g.get("PRODUCT_NAME") != None:
+  if not cfg.get("PRODUCT_NAME", ""):
     cfg["PRODUCT_NAME"] = "gizmo1"
   else:
     cfg["PRODUCT_NAME"] = "gizmo2"
@@ -315,9 +327,9 @@ endif
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
-  if g.get("PRODUCT_NAME") != None:
+  if cfg.get("PRODUCT_NAME", ""):
     cfg["PRODUCT_NAME"] = "gizmo"
-  elif not g.get("PRODUCT_PACKAGES") != None:
+  elif not cfg.get("PRODUCT_PACKAGES", []):
     # Comment
     pass
 `,
@@ -389,6 +401,10 @@ ifneq (,$(filter plaf,$(PLATFORM_LIST)))
 endif
 ifeq ($(TARGET_BUILD_VARIANT), $(filter $(TARGET_BUILD_VARIANT), userdebug eng))
 endif
+ifneq (, $(filter $(TARGET_BUILD_VARIANT), userdebug eng))
+endif
+ifneq (,$(filter userdebug eng, $(TARGET_BUILD_VARIANT)))
+endif
 ifneq (,$(filter true, $(v1)$(v2)))
 endif
 ifeq (,$(filter barbet coral%,$(TARGET_PRODUCT)))
@@ -407,7 +423,11 @@ def init(g, handle):
     pass
   if "plaf" in g.get("PLATFORM_LIST", []):
     pass
+  if g["TARGET_BUILD_VARIANT"] == " ".join(rblf.filter(g["TARGET_BUILD_VARIANT"], "userdebug eng")):
+    pass
   if g["TARGET_BUILD_VARIANT"] in ["userdebug", "eng"]:
+    pass
+  if rblf.filter("userdebug eng", g["TARGET_BUILD_VARIANT"]):
     pass
   if rblf.filter("true", "%s%s" % (_v1, _v2)):
     pass
@@ -509,11 +529,11 @@ endif
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
-  if g.get("PRODUCT_NAME") != None:
+  if cfg.get("PRODUCT_NAME", ""):
     cfg["PRODUCT_PACKAGES"] = ["pack-if0"]
-    if g.get("PRODUCT_MODEL") != None:
+    if cfg.get("PRODUCT_MODEL", ""):
       cfg["PRODUCT_PACKAGES"] = ["pack-if-if"]
-    elif g.get("PRODUCT_NAME") != None:
+    elif cfg.get("PRODUCT_NAME", ""):
       cfg["PRODUCT_PACKAGES"] = ["pack-if-elif"]
     else:
       cfg["PRODUCT_PACKAGES"] = ["pack-if-else"]
@@ -731,6 +751,7 @@ $(call enforce-product-packages-exist, foo)
 $(call require-artifacts-in-path, foo, bar)
 $(call require-artifacts-in-path-relaxed, foo, bar)
 $(call dist-for-goals, goal, from:to)
+$(call add-product-dex-preopt-module-config,MyModule,disable)
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
@@ -741,6 +762,7 @@ def init(g, handle):
   rblf.require_artifacts_in_path("foo", "bar")
   rblf.require_artifacts_in_path_relaxed("foo", "bar")
   rblf.mkdist_for_goals(g, "goal", "from:to")
+  rblf.add_product_dex_preopt_module_config(handle, "MyModule", "disable")
 `,
 	},
 	{
@@ -883,6 +905,43 @@ def init(g, handle):
 `,
 	},
 	{
+		desc:   "assigment setdefaults",
+		mkname: "product.mk",
+		in: `
+# All of these should have a setdefault because they're self-referential and not defined before
+PRODUCT_LIST1 = a $(PRODUCT_LIST1)
+PRODUCT_LIST2 ?= a $(PRODUCT_LIST2)
+PRODUCT_LIST3 += a
+
+# Now doing them again should not have a setdefault because they've already been set
+PRODUCT_LIST1 = a $(PRODUCT_LIST1)
+PRODUCT_LIST2 ?= a $(PRODUCT_LIST2)
+PRODUCT_LIST3 += a
+`,
+		expected: `# All of these should have a setdefault because they're self-referential and not defined before
+load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  rblf.setdefault(handle, "PRODUCT_LIST1")
+  cfg["PRODUCT_LIST1"] = (["a"] +
+      cfg.get("PRODUCT_LIST1", []))
+  if cfg.get("PRODUCT_LIST2") == None:
+    rblf.setdefault(handle, "PRODUCT_LIST2")
+    cfg["PRODUCT_LIST2"] = (["a"] +
+        cfg.get("PRODUCT_LIST2", []))
+  rblf.setdefault(handle, "PRODUCT_LIST3")
+  cfg["PRODUCT_LIST3"] += ["a"]
+  # Now doing them again should not have a setdefault because they've already been set
+  cfg["PRODUCT_LIST1"] = (["a"] +
+      cfg["PRODUCT_LIST1"])
+  if cfg.get("PRODUCT_LIST2") == None:
+    cfg["PRODUCT_LIST2"] = (["a"] +
+        cfg["PRODUCT_LIST2"])
+  cfg["PRODUCT_LIST3"] += ["a"]
+`,
+	},
+	{
 		desc:   "soong namespace assignments",
 		mkname: "product.mk",
 		in: `
@@ -975,6 +1034,7 @@ endif
 def init(g, handle):
   cfg = rblf.cfg(handle)
   if "hwaddress" not in cfg.get("PRODUCT_PACKAGES", []):
+    rblf.setdefault(handle, "PRODUCT_PACKAGES")
     cfg["PRODUCT_PACKAGES"] = (rblf.mkstrip("%s hwaddress" % " ".join(cfg.get("PRODUCT_PACKAGES", [])))).split()
 `,
 	},
@@ -1048,8 +1108,8 @@ def init(g, handle):
   cfg = rblf.cfg(handle)
   g["MY_PATH"] = "foo"
   _entry = {
-    "vendor/foo1/cfg.mk": ("_cfg", _cfg_init),
-    "vendor/bar/baz/cfg.mk": ("_cfg1", _cfg1_init),
+    "vendor/foo1/cfg.mk": ("vendor/foo1/cfg", _cfg_init),
+    "vendor/bar/baz/cfg.mk": ("vendor/bar/baz/cfg", _cfg1_init),
   }.get("vendor/%s/cfg.mk" % g["MY_PATH"])
   (_varmod, _varmod_init) = _entry if _entry else (None, None)
   if not _varmod_init:
@@ -1071,9 +1131,8 @@ load("//vendor/foo1:cfg.star|init", _cfg_init = "init")
 def init(g, handle):
   cfg = rblf.cfg(handle)
   g["MY_PATH"] = "foo"
-  #RBC# include_top vendor/foo1
   _entry = {
-    "vendor/foo1/cfg.mk": ("_cfg", _cfg_init),
+    "vendor/foo1/cfg.mk": ("vendor/foo1/cfg", _cfg_init),
   }.get("%s/cfg.mk" % g["MY_PATH"])
   (_varmod, _varmod_init) = _entry if _entry else (None, None)
   if not _varmod_init:
@@ -1089,6 +1148,7 @@ MY_PATH:=foo
 #RBC# include_top vendor/foo1
 $(call inherit-product,$(MY_PATH)/cfg.mk)
 #RBC# include_top vendor/foo1
+#RBC# include_top vendor/foo1
 $(call inherit-product,$(MY_PATH)/cfg.mk)
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
@@ -1097,17 +1157,15 @@ load("//vendor/foo1:cfg.star|init", _cfg_init = "init")
 def init(g, handle):
   cfg = rblf.cfg(handle)
   g["MY_PATH"] = "foo"
-  #RBC# include_top vendor/foo1
   _entry = {
-    "vendor/foo1/cfg.mk": ("_cfg", _cfg_init),
+    "vendor/foo1/cfg.mk": ("vendor/foo1/cfg", _cfg_init),
   }.get("%s/cfg.mk" % g["MY_PATH"])
   (_varmod, _varmod_init) = _entry if _entry else (None, None)
   if not _varmod_init:
     rblf.mkerror("product.mk", "Cannot find %s" % ("%s/cfg.mk" % g["MY_PATH"]))
   rblf.inherit(handle, _varmod, _varmod_init)
-  #RBC# include_top vendor/foo1
   _entry = {
-    "vendor/foo1/cfg.mk": ("_cfg", _cfg_init),
+    "vendor/foo1/cfg.mk": ("vendor/foo1/cfg", _cfg_init),
   }.get("%s/cfg.mk" % g["MY_PATH"])
   (_varmod, _varmod_init) = _entry if _entry else (None, None)
   if not _varmod_init:
@@ -1116,7 +1174,7 @@ def init(g, handle):
 `,
 	},
 	{
-		desc:   "Dynamic inherit path that lacks necessary hint",
+		desc:   "Dynamic inherit path that lacks hint",
 		mkname: "product.mk",
 		in: `
 #RBC# include_top foo
@@ -1130,29 +1188,36 @@ $(call inherit-product,$(MY_VAR)/font.mk)
 
 $(call inherit-product,$(MY_VAR)/font.mk)
 `,
-		expected: `#RBC# include_top foo
-load("//build/make/core:product_config.rbc", "rblf")
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
 load("//foo:font.star|init", _font_init = "init")
+load("//bar:font.star|init", _font1_init = "init")
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
   _entry = {
-    "foo/font.mk": ("_font", _font_init),
+    "foo/font.mk": ("foo/font", _font_init),
   }.get("%s/font.mk" % g.get("MY_VAR", ""))
   (_varmod, _varmod_init) = _entry if _entry else (None, None)
   if not _varmod_init:
     rblf.mkerror("product.mk", "Cannot find %s" % ("%s/font.mk" % g.get("MY_VAR", "")))
   rblf.inherit(handle, _varmod, _varmod_init)
-  #RBC# include_top foo
   # There's some space and even this comment between the include_top and the inherit-product
   _entry = {
-    "foo/font.mk": ("_font", _font_init),
+    "foo/font.mk": ("foo/font", _font_init),
   }.get("%s/font.mk" % g.get("MY_VAR", ""))
   (_varmod, _varmod_init) = _entry if _entry else (None, None)
   if not _varmod_init:
     rblf.mkerror("product.mk", "Cannot find %s" % ("%s/font.mk" % g.get("MY_VAR", "")))
   rblf.inherit(handle, _varmod, _varmod_init)
-  rblf.mk2rbc_error("product.mk:11", "inherit-product/include statements must not be prefixed with a variable, or must include a #RBC# include_top comment beforehand giving a root directory to search.")
+  rblf.mkwarning("product.mk:11", "Please avoid starting an include path with a variable. See https://source.android.com/setup/build/bazel/product_config/issues/includes for details.")
+  _entry = {
+    "foo/font.mk": ("foo/font", _font_init),
+    "bar/font.mk": ("bar/font", _font1_init),
+  }.get("%s/font.mk" % g.get("MY_VAR", ""))
+  (_varmod, _varmod_init) = _entry if _entry else (None, None)
+  if not _varmod_init:
+    rblf.mkerror("product.mk", "Cannot find %s" % ("%s/font.mk" % g.get("MY_VAR", "")))
+  rblf.inherit(handle, _varmod, _varmod_init)
 `,
 	},
 	{
@@ -1178,7 +1243,6 @@ override FOO:=`,
 def init(g, handle):
   cfg = rblf.cfg(handle)
   rblf.mk2rbc_error("product.mk:2", "cannot handle override directive")
-  g["override FOO"] = ""
 `,
 	},
 	{
@@ -1205,7 +1269,7 @@ TEST_VAR_LIST := foo
 TEST_VAR_LIST += bar
 TEST_VAR_2 := $(if $(TEST_VAR),bar)
 TEST_VAR_3 := $(if $(TEST_VAR),bar,baz)
-TEST_VAR_3 := $(if $(TEST_VAR),$(TEST_VAR_LIST))
+TEST_VAR_4 := $(if $(TEST_VAR),$(TEST_VAR_LIST))
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
@@ -1216,7 +1280,7 @@ def init(g, handle):
   g["TEST_VAR_LIST"] += ["bar"]
   g["TEST_VAR_2"] = ("bar" if g["TEST_VAR"] else "")
   g["TEST_VAR_3"] = ("bar" if g["TEST_VAR"] else "baz")
-  g["TEST_VAR_3"] = (g["TEST_VAR_LIST"] if g["TEST_VAR"] else [])
+  g["TEST_VAR_4"] = (g["TEST_VAR_LIST"] if g["TEST_VAR"] else [])
 `,
 	},
 	{
@@ -1246,6 +1310,9 @@ BOOT_KERNEL_MODULES_LIST := foo.ko
 BOOT_KERNEL_MODULES_LIST += bar.ko
 BOOT_KERNEL_MODULES_FILTER_2 := $(foreach m,$(BOOT_KERNEL_MODULES_LIST),%/$(m))
 
+FOREACH_WITH_IF := $(foreach module,\
+  $(BOOT_KERNEL_MODULES_LIST),\
+  $(if $(filter $(module),foo.ko),,$(error module "$(module)" has an error!)))
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
@@ -1256,6 +1323,7 @@ def init(g, handle):
   g["BOOT_KERNEL_MODULES_LIST"] = ["foo.ko"]
   g["BOOT_KERNEL_MODULES_LIST"] += ["bar.ko"]
   g["BOOT_KERNEL_MODULES_FILTER_2"] = ["%%/%s" % m for m in g["BOOT_KERNEL_MODULES_LIST"]]
+  g["FOREACH_WITH_IF"] = [("" if rblf.filter(module, "foo.ko") else rblf.mkerror("product.mk", "module \"%s\" has an error!" % module)) for module in g["BOOT_KERNEL_MODULES_LIST"]]
 `,
 	},
 	{
@@ -1342,6 +1410,70 @@ def init(g, handle):
     pass
 `,
 	},
+	{
+		desc:   "Type hints",
+		mkname: "product.mk",
+		in: `
+# Test type hints
+#RBC# type_hint list MY_VAR MY_VAR_2
+# Unsupported type
+#RBC# type_hint bool MY_VAR_3
+# Invalid syntax
+#RBC# type_hint list
+# Duplicated variable
+#RBC# type_hint list MY_VAR_2
+#RBC# type_hint list my-local-var-with-dashes
+#RBC# type_hint string MY_STRING_VAR
+
+MY_VAR := foo
+MY_VAR_UNHINTED := foo
+
+# Vars set after other statements still get the hint
+MY_VAR_2 := foo
+
+# You can't specify a type hint after the first statement
+#RBC# type_hint list MY_VAR_4
+MY_VAR_4 := foo
+
+my-local-var-with-dashes := foo
+
+MY_STRING_VAR := $(wildcard foo/bar.mk)
+`,
+		expected: `# Test type hints
+# Unsupported type
+load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  rblf.mk2rbc_error("product.mk:5", "Invalid type_hint annotation. Only list/string types are accepted, found bool")
+  # Invalid syntax
+  rblf.mk2rbc_error("product.mk:7", "Invalid type_hint annotation: list. Must be a variable type followed by a list of variables of that type")
+  # Duplicated variable
+  rblf.mk2rbc_error("product.mk:9", "Duplicate type hint for variable MY_VAR_2")
+  g["MY_VAR"] = ["foo"]
+  g["MY_VAR_UNHINTED"] = "foo"
+  # Vars set after other statements still get the hint
+  g["MY_VAR_2"] = ["foo"]
+  # You can't specify a type hint after the first statement
+  rblf.mk2rbc_error("product.mk:20", "type_hint annotations must come before the first Makefile statement")
+  g["MY_VAR_4"] = "foo"
+  _my_local_var_with_dashes = ["foo"]
+  g["MY_STRING_VAR"] = " ".join(rblf.expand_wildcard("foo/bar.mk"))
+`,
+	},
+	{
+		desc:   "Set LOCAL_PATH to my-dir",
+		mkname: "product.mk",
+		in: `
+LOCAL_PATH := $(call my-dir)
+`,
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  
+`,
+	},
 }
 
 var known_variables = []struct {
@@ -1413,7 +1545,6 @@ func TestGood(t *testing.T) {
 				ss, err := Convert(Request{
 					MkFile:         test.mkname,
 					Reader:         bytes.NewBufferString(test.in),
-					RootDir:        ".",
 					OutputSuffix:   ".star",
 					SourceFS:       fs,
 					MakefileFinder: &testMakefileFinder{fs: fs},

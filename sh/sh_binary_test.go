@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"android/soong/android"
@@ -36,6 +37,8 @@ var prepareForShTest = android.GroupFixturePreparers(
 //
 // deprecated
 func testShBinary(t *testing.T, bp string) (*android.TestContext, android.Config) {
+	bp = bp + cc.GatherRequiredDepsForTest(android.Android)
+
 	result := prepareForShTest.RunTestWithBp(t, bp)
 
 	return result.TestContext, result.Config
@@ -214,4 +217,41 @@ func TestShTestHost_dataDeviceModules(t *testing.T) {
 	}
 	actualData := entries.EntryMap["LOCAL_TEST_DATA"]
 	android.AssertStringPathsRelativeToTopEquals(t, "LOCAL_TEST_DATA", config, expectedData, actualData)
+}
+
+func TestShTestHost_dataDeviceModulesAutogenTradefedConfig(t *testing.T) {
+	ctx, config := testShBinary(t, `
+		sh_test_host {
+			name: "foo",
+			src: "test.sh",
+			data_device_bins: ["bar"],
+			data_device_libs: ["libbar"],
+		}
+
+		cc_binary {
+			name: "bar",
+			shared_libs: ["libbar"],
+			no_libcrt: true,
+			nocrt: true,
+			system_shared_libs: [],
+			stl: "none",
+		}
+
+		cc_library {
+			name: "libbar",
+			no_libcrt: true,
+			nocrt: true,
+			system_shared_libs: [],
+			stl: "none",
+		}
+	`)
+
+	buildOS := config.BuildOS.String()
+	fooModule := ctx.ModuleForTests("foo", buildOS+"_x86_64")
+
+	expectedBinAutogenConfig := `<option name="push-file" key="bar" value="/data/local/tests/unrestricted/foo/bar" />`
+	autogen := fooModule.Rule("autogen")
+	if !strings.Contains(autogen.Args["extraConfigs"], expectedBinAutogenConfig) {
+		t.Errorf("foo extraConfings %v does not contain %q", autogen.Args["extraConfigs"], expectedBinAutogenConfig)
+	}
 }

@@ -129,7 +129,7 @@ type variableProperties struct {
 			Exclude_srcs []string
 		}
 
-		// eng is true for -eng builds, and can be used to turn on additionaly heavyweight debugging
+		// eng is true for -eng builds, and can be used to turn on additional heavyweight debugging
 		// features.
 		Eng struct {
 			Cflags   []string
@@ -191,6 +191,7 @@ type productVariables struct {
 	Platform_sdk_version_or_codename          *string  `json:",omitempty"`
 	Platform_sdk_final                        *bool    `json:",omitempty"`
 	Platform_sdk_extension_version            *int     `json:",omitempty"`
+	Platform_base_sdk_extension_version       *int     `json:",omitempty"`
 	Platform_version_active_codenames         []string `json:",omitempty"`
 	Platform_vndk_version                     *string  `json:",omitempty"`
 	Platform_systemsdk_versions               []string `json:",omitempty"`
@@ -305,10 +306,11 @@ type productVariables struct {
 	JavaCoveragePaths        []string `json:",omitempty"`
 	JavaCoverageExcludePaths []string `json:",omitempty"`
 
-	GcovCoverage               *bool    `json:",omitempty"`
-	ClangCoverage              *bool    `json:",omitempty"`
-	NativeCoveragePaths        []string `json:",omitempty"`
-	NativeCoverageExcludePaths []string `json:",omitempty"`
+	GcovCoverage                *bool    `json:",omitempty"`
+	ClangCoverage               *bool    `json:",omitempty"`
+	NativeCoveragePaths         []string `json:",omitempty"`
+	NativeCoverageExcludePaths  []string `json:",omitempty"`
+	ClangCoverageContinuousMode *bool    `json:",omitempty"`
 
 	// Set by NewConfig
 	Native_coverage *bool `json:",omitempty"`
@@ -364,6 +366,9 @@ type productVariables struct {
 	PlatformSepolicyVersion *string `json:",omitempty"`
 	TotSepolicyVersion      *string `json:",omitempty"`
 
+	SystemExtSepolicyPrebuiltApiDir *string `json:",omitempty"`
+	ProductSepolicyPrebuiltApiDir   *string `json:",omitempty"`
+
 	PlatformSepolicyCompatVersions []string `json:",omitempty"`
 
 	VendorVars map[string]map[string]string `json:",omitempty"`
@@ -417,9 +422,10 @@ type productVariables struct {
 
 	ShippingApiLevel *string `json:",omitempty"`
 
-	BuildBrokenEnforceSyspropOwner     bool `json:",omitempty"`
-	BuildBrokenTrebleSyspropNeverallow bool `json:",omitempty"`
-	BuildBrokenVendorPropertyNamespace bool `json:",omitempty"`
+	BuildBrokenEnforceSyspropOwner     bool     `json:",omitempty"`
+	BuildBrokenTrebleSyspropNeverallow bool     `json:",omitempty"`
+	BuildBrokenVendorPropertyNamespace bool     `json:",omitempty"`
+	BuildBrokenInputDirModules         []string `json:",omitempty"`
 
 	BuildDebugfsRestrictionsEnabled bool `json:",omitempty"`
 

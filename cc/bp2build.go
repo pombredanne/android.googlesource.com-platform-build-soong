@@ -16,7 +16,6 @@ package cc
 import (
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"android/soong/android"
@@ -32,12 +31,6 @@ const (
 	asSrcPartition    = "as"
 	cppSrcPartition   = "cpp"
 	protoSrcPartition = "proto"
-)
-
-var (
-	// ignoring case, checks for proto or protos as an independent word in the name, whether at the
-	// beginning, end, or middle. e.g. "proto.foo", "bar-protos", "baz_proto_srcs" would all match
-	filegroupLikelyProtoPattern = regexp.MustCompile("(?i)(^|[^a-z])proto(s)?([^a-z]|$)")
 )
 
 // staticOrSharedAttributes are the Bazel-ified versions of StaticOrSharedProperties --
@@ -59,48 +52,36 @@ type staticOrSharedAttributes struct {
 	System_dynamic_deps bazel.LabelListAttribute
 
 	Enabled bazel.BoolAttribute
+
+	sdkAttributes
 }
 
+// groupSrcsByExtension partitions `srcs` into groups based on file extension.
 func groupSrcsByExtension(ctx android.BazelConversionPathContext, srcs bazel.LabelListAttribute) bazel.PartitionToLabelListAttribute {
-	// Check that a module is a filegroup type
-	isFilegroup := func(m blueprint.Module) bool {
-		return ctx.OtherModuleType(m) == "filegroup"
-	}
-
 	// Convert filegroup dependencies into extension-specific filegroups filtered in the filegroup.bzl
 	// macro.
 	addSuffixForFilegroup := func(suffix string) bazel.LabelMapper {
 		return func(ctx bazel.OtherModuleContext, label bazel.Label) (string, bool) {
 			m, exists := ctx.ModuleFromName(label.OriginalModuleName)
 			labelStr := label.Label
-			if !exists || !isFilegroup(m) {
+			if !exists || !android.IsFilegroup(ctx, m) {
 				return labelStr, false
 			}
 			return labelStr + suffix, true
 		}
 	}
 
-	isProtoFilegroup := func(ctx bazel.OtherModuleContext, label bazel.Label) (string, bool) {
-		m, exists := ctx.ModuleFromName(label.OriginalModuleName)
-		labelStr := label.Label
-		if !exists || !isFilegroup(m) {
-			return labelStr, false
-		}
-		likelyProtos := filegroupLikelyProtoPattern.MatchString(label.OriginalModuleName)
-		return labelStr, likelyProtos
-	}
-
 	// TODO(b/190006308): Handle language detection of sources in a Bazel rule.
-	partitioned := bazel.PartitionLabelListAttribute(ctx, &srcs, bazel.LabelPartitions{
-		protoSrcPartition: bazel.LabelPartition{Extensions: []string{".proto"}, LabelMapper: isProtoFilegroup},
+	labels := bazel.LabelPartitions{
+		protoSrcPartition: android.ProtoSrcLabelPartition,
 		cSrcPartition:     bazel.LabelPartition{Extensions: []string{".c"}, LabelMapper: addSuffixForFilegroup("_c_srcs")},
 		asSrcPartition:    bazel.LabelPartition{Extensions: []string{".s", ".S"}, LabelMapper: addSuffixForFilegroup("_as_srcs")},
 		// C++ is the "catch-all" group, and comprises generated sources because we don't
 		// know the language of these sources until the genrule is executed.
 		cppSrcPartition: bazel.LabelPartition{Extensions: []string{".cpp", ".cc", ".cxx", ".mm"}, LabelMapper: addSuffixForFilegroup("_cpp_srcs"), Keep_remainder: true},
-	})
+	}
 
-	return partitioned
+	return bazel.PartitionLabelListAttribute(ctx, &srcs, labels)
 }
 
 // bp2BuildParseLibProps returns the attributes for a variant of a cc_library.
@@ -560,6 +541,18 @@ func bp2BuildParseBaseProps(ctx android.Bp2buildMutatorContext, module *Module) 
 	}
 }
 
+func bp2BuildParseSdkAttributes(module *Module) sdkAttributes {
+	return sdkAttributes {
+		Sdk_version: module.Properties.Sdk_version,
+		Min_sdk_version: module.Properties.Min_sdk_version,
+	}
+}
+
+type sdkAttributes struct {
+	Sdk_version     *string
+	Min_sdk_version *string
+}
+
 // Convenience struct to hold all attributes parsed from linker properties.
 type linkerAttributes struct {
 	deps                             bazel.LabelListAttribute
@@ -644,7 +637,7 @@ func (la *linkerAttributes) bp2buildForAxisAndConfig(ctx android.BazelConversion
 
 	var linkerFlags []string
 	if len(props.Ldflags) > 0 {
-		linkerFlags = append(linkerFlags, props.Ldflags...)
+		linkerFlags = append(linkerFlags, proptools.NinjaEscapeList(props.Ldflags)...)
 		// binaries remove static flag if -shared is in the linker flags
 		if isBinary && android.InList("-shared", linkerFlags) {
 			axisFeatures = append(axisFeatures, "-static_flag")
@@ -844,10 +837,8 @@ func bp2BuildParseExportedIncludesHelper(ctx android.BazelConversionPathContext,
 
 func bazelLabelForStaticModule(ctx android.BazelConversionPathContext, m blueprint.Module) string {
 	label := android.BazelModuleLabel(ctx, m)
-	if aModule, ok := m.(android.Module); ok {
-		if ctx.OtherModuleType(aModule) == "cc_library" && !android.GenerateCcLibraryStaticOnly(m.Name()) {
-			label += "_bp2build_cc_library_static"
-		}
+	if ccModule, ok := m.(*Module); ok && ccModule.typ() == fullLibrary && !android.GenerateCcLibraryStaticOnly(m.Name()) {
+		label += "_bp2build_cc_library_static"
 	}
 	return label
 }

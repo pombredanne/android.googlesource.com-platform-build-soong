@@ -121,6 +121,12 @@ type BaseCompilerProperties struct {
 	// include all of the static libraries symbols in any dylibs or binaries which use this rlib as well.
 	Whole_static_libs []string `android:"arch_variant"`
 
+	// list of Rust system library dependencies.
+	//
+	// This is usually only needed when `no_stdlibs` is true, in which case it can be used to depend on system crates
+	// like `core` and `alloc`.
+	Stdlibs []string `android:"arch_variant"`
+
 	// crate name, required for modules which produce Rust libraries: rust_library, rust_ffi and SourceProvider
 	// modules which create library variants (rust_bindgen). This must be the expected extern crate name used in
 	// source, and is required to conform to an enforced format matching library output files (if the output file is
@@ -360,11 +366,12 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	deps.StaticLibs = append(deps.StaticLibs, compiler.Properties.Static_libs...)
 	deps.WholeStaticLibs = append(deps.WholeStaticLibs, compiler.Properties.Whole_static_libs...)
 	deps.SharedLibs = append(deps.SharedLibs, compiler.Properties.Shared_libs...)
+	deps.Stdlibs = append(deps.Stdlibs, compiler.Properties.Stdlibs...)
 
 	if !Bool(compiler.Properties.No_stdlibs) {
 		for _, stdlib := range config.Stdlibs {
 			// If we're building for the build host, use the prebuilt stdlibs
-			if ctx.Target().Os == ctx.Config().BuildOS {
+			if ctx.Target().Os == android.Linux || ctx.Target().Os == android.Darwin {
 				stdlib = "prebuilt_" + stdlib
 			}
 			deps.Stdlibs = append(deps.Stdlibs, stdlib)
@@ -391,6 +398,20 @@ func bionicDeps(ctx DepsContext, deps Deps, static bool) Deps {
 	if libRuntimeBuiltins := config.BuiltinsRuntimeLibrary(ctx.toolchain()); libRuntimeBuiltins != "" {
 		deps.StaticLibs = append(deps.StaticLibs, libRuntimeBuiltins)
 	}
+	return deps
+}
+
+func muslDeps(ctx DepsContext, deps Deps, static bool) Deps {
+	muslLibs := []string{"libc_musl"}
+	if static {
+		deps.StaticLibs = append(deps.StaticLibs, muslLibs...)
+	} else {
+		deps.SharedLibs = append(deps.SharedLibs, muslLibs...)
+	}
+	if libRuntimeBuiltins := config.BuiltinsRuntimeLibrary(ctx.toolchain()); libRuntimeBuiltins != "" {
+		deps.StaticLibs = append(deps.StaticLibs, libRuntimeBuiltins)
+	}
+
 	return deps
 }
 

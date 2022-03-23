@@ -397,6 +397,12 @@ func (a *apexBundle) buildBundleConfig(ctx android.ModuleContext) android.Output
 	return output.OutputPath
 }
 
+func markManifestTestOnly(ctx android.ModuleContext, androidManifestFile android.Path) android.Path {
+	return java.ManifestFixer(ctx, androidManifestFile, java.ManifestFixerParams{
+		TestOnly: true,
+	})
+}
+
 // buildUnflattendApex creates build rules to build an APEX using apexer.
 func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 	apexType := a.properties.ApexType
@@ -595,8 +601,15 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 
 		if a.properties.AndroidManifest != nil {
 			androidManifestFile := android.PathForModuleSrc(ctx, proptools.String(a.properties.AndroidManifest))
+
+			if a.testApex {
+				androidManifestFile = markManifestTestOnly(ctx, androidManifestFile)
+			}
+
 			implicitInputs = append(implicitInputs, androidManifestFile)
 			optFlags = append(optFlags, "--android_manifest "+androidManifestFile.String())
+		} else if a.testApex {
+			optFlags = append(optFlags, "--test_only")
 		}
 
 		// Determine target/min sdk version from the context
@@ -797,6 +810,9 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		Implicits:   implicits,
 		Args:        args,
 	})
+	if suffix == imageApexSuffix {
+		a.outputApexFile = signedOutputFile
+	}
 	a.outputFile = signedOutputFile
 
 	if ctx.ModuleDir() != "system/apex/apexd/apexd_testdata" && a.testOnlyShouldForceCompression() {
@@ -838,6 +854,10 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 	installSuffix := suffix
 	if a.isCompressed {
 		installSuffix = imageCapexSuffix
+	}
+
+	if !a.installable() {
+		a.SkipInstall()
 	}
 
 	// Install to $OUT/soong/{target,host}/.../apex.

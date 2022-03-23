@@ -198,6 +198,7 @@ var (
 		// build/bazel is not recursive. Instead list each subdirectory under
 		// build/bazel explicitly.
 		"build/bazel":/* recursive = */ false,
+		"build/bazel/ci/dist":/* recursive = */ false,
 		"build/bazel/examples/android_app":/* recursive = */ true,
 		"build/bazel/examples/java":/* recursive = */ true,
 		"build/bazel/bazel_skylib":/* recursive = */ true,
@@ -207,6 +208,7 @@ var (
 		"build/bazel/tests":/* recursive = */ true,
 		"build/bazel/platforms":/* recursive = */ true,
 		"build/bazel/product_variables":/* recursive = */ true,
+		"build/bazel/vendor/google":/* recursive = */ true,
 		"build/bazel_common_rules":/* recursive = */ true,
 		// build/make/tools/signapk BUILD file is generated, so build/make/tools is not recursive.
 		"build/make/tools":/* recursive = */ false,
@@ -217,7 +219,6 @@ var (
 		"external/bazelbuild-rules_android":/* recursive = */ true,
 		"external/bazel-skylib":/* recursive = */ true,
 		"external/guava":/* recursive = */ true,
-		"external/error_prone":/* recursive = */ true,
 		"external/jsr305":/* recursive = */ true,
 		"frameworks/ex/common":/* recursive = */ true,
 
@@ -225,8 +226,10 @@ var (
 		"packages/apps/QuickSearchBox":/* recursive = */ true,
 		"packages/apps/WallpaperPicker":/* recursive = */ false,
 
+		"prebuilts/bundletool":/* recursive = */ true,
 		"prebuilts/gcc":/* recursive = */ true,
 		"prebuilts/build-tools":/* recursive = */ false,
+		"prebuilts/jdk/jdk11":/* recursive = */ false,
 		"prebuilts/sdk":/* recursive = */ false,
 		"prebuilts/sdk/current/extras/app-toolkit":/* recursive = */ false,
 		"prebuilts/sdk/current/support":/* recursive = */ false,
@@ -236,6 +239,7 @@ var (
 
 	// Configure modules in these directories to enable bp2build_available: true or false by default.
 	bp2buildDefaultConfig = Bp2BuildConfig{
+		"art/libartpalette":                     Bp2BuildDefaultTrueRecursively,
 		"art/libdexfile":                        Bp2BuildDefaultTrueRecursively,
 		"art/runtime":                           Bp2BuildDefaultTrueRecursively,
 		"art/tools":                             Bp2BuildDefaultTrue,
@@ -244,6 +248,7 @@ var (
 		"build/bazel/examples/soong_config_variables":        Bp2BuildDefaultTrueRecursively,
 		"build/bazel/examples/apex/minimal":                  Bp2BuildDefaultTrueRecursively,
 		"build/make/tools/signapk":                           Bp2BuildDefaultTrue,
+		"build/make/target/product/security":                 Bp2BuildDefaultTrue,
 		"build/soong":                                        Bp2BuildDefaultTrue,
 		"build/soong/cc/libbuildversion":                     Bp2BuildDefaultTrue, // Skip tests subdir
 		"build/soong/cc/ndkstubgen":                          Bp2BuildDefaultTrue,
@@ -288,14 +293,23 @@ var (
 		"development/samples/WiFiDirectDemo":                 Bp2BuildDefaultTrue,
 		"development/sdk":                                    Bp2BuildDefaultTrueRecursively,
 		"external/arm-optimized-routines":                    Bp2BuildDefaultTrueRecursively,
+		"external/auto/android-annotation-stubs":             Bp2BuildDefaultTrueRecursively,
+		"external/auto/common":                               Bp2BuildDefaultTrueRecursively,
+		"external/auto/service":                              Bp2BuildDefaultTrueRecursively,
 		"external/boringssl":                                 Bp2BuildDefaultTrueRecursively,
 		"external/bouncycastle":                              Bp2BuildDefaultTrue,
 		"external/brotli":                                    Bp2BuildDefaultTrue,
 		"external/conscrypt":                                 Bp2BuildDefaultTrue,
+		"external/e2fsprogs":                                 Bp2BuildDefaultTrueRecursively,
+		"external/error_prone":                               Bp2BuildDefaultTrueRecursively,
 		"external/fmtlib":                                    Bp2BuildDefaultTrueRecursively,
 		"external/google-benchmark":                          Bp2BuildDefaultTrueRecursively,
 		"external/googletest":                                Bp2BuildDefaultTrueRecursively,
 		"external/gwp_asan":                                  Bp2BuildDefaultTrueRecursively,
+		"external/icu":                                       Bp2BuildDefaultTrueRecursively,
+		"external/icu/android_icu4j":                         Bp2BuildDefaultFalse, // java rules incomplete
+		"external/icu/icu4j":                                 Bp2BuildDefaultFalse, // java rules incomplete
+		"external/javapoet":                                  Bp2BuildDefaultTrueRecursively,
 		"external/jemalloc_new":                              Bp2BuildDefaultTrueRecursively,
 		"external/jsoncpp":                                   Bp2BuildDefaultTrueRecursively,
 		"external/libcap":                                    Bp2BuildDefaultTrueRecursively,
@@ -317,6 +331,7 @@ var (
 		"external/zstd":                                      Bp2BuildDefaultTrueRecursively,
 		"frameworks/base/media/tests/MediaDump":              Bp2BuildDefaultTrue,
 		"frameworks/base/startop/apps/test":                  Bp2BuildDefaultTrue,
+		"frameworks/base/tests/appwidgets/AppWidgetHostTest": Bp2BuildDefaultTrueRecursively,
 		"frameworks/native/libs/adbd_auth":                   Bp2BuildDefaultTrueRecursively,
 		"frameworks/native/opengl/tests/gl2_cameraeye":       Bp2BuildDefaultTrue,
 		"frameworks/native/opengl/tests/gl2_java":            Bp2BuildDefaultTrue,
@@ -341,6 +356,7 @@ var (
 		"packages/screensavers/Basic":                        Bp2BuildDefaultTrue,
 		"packages/services/Car/tests/SampleRearViewCamera":   Bp2BuildDefaultTrue,
 		"prebuilts/clang/host/linux-x86":                     Bp2BuildDefaultTrueRecursively,
+		"prebuilts/tools/common/m2":                          Bp2BuildDefaultTrue,
 		"system/apex":                                        Bp2BuildDefaultFalse, // TODO(b/207466993): flaky failures
 		"system/apex/proto":                                  Bp2BuildDefaultTrueRecursively,
 		"system/apex/libs":                                   Bp2BuildDefaultTrueRecursively,
@@ -369,6 +385,43 @@ var (
 		"tools/apksig":                                       Bp2BuildDefaultTrue,
 		"tools/platform-compat/java/android/compat":          Bp2BuildDefaultTrueRecursively,
 	}
+
+	// Per-module allowlist to always opt modules in of both bp2build and mixed builds.
+	// These modules are usually in directories with many other modules that are not ready for
+	// conversion.
+	//
+	// A module can either be in this list or its directory allowlisted entirely
+	// in bp2buildDefaultConfig, but not both at the same time.
+	bp2buildModuleAlwaysConvertList = []string{
+		"prebuilt_junit-params-assertj-core",
+
+		//external/avb
+		"avbtool",
+		"libavb",
+		"avb_headers",
+
+		//external/fec
+		"libfec_rs",
+
+		//system/core/libsparse
+		"libsparse",
+
+		//system/extras/ext4_utils
+		"libext4_utils",
+
+		//system/extras/libfec
+		"libfec",
+
+		//system/extras/squashfs_utils
+		"libsquashfs_utils",
+
+		//system/extras/verity/fec
+		"fec",
+	}
+
+	// Per-module-type allowlist to always opt modules in of both bp2build and mixed builds
+	// when they have the same type as one listed.
+	bp2buildModuleTypeAlwaysConvertList = []string{}
 
 	// Per-module denylist to always opt modules out of both bp2build and mixed builds.
 	bp2buildModuleDoNotConvertList = []string{
@@ -430,8 +483,23 @@ var (
 		"libprotobuf-internal-protos",      // b/210751803, we don't handle path property for filegroups
 		"libprotobuf-internal-python-srcs", // b/210751803, we don't handle path property for filegroups
 		"libprotobuf-java-full",            // b/210751803, we don't handle path property for filegroups
+		"host-libprotobuf-java-full",       // b/210751803, we don't handle path property for filegroups
 		"libprotobuf-java-util-full",       // b/210751803, we don't handle path property for filegroups
-		"conscrypt",                        // b/210751803, we don't handle path property for filegroups
+
+		"conscrypt",          // b/210751803, we don't handle path property for filegroups
+		"conscrypt-for-host", // b/210751803, we don't handle path property for filegroups
+
+		"host-libprotobuf-java-lite",   // b/217236083, java_library cannot have deps without srcs
+		"host-libprotobuf-java-micro",  // b/217236083, java_library cannot have deps without srcs
+		"host-libprotobuf-java-nano",   // b/217236083, java_library cannot have deps without srcs
+		"error_prone_core",             // b/217236083, java_library cannot have deps without srcs
+		"bouncycastle-host",            // b/217236083, java_library cannot have deps without srcs
+		"mockito-robolectric-prebuilt", // b/217236083, java_library cannot have deps without srcs
+
+		"apex_manifest_proto_java", // b/215230097, we don't handle .proto files in java_library srcs attribute
+
+		"libc_musl_sysroot_bionic_arch_headers", // b/218405924, depends on soong_zip
+		"libc_musl_sysroot_bionic_headers",      // b/218405924, depends on soong_zip and generates duplicate srcs
 
 		// python protos
 		"libprotobuf-python",                           // contains .proto sources
@@ -469,13 +537,35 @@ var (
 		"libdexfiled", // depends on unconverted modules: dexfile_operator_srcs, libartbased, libartpalette
 
 		// go deps:
-		"apex-protos",               // depends on soong_zip, a go binary
-		"robolectric_tzdata",        // depends on soong_zip, a go binary
-		"host_bionic_linker_asm",    // depends on extract_linker, a go binary.
-		"host_bionic_linker_script", // depends on extract_linker, a go binary.
+		"apex-protos",                                                                                // depends on soong_zip, a go binary
+		"generated_android_icu4j_src_files", "generated_android_icu4j_test_files", "icu4c_test_data", // depends on unconverted modules: soong_zip
+		"host_bionic_linker_asm",                                                  // depends on extract_linker, a go binary.
+		"host_bionic_linker_script",                                               // depends on extract_linker, a go binary.
+		"robolectric-sqlite4java-native",                                          // depends on soong_zip, a go binary
+		"robolectric_tzdata",                                                      // depends on soong_zip, a go binary
+		"libc_musl_sysroot_libc++_headers", "libc_musl_sysroot_libc++abi_headers", // depends on soong_zip, zip2zip
+
+		"android_icu4j_srcgen_binary", // Bazel build error: deps not allowed without srcs; move to runtime_deps
+		"core-icu4j-for-host",         // Bazel build error: deps not allowed without srcs; move to runtime_deps
 
 		// java deps
-		"bin2c_fastdeployagent", // depends on deployagent, a java binary
+		"android_icu4j_srcgen",          // depends on unconverted modules: currysrc
+		"bin2c_fastdeployagent",         // depends on deployagent, a java binary
+		"currysrc",                      // depends on unconverted modules: currysrc_org.eclipse, guavalib, jopt-simple-4.9
+		"robolectric-sqlite4java-0.282", // depends on unconverted modules: robolectric-sqlite4java-import, robolectric-sqlite4java-native
+		"timezone-host",                 // depends on unconverted modules: art.module.api.annotations
+		"truth-host-prebuilt",           // depends on unconverted modules: truth-prebuilt
+		"truth-prebuilt",                // depends on unconverted modules: asm-7.0, guava
+
+		"generated_android_icu4j_resources",      // depends on unconverted modules: android_icu4j_srcgen_binary, soong_zip
+		"generated_android_icu4j_test_resources", // depends on unconverted modules: android_icu4j_srcgen_binary, soong_zip
+
+		"art-script",     // depends on unconverted modules: dalvikvm, dex2oat
+		"dex2oat-script", // depends on unconverted modules: dex2oat
+
+		"error_prone_checkerframework_dataflow_nullaway", // TODO(b/219908977): "Error in fail: deps not allowed without srcs; move to runtime_deps?"
+
+		"libprotobuf-java-nano", // b/220869005, depends on non-public_current SDK
 	}
 
 	// Per-module denylist of cc_library modules to only generate the static
@@ -498,15 +588,50 @@ var (
 		"libadb_pairing_connection",
 		"libadb_pairing_connection_static",
 		"libadb_pairing_server", "libadb_pairing_server_static",
+
+		// TODO(b/204811222) support suffix in cc_binary
+		"acvp_modulewrapper",
+		"android.hardware.media.c2@1.0-service-v4l2",
+		"app_process",
+		"bar_test",
+		"bench_cxa_atexit",
+		"bench_noop",
+		"bench_noop_nostl",
+		"bench_noop_static",
+		"boringssl_self_test",
+		"boringssl_self_test_vendor",
+		"bssl",
+		"cavp",
+		"crash_dump",
+		"crasher",
+		"libcxx_test_template",
+		"linker",
+		"memory_replay",
+		"native_bridge_guest_linker",
+		"native_bridge_stub_library_defaults",
+		"noop",
+		"simpleperf_ndk",
+		"toybox-static",
+		"zlib_bench",
 	}
 
 	// Used for quicker lookups
-	bp2buildModuleDoNotConvert  = map[string]bool{}
-	bp2buildCcLibraryStaticOnly = map[string]bool{}
-	mixedBuildsDisabled         = map[string]bool{}
+	bp2buildModuleDoNotConvert      = map[string]bool{}
+	bp2buildModuleAlwaysConvert     = map[string]bool{}
+	bp2buildModuleTypeAlwaysConvert = map[string]bool{}
+	bp2buildCcLibraryStaticOnly     = map[string]bool{}
+	mixedBuildsDisabled             = map[string]bool{}
 )
 
 func init() {
+	for _, moduleName := range bp2buildModuleAlwaysConvertList {
+		bp2buildModuleAlwaysConvert[moduleName] = true
+	}
+
+	for _, moduleType := range bp2buildModuleTypeAlwaysConvertList {
+		bp2buildModuleTypeAlwaysConvert[moduleType] = true
+	}
+
 	for _, moduleName := range bp2buildModuleDoNotConvertList {
 		bp2buildModuleDoNotConvert[moduleName] = true
 	}
@@ -582,7 +707,20 @@ func (b *BazelModuleBase) ShouldConvertWithBp2build(ctx BazelConversionContext) 
 }
 
 func (b *BazelModuleBase) shouldConvertWithBp2build(ctx BazelConversionContext, module blueprint.Module) bool {
-	if bp2buildModuleDoNotConvert[module.Name()] {
+	moduleName := module.Name()
+	moduleNameAllowed := bp2buildModuleAlwaysConvert[moduleName]
+	moduleTypeAllowed := bp2buildModuleTypeAlwaysConvert[ctx.OtherModuleType(module)]
+	allowlistConvert := moduleNameAllowed || moduleTypeAllowed
+	if moduleNameAllowed && moduleTypeAllowed {
+		ctx.(BaseModuleContext).ModuleErrorf("A module cannot be in bp2buildModuleAlwaysConvert and also be" +
+			" in bp2buildModuleTypeAlwaysConvert")
+	}
+
+	if bp2buildModuleDoNotConvert[moduleName] {
+		if moduleNameAllowed {
+			ctx.(BaseModuleContext).ModuleErrorf("a module cannot be in bp2buildModuleDoNotConvert" +
+				" and also be in bp2buildModuleAlwaysConvert")
+		}
 		return false
 	}
 
@@ -590,18 +728,34 @@ func (b *BazelModuleBase) shouldConvertWithBp2build(ctx BazelConversionContext, 
 		return false
 	}
 
-	packagePath := ctx.OtherModuleDir(module)
-	config := ctx.Config().bp2buildPackageConfig
-
-	// This is a tristate value: true, false, or unset.
 	propValue := b.bazelProperties.Bazel_module.Bp2build_available
+	packagePath := ctx.OtherModuleDir(module)
+	// Modules in unit tests which are enabled in the allowlist by type or name
+	// trigger this conditional because unit tests run under the "." package path
+	isTestModule := packagePath == "." && proptools.BoolDefault(propValue, false)
+	if allowlistConvert && !isTestModule && ShouldKeepExistingBuildFileForDir(packagePath) {
+		if moduleNameAllowed {
+			ctx.(BaseModuleContext).ModuleErrorf("A module cannot be in a directory listed in bp2buildKeepExistingBuildFile"+
+				" and also be in bp2buildModuleAlwaysConvert. Directory: '%s'", packagePath)
+		}
+		return false
+	}
+
+	config := ctx.Config().bp2buildPackageConfig
+	// This is a tristate value: true, false, or unset.
 	if bp2buildDefaultTrueRecursively(packagePath, config) {
+		if moduleNameAllowed {
+			ctx.(BaseModuleContext).ModuleErrorf("A module cannot be in a directory marked Bp2BuildDefaultTrue"+
+				" or Bp2BuildDefaultTrueRecursively and also be in bp2buildModuleAlwaysConvert. Directory: '%s'",
+				packagePath)
+		}
+
 		// Allow modules to explicitly opt-out.
 		return proptools.BoolDefault(propValue, true)
 	}
 
 	// Allow modules to explicitly opt-in.
-	return proptools.BoolDefault(propValue, false)
+	return proptools.BoolDefault(propValue, allowlistConvert)
 }
 
 // bp2buildDefaultTrueRecursively checks that the package contains a prefix from the
@@ -683,6 +837,7 @@ func GetMainClassInManifest(c Config, filepath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()

@@ -1333,6 +1333,42 @@ func TestAidlFlagsWithMinSdkVersion(t *testing.T) {
 	}
 }
 
+func TestAidlEnforcePermissions(t *testing.T) {
+	ctx, _ := testJava(t, `
+		java_library {
+			name: "foo",
+			srcs: ["aidl/foo/IFoo.aidl"],
+			aidl: { enforce_permissions: true },
+		}
+	`)
+
+	aidlCommand := ctx.ModuleForTests("foo", "android_common").Rule("aidl").RuleParams.Command
+	expectedAidlFlag := "-Wmissing-permission-annotation -Werror"
+	if !strings.Contains(aidlCommand, expectedAidlFlag) {
+		t.Errorf("aidl command %q does not contain %q", aidlCommand, expectedAidlFlag)
+	}
+}
+
+func TestAidlEnforcePermissionsException(t *testing.T) {
+	ctx, _ := testJava(t, `
+		java_library {
+			name: "foo",
+			srcs: ["aidl/foo/IFoo.aidl", "aidl/foo/IFoo2.aidl"],
+			aidl: { enforce_permissions: true, enforce_permissions_exceptions: ["aidl/foo/IFoo2.aidl"] },
+		}
+	`)
+
+	aidlCommand := ctx.ModuleForTests("foo", "android_common").Rule("aidl").RuleParams.Command
+	expectedAidlFlag := "$$FLAGS -Wmissing-permission-annotation -Werror aidl/foo/IFoo.aidl"
+	if !strings.Contains(aidlCommand, expectedAidlFlag) {
+		t.Errorf("aidl command %q does not contain %q", aidlCommand, expectedAidlFlag)
+	}
+	expectedAidlFlag = "$$FLAGS  aidl/foo/IFoo2.aidl"
+	if !strings.Contains(aidlCommand, expectedAidlFlag) {
+		t.Errorf("aidl command %q does not contain %q", aidlCommand, expectedAidlFlag)
+	}
+}
+
 func TestDataNativeBinaries(t *testing.T) {
 	ctx, _ := testJava(t, `
 		java_test_host {
@@ -1458,5 +1494,66 @@ func TestErrorproneEnabledOnlyByEnvironmentVariable(t *testing.T) {
 	// Check that the errorprone plugin is enabled
 	if !strings.Contains(errorprone.Args["javacFlags"], expectedSubstring) {
 		t.Errorf("expected errorprone to contain %q, got %q", expectedSubstring, javac.Args["javacFlags"])
+	}
+}
+
+func TestDataDeviceBinsBuildsDeviceBinary(t *testing.T) {
+	bp := `
+		java_test_host {
+			name: "foo",
+			srcs: ["test.java"],
+			data_device_bins: ["bar"],
+		}
+
+		cc_binary {
+			name: "bar",
+		}
+	`
+
+	ctx := android.GroupFixturePreparers(
+		PrepareForIntegrationTestWithJava,
+	).RunTestWithBp(t, bp)
+
+	buildOS := ctx.Config.BuildOS.String()
+	fooVariant := ctx.ModuleForTests("foo", buildOS+"_common")
+	barVariant := ctx.ModuleForTests("bar", "android_arm64_armv8-a")
+	fooMod := fooVariant.Module().(*TestHost)
+
+	relocated := barVariant.Output("bar")
+	expectedInput := "out/soong/.intermediates/bar/android_arm64_armv8-a/unstripped/bar"
+	android.AssertPathRelativeToTopEquals(t, "relocation input", expectedInput, relocated.Input)
+
+	entries := android.AndroidMkEntriesForTest(t, ctx.TestContext, fooMod)[0]
+	expectedData := []string{
+		"out/soong/.intermediates/bar/android_arm64_armv8-a/bar:bar",
+	}
+	actualData := entries.EntryMap["LOCAL_COMPATIBILITY_SUPPORT_FILES"]
+	android.AssertStringPathsRelativeToTopEquals(t, "LOCAL_TEST_DATA", ctx.Config, expectedData, actualData)
+}
+
+func TestDataDeviceBinsAutogenTradefedConfig(t *testing.T) {
+	bp := `
+		java_test_host {
+			name: "foo",
+			srcs: ["test.java"],
+			data_device_bins: ["bar"],
+		}
+
+		cc_binary {
+			name: "bar",
+		}
+	`
+
+	ctx := android.GroupFixturePreparers(
+		PrepareForIntegrationTestWithJava,
+	).RunTestWithBp(t, bp)
+
+	buildOS := ctx.Config.BuildOS.String()
+	fooModule := ctx.ModuleForTests("foo", buildOS+"_common")
+	expectedAutogenConfig := `<option name="push-file" key="bar" value="/data/local/tests/unrestricted/foo/bar" />`
+
+	autogen := fooModule.Rule("autogen")
+	if !strings.Contains(autogen.Args["extraConfigs"], expectedAutogenConfig) {
+		t.Errorf("foo extraConfigs %v does not contain %q", autogen.Args["extraConfigs"], expectedAutogenConfig)
 	}
 }

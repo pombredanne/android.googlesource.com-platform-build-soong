@@ -54,6 +54,10 @@ func (im moduleInfo) entryName() string {
 	return im.moduleLocalName + "_init"
 }
 
+func (mi moduleInfo) name() string {
+	return fmt.Sprintf("%q", MakePath2ModuleName(mi.originalPath))
+}
+
 type inheritedModule interface {
 	name() string
 	entryName() string
@@ -65,10 +69,6 @@ type inheritedModule interface {
 type inheritedStaticModule struct {
 	*moduleInfo
 	loadAlways bool
-}
-
-func (im inheritedStaticModule) name() string {
-	return fmt.Sprintf("%q", MakePath2ModuleName(im.originalPath))
 }
 
 func (im inheritedStaticModule) emitSelect(_ *generationContext) {
@@ -86,6 +86,8 @@ type inheritedDynamicModule struct {
 	path             interpolateExpr
 	candidateModules []*moduleInfo
 	loadAlways       bool
+	location         ErrorLocation
+	needsWarning     bool
 }
 
 func (i inheritedDynamicModule) name() string {
@@ -97,12 +99,16 @@ func (i inheritedDynamicModule) entryName() string {
 }
 
 func (i inheritedDynamicModule) emitSelect(gctx *generationContext) {
+	if i.needsWarning {
+		gctx.newLine()
+		gctx.writef("%s.mkwarning(%q, %q)", baseName, i.location, "Please avoid starting an include path with a variable. See https://source.android.com/setup/build/bazel/product_config/issues/includes for details.")
+	}
 	gctx.newLine()
 	gctx.writef("_entry = {")
 	gctx.indentLevel++
 	for _, mi := range i.candidateModules {
 		gctx.newLine()
-		gctx.writef(`"%s": (%q, %s),`, mi.originalPath, mi.moduleLocalName, mi.entryName())
+		gctx.writef(`"%s": (%s, %s),`, mi.originalPath, mi.name(), mi.entryName())
 	}
 	gctx.indentLevel--
 	gctx.newLine()
@@ -178,10 +184,9 @@ type assignmentFlavor int
 
 const (
 	// Assignment flavors
-	asgnSet         assignmentFlavor = iota // := or =
-	asgnMaybeSet    assignmentFlavor = iota // ?= and variable may be unset
-	asgnAppend      assignmentFlavor = iota // += and variable has been set before
-	asgnMaybeAppend assignmentFlavor = iota // += and variable may be unset
+	asgnSet      assignmentFlavor = iota // := or =
+	asgnMaybeSet assignmentFlavor = iota // ?=
+	asgnAppend   assignmentFlavor = iota // +=
 )
 
 type assignmentNode struct {
@@ -207,6 +212,20 @@ func (asgn *assignmentNode) emit(gctx *generationContext) {
 		asgn.lhs.emitGet(gctx, true)
 		gctx.writef(")")
 	}
+}
+
+func (asgn *assignmentNode) isSelfReferential() bool {
+	if asgn.flavor == asgnAppend {
+		return true
+	}
+	isSelfReferential := false
+	asgn.value.transform(func(expr starlarkExpr) starlarkExpr {
+		if ref, ok := expr.(*variableRefExpr); ok && ref.ref.name() == asgn.lhs.name() {
+			isSelfReferential = true
+		}
+		return nil
+	})
+	return isSelfReferential
 }
 
 type exprNode struct {
@@ -249,29 +268,17 @@ type switchCase struct {
 	nodes []starlarkNode
 }
 
-func (cb *switchCase) newNode(node starlarkNode) {
-	cb.nodes = append(cb.nodes, node)
-}
-
 func (cb *switchCase) emit(gctx *generationContext) {
 	cb.gate.emit(gctx)
 	gctx.indentLevel++
 	hasStatements := false
-	emitNode := func(node starlarkNode) {
+	for _, node := range cb.nodes {
 		if _, ok := node.(*commentNode); !ok {
 			hasStatements = true
 		}
 		node.emit(gctx)
 	}
-	if len(cb.nodes) > 0 {
-		emitNode(cb.nodes[0])
-		for _, node := range cb.nodes[1:] {
-			emitNode(node)
-		}
-		if !hasStatements {
-			gctx.emitPass()
-		}
-	} else {
+	if !hasStatements {
 		gctx.emitPass()
 	}
 	gctx.indentLevel--
@@ -282,22 +289,8 @@ type switchNode struct {
 	ssCases []*switchCase
 }
 
-func (ssw *switchNode) newNode(node starlarkNode) {
-	switch br := node.(type) {
-	case *switchCase:
-		ssw.ssCases = append(ssw.ssCases, br)
-	default:
-		panic(fmt.Errorf("expected switchCase node, got %t", br))
-	}
-}
-
 func (ssw *switchNode) emit(gctx *generationContext) {
-	if len(ssw.ssCases) == 0 {
-		gctx.emitPass()
-	} else {
-		ssw.ssCases[0].emit(gctx)
-		for _, ssCase := range ssw.ssCases[1:] {
-			ssCase.emit(gctx)
-		}
+	for _, ssCase := range ssw.ssCases {
+		ssCase.emit(gctx)
 	}
 }
