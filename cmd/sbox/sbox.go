@@ -34,7 +34,7 @@ import (
 	"android/soong/makedeps"
 	"android/soong/response"
 
-	"google.golang.org/protobuf/encoding/prototext"
+	"github.com/golang/protobuf/proto"
 )
 
 var (
@@ -164,7 +164,7 @@ func run() error {
 		if useSubDir {
 			localTempDir = filepath.Join(localTempDir, strconv.Itoa(i))
 		}
-		depFile, err := runCommand(command, localTempDir, i)
+		depFile, err := runCommand(command, localTempDir)
 		if err != nil {
 			// Running the command failed, keep the temporary output directory around in
 			// case a user wants to inspect it for debugging purposes.  Soong will delete
@@ -194,28 +194,6 @@ func run() error {
 	return nil
 }
 
-// createCommandScript will create and return an exec.Cmd that runs rawCommand.
-//
-// rawCommand is executed via a script in the sandbox.
-// tempDir is the temporary where the script is created.
-// toDirInSandBox is the path containing the script in the sbox environment.
-// toDirInSandBox is the path containing the script in the sbox environment.
-// seed is a unique integer used to distinguish different scripts that might be at location.
-//
-// returns an exec.Cmd that can be ran from within sbox context if no error, or nil if error.
-// caller must ensure script is cleaned up if function succeeds.
-//
-func createCommandScript(rawCommand string, tempDir, toDirInSandbox string, seed int) (*exec.Cmd, error) {
-	scriptName := fmt.Sprintf("sbox_command.%d.bash", seed)
-	scriptPathAndName := joinPath(tempDir, scriptName)
-	err := os.WriteFile(scriptPathAndName, []byte(rawCommand), 0644)
-	if err != nil {
-		return nil, fmt.Errorf("failed to write command %s... to %s",
-			rawCommand[0:40], scriptPathAndName)
-	}
-	return exec.Command("bash", joinPath(toDirInSandbox, filepath.Base(scriptName))), nil
-}
-
 // readManifest reads an sbox manifest from a textproto file.
 func readManifest(file string) (*sbox_proto.Manifest, error) {
 	manifestData, err := ioutil.ReadFile(file)
@@ -225,7 +203,7 @@ func readManifest(file string) (*sbox_proto.Manifest, error) {
 
 	manifest := sbox_proto.Manifest{}
 
-	err = prototext.Unmarshal(manifestData, &manifest)
+	err = proto.UnmarshalText(string(manifestData), &manifest)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing manifest %q: %w", file, err)
 	}
@@ -235,7 +213,7 @@ func readManifest(file string) (*sbox_proto.Manifest, error) {
 
 // runCommand runs a single command from a manifest.  If the command references the
 // __SBOX_DEPFILE__ placeholder it returns the name of the depfile that was used.
-func runCommand(command *sbox_proto.Command, tempDir string, commandIndex int) (depFile string, err error) {
+func runCommand(command *sbox_proto.Command, tempDir string) (depFile string, err error) {
 	rawCommand := command.GetCommand()
 	if rawCommand == "" {
 		return "", fmt.Errorf("command is required")
@@ -277,11 +255,7 @@ func runCommand(command *sbox_proto.Command, tempDir string, commandIndex int) (
 		return "", err
 	}
 
-	cmd, err := createCommandScript(rawCommand, tempDir, pathToTempDirInSbox, commandIndex)
-	if err != nil {
-		return "", err
-	}
-
+	cmd := exec.Command("bash", "-c", rawCommand)
 	buf := &bytes.Buffer{}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = buf

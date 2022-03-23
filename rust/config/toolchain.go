@@ -121,7 +121,14 @@ func LibFuzzerRuntimeLibrary(t Toolchain) string {
 }
 
 func LibclangRuntimeLibrary(t Toolchain, library string) string {
-	return "libclang_rt." + library
+	arch := t.LibclangRuntimeLibraryArch()
+	if arch == "" {
+		return ""
+	}
+	if !t.Bionic() {
+		return "libclang_rt." + library + "-" + arch
+	}
+	return "libclang_rt." + library + "-" + arch + "-android"
 }
 
 func LibRustRuntimeLibrary(t Toolchain, library string) string {

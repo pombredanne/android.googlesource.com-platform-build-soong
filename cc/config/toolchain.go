@@ -16,6 +16,7 @@ package config
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"android/soong/android"
 )
@@ -76,22 +77,25 @@ type Toolchain interface {
 	GccTriple() string
 	// GccVersion should return a real value, not a ninja reference
 	GccVersion() string
+	ToolPath() string
 
 	IncludeFlags() string
 
 	ClangTriple() string
-	ToolchainCflags() string
-	ToolchainLdflags() string
-	Asflags() string
-	Cflags() string
-	Cppflags() string
-	Ldflags() string
-	Lldflags() string
-	InstructionSetFlags(string) (string, error)
+	ToolchainClangCflags() string
+	ToolchainClangLdflags() string
+	ClangAsflags() string
+	ClangCflags() string
+	ClangCppflags() string
+	ClangLdflags() string
+	ClangLldflags() string
+	ClangInstructionSetFlags(string) (string, error)
 
 	ndkTriple() string
 
 	YasmFlags() string
+
+	WindresFlags() string
 
 	Is64Bit() bool
 
@@ -102,20 +106,7 @@ type Toolchain interface {
 
 	AvailableLibraries() []string
 
-	CrtBeginStaticBinary() []string
-	CrtBeginSharedBinary() []string
-	CrtBeginSharedLibrary() []string
-	CrtEndStaticBinary() []string
-	CrtEndSharedBinary() []string
-	CrtEndSharedLibrary() []string
-
-	// DefaultSharedLibraries returns the list of shared libraries that will be added to all
-	// targets unless they explicitly specify system_shared_libs.
-	DefaultSharedLibraries() []string
-
 	Bionic() bool
-	Glibc() bool
-	Musl() bool
 }
 
 type toolchainBase struct {
@@ -134,18 +125,18 @@ func NDKTriple(toolchain Toolchain) string {
 	return triple
 }
 
-func (toolchainBase) InstructionSetFlags(s string) (string, error) {
+func (toolchainBase) ClangInstructionSetFlags(s string) (string, error) {
 	if s != "" {
 		return "", fmt.Errorf("instruction_set: %s is not a supported instruction set", s)
 	}
 	return "", nil
 }
 
-func (toolchainBase) ToolchainCflags() string {
+func (toolchainBase) ToolchainClangCflags() string {
 	return ""
 }
 
-func (toolchainBase) ToolchainLdflags() string {
+func (toolchainBase) ToolchainClangLdflags() string {
 	return ""
 }
 
@@ -157,11 +148,15 @@ func (toolchainBase) ExecutableSuffix() string {
 	return ""
 }
 
-func (toolchainBase) Asflags() string {
+func (toolchainBase) ClangAsflags() string {
 	return ""
 }
 
 func (toolchainBase) YasmFlags() string {
+	return ""
+}
+
+func (toolchainBase) WindresFlags() string {
 	return ""
 }
 
@@ -170,30 +165,15 @@ func (toolchainBase) LibclangRuntimeLibraryArch() string {
 }
 
 func (toolchainBase) AvailableLibraries() []string {
-	return nil
-}
-
-func (toolchainBase) CrtBeginStaticBinary() []string  { return nil }
-func (toolchainBase) CrtBeginSharedBinary() []string  { return nil }
-func (toolchainBase) CrtBeginSharedLibrary() []string { return nil }
-func (toolchainBase) CrtEndStaticBinary() []string    { return nil }
-func (toolchainBase) CrtEndSharedBinary() []string    { return nil }
-func (toolchainBase) CrtEndSharedLibrary() []string   { return nil }
-
-func (toolchainBase) DefaultSharedLibraries() []string {
-	return nil
+	return []string{}
 }
 
 func (toolchainBase) Bionic() bool {
-	return false
+	return true
 }
 
-func (toolchainBase) Glibc() bool {
-	return false
-}
-
-func (toolchainBase) Musl() bool {
-	return false
+func (t toolchainBase) ToolPath() string {
+	return ""
 }
 
 type toolchain64Bit struct {
@@ -227,7 +207,14 @@ func addPrefix(list []string, prefix string) []string {
 }
 
 func LibclangRuntimeLibrary(t Toolchain, library string) string {
-	return "libclang_rt." + library
+	arch := t.LibclangRuntimeLibraryArch()
+	if arch == "" {
+		return ""
+	}
+	if !t.Bionic() {
+		return "libclang_rt." + library + "-" + arch
+	}
+	return "libclang_rt." + library + "-" + arch + "-android"
 }
 
 func BuiltinsRuntimeLibrary(t Toolchain) string {
@@ -268,6 +255,13 @@ func ScudoMinimalRuntimeLibrary(t Toolchain) string {
 
 func LibFuzzerRuntimeLibrary(t Toolchain) string {
 	return LibclangRuntimeLibrary(t, "fuzzer")
+}
+
+func ToolPath(t Toolchain) string {
+	if p := t.ToolPath(); p != "" {
+		return p
+	}
+	return filepath.Join(t.GccRoot(), t.GccTriple(), "bin")
 }
 
 var inList = android.InList
