@@ -17,7 +17,6 @@ package sdk
 import (
 	"log"
 	"os"
-	"runtime"
 	"testing"
 
 	"android/soong/android"
@@ -28,9 +27,9 @@ import (
 
 // Needed in an _test.go file in this package to ensure tests run correctly, particularly in IDE.
 func TestMain(m *testing.M) {
-	if runtime.GOOS != "linux" {
+	if android.BuildOs != android.Linux {
 		// b/145598135 - Generating host snapshots for anything other than linux is not supported.
-		log.Printf("Skipping as sdk snapshot generation is only supported on linux not %s", runtime.GOOS)
+		log.Printf("Skipping as sdk snapshot generation is only supported on %s not %s", android.Linux, android.BuildOs)
 		os.Exit(0)
 	}
 
@@ -568,49 +567,6 @@ sdk_snapshot {
 		)
 	})
 
-	t.Run("SOONG_SDK_SNAPSHOT_USE_SOURCE_CONFIG_VAR=module:build_from_source", func(t *testing.T) {
-		result := android.GroupFixturePreparers(
-			preparer,
-			android.FixtureMergeEnv(map[string]string{
-				"SOONG_SDK_SNAPSHOT_USE_SOURCE_CONFIG_VAR": "module:build_from_source",
-			}),
-		).RunTest(t)
-
-		checkZipFile(t, result, "out/soong/.intermediates/mysdk/common_os/mysdk-current.zip")
-
-		CheckSnapshot(t, result, "mysdk", "",
-			checkAndroidBpContents(`
-// This is auto-generated. DO NOT EDIT.
-
-java_import {
-    name: "mysdk_myjavalib@current",
-    sdk_member_name: "myjavalib",
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
-}
-
-java_import {
-    name: "myjavalib",
-    prefer: false,
-    use_source_config_var: {
-        config_namespace: "module",
-        var_name: "build_from_source",
-    },
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
-}
-
-sdk_snapshot {
-    name: "mysdk@current",
-    visibility: ["//visibility:public"],
-    java_header_libs: ["mysdk_myjavalib@current"],
-}
-			`),
-		)
-	})
-
 	t.Run("SOONG_SDK_SNAPSHOT_VERSION=unversioned", func(t *testing.T) {
 		result := android.GroupFixturePreparers(
 			preparer,
@@ -750,10 +706,10 @@ prebuilt_bootclasspath_fragment {
     apex_available: ["myapex"],
     contents: ["mysdklibrary"],
     hidden_api: {
+        stub_flags: "hiddenapi/stub-flags.csv",
         annotation_flags: "hiddenapi/annotation-flags.csv",
         metadata: "hiddenapi/metadata.csv",
         index: "hiddenapi/index.csv",
-        stub_flags: "hiddenapi/stub-flags.csv",
         all_flags: "hiddenapi/all-flags.csv",
     },
 }
@@ -777,10 +733,10 @@ java_sdk_library_import {
 `),
 
 			checkAllCopyRules(`
+.intermediates/mybootclasspathfragment/android_common/modular-hiddenapi/stub-flags.csv -> hiddenapi/stub-flags.csv
 .intermediates/mybootclasspathfragment/android_common/modular-hiddenapi/annotation-flags.csv -> hiddenapi/annotation-flags.csv
 .intermediates/mybootclasspathfragment/android_common/modular-hiddenapi/metadata.csv -> hiddenapi/metadata.csv
 .intermediates/mybootclasspathfragment/android_common/modular-hiddenapi/index.csv -> hiddenapi/index.csv
-.intermediates/mybootclasspathfragment/android_common/modular-hiddenapi/stub-flags.csv -> hiddenapi/stub-flags.csv
 .intermediates/mybootclasspathfragment/android_common/modular-hiddenapi/all-flags.csv -> hiddenapi/all-flags.csv
 .intermediates/mysdklibrary.stubs/android_common/javac/mysdklibrary.stubs.jar -> sdk_library/public/mysdklibrary-stubs.jar
 .intermediates/mysdklibrary.stubs.source/android_common/metalava/mysdklibrary.stubs.source_api.txt -> sdk_library/public/mysdklibrary.txt
