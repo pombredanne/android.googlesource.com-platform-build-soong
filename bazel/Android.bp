@@ -7,14 +7,12 @@ bootstrap_go_package {
     pkgPath: "android/soong/bazel",
     srcs: [
         "aquery.go",
-        "configurability.go",
         "constants.go",
         "properties.go",
     ],
     testSrcs: [
         "aquery_test.go",
         "properties_test.go",
-        "testing.go",
     ],
     pluginFor: [
         "soong_build",

@@ -32,7 +32,25 @@ import (
 )
 
 const (
-	sdkXmlFileSuffix = ".xml"
+	sdkXmlFileSuffix    = ".xml"
+	permissionsTemplate = `<?xml version=\"1.0\" encoding=\"utf-8\"?>\n` +
+		`<!-- Copyright (C) 2018 The Android Open Source Project\n` +
+		`\n` +
+		`    Licensed under the Apache License, Version 2.0 (the \"License\");\n` +
+		`    you may not use this file except in compliance with the License.\n` +
+		`    You may obtain a copy of the License at\n` +
+		`\n` +
+		`        http://www.apache.org/licenses/LICENSE-2.0\n` +
+		`\n` +
+		`    Unless required by applicable law or agreed to in writing, software\n` +
+		`    distributed under the License is distributed on an \"AS IS\" BASIS,\n` +
+		`    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n` +
+		`    See the License for the specific language governing permissions and\n` +
+		`    limitations under the License.\n` +
+		`-->\n` +
+		`<permissions>\n` +
+		`    <library name=\"%s\" file=\"%s\"/>\n` +
+		`</permissions>\n`
 )
 
 // A tag to associated a dependency with a specific api scope.
@@ -343,14 +361,13 @@ type ApiScopeProperties struct {
 	// The sdk_version to use for building the stubs.
 	//
 	// If not specified then it will use an sdk_version determined as follows:
-	//
 	// 1) If the sdk_version specified on the java_sdk_library is none then this
-	// will be none. This is used for java_sdk_library instances that are used
-	// to create stubs that contribute to the core_current sdk version.
-	// 2) Otherwise, it is assumed that this library extends but does not
-	// contribute directly to a specific sdk_version and so this uses the
-	// sdk_version appropriate for the api scope. e.g. public will use
-	// sdk_version: current, system will use sdk_version: system_current, etc.
+	//    will be none. This is used for java_sdk_library instances that are used
+	//    to create stubs that contribute to the core_current sdk version.
+	// 2) Otherwise, it is assumed that this library extends but does not contribute
+	//    directly to a specific sdk_version and so this uses the sdk_version appropriate
+	//    for the api scope. e.g. public will use sdk_version: current, system will use
+	//    sdk_version: system_current, etc.
 	//
 	// This does not affect the sdk_version used for either generating the stubs source
 	// or the API file. They both have to use the same sdk_version as is used for
@@ -405,7 +422,7 @@ type sdkLibraryProperties struct {
 	// local files that are used within user customized droiddoc options.
 	Droiddoc_option_files []string
 
-	// additional droiddoc options.
+	// additional droiddoc options
 	// Available variables for substitution:
 	//
 	//  $(location <label>): the path to the droiddoc_option_files with name <label>
@@ -523,7 +540,7 @@ type scopePaths struct {
 	// The dex jar for the stubs.
 	//
 	// This is not the implementation jar, it still only contains stubs.
-	stubsDexJarPath OptionalDexJarPath
+	stubsDexJarPath android.Path
 
 	// The API specification file, e.g. system_current.txt.
 	currentApiFilePath android.OptionalPath
@@ -619,33 +636,6 @@ type commonToSdkLibraryAndImportProperties struct {
 
 	// Files containing information about supported java doc tags.
 	Doctag_files []string `android:"path"`
-
-	// Signals that this shared library is part of the bootclasspath starting
-	// on the version indicated in this attribute.
-	//
-	// This will make platforms at this level and above to ignore
-	// <uses-library> tags with this library name because the library is already
-	// available
-	On_bootclasspath_since *string
-
-	// Signals that this shared library was part of the bootclasspath before
-	// (but not including) the version indicated in this attribute.
-	//
-	// The system will automatically add a <uses-library> tag with this library to
-	// apps that target any SDK less than the version indicated in this attribute.
-	On_bootclasspath_before *string
-
-	// Indicates that PackageManager should ignore this shared library if the
-	// platform is below the version indicated in this attribute.
-	//
-	// This means that the device won't recognise this library as installed.
-	Min_device_sdk *string
-
-	// Indicates that PackageManager should ignore this shared library if the
-	// platform is above the version indicated in this attribute.
-	//
-	// This means that the device won't recognise this library as installed.
-	Max_device_sdk *string
 }
 
 // commonSdkLibraryAndImportModule defines the interface that must be provided by a module that
@@ -925,10 +915,10 @@ func sdkKindToApiScope(kind android.SdkKind) *apiScope {
 }
 
 // to satisfy SdkLibraryDependency interface
-func (c *commonToSdkLibraryAndImport) SdkApiStubDexJar(ctx android.BaseModuleContext, kind android.SdkKind) OptionalDexJarPath {
+func (c *commonToSdkLibraryAndImport) SdkApiStubDexJar(ctx android.BaseModuleContext, kind android.SdkKind) android.Path {
 	paths := c.selectScopePaths(ctx, kind)
 	if paths == nil {
-		return makeUnsetDexJarPath()
+		return nil
 	}
 
 	return paths.stubsDexJarPath
@@ -1003,15 +993,13 @@ func (e *EmbeddableSdkLibraryComponent) SdkLibraryName() *string {
 }
 
 // to satisfy SdkLibraryComponentDependency
+func (e *EmbeddableSdkLibraryComponent) OptionalImplicitSdkLibrary() *string {
+	return e.sdkLibraryComponentProperties.SdkLibraryToImplicitlyTrack
+}
+
+// to satisfy SdkLibraryComponentDependency
 func (e *EmbeddableSdkLibraryComponent) OptionalSdkLibraryImplementation() *string {
-	// For shared libraries, this is the same as the SDK library name. If a Java library or app
-	// depends on a component library (e.g. a stub library) it still needs to know the name of the
-	// run-time library and the corresponding module that provides the implementation. This name is
-	// passed to manifest_fixer (to be added to AndroidManifest.xml) and added to CLC (to be used
-	// in dexpreopt).
-	//
-	// For non-shared SDK (component or not) libraries this returns `nil`, as they are not
-	// <uses-library> and should not be added to the manifest or to CLC.
+	// Currently implementation library name is the same as the SDK library name.
 	return e.sdkLibraryComponentProperties.SdkLibraryToImplicitlyTrack
 }
 
@@ -1022,6 +1010,12 @@ type SdkLibraryComponentDependency interface {
 
 	// SdkLibraryName returns the name of the java_sdk_library/_import module.
 	SdkLibraryName() *string
+
+	// The optional name of the sdk library that should be implicitly added to the
+	// AndroidManifest of an app that contains code which references the sdk library.
+	//
+	// Returns the name of the optional implicit SDK library or nil, if there isn't one.
+	OptionalImplicitSdkLibrary() *string
 
 	// The name of the implementation library for the optional SDK library or nil, if there isn't one.
 	OptionalSdkLibraryImplementation() *string
@@ -1054,7 +1048,7 @@ type SdkLibraryDependency interface {
 
 	// SdkApiStubDexJar returns the dex jar for the stubs. It is needed by the hiddenapi processing
 	// tool which processes dex files.
-	SdkApiStubDexJar(ctx android.BaseModuleContext, kind android.SdkKind) OptionalDexJarPath
+	SdkApiStubDexJar(ctx android.BaseModuleContext, kind android.SdkKind) android.Path
 
 	// SdkRemovedTxtFile returns the optional path to the removed.txt file for the specified sdk kind.
 	SdkRemovedTxtFile(ctx android.BaseModuleContext, kind android.SdkKind) android.OptionalPath
@@ -1221,16 +1215,11 @@ func (module *SdkLibrary) DepsMutator(ctx android.BottomUpMutatorContext) {
 
 func (module *SdkLibrary) OutputFiles(tag string) (android.Paths, error) {
 	paths, err := module.commonOutputFiles(tag)
-	if paths != nil || err != nil {
+	if paths == nil && err == nil {
+		return module.Library.OutputFiles(tag)
+	} else {
 		return paths, err
 	}
-	if module.requiresRuntimeImplementationLibrary() {
-		return module.Library.OutputFiles(tag)
-	}
-	if tag == "" {
-		return nil, nil
-	}
-	return nil, fmt.Errorf("unsupported module reference tag %q", tag)
 }
 
 func (module *SdkLibrary) GenerateAndroidBuildActions(ctx android.ModuleContext) {
@@ -1511,15 +1500,15 @@ func (module *SdkLibrary) createStubsSourcesAndApi(mctx android.DefaultableHookC
 	}
 	droidstubsArgs = append(droidstubsArgs, module.sdkLibraryProperties.Droiddoc_options...)
 	disabledWarnings := []string{
-		"BroadcastBehavior",
-		"DeprecationMismatch",
-		"HiddenSuperclass",
-		"HiddenTypeParameter",
 		"MissingPermission",
+		"BroadcastBehavior",
+		"HiddenSuperclass",
+		"DeprecationMismatch",
+		"UnavailableSymbol",
 		"SdkConstant",
+		"HiddenTypeParameter",
 		"Todo",
 		"Typo",
-		"UnavailableSymbol",
 	}
 	droidstubsArgs = append(droidstubsArgs, android.JoinWithPrefix(disabledWarnings, "--hide "))
 
@@ -1614,29 +1603,14 @@ func (module *SdkLibrary) UniqueApexVariations() bool {
 
 // Creates the xml file that publicizes the runtime library
 func (module *SdkLibrary) createXmlFile(mctx android.DefaultableHookContext) {
-	moduleMinApiLevel := module.Library.MinSdkVersion(mctx).ApiLevel
-	var moduleMinApiLevelStr = moduleMinApiLevel.String()
-	if moduleMinApiLevel == android.NoneApiLevel {
-		moduleMinApiLevelStr = "current"
-	}
 	props := struct {
-		Name                      *string
-		Lib_name                  *string
-		Apex_available            []string
-		On_bootclasspath_since    *string
-		On_bootclasspath_before   *string
-		Min_device_sdk            *string
-		Max_device_sdk            *string
-		Sdk_library_min_api_level *string
+		Name           *string
+		Lib_name       *string
+		Apex_available []string
 	}{
-		Name:                      proptools.StringPtr(module.xmlPermissionsModuleName()),
-		Lib_name:                  proptools.StringPtr(module.BaseModuleName()),
-		Apex_available:            module.ApexProperties.Apex_available,
-		On_bootclasspath_since:    module.commonSdkLibraryProperties.On_bootclasspath_since,
-		On_bootclasspath_before:   module.commonSdkLibraryProperties.On_bootclasspath_before,
-		Min_device_sdk:            module.commonSdkLibraryProperties.Min_device_sdk,
-		Max_device_sdk:            module.commonSdkLibraryProperties.Max_device_sdk,
-		Sdk_library_min_api_level: &moduleMinApiLevelStr,
+		Name:           proptools.StringPtr(module.xmlPermissionsModuleName()),
+		Lib_name:       proptools.StringPtr(module.BaseModuleName()),
+		Apex_available: module.ApexProperties.Apex_available,
 	}
 
 	mctx.CreateModule(sdkLibraryXmlFactory, &props)
@@ -1759,12 +1733,8 @@ func (module *SdkLibrary) CreateInternalModules(mctx android.DefaultableHookCont
 			path := path.Join(mctx.ModuleDir(), apiDir, scope.apiFilePrefix+api)
 			p := android.ExistentPathForSource(mctx, path)
 			if !p.Valid() {
-				if mctx.Config().AllowMissingDependencies() {
-					mctx.AddMissingDependencies([]string{path})
-				} else {
-					mctx.ModuleErrorf("Current api file %#v doesn't exist", path)
-					missingCurrentApi = true
-				}
+				mctx.ModuleErrorf("Current api file %#v doesn't exist", path)
+				missingCurrentApi = true
 			}
 		}
 	}
@@ -1961,6 +1931,7 @@ type sdkLibraryImportProperties struct {
 	Compile_dex *bool
 
 	// If not empty, classes are restricted to the specified packages and their sub-packages.
+	// This information is used to generate the updatable-bcp-packages.txt file.
 	Permitted_packages []string
 }
 
@@ -1972,7 +1943,6 @@ type SdkLibraryImport struct {
 	android.SdkBase
 
 	hiddenAPI
-	dexpreopter
 
 	properties sdkLibraryImportProperties
 
@@ -1989,12 +1959,8 @@ type SdkLibraryImport struct {
 	// Is nil if the source module does not exist.
 	xmlPermissionsFileModule *sdkLibraryXml
 
-	// Build path to the dex implementation jar obtained from the prebuilt_apex, if any.
-	dexJarFile OptionalDexJarPath
-
-	// Expected install file path of the source module(sdk_library)
-	// or dex implementation jar obtained from the prebuilt_apex, if any.
-	installFile android.Path
+	// Path to the dex implementation jar obtained from the prebuilt_apex, if any.
+	dexJarFile android.Path
 }
 
 var _ SdkLibraryDependency = (*SdkLibraryImport)(nil)
@@ -2177,14 +2143,6 @@ func (module *SdkLibraryImport) DepsMutator(ctx android.BottomUpMutatorContext) 
 	}
 }
 
-func (module *SdkLibraryImport) AndroidMkEntries() []android.AndroidMkEntries {
-	// For an SDK library imported from a prebuilt APEX, we don't need a Make module for itself, as we
-	// don't need to install it. However, we need to add its dexpreopt outputs as sub-modules, if it
-	// is preopted.
-	dexpreoptEntries := module.dexpreopter.AndroidMkEntriesForApex()
-	return append(dexpreoptEntries, android.AndroidMkEntries{Disabled: true})
-}
-
 var _ android.ApexModule = (*SdkLibraryImport)(nil)
 
 // Implements android.ApexModule
@@ -2218,8 +2176,7 @@ func (module *SdkLibraryImport) OutputFiles(tag string) (android.Paths, error) {
 func (module *SdkLibraryImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	module.generateCommonBuildActions(ctx)
 
-	// Assume that source module(sdk_library) is installed in /<sdk_library partition>/framework
-	module.installFile = android.PathForModuleInstall(ctx, "framework", module.Stem()+".jar")
+	var deapexerModule android.Module
 
 	// Record the paths to the prebuilt stubs library and stubs source.
 	ctx.VisitDirectDeps(func(to android.Module) {
@@ -2246,6 +2203,15 @@ func (module *SdkLibraryImport) GenerateAndroidBuildActions(ctx android.ModuleCo
 				ctx.ModuleErrorf("xml permissions file module must be of type *sdkLibraryXml but was %T", to)
 			}
 		}
+
+		// Save away the `deapexer` module on which this depends, if any.
+		if tag == android.DeapexerTag {
+			if deapexerModule != nil {
+				ctx.ModuleErrorf("Ambiguous duplicate deapexer module dependencies %q and %q",
+					deapexerModule.Name(), to.Name())
+			}
+			deapexerModule = to
+		}
 	})
 
 	// Populate the scope paths with information from the properties.
@@ -2265,28 +2231,22 @@ func (module *SdkLibraryImport) GenerateAndroidBuildActions(ctx android.ModuleCo
 		// obtained from the associated deapexer module.
 		ai := ctx.Provider(android.ApexInfoProvider).(android.ApexInfo)
 		if ai.ForPrebuiltApex {
-			// Get the path of the dex implementation jar from the `deapexer` module.
-			di := android.FindDeapexerProviderForModule(ctx)
-			if di == nil {
-				return // An error has been reported by FindDeapexerProviderForModule.
+			if deapexerModule == nil {
+				// This should never happen as a variant for a prebuilt_apex is only created if the
+				// deapxer module has been configured to export the dex implementation jar for this module.
+				ctx.ModuleErrorf("internal error: module %q does not depend on a `deapexer` module for prebuilt_apex %q",
+					module.Name(), ai.ApexVariationName)
 			}
-			if dexOutputPath := di.PrebuiltExportPath(apexRootRelativePathToJavaLib(module.BaseModuleName())); dexOutputPath != nil {
-				dexJarFile := makeDexJarPathFromPath(dexOutputPath)
-				module.dexJarFile = dexJarFile
-				installPath := android.PathForModuleInPartitionInstall(
-					ctx, "apex", ai.ApexVariationName, apexRootRelativePathToJavaLib(module.BaseModuleName()))
-				module.installFile = installPath
-				module.initHiddenAPI(ctx, dexJarFile, module.findScopePaths(apiScopePublic).stubsImplPath[0], nil)
 
-				// Dexpreopting.
-				module.dexpreopter.installPath = module.dexpreopter.getInstallPath(ctx, installPath)
-				module.dexpreopter.isSDKLibrary = true
-				module.dexpreopter.uncompressedDex = shouldUncompressDex(ctx, &module.dexpreopter)
-				module.dexpreopt(ctx, dexOutputPath)
+			// Get the path of the dex implementation jar from the `deapexer` module.
+			di := ctx.OtherModuleProvider(deapexerModule, android.DeapexerProvider).(android.DeapexerInfo)
+			if dexOutputPath := di.PrebuiltExportPath(apexRootRelativePathToJavaLib(module.BaseModuleName())); dexOutputPath != nil {
+				module.dexJarFile = dexOutputPath
+				module.initHiddenAPI(ctx, dexOutputPath, module.findScopePaths(apiScopePublic).stubsImplPath[0], nil)
 			} else {
 				// This should never happen as a variant for a prebuilt_apex is only created if the
 				// prebuilt_apex has been configured to export the java library dex file.
-				ctx.ModuleErrorf("internal error: no dex implementation jar available from prebuilt APEX %s", di.ApexModuleName())
+				ctx.ModuleErrorf("internal error: no dex implementation jar available from prebuilt_apex %q", deapexerModule.Name())
 			}
 		}
 	}
@@ -2321,14 +2281,14 @@ func (module *SdkLibraryImport) SdkImplementationJars(ctx android.BaseModuleCont
 }
 
 // to satisfy UsesLibraryDependency interface
-func (module *SdkLibraryImport) DexJarBuildPath() OptionalDexJarPath {
+func (module *SdkLibraryImport) DexJarBuildPath() android.Path {
 	// The dex implementation jar extracted from the .apex file should be used in preference to the
 	// source.
-	if module.dexJarFile.IsSet() {
+	if module.dexJarFile != nil {
 		return module.dexJarFile
 	}
 	if module.implLibraryModule == nil {
-		return makeUnsetDexJarPath()
+		return nil
 	} else {
 		return module.implLibraryModule.DexJarBuildPath()
 	}
@@ -2336,7 +2296,11 @@ func (module *SdkLibraryImport) DexJarBuildPath() OptionalDexJarPath {
 
 // to satisfy UsesLibraryDependency interface
 func (module *SdkLibraryImport) DexJarInstallPath() android.Path {
-	return module.installFile
+	if module.implLibraryModule == nil {
+		return nil
+	} else {
+		return module.implLibraryModule.DexJarInstallPath()
+	}
 }
 
 // to satisfy UsesLibraryDependency interface
@@ -2401,11 +2365,6 @@ func (module *SdkLibraryImport) ImplementationAndResourcesJars() android.Paths {
 	}
 }
 
-// to satisfy java.DexpreopterInterface interface
-func (module *SdkLibraryImport) IsInstallable() bool {
-	return true
-}
-
 var _ android.RequiredFilesFromPrebuiltApex = (*SdkLibraryImport)(nil)
 
 func (module *SdkLibraryImport) RequiredFilesFromPrebuiltApex(ctx android.BaseModuleContext) []string {
@@ -2432,38 +2391,6 @@ type sdkLibraryXml struct {
 type sdkLibraryXmlProperties struct {
 	// canonical name of the lib
 	Lib_name *string
-
-	// Signals that this shared library is part of the bootclasspath starting
-	// on the version indicated in this attribute.
-	//
-	// This will make platforms at this level and above to ignore
-	// <uses-library> tags with this library name because the library is already
-	// available
-	On_bootclasspath_since *string
-
-	// Signals that this shared library was part of the bootclasspath before
-	// (but not including) the version indicated in this attribute.
-	//
-	// The system will automatically add a <uses-library> tag with this library to
-	// apps that target any SDK less than the version indicated in this attribute.
-	On_bootclasspath_before *string
-
-	// Indicates that PackageManager should ignore this shared library if the
-	// platform is below the version indicated in this attribute.
-	//
-	// This means that the device won't recognise this library as installed.
-	Min_device_sdk *string
-
-	// Indicates that PackageManager should ignore this shared library if the
-	// platform is above the version indicated in this attribute.
-	//
-	// This means that the device won't recognise this library as installed.
-	Max_device_sdk *string
-
-	// The SdkLibrary's min api level as a string
-	//
-	// This value comes from the ApiLevel of the MinSdkVersion property.
-	Sdk_library_min_api_level *string
 }
 
 // java_sdk_library_xml builds the permission xml file for a java_sdk_library.
@@ -2540,87 +2467,11 @@ func (module *sdkLibraryXml) implPath(ctx android.ModuleContext) string {
 	return "/" + partition + "/framework/" + implName + ".jar"
 }
 
-func formattedOptionalSdkLevelAttribute(ctx android.ModuleContext, attrName string, value *string) string {
-	if value == nil {
-		return ""
-	}
-	apiLevel, err := android.ApiLevelFromUser(ctx, *value)
-	if err != nil {
-		// attributes in bp files have underscores but in the xml have dashes.
-		ctx.PropertyErrorf(strings.ReplaceAll(attrName, "-", "_"), err.Error())
-		return ""
-	}
-	if apiLevel.IsCurrent() {
-		// passing "current" would always mean a future release, never the current (or the current in
-		// progress) which means some conditions would never be triggered.
-		ctx.PropertyErrorf(strings.ReplaceAll(attrName, "-", "_"),
-			`"current" is not an allowed value for this attribute`)
-		return ""
-	}
-	return formattedOptionalAttribute(attrName, value)
-}
-
-// formats an attribute for the xml permissions file if the value is not null
-// returns empty string otherwise
-func formattedOptionalAttribute(attrName string, value *string) string {
-	if value == nil {
-		return ""
-	}
-	return fmt.Sprintf(`        %s=\"%s\"\n`, attrName, *value)
-}
-
-func (module *sdkLibraryXml) permissionsContents(ctx android.ModuleContext) string {
-	libName := proptools.String(module.properties.Lib_name)
-	libNameAttr := formattedOptionalAttribute("name", &libName)
-	filePath := module.implPath(ctx)
-	filePathAttr := formattedOptionalAttribute("file", &filePath)
-	implicitFromAttr := formattedOptionalSdkLevelAttribute(ctx, "on-bootclasspath-since", module.properties.On_bootclasspath_since)
-	implicitUntilAttr := formattedOptionalSdkLevelAttribute(ctx, "on-bootclasspath-before", module.properties.On_bootclasspath_before)
-	minSdkAttr := formattedOptionalSdkLevelAttribute(ctx, "min-device-sdk", module.properties.Min_device_sdk)
-	maxSdkAttr := formattedOptionalSdkLevelAttribute(ctx, "max-device-sdk", module.properties.Max_device_sdk)
-	// <library> is understood in all android versions whereas <apex-library> is only understood from API T (and ignored before that).
-	// similarly, min_device_sdk is only understood from T. So if a library is using that, we need to use the apex-library to make sure this library is not loaded before T
-	var libraryTag string
-	if module.properties.Min_device_sdk != nil {
-		libraryTag = `    <apex-library\n`
-	} else {
-		libraryTag = `    <library\n`
-	}
-
-	return strings.Join([]string{
-		`<?xml version=\"1.0\" encoding=\"utf-8\"?>\n`,
-		`<!-- Copyright (C) 2018 The Android Open Source Project\n`,
-		`\n`,
-		`    Licensed under the Apache License, Version 2.0 (the \"License\");\n`,
-		`    you may not use this file except in compliance with the License.\n`,
-		`    You may obtain a copy of the License at\n`,
-		`\n`,
-		`        http://www.apache.org/licenses/LICENSE-2.0\n`,
-		`\n`,
-		`    Unless required by applicable law or agreed to in writing, software\n`,
-		`    distributed under the License is distributed on an \"AS IS\" BASIS,\n`,
-		`    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.\n`,
-		`    See the License for the specific language governing permissions and\n`,
-		`    limitations under the License.\n`,
-		`-->\n`,
-		`<permissions>\n`,
-		libraryTag,
-		libNameAttr,
-		filePathAttr,
-		implicitFromAttr,
-		implicitUntilAttr,
-		minSdkAttr,
-		maxSdkAttr,
-		`    />\n`,
-		`</permissions>\n`}, "")
-}
-
 func (module *sdkLibraryXml) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	module.hideApexVariantFromMake = !ctx.Provider(android.ApexInfoProvider).(android.ApexInfo).IsForPlatform()
 
 	libName := proptools.String(module.properties.Lib_name)
-	module.selfValidate(ctx)
-	xmlContent := module.permissionsContents(ctx)
+	xmlContent := fmt.Sprintf(permissionsTemplate, libName, module.implPath(ctx))
 
 	module.outputFilePath = android.PathForModuleOut(ctx, libName+".xml").OutputPath
 	rule := android.NewRuleBuilder(pctx, ctx)
@@ -2646,94 +2497,19 @@ func (module *sdkLibraryXml) AndroidMkEntries() []android.AndroidMkEntries {
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
 			func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
 				entries.SetString("LOCAL_MODULE_TAGS", "optional")
-				entries.SetString("LOCAL_MODULE_PATH", module.installDirPath.String())
+				entries.SetString("LOCAL_MODULE_PATH", module.installDirPath.ToMakePath().String())
 				entries.SetString("LOCAL_INSTALLED_MODULE_STEM", module.outputFilePath.Base())
 			},
 		},
 	}}
 }
 
-func (module *sdkLibraryXml) selfValidate(ctx android.ModuleContext) {
-	module.validateAtLeastTAttributes(ctx)
-	module.validateMinAndMaxDeviceSdk(ctx)
-	module.validateMinMaxDeviceSdkAndModuleMinSdk(ctx)
-	module.validateOnBootclasspathBeforeRequirements(ctx)
-}
-
-func (module *sdkLibraryXml) validateAtLeastTAttributes(ctx android.ModuleContext) {
-	t := android.ApiLevelOrPanic(ctx, "Tiramisu")
-	module.attrAtLeastT(ctx, t, module.properties.Min_device_sdk, "min_device_sdk")
-	module.attrAtLeastT(ctx, t, module.properties.Max_device_sdk, "max_device_sdk")
-	module.attrAtLeastT(ctx, t, module.properties.On_bootclasspath_before, "on_bootclasspath_before")
-	module.attrAtLeastT(ctx, t, module.properties.On_bootclasspath_since, "on_bootclasspath_since")
-}
-
-func (module *sdkLibraryXml) attrAtLeastT(ctx android.ModuleContext, t android.ApiLevel, attr *string, attrName string) {
-	if attr != nil {
-		if level, err := android.ApiLevelFromUser(ctx, *attr); err == nil {
-			// we will inform the user of invalid inputs when we try to write the
-			// permissions xml file so we don't need to do it here
-			if t.GreaterThan(level) {
-				ctx.PropertyErrorf(attrName, "Attribute value needs to be at least T")
-			}
-		}
-	}
-}
-
-func (module *sdkLibraryXml) validateMinAndMaxDeviceSdk(ctx android.ModuleContext) {
-	if module.properties.Min_device_sdk != nil && module.properties.Max_device_sdk != nil {
-		min, minErr := android.ApiLevelFromUser(ctx, *module.properties.Min_device_sdk)
-		max, maxErr := android.ApiLevelFromUser(ctx, *module.properties.Max_device_sdk)
-		if minErr == nil && maxErr == nil {
-			// we will inform the user of invalid inputs when we try to write the
-			// permissions xml file so we don't need to do it here
-			if min.GreaterThan(max) {
-				ctx.ModuleErrorf("min_device_sdk can't be greater than max_device_sdk")
-			}
-		}
-	}
-}
-
-func (module *sdkLibraryXml) validateMinMaxDeviceSdkAndModuleMinSdk(ctx android.ModuleContext) {
-	moduleMinApi := android.ApiLevelOrPanic(ctx, *module.properties.Sdk_library_min_api_level)
-	if module.properties.Min_device_sdk != nil {
-		api, err := android.ApiLevelFromUser(ctx, *module.properties.Min_device_sdk)
-		if err == nil {
-			if moduleMinApi.GreaterThan(api) {
-				ctx.PropertyErrorf("min_device_sdk", "Can't be less than module's min sdk (%s)", moduleMinApi)
-			}
-		}
-	}
-	if module.properties.Max_device_sdk != nil {
-		api, err := android.ApiLevelFromUser(ctx, *module.properties.Max_device_sdk)
-		if err == nil {
-			if moduleMinApi.GreaterThan(api) {
-				ctx.PropertyErrorf("max_device_sdk", "Can't be less than module's min sdk (%s)", moduleMinApi)
-			}
-		}
-	}
-}
-
-func (module *sdkLibraryXml) validateOnBootclasspathBeforeRequirements(ctx android.ModuleContext) {
-	moduleMinApi := android.ApiLevelOrPanic(ctx, *module.properties.Sdk_library_min_api_level)
-	if module.properties.On_bootclasspath_before != nil {
-		t := android.ApiLevelOrPanic(ctx, "Tiramisu")
-		// if we use the attribute, then we need to do this validation
-		if moduleMinApi.LessThan(t) {
-			// if minAPi is < T, then we need to have min_device_sdk (which only accepts T+)
-			if module.properties.Min_device_sdk == nil {
-				ctx.PropertyErrorf("on_bootclasspath_before", "Using this property requires that the module's min_sdk_version or the shared library's min_device_sdk is at least T")
-			}
-		}
-	}
-}
-
 type sdkLibrarySdkMemberType struct {
 	android.SdkMemberTypeBase
 }
 
-func (s *sdkLibrarySdkMemberType) AddDependencies(ctx android.SdkDependencyContext, dependencyTag blueprint.DependencyTag, names []string) {
-	ctx.AddVariationDependencies(nil, dependencyTag, names...)
+func (s *sdkLibrarySdkMemberType) AddDependencies(mctx android.BottomUpMutatorContext, dependencyTag blueprint.DependencyTag, names []string) {
+	mctx.AddVariationDependencies(nil, dependencyTag, names...)
 }
 
 func (s *sdkLibrarySdkMemberType) IsInstance(module android.Module) bool {
@@ -2779,33 +2555,6 @@ type sdkLibrarySdkMemberProperties struct {
 	Doctag_paths android.Paths
 
 	Permitted_packages []string
-
-	// Signals that this shared library is part of the bootclasspath starting
-	// on the version indicated in this attribute.
-	//
-	// This will make platforms at this level and above to ignore
-	// <uses-library> tags with this library name because the library is already
-	// available
-	On_bootclasspath_since *string
-
-	// Signals that this shared library was part of the bootclasspath before
-	// (but not including) the version indicated in this attribute.
-	//
-	// The system will automatically add a <uses-library> tag with this library to
-	// apps that target any SDK less than the version indicated in this attribute.
-	On_bootclasspath_before *string
-
-	// Indicates that PackageManager should ignore this shared library if the
-	// platform is below the version indicated in this attribute.
-	//
-	// This means that the device won't recognise this library as installed.
-	Min_device_sdk *string
-
-	// Indicates that PackageManager should ignore this shared library if the
-	// platform is above the version indicated in this attribute.
-	//
-	// This means that the device won't recognise this library as installed.
-	Max_device_sdk *string
 }
 
 type scopeProperties struct {
@@ -2852,10 +2601,6 @@ func (s *sdkLibrarySdkMemberProperties) PopulateFromVariant(ctx android.SdkMembe
 	s.Compile_dex = sdk.dexProperties.Compile_dex
 	s.Doctag_paths = sdk.doctagPaths
 	s.Permitted_packages = sdk.PermittedPackagesForUpdatableBootJars()
-	s.On_bootclasspath_since = sdk.commonSdkLibraryProperties.On_bootclasspath_since
-	s.On_bootclasspath_before = sdk.commonSdkLibraryProperties.On_bootclasspath_before
-	s.Min_device_sdk = sdk.commonSdkLibraryProperties.Min_device_sdk
-	s.Max_device_sdk = sdk.commonSdkLibraryProperties.Max_device_sdk
 }
 
 func (s *sdkLibrarySdkMemberProperties) AddToPropertySet(ctx android.SdkMemberContext, propertySet android.BpPropertySet) {

@@ -120,14 +120,14 @@ var (
 		"extractMatchingApks",
 		blueprint.RuleParams{
 			Command: `rm -rf "$out" && ` +
-				`${config.ExtractApksCmd} -o "${out}" -zip "${zip}" -allow-prereleased=${allow-prereleased} ` +
+				`${config.ExtractApksCmd} -o "${out}" -allow-prereleased=${allow-prereleased} ` +
 				`-sdk-version=${sdk-version} -abis=${abis} ` +
 				`--screen-densities=${screen-densities} --stem=${stem} ` +
 				`-apkcerts=${apkcerts} -partition=${partition} ` +
 				`${in}`,
 			CommandDeps: []string{"${config.ExtractApksCmd}"},
 		},
-		"abis", "allow-prereleased", "screen-densities", "sdk-version", "stem", "apkcerts", "partition", "zip")
+		"abis", "allow-prereleased", "screen-densities", "sdk-version", "stem", "apkcerts", "partition")
 
 	turbine, turbineRE = pctx.RemoteStaticRules("turbine",
 		blueprint.RuleParams{
@@ -247,40 +247,22 @@ func init() {
 }
 
 type javaBuilderFlags struct {
-	javacFlags string
-
-	// bootClasspath is the list of jars that form the boot classpath (generally the java.* and
-	// android.* classes) for tools that still use it.  javac targeting 1.9 or higher uses
-	// systemModules and java9Classpath instead.
-	bootClasspath classpath
-
-	// classpath is the list of jars that form the classpath for javac and kotlinc rules.  It
-	// contains header jars for all static and non-static dependencies.
-	classpath classpath
-
-	// dexClasspath is the list of jars that form the classpath for d8 and r8 rules.  It contains
-	// header jars for all non-static dependencies.  Static dependencies have already been
-	// combined into the program jar.
-	dexClasspath classpath
-
-	// java9Classpath is the list of jars that will be added to the classpath when targeting
-	// 1.9 or higher.  It generally contains the android.* classes, while the java.* classes
-	// are provided by systemModules.
+	javacFlags     string
+	bootClasspath  classpath
+	classpath      classpath
 	java9Classpath classpath
-
-	processorPath classpath
-	processors    []string
-	systemModules *systemModules
-	aidlFlags     string
-	aidlDeps      android.Paths
-	javaVersion   javaVersion
+	processorPath  classpath
+	processors     []string
+	systemModules  *systemModules
+	aidlFlags      string
+	aidlDeps       android.Paths
+	javaVersion    javaVersion
 
 	errorProneExtraJavacFlags string
 	errorProneProcessorPath   classpath
 
 	kotlincFlags     string
 	kotlincClasspath classpath
-	kotlincDeps      android.Paths
 
 	proto android.ProtoFlags
 }
@@ -295,6 +277,23 @@ func TransformJavaToClasses(ctx android.ModuleContext, outputFile android.Writab
 	}
 
 	transformJavaToClasses(ctx, outputFile, shardIdx, srcFiles, srcJars, flags, deps, "javac", desc)
+}
+
+func RunErrorProne(ctx android.ModuleContext, outputFile android.WritablePath,
+	srcFiles, srcJars android.Paths, flags javaBuilderFlags) {
+
+	flags.processorPath = append(flags.errorProneProcessorPath, flags.processorPath...)
+
+	if len(flags.errorProneExtraJavacFlags) > 0 {
+		if len(flags.javacFlags) > 0 {
+			flags.javacFlags += " " + flags.errorProneExtraJavacFlags
+		} else {
+			flags.javacFlags = flags.errorProneExtraJavacFlags
+		}
+	}
+
+	transformJavaToClasses(ctx, outputFile, -1, srcFiles, srcJars, flags, nil,
+		"errorprone", "errorprone")
 }
 
 // Emits the rule to generate Xref input file (.kzip file) for the given set of source files and source jars

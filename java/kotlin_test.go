@@ -15,11 +15,10 @@
 package java
 
 import (
+	"android/soong/android"
 	"strconv"
 	"strings"
 	"testing"
-
-	"android/soong/android"
 )
 
 func TestKotlin(t *testing.T) {
@@ -115,7 +114,7 @@ func TestKapt(t *testing.T) {
 	t.Run("", func(t *testing.T) {
 		ctx, _ := testJava(t, bp)
 
-		buildOS := ctx.Config().BuildOS.String()
+		buildOS := android.BuildOs.String()
 
 		kapt := ctx.ModuleForTests("foo", "android_common").Rule("kapt")
 		kotlinc := ctx.ModuleForTests("foo", "android_common").Rule("kotlinc")
@@ -183,9 +182,10 @@ func TestKapt(t *testing.T) {
 			android.FixtureMergeEnv(env),
 		).RunTestWithBp(t, bp)
 
-		buildOS := result.Config.BuildOS.String()
+		buildOS := android.BuildOs.String()
 
 		kapt := result.ModuleForTests("foo", "android_common").Rule("kapt")
+		//kotlinc := ctx.ModuleForTests("foo", "android_common").Rule("kotlinc")
 		javac := result.ModuleForTests("foo", "android_common").Description("javac")
 		errorprone := result.ModuleForTests("foo", "android_common").Description("errorprone")
 
@@ -280,47 +280,4 @@ func TestKaptEncodeFlags(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestKotlinCompose(t *testing.T) {
-	result := android.GroupFixturePreparers(
-		PrepareForTestWithJavaDefaultModules,
-	).RunTestWithBp(t, `
-		java_library {
-			name: "androidx.compose.runtime_runtime",
-		}
-
-		java_library_host {
-			name: "androidx.compose.compiler_compiler-hosted",
-		}
-
-		java_library {
-			name: "withcompose",
-			srcs: ["a.kt"],
-			static_libs: ["androidx.compose.runtime_runtime"],
-		}
-
-		java_library {
-			name: "nocompose",
-			srcs: ["a.kt"],
-		}
-	`)
-
-	buildOS := result.Config.BuildOS.String()
-
-	composeCompiler := result.ModuleForTests("androidx.compose.compiler_compiler-hosted", buildOS+"_common").Rule("combineJar").Output
-	withCompose := result.ModuleForTests("withcompose", "android_common")
-	noCompose := result.ModuleForTests("nocompose", "android_common")
-
-	android.AssertStringListContains(t, "missing compose compiler dependency",
-		withCompose.Rule("kotlinc").Implicits.Strings(), composeCompiler.String())
-
-	android.AssertStringDoesContain(t, "missing compose compiler plugin",
-		withCompose.VariablesForTestsRelativeToTop()["kotlincFlags"], "-Xplugin="+composeCompiler.String())
-
-	android.AssertStringListDoesNotContain(t, "unexpected compose compiler dependency",
-		noCompose.Rule("kotlinc").Implicits.Strings(), composeCompiler.String())
-
-	android.AssertStringDoesNotContain(t, "unexpected compose compiler plugin",
-		noCompose.VariablesForTestsRelativeToTop()["kotlincFlags"], "-Xplugin="+composeCompiler.String())
 }

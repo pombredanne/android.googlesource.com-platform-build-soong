@@ -69,18 +69,11 @@ import (
 
 // The information exported by the `deapexer` module, access it using `DeapxerInfoProvider`.
 type DeapexerInfo struct {
-	apexModuleName string
-
 	// map from the name of an exported file from a prebuilt_apex to the path to that file. The
 	// exported file name is the apex relative path, e.g. javalib/core-libart.jar.
 	//
 	// See Prebuilt.ApexInfoMutator for more information.
-	exports map[string]WritablePath
-}
-
-// ApexModuleName returns the name of the APEX module that provided the info.
-func (i DeapexerInfo) ApexModuleName() string {
-	return i.apexModuleName
+	exports map[string]Path
 }
 
 // PrebuiltExportPath provides the path, or nil if not available, of a file exported from the
@@ -89,7 +82,7 @@ func (i DeapexerInfo) ApexModuleName() string {
 // The exported file is identified by the apex relative path, e.g. "javalib/core-libart.jar".
 //
 // See apex/deapexer.go for more information.
-func (i DeapexerInfo) PrebuiltExportPath(apexRelativePath string) WritablePath {
+func (i DeapexerInfo) PrebuiltExportPath(apexRelativePath string) Path {
 	path := i.exports[apexRelativePath]
 	return path
 }
@@ -102,10 +95,9 @@ var DeapexerProvider = blueprint.NewProvider(DeapexerInfo{})
 // for use with a prebuilt_apex module.
 //
 // See apex/deapexer.go for more information.
-func NewDeapexerInfo(apexModuleName string, exports map[string]WritablePath) DeapexerInfo {
+func NewDeapexerInfo(exports map[string]Path) DeapexerInfo {
 	return DeapexerInfo{
-		apexModuleName: apexModuleName,
-		exports:        exports,
+		exports: exports,
 	}
 }
 
@@ -140,25 +132,4 @@ type RequiresFilesFromPrebuiltApexTag interface {
 
 	// Method that differentiates this interface from others.
 	RequiresFilesFromPrebuiltApex()
-}
-
-// FindDeapexerProviderForModule searches through the direct dependencies of the current context
-// module for a DeapexerTag dependency and returns its DeapexerInfo. If a single nonambiguous
-// deapexer module isn't found then errors are reported with ctx.ModuleErrorf and nil is returned.
-func FindDeapexerProviderForModule(ctx ModuleContext) *DeapexerInfo {
-	var di *DeapexerInfo
-	ctx.VisitDirectDepsWithTag(DeapexerTag, func(m Module) {
-		p := ctx.OtherModuleProvider(m, DeapexerProvider).(DeapexerInfo)
-		if di != nil {
-			ctx.ModuleErrorf("Multiple installable prebuilt APEXes provide ambiguous deapexers: %s and %s",
-				di.ApexModuleName(), p.ApexModuleName())
-		}
-		di = &p
-	})
-	if di != nil {
-		return di
-	}
-	ai := ctx.Provider(ApexInfoProvider).(ApexInfo)
-	ctx.ModuleErrorf("No prebuilt APEX provides a deapexer module for APEX variant %s", ai.ApexVariationName)
-	return nil
 }

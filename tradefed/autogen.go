@@ -188,20 +188,20 @@ func AutoGenNativeBenchmarkTestConfig(ctx android.ModuleContext, testConfigProp 
 }
 
 func AutoGenJavaTestConfig(ctx android.ModuleContext, testConfigProp *string, testConfigTemplateProp *string,
-	testSuites []string, config []Config, autoGenConfig *bool, unitTest *bool) android.Path {
+	testSuites []string, autoGenConfig *bool, unitTest *bool) android.Path {
 	path, autogenPath := testConfigPath(ctx, testConfigProp, testSuites, autoGenConfig, testConfigTemplateProp)
 	if autogenPath != nil {
 		templatePath := getTestConfigTemplate(ctx, testConfigTemplateProp)
 		if templatePath.Valid() {
-			autogenTemplate(ctx, autogenPath, templatePath.String(), config, "")
+			autogenTemplate(ctx, autogenPath, templatePath.String(), nil, "")
 		} else {
 			if ctx.Device() {
-				autogenTemplate(ctx, autogenPath, "${JavaTestConfigTemplate}", config, "")
+				autogenTemplate(ctx, autogenPath, "${JavaTestConfigTemplate}", nil, "")
 			} else {
 				if Bool(unitTest) {
-					autogenTemplate(ctx, autogenPath, "${JavaHostUnitTestConfigTemplate}", config, "")
+					autogenTemplate(ctx, autogenPath, "${JavaHostUnitTestConfigTemplate}", nil, "")
 				} else {
-					autogenTemplate(ctx, autogenPath, "${JavaHostTestConfigTemplate}", config, "")
+					autogenTemplate(ctx, autogenPath, "${JavaHostTestConfigTemplate}", nil, "")
 				}
 			}
 		}
@@ -227,17 +227,17 @@ func AutoGenPythonBinaryHostTestConfig(ctx android.ModuleContext, testConfigProp
 }
 
 func AutoGenRustTestConfig(ctx android.ModuleContext, testConfigProp *string,
-	testConfigTemplateProp *string, testSuites []string, config []Config, autoGenConfig *bool, testInstallBase string) android.Path {
+	testConfigTemplateProp *string, testSuites []string, config []Config, autoGenConfig *bool) android.Path {
 	path, autogenPath := testConfigPath(ctx, testConfigProp, testSuites, autoGenConfig, testConfigTemplateProp)
 	if autogenPath != nil {
 		templatePath := getTestConfigTemplate(ctx, testConfigTemplateProp)
 		if templatePath.Valid() {
-			autogenTemplate(ctx, autogenPath, templatePath.String(), config, testInstallBase)
+			autogenTemplate(ctx, autogenPath, templatePath.String(), config, "")
 		} else {
 			if ctx.Device() {
-				autogenTemplate(ctx, autogenPath, "${RustDeviceTestConfigTemplate}", config, testInstallBase)
+				autogenTemplate(ctx, autogenPath, "${RustDeviceTestConfigTemplate}", config, "")
 			} else {
-				autogenTemplate(ctx, autogenPath, "${RustHostTestConfigTemplate}", config, testInstallBase)
+				autogenTemplate(ctx, autogenPath, "${RustHostTestConfigTemplate}", config, "")
 			}
 		}
 		return autogenPath
