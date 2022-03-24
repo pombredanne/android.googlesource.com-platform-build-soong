@@ -25,7 +25,7 @@ import (
 	"android/soong/android"
 )
 
-// Build rules and utilities to generate individual packages/modules/SdkExtensions/proto/classpaths.proto
+// Build rules and utilities to generate individual packages/modules/common/proto/classpaths.proto
 // config files based on build configuration to embed into /system and /apex on a device.
 //
 // See `derive_classpath` service that reads the configs at runtime and defines *CLASSPATH variables
@@ -34,14 +34,15 @@ import (
 type classpathType int
 
 const (
-	// Matches definition in packages/modules/SdkExtensions/proto/classpaths.proto
+	// Matches definition in packages/modules/common/proto/classpaths.proto
 	BOOTCLASSPATH classpathType = iota
 	DEX2OATBOOTCLASSPATH
 	SYSTEMSERVERCLASSPATH
+	STANDALONE_SYSTEMSERVER_JARS
 )
 
 func (c classpathType) String() string {
-	return [...]string{"BOOTCLASSPATH", "DEX2OATBOOTCLASSPATH", "SYSTEMSERVERCLASSPATH"}[c]
+	return [...]string{"BOOTCLASSPATH", "DEX2OATBOOTCLASSPATH", "SYSTEMSERVERCLASSPATH", "STANDALONE_SYSTEMSERVER_JARS"}[c]
 }
 
 type classpathFragmentProperties struct {
@@ -203,7 +204,7 @@ func (c *ClasspathFragmentBase) androidMkEntries() []android.AndroidMkEntries {
 		OutputFile: android.OptionalPathForPath(c.outputFilepath),
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
 			func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-				entries.SetString("LOCAL_MODULE_PATH", c.installDirPath.ToMakePath().String())
+				entries.SetString("LOCAL_MODULE_PATH", c.installDirPath.String())
 				entries.SetString("LOCAL_INSTALLED_MODULE_STEM", c.outputFilepath.Base())
 			},
 		},

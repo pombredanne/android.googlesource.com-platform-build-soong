@@ -16,6 +16,7 @@ package android
 
 import (
 	"path/filepath"
+	"strings"
 
 	"github.com/google/blueprint"
 )
@@ -99,4 +100,17 @@ func BuildNoticeOutput(ctx ModuleContext, installPath InstallPath, installFilena
 		HtmlOutput:   OptionalPathForPath(htmlOutput),
 		HtmlGzOutput: OptionalPathForPath(htmlGzOutput),
 	}
+}
+
+// BuildNoticeTextOutputFromLicenseMetadata writes out a notice text file based on the module's
+// generated license metadata file.
+func BuildNoticeTextOutputFromLicenseMetadata(ctx ModuleContext, outputFile WritablePath) {
+	depsFile := outputFile.ReplaceExtension(ctx, strings.TrimPrefix(outputFile.Ext()+".d", "."))
+	rule := NewRuleBuilder(pctx, ctx)
+	rule.Command().
+		BuiltTool("textnotice").
+		FlagWithOutput("-o ", outputFile).
+		FlagWithDepFile("-d ", depsFile).
+		Input(ctx.Module().base().licenseMetadataFile)
+	rule.Build("container_notice", "container notice file")
 }
