@@ -34,7 +34,8 @@ var kotlinc = pctx.AndroidRemoteStaticRule("kotlinc", android.RemoteRuleSupports
 			`${config.GenKotlinBuildFileCmd} --classpath "$classpath" --name "$name"` +
 			` --out_dir "$classesDir" --srcs "$out.rsp" --srcs "$srcJarDir/list"` +
 			` $commonSrcFilesArg --out "$kotlinBuildFile" && ` +
-			`${config.KotlincCmd} ${config.KotlincSuppressJDK9Warnings} ${config.JavacHeapFlags} ` +
+			`${config.KotlincCmd} ${config.KotlincGlobalFlags} ` +
+			`${config.KotlincSuppressJDK9Warnings} ${config.JavacHeapFlags} ` +
 			`$kotlincFlags -jvm-target $kotlinJvmTarget -Xbuild-file=$kotlinBuildFile ` +
 			`-kotlin-home $emptyDir && ` +
 			`${config.SoongZipCmd} -jar -o $out -C $classesDir -D $classesDir && ` +
@@ -81,6 +82,7 @@ func kotlinCompile(ctx android.ModuleContext, outputFile android.WritablePath,
 
 	var deps android.Paths
 	deps = append(deps, flags.kotlincClasspath...)
+	deps = append(deps, flags.kotlincDeps...)
 	deps = append(deps, srcJars...)
 	deps = append(deps, commonSrcFiles...)
 
@@ -124,7 +126,8 @@ var kapt = pctx.AndroidRemoteStaticRule("kapt", android.RemoteRuleSupports{Goma:
 			`${config.GenKotlinBuildFileCmd} --classpath "$classpath" --name "$name"` +
 			` --srcs "$out.rsp" --srcs "$srcJarDir/list"` +
 			` $commonSrcFilesArg --out "$kotlinBuildFile" && ` +
-			`${config.KotlincCmd} ${config.KaptSuppressJDK9Warnings} ${config.KotlincSuppressJDK9Warnings} ` +
+			`${config.KotlincCmd} ${config.KotlincGlobalFlags} ` +
+			`${config.KaptSuppressJDK9Warnings} ${config.KotlincSuppressJDK9Warnings} ` +
 			`${config.JavacHeapFlags} $kotlincFlags -Xplugin=${config.KotlinKaptJar} ` +
 			`-P plugin:org.jetbrains.kotlin.kapt3:sources=$kaptDir/sources ` +
 			`-P plugin:org.jetbrains.kotlin.kapt3:classes=$kaptDir/classes ` +

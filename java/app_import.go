@@ -61,7 +61,7 @@ type AndroidAppImport struct {
 
 type AndroidAppImportProperties struct {
 	// A prebuilt apk to import
-	Apk *string
+	Apk *string `android:"path"`
 
 	// The name of a certificate in the default certificate directory or an android_app_certificate
 	// module name in the form ":module". Should be empty if presigned or default_dev_cert is set.
@@ -76,6 +76,9 @@ type AndroidAppImportProperties struct {
 
 	// Name of the signing certificate lineage file or filegroup module.
 	Lineage *string `android:"path"`
+
+	// For overriding the --rotation-min-sdk-version property of apksig
+	RotationMinSdkVersion *string
 
 	// Sign with the default system dev certificate. Must be used judiciously. Most imported apps
 	// need to either specify a specific certificate or be presigned.
@@ -99,6 +102,9 @@ type AndroidAppImportProperties struct {
 	// If set, create package-export.apk, which other packages can
 	// use to get PRODUCT-agnostic resource data like IDs and type definitions.
 	Export_package_resources *bool
+
+	// Optional. Install to a subdirectory of the default install path for the module
+	Relative_install_path *string
 }
 
 func (a *AndroidAppImport) IsInstallable() bool {
@@ -201,9 +207,9 @@ func (a *AndroidAppImport) shouldUncompressDex(ctx android.ModuleContext) bool {
 		return false
 	}
 
-	// Uncompress dex in APKs of privileged apps
-	if ctx.Config().UncompressPrivAppDex() && a.Privileged() {
-		return true
+	// Uncompress dex in APKs of priv-apps if and only if DONT_UNCOMPRESS_PRIV_APPS_DEXS is false.
+	if a.Privileged() {
+		return ctx.Config().UncompressPrivAppDex()
 	}
 
 	return shouldUncompressDex(ctx, &a.dexpreopter)
@@ -263,20 +269,25 @@ func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext
 	jnisUncompressed := android.PathForModuleOut(ctx, "jnis-uncompressed", ctx.ModuleName()+".apk")
 	a.uncompressEmbeddedJniLibs(ctx, srcApk, jnisUncompressed.OutputPath)
 
-	var installDir android.InstallPath
+	var pathFragments []string
+	relInstallPath := String(a.properties.Relative_install_path)
 
 	if a.isPrebuiltFrameworkRes() {
 		// framework-res.apk is installed as system/framework/framework-res.apk
-		installDir = android.PathForModuleInstall(ctx, "framework")
+		if relInstallPath != "" {
+			ctx.PropertyErrorf("relative_install_path", "Relative_install_path cannot be set for framework-res")
+		}
+		pathFragments = []string{"framework"}
 		a.preprocessed = true
 	} else if Bool(a.properties.Privileged) {
-		installDir = android.PathForModuleInstall(ctx, "priv-app", a.BaseModuleName())
+		pathFragments = []string{"priv-app", relInstallPath, a.BaseModuleName()}
 	} else if ctx.InstallInTestcases() {
-		installDir = android.PathForModuleInstall(ctx, a.BaseModuleName(), ctx.DeviceConfig().DeviceArch())
+		pathFragments = []string{relInstallPath, a.BaseModuleName(), ctx.DeviceConfig().DeviceArch()}
 	} else {
-		installDir = android.PathForModuleInstall(ctx, "app", a.BaseModuleName())
+		pathFragments = []string{"app", relInstallPath, a.BaseModuleName()}
 	}
 
+	installDir := android.PathForModuleInstall(ctx, pathFragments...)
 	a.dexpreopter.isApp = true
 	a.dexpreopter.installPath = installDir.Join(ctx, a.BaseModuleName()+".apk")
 	a.dexpreopter.isPresignedPrebuilt = Bool(a.properties.Presigned)
@@ -322,7 +333,10 @@ func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext
 		if lineage := String(a.properties.Lineage); lineage != "" {
 			lineageFile = android.PathForModuleSrc(ctx, lineage)
 		}
-		SignAppPackage(ctx, signed, jnisUncompressed, certificates, nil, lineageFile)
+
+		rotationMinSdkVersion := String(a.properties.RotationMinSdkVersion)
+
+		SignAppPackage(ctx, signed, jnisUncompressed, certificates, nil, lineageFile, rotationMinSdkVersion)
 		a.outputFile = signed
 	} else {
 		alignedApk := android.PathForModuleOut(ctx, "zip-aligned", apkFilename)
