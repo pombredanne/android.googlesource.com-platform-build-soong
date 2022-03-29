@@ -131,31 +131,27 @@ var (
 
 	turbine, turbineRE = pctx.RemoteStaticRules("turbine",
 		blueprint.RuleParams{
-			Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
-				`$reTemplate${config.JavaCmd} ${config.JavaVmFlags} -jar ${config.TurbineJar} --output $out.tmp ` +
-				`--temp_dir "$outDir" --sources @$out.rsp  --source_jars $srcJars ` +
+			Command: `$reTemplate${config.JavaCmd} ${config.JavaVmFlags} -jar ${config.TurbineJar} --output $out.tmp ` +
+				`--sources @$out.rsp  --source_jars $srcJars ` +
 				`--javacopts ${config.CommonJdkFlags} ` +
 				`$javacFlags -source $javaVersion -target $javaVersion -- $bootClasspath $classpath && ` +
-				`${config.Ziptime} $out.tmp && ` +
 				`(if cmp -s $out.tmp $out ; then rm $out.tmp ; else mv $out.tmp $out ; fi )`,
 			CommandDeps: []string{
 				"${config.TurbineJar}",
 				"${config.JavaCmd}",
-				"${config.Ziptime}",
 			},
 			Rspfile:        "$out.rsp",
 			RspfileContent: "$in",
 			Restat:         true,
 		},
 		&remoteexec.REParams{Labels: map[string]string{"type": "tool", "name": "turbine"},
-			ExecStrategy:      "${config.RETurbineExecStrategy}",
-			Inputs:            []string{"${config.TurbineJar}", "${out}.rsp", "$implicits"},
-			RSPFiles:          []string{"${out}.rsp"},
-			OutputFiles:       []string{"$out.tmp"},
-			OutputDirectories: []string{"$outDir"},
-			ToolchainInputs:   []string{"${config.JavaCmd}"},
-			Platform:          map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
-		}, []string{"javacFlags", "bootClasspath", "classpath", "srcJars", "outDir", "javaVersion"}, []string{"implicits"})
+			ExecStrategy:    "${config.RETurbineExecStrategy}",
+			Inputs:          []string{"${config.TurbineJar}", "${out}.rsp", "$implicits"},
+			RSPFiles:        []string{"${out}.rsp"},
+			OutputFiles:     []string{"$out.tmp"},
+			ToolchainInputs: []string{"${config.JavaCmd}"},
+			Platform:        map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
+		}, []string{"javacFlags", "bootClasspath", "classpath", "srcJars", "javaVersion"}, []string{"implicits"})
 
 	jar, jarRE = pctx.RemoteStaticRules("jar",
 		blueprint.RuleParams{
@@ -247,16 +243,33 @@ func init() {
 }
 
 type javaBuilderFlags struct {
-	javacFlags     string
-	bootClasspath  classpath
-	classpath      classpath
+	javacFlags string
+
+	// bootClasspath is the list of jars that form the boot classpath (generally the java.* and
+	// android.* classes) for tools that still use it.  javac targeting 1.9 or higher uses
+	// systemModules and java9Classpath instead.
+	bootClasspath classpath
+
+	// classpath is the list of jars that form the classpath for javac and kotlinc rules.  It
+	// contains header jars for all static and non-static dependencies.
+	classpath classpath
+
+	// dexClasspath is the list of jars that form the classpath for d8 and r8 rules.  It contains
+	// header jars for all non-static dependencies.  Static dependencies have already been
+	// combined into the program jar.
+	dexClasspath classpath
+
+	// java9Classpath is the list of jars that will be added to the classpath when targeting
+	// 1.9 or higher.  It generally contains the android.* classes, while the java.* classes
+	// are provided by systemModules.
 	java9Classpath classpath
-	processorPath  classpath
-	processors     []string
-	systemModules  *systemModules
-	aidlFlags      string
-	aidlDeps       android.Paths
-	javaVersion    javaVersion
+
+	processorPath classpath
+	processors    []string
+	systemModules *systemModules
+	aidlFlags     string
+	aidlDeps      android.Paths
+	javaVersion   javaVersion
 
 	errorProneExtraJavacFlags string
 	errorProneProcessorPath   classpath
@@ -375,7 +388,6 @@ func TransformJavaToHeaderClasses(ctx android.ModuleContext, outputFile android.
 		"bootClasspath": bootClasspath,
 		"srcJars":       strings.Join(srcJars.Strings(), " "),
 		"classpath":     classpath.FormTurbineClassPath("--classpath "),
-		"outDir":        android.PathForModuleOut(ctx, "turbine", "classes").String(),
 		"javaVersion":   flags.javaVersion.String(),
 	}
 	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_TURBINE") {
