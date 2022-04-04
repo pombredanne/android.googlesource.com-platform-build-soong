@@ -254,6 +254,8 @@ def init(g, handle):
 		in: `
 $(warning this is the warning)
 $(warning)
+$(warning # this warning starts with a pound)
+$(warning this warning has a # in the middle)
 $(info this is the info)
 $(error this is the error)
 PRODUCT_NAME:=$(shell echo *)
@@ -264,6 +266,8 @@ def init(g, handle):
   cfg = rblf.cfg(handle)
   rblf.mkwarning("product.mk", "this is the warning")
   rblf.mkwarning("product.mk", "")
+  rblf.mkwarning("product.mk", "# this warning starts with a pound")
+  rblf.mkwarning("product.mk", "this warning has a # in the middle")
   rblf.mkinfo("product.mk", "this is the info")
   rblf.mkerror("product.mk", "this is the error")
   cfg["PRODUCT_NAME"] = rblf.shell("echo *")
@@ -1265,7 +1269,7 @@ TEST_VAR_LIST := foo
 TEST_VAR_LIST += bar
 TEST_VAR_2 := $(if $(TEST_VAR),bar)
 TEST_VAR_3 := $(if $(TEST_VAR),bar,baz)
-TEST_VAR_3 := $(if $(TEST_VAR),$(TEST_VAR_LIST))
+TEST_VAR_4 := $(if $(TEST_VAR),$(TEST_VAR_LIST))
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
@@ -1276,7 +1280,7 @@ def init(g, handle):
   g["TEST_VAR_LIST"] += ["bar"]
   g["TEST_VAR_2"] = ("bar" if g["TEST_VAR"] else "")
   g["TEST_VAR_3"] = ("bar" if g["TEST_VAR"] else "baz")
-  g["TEST_VAR_3"] = (g["TEST_VAR_LIST"] if g["TEST_VAR"] else [])
+  g["TEST_VAR_4"] = (g["TEST_VAR_LIST"] if g["TEST_VAR"] else [])
 `,
 	},
 	{
@@ -1419,6 +1423,7 @@ def init(g, handle):
 # Duplicated variable
 #RBC# type_hint list MY_VAR_2
 #RBC# type_hint list my-local-var-with-dashes
+#RBC# type_hint string MY_STRING_VAR
 
 MY_VAR := foo
 MY_VAR_UNHINTED := foo
@@ -1431,6 +1436,8 @@ MY_VAR_2 := foo
 MY_VAR_4 := foo
 
 my-local-var-with-dashes := foo
+
+MY_STRING_VAR := $(wildcard foo/bar.mk)
 `,
 		expected: `# Test type hints
 # Unsupported type
@@ -1448,9 +1455,23 @@ def init(g, handle):
   # Vars set after other statements still get the hint
   g["MY_VAR_2"] = ["foo"]
   # You can't specify a type hint after the first statement
-  rblf.mk2rbc_error("product.mk:19", "type_hint annotations must come before the first Makefile statement")
+  rblf.mk2rbc_error("product.mk:20", "type_hint annotations must come before the first Makefile statement")
   g["MY_VAR_4"] = "foo"
   _my_local_var_with_dashes = ["foo"]
+  g["MY_STRING_VAR"] = " ".join(rblf.expand_wildcard("foo/bar.mk"))
+`,
+	},
+	{
+		desc:   "Set LOCAL_PATH to my-dir",
+		mkname: "product.mk",
+		in: `
+LOCAL_PATH := $(call my-dir)
+`,
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  
 `,
 	},
 }

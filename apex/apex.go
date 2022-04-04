@@ -76,6 +76,8 @@ func RegisterPostDepsMutators(ctx android.RegisterMutatorsContext) {
 	ctx.BottomUp("apex", apexMutator).Parallel()
 	ctx.BottomUp("apex_directly_in_any", apexDirectlyInAnyMutator).Parallel()
 	ctx.BottomUp("apex_flattened", apexFlattenedMutator).Parallel()
+	// Register after apex_info mutator so that it can use ApexVariationName
+	ctx.TopDown("apex_strict_updatability_lint", apexStrictUpdatibilityLintMutator).Parallel()
 }
 
 type apexBundleProperties struct {
@@ -412,8 +414,8 @@ type apexBundle struct {
 	// Processed file_contexts files
 	fileContexts android.WritablePath
 
-	// Struct holding the merged notice file paths in different formats
-	mergedNotices android.NoticeOutputs
+	// Path to notice file in html.gz format.
+	htmlGzNotice android.WritablePath
 
 	// The built APEX file. This is the main product.
 	// Could be .apex or .capex
@@ -485,11 +487,10 @@ const (
 // for each of the files in case when the APEX is flattened.
 type apexFile struct {
 	// buildFile is put in the installDir inside the APEX.
-	builtFile   android.Path
-	noticeFiles android.Paths
-	installDir  string
-	customStem  string
-	symlinks    []string // additional symlinks
+	builtFile  android.Path
+	installDir string
+	customStem string
+	symlinks   []string // additional symlinks
 
 	// Info for Android.mk Module name of `module` in AndroidMk. Note the generated AndroidMk
 	// module for apexFile is named something like <AndroidMk module name>.<apex name>[<apex
@@ -526,7 +527,6 @@ func newApexFile(ctx android.BaseModuleContext, builtFile android.Path, androidM
 		module:              module,
 	}
 	if module != nil {
-		ret.noticeFiles = module.NoticeFiles()
 		ret.moduleDir = ctx.OtherModuleDir(module)
 		ret.requiredModuleNames = module.RequiredModuleNames()
 		ret.targetRequiredModuleNames = module.TargetRequiredModuleNames()
@@ -1003,6 +1003,66 @@ func apexInfoMutator(mctx android.TopDownMutatorContext) {
 		a.ApexInfoMutator(mctx)
 		return
 	}
+}
+
+// apexStrictUpdatibilityLintMutator propagates strict_updatability_linting to transitive deps of a mainline module
+// This check is enforced for updatable modules
+func apexStrictUpdatibilityLintMutator(mctx android.TopDownMutatorContext) {
+	if !mctx.Module().Enabled() {
+		return
+	}
+	if apex, ok := mctx.Module().(*apexBundle); ok && apex.checkStrictUpdatabilityLinting() {
+		mctx.WalkDeps(func(child, parent android.Module) bool {
+			// b/208656169 Do not propagate strict updatability linting to libcore/
+			// These libs are available on the classpath during compilation
+			// These libs are transitive deps of the sdk. See java/sdk.go:decodeSdkDep
+			// Only skip libraries defined in libcore root, not subdirectories
+			if mctx.OtherModuleDir(child) == "libcore" {
+				// Do not traverse transitive deps of libcore/ libs
+				return false
+			}
+			if android.InList(child.Name(), skipLintJavalibAllowlist) {
+				return false
+			}
+			if lintable, ok := child.(java.LintDepSetsIntf); ok {
+				lintable.SetStrictUpdatabilityLinting(true)
+			}
+			// visit transitive deps
+			return true
+		})
+	}
+}
+
+// TODO: b/215736885 Whittle the denylist
+// Transitive deps of certain mainline modules baseline NewApi errors
+// Skip these mainline modules for now
+var (
+	skipStrictUpdatabilityLintAllowlist = []string{
+		"com.android.art",
+		"com.android.art.debug",
+		"com.android.conscrypt",
+		"com.android.media",
+		// test apexes
+		"test_com.android.art",
+		"test_com.android.conscrypt",
+		"test_com.android.media",
+		"test_jitzygote_com.android.art",
+	}
+
+	// TODO: b/215736885 Remove this list
+	skipLintJavalibAllowlist = []string{
+		"conscrypt.module.platform.api.stubs",
+		"conscrypt.module.public.api.stubs",
+		"conscrypt.module.public.api.stubs.system",
+		"conscrypt.module.public.api.stubs.module_lib",
+		"framework-media.stubs",
+		"framework-media.stubs.system",
+		"framework-media.stubs.module_lib",
+	}
+)
+
+func (a *apexBundle) checkStrictUpdatabilityLinting() bool {
+	return a.Updatable() && !android.InList(a.ApexVariationName(), skipStrictUpdatabilityLintAllowlist)
 }
 
 // apexUniqueVariationsMutator checks if any dependencies use unique apex variations. If so, use
@@ -2671,31 +2731,8 @@ func makeApexAvailableBaseline() map[string][]string {
 	// Module separator
 	//
 	m["com.android.bluetooth"] = []string{
-		"android.hardware.audio.common@5.0",
-		"android.hardware.bluetooth.a2dp@1.0",
-		"android.hardware.bluetooth.audio@2.0",
-		"android.hardware.bluetooth@1.0",
-		"android.hardware.bluetooth@1.1",
-		"android.hardware.graphics.bufferqueue@1.0",
-		"android.hardware.graphics.bufferqueue@2.0",
-		"android.hardware.graphics.common@1.0",
-		"android.hardware.graphics.common@1.1",
-		"android.hardware.graphics.common@1.2",
-		"android.hidl.safe_union@1.0",
-		"android.hidl.token@1.0",
-		"android.hidl.token@1.0-utils",
-		"avrcp-target-service",
-		"avrcp_headers",
 		"bluetooth-protos-lite",
-		"bluetooth.mapsapi",
-		"com.android.vcard",
-		"dnsresolver_aidl_interface-V2-java",
-		"ipmemorystore-aidl-interfaces-V5-java",
-		"ipmemorystore-aidl-interfaces-java",
 		"internal_include_headers",
-		"lib-bt-packets",
-		"lib-bt-packets-avrcp",
-		"lib-bt-packets-base",
 		"libaudio-a2dp-hw-utils",
 		"libaudio-hearing-aid-hw-utils",
 		"libbluetooth",
@@ -2719,25 +2756,6 @@ func makeApexAvailableBaseline() map[string][]string {
 		"libbte",
 		"libbtif",
 		"libchrome",
-		"libevent",
-		"libfmq",
-		"libg722codec",
-		"libgui_headers",
-		"libmodpb64",
-		"libosi",
-		"libstatslog",
-		"libstatssocket",
-		"libtinyxml2",
-		"libudrv-uipc",
-		"libz",
-		"media_plugin_headers",
-		"net-utils-services-common",
-		"netd_aidl_interface-unstable-java",
-		"netd_event_listener_interface-java",
-		"netlink-client",
-		"networkstack-client",
-		"sap-api-java-static",
-		"services.net",
 	}
 	//
 	// Module separator

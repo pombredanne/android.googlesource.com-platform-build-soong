@@ -591,15 +591,6 @@ func TestBasicApex(t *testing.T) {
 		t.Errorf("Could not find all expected symlinks! foo: %t, foo_link_64: %t. Command was %s", found_foo, found_foo_link_64, copyCmds)
 	}
 
-	mergeNoticesRule := ctx.ModuleForTests("myapex", "android_common_myapex_image").Rule("mergeNoticesRule")
-	noticeInputs := mergeNoticesRule.Inputs.Strings()
-	if len(noticeInputs) != 3 {
-		t.Errorf("number of input notice files: expected = 3, actual = %q", len(noticeInputs))
-	}
-	ensureListContains(t, noticeInputs, "NOTICE")
-	ensureListContains(t, noticeInputs, "custom_notice")
-	ensureListContains(t, noticeInputs, "custom_notice_for_static_lib")
-
 	fullDepsInfo := strings.Split(ctx.ModuleForTests("myapex", "android_common_myapex_image").Output("depsinfo/fulllist.txt").Args["content"], "\\n")
 	ensureListContains(t, fullDepsInfo, "  myjar(minSdkVersion:(no version)) <- myapex")
 	ensureListContains(t, fullDepsInfo, "  mylib2(minSdkVersion:(no version)) <- mylib")
@@ -9048,6 +9039,185 @@ func ensureDoesNotContainRequiredDeps(t *testing.T, ctx *android.TestContext, mo
 	a := ctx.ModuleForTests(moduleName, variant).Module().(*apexBundle)
 	for _, dep := range deps {
 		android.AssertStringListDoesNotContain(t, "", a.requiredDeps, dep)
+	}
+}
+
+func TestApexStrictUpdtabilityLint(t *testing.T) {
+	bpTemplate := `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			java_libs: ["myjavalib"],
+			updatable: %v,
+			min_sdk_version: "29",
+		}
+		apex_key {
+			name: "myapex.key",
+		}
+		java_library {
+			name: "myjavalib",
+			srcs: ["MyClass.java"],
+			apex_available: [ "myapex" ],
+			lint: {
+				strict_updatability_linting: %v,
+			},
+			sdk_version: "current",
+			min_sdk_version: "29",
+		}
+		`
+	fs := android.MockFS{
+		"lint-baseline.xml": nil,
+	}
+
+	testCases := []struct {
+		testCaseName              string
+		apexUpdatable             bool
+		javaStrictUpdtabilityLint bool
+		lintFileExists            bool
+		disallowedFlagExpected    bool
+	}{
+		{
+			testCaseName:              "lint-baseline.xml does not exist, no disallowed flag necessary in lint cmd",
+			apexUpdatable:             true,
+			javaStrictUpdtabilityLint: true,
+			lintFileExists:            false,
+			disallowedFlagExpected:    false,
+		},
+		{
+			testCaseName:              "non-updatable apex respects strict_updatability of javalib",
+			apexUpdatable:             false,
+			javaStrictUpdtabilityLint: false,
+			lintFileExists:            true,
+			disallowedFlagExpected:    false,
+		},
+		{
+			testCaseName:              "non-updatable apex respects strict updatability of javalib",
+			apexUpdatable:             false,
+			javaStrictUpdtabilityLint: true,
+			lintFileExists:            true,
+			disallowedFlagExpected:    true,
+		},
+		{
+			testCaseName:              "updatable apex sets strict updatability of javalib to true",
+			apexUpdatable:             true,
+			javaStrictUpdtabilityLint: false, // will be set to true by mutator
+			lintFileExists:            true,
+			disallowedFlagExpected:    true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		bp := fmt.Sprintf(bpTemplate, testCase.apexUpdatable, testCase.javaStrictUpdtabilityLint)
+		fixtures := []android.FixturePreparer{}
+		if testCase.lintFileExists {
+			fixtures = append(fixtures, fs.AddToFixture())
+		}
+
+		result := testApex(t, bp, fixtures...)
+		myjavalib := result.ModuleForTests("myjavalib", "android_common_apex29")
+		sboxProto := android.RuleBuilderSboxProtoForTests(t, myjavalib.Output("lint.sbox.textproto"))
+		disallowedFlagActual := strings.Contains(*sboxProto.Commands[0].Command, "--baseline lint-baseline.xml --disallowed_issues NewApi")
+
+		if disallowedFlagActual != testCase.disallowedFlagExpected {
+			t.Errorf("Failed testcase: %v \nActual lint cmd: %v", testCase.testCaseName, *sboxProto.Commands[0].Command)
+		}
+	}
+}
+
+func TestUpdatabilityLintSkipLibcore(t *testing.T) {
+	bp := `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			java_libs: ["myjavalib"],
+			updatable: true,
+			min_sdk_version: "29",
+		}
+		apex_key {
+			name: "myapex.key",
+		}
+		java_library {
+			name: "myjavalib",
+			srcs: ["MyClass.java"],
+			apex_available: [ "myapex" ],
+			sdk_version: "current",
+			min_sdk_version: "29",
+		}
+		`
+
+	testCases := []struct {
+		testCaseName           string
+		moduleDirectory        string
+		disallowedFlagExpected bool
+	}{
+		{
+			testCaseName:           "lintable module defined outside libcore",
+			moduleDirectory:        "",
+			disallowedFlagExpected: true,
+		},
+		{
+			testCaseName:           "lintable module defined in libcore root directory",
+			moduleDirectory:        "libcore/",
+			disallowedFlagExpected: false,
+		},
+		{
+			testCaseName:           "lintable module defined in libcore child directory",
+			moduleDirectory:        "libcore/childdir/",
+			disallowedFlagExpected: true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		lintFileCreator := android.FixtureAddTextFile(testCase.moduleDirectory+"lint-baseline.xml", "")
+		bpFileCreator := android.FixtureAddTextFile(testCase.moduleDirectory+"Android.bp", bp)
+		result := testApex(t, "", lintFileCreator, bpFileCreator)
+		myjavalib := result.ModuleForTests("myjavalib", "android_common_apex29")
+		sboxProto := android.RuleBuilderSboxProtoForTests(t, myjavalib.Output("lint.sbox.textproto"))
+		cmdFlags := fmt.Sprintf("--baseline %vlint-baseline.xml --disallowed_issues NewApi", testCase.moduleDirectory)
+		disallowedFlagActual := strings.Contains(*sboxProto.Commands[0].Command, cmdFlags)
+
+		if disallowedFlagActual != testCase.disallowedFlagExpected {
+			t.Errorf("Failed testcase: %v \nActual lint cmd: %v", testCase.testCaseName, *sboxProto.Commands[0].Command)
+		}
+	}
+}
+
+// checks transtive deps of an apex coming from bootclasspath_fragment
+func TestApexStrictUpdtabilityLintBcpFragmentDeps(t *testing.T) {
+	bp := `
+		apex {
+			name: "myapex",
+			key: "myapex.key",
+			bootclasspath_fragments: ["mybootclasspathfragment"],
+			updatable: true,
+			min_sdk_version: "29",
+		}
+		apex_key {
+			name: "myapex.key",
+		}
+		bootclasspath_fragment {
+			name: "mybootclasspathfragment",
+			contents: ["myjavalib"],
+			apex_available: ["myapex"],
+		}
+		java_library {
+			name: "myjavalib",
+			srcs: ["MyClass.java"],
+			apex_available: [ "myapex" ],
+			sdk_version: "current",
+			min_sdk_version: "29",
+			compile_dex: true,
+		}
+		`
+	fs := android.MockFS{
+		"lint-baseline.xml": nil,
+	}
+
+	result := testApex(t, bp, dexpreopt.FixtureSetApexBootJars("myapex:myjavalib"), fs.AddToFixture())
+	myjavalib := result.ModuleForTests("myjavalib", "android_common_apex29")
+	sboxProto := android.RuleBuilderSboxProtoForTests(t, myjavalib.Output("lint.sbox.textproto"))
+	if !strings.Contains(*sboxProto.Commands[0].Command, "--baseline lint-baseline.xml --disallowed_issues NewApi") {
+		t.Errorf("Strict updabality lint missing in myjavalib coming from bootclasspath_fragment mybootclasspath-fragment\nActual lint cmd: %v", *sboxProto.Commands[0].Command)
 	}
 }
 

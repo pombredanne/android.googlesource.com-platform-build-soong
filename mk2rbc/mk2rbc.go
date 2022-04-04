@@ -566,6 +566,12 @@ func (ctx *parseContext) handleAssignment(a *mkparser.Assignment) []starlarkNode
 		}
 	}
 
+	if asgn.lhs.valueType() == starlarkTypeString &&
+		asgn.value.typ() != starlarkTypeUnknown &&
+		asgn.value.typ() != starlarkTypeString {
+		asgn.value = &toStringExpr{expr: asgn.value}
+	}
+
 	asgn.previous = ctx.lastAssignment(lhs)
 	ctx.setLastAssignment(lhs, asgn)
 	switch a.Type {
@@ -1370,7 +1376,7 @@ func (p *myDirCallParser) parse(ctx *parseContext, node mkparser.Node, args *mkp
 	if !args.Empty() {
 		return ctx.newBadExpr(node, "my-dir function cannot have any arguments passed to it.")
 	}
-	return &variableRefExpr{ctx.addVariable("LOCAL_PATH"), true}
+	return &stringLiteralExpr{literal: filepath.Dir(ctx.script.mkFile)}
 }
 
 type isProductInListCallParser struct{}

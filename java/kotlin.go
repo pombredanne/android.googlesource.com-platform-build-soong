@@ -34,7 +34,8 @@ var kotlinc = pctx.AndroidRemoteStaticRule("kotlinc", android.RemoteRuleSupports
 			`${config.GenKotlinBuildFileCmd} --classpath "$classpath" --name "$name"` +
 			` --out_dir "$classesDir" --srcs "$out.rsp" --srcs "$srcJarDir/list"` +
 			` $commonSrcFilesArg --out "$kotlinBuildFile" && ` +
-			`${config.KotlincCmd} ${config.KotlincSuppressJDK9Warnings} ${config.JavacHeapFlags} ` +
+			`${config.KotlincCmd} ${config.KotlincGlobalFlags} ` +
+			`${config.KotlincSuppressJDK9Warnings} ${config.JavacHeapFlags} ` +
 			`$kotlincFlags -jvm-target $kotlinJvmTarget -Xbuild-file=$kotlinBuildFile ` +
 			`-kotlin-home $emptyDir && ` +
 			`${config.SoongZipCmd} -jar -o $out -C $classesDir -D $classesDir && ` +
@@ -117,7 +118,7 @@ func kotlinCompile(ctx android.ModuleContext, outputFile android.WritablePath,
 	})
 }
 
-var kapt = pctx.AndroidRemoteStaticRule("kapt", android.RemoteRuleSupports{Goma: true},
+var kaptStubs = pctx.AndroidRemoteStaticRule("kaptStubs", android.RemoteRuleSupports{Goma: true},
 	blueprint.RuleParams{
 		Command: `rm -rf "$srcJarDir" "$kotlinBuildFile" "$kaptDir" && ` +
 			`mkdir -p "$srcJarDir" "$kaptDir/sources" "$kaptDir/classes" && ` +
@@ -125,19 +126,19 @@ var kapt = pctx.AndroidRemoteStaticRule("kapt", android.RemoteRuleSupports{Goma:
 			`${config.GenKotlinBuildFileCmd} --classpath "$classpath" --name "$name"` +
 			` --srcs "$out.rsp" --srcs "$srcJarDir/list"` +
 			` $commonSrcFilesArg --out "$kotlinBuildFile" && ` +
-			`${config.KotlincCmd} ${config.KaptSuppressJDK9Warnings} ${config.KotlincSuppressJDK9Warnings} ` +
+			`${config.KotlincCmd} ${config.KotlincGlobalFlags} ` +
+			`${config.KaptSuppressJDK9Warnings} ${config.KotlincSuppressJDK9Warnings} ` +
 			`${config.JavacHeapFlags} $kotlincFlags -Xplugin=${config.KotlinKaptJar} ` +
 			`-P plugin:org.jetbrains.kotlin.kapt3:sources=$kaptDir/sources ` +
 			`-P plugin:org.jetbrains.kotlin.kapt3:classes=$kaptDir/classes ` +
 			`-P plugin:org.jetbrains.kotlin.kapt3:stubs=$kaptDir/stubs ` +
 			`-P plugin:org.jetbrains.kotlin.kapt3:correctErrorTypes=true ` +
-			`-P plugin:org.jetbrains.kotlin.kapt3:aptMode=stubsAndApt ` +
+			`-P plugin:org.jetbrains.kotlin.kapt3:aptMode=stubs ` +
 			`-P plugin:org.jetbrains.kotlin.kapt3:javacArguments=$encodedJavacFlags ` +
 			`$kaptProcessorPath ` +
 			`$kaptProcessor ` +
 			`-Xbuild-file=$kotlinBuildFile && ` +
-			`${config.SoongZipCmd} -jar -o $out -C $kaptDir/sources -D $kaptDir/sources && ` +
-			`${config.SoongZipCmd} -jar -o $classesJarOut -C $kaptDir/classes -D $kaptDir/classes && ` +
+			`${config.SoongZipCmd} -jar -o $out -C $kaptDir/stubs -D $kaptDir/stubs && ` +
 			`rm -rf "$srcJarDir"`,
 		CommandDeps: []string{
 			"${config.KotlincCmd}",
@@ -195,13 +196,14 @@ func kotlinKapt(ctx android.ModuleContext, srcJarOutputFile, resJarOutputFile an
 	kotlinName := filepath.Join(ctx.ModuleDir(), ctx.ModuleSubDir(), ctx.ModuleName())
 	kotlinName = strings.ReplaceAll(kotlinName, "/", "__")
 
+	// First run kapt to generate .java stubs from .kt files
+	kaptStubsJar := android.PathForModuleOut(ctx, "kapt", "stubs.jar")
 	ctx.Build(pctx, android.BuildParams{
-		Rule:           kapt,
-		Description:    "kapt",
-		Output:         srcJarOutputFile,
-		ImplicitOutput: resJarOutputFile,
-		Inputs:         srcFiles,
-		Implicits:      deps,
+		Rule:        kaptStubs,
+		Description: "kapt stubs",
+		Output:      kaptStubsJar,
+		Inputs:      srcFiles,
+		Implicits:   deps,
 		Args: map[string]string{
 			"classpath":         flags.kotlincClasspath.FormJavaClassPath(""),
 			"kotlincFlags":      flags.kotlincFlags,
@@ -217,6 +219,11 @@ func kotlinKapt(ctx android.ModuleContext, srcJarOutputFile, resJarOutputFile an
 			"classesJarOut":     resJarOutputFile.String(),
 		},
 	})
+
+	// Then run turbine to perform annotation processing on the stubs and any .java srcFiles.
+	javaSrcFiles := srcFiles.FilterByExt(".java")
+	turbineSrcJars := append(android.Paths{kaptStubsJar}, srcJars...)
+	TurbineApt(ctx, srcJarOutputFile, resJarOutputFile, javaSrcFiles, turbineSrcJars, flags)
 }
 
 // kapt converts a list of key, value pairs into a base64 encoded Java serialization, which is what kapt expects.
