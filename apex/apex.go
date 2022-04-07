@@ -19,6 +19,7 @@ package apex
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -1537,13 +1538,33 @@ type androidApp interface {
 var _ androidApp = (*java.AndroidApp)(nil)
 var _ androidApp = (*java.AndroidAppImport)(nil)
 
+func sanitizedBuildIdForPath(ctx android.BaseModuleContext) string {
+	buildId := ctx.Config().BuildId()
+
+	// The build ID is used as a suffix for a filename, so ensure that
+	// the set of characters being used are sanitized.
+	// - any word character: [a-zA-Z0-9_]
+	// - dots: .
+	// - dashes: -
+	validRegex := regexp.MustCompile(`^[\w\.\-\_]+$`)
+	if !validRegex.MatchString(buildId) {
+		ctx.ModuleErrorf("Unable to use build id %s as filename suffix, valid characters are [a-z A-Z 0-9 _ . -].", buildId)
+	}
+	return buildId
+}
+
 func apexFileForAndroidApp(ctx android.BaseModuleContext, aapp androidApp) apexFile {
 	appDir := "app"
 	if aapp.Privileged() {
 		appDir = "priv-app"
 	}
-	dirInApex := filepath.Join(appDir, aapp.InstallApkName())
+
+	// TODO(b/224589412, b/226559955): Ensure that the subdirname is suffixed
+	// so that PackageManager correctly invalidates the existing installed apk
+	// in favour of the new APK-in-APEX.  See bugs for more information.
+	dirInApex := filepath.Join(appDir, aapp.InstallApkName()+"@"+sanitizedBuildIdForPath(ctx))
 	fileToCopy := aapp.OutputFile()
+
 	af := newApexFile(ctx, fileToCopy, aapp.BaseModuleName(), dirInApex, app, aapp)
 	af.jacocoReportClassesFile = aapp.JacocoReportClassesFile()
 	af.lintDepSets = aapp.LintDepSets()
@@ -1572,8 +1593,8 @@ func apexFileForRuntimeResourceOverlay(ctx android.BaseModuleContext, rro java.R
 	return af
 }
 
-func apexFileForBpfProgram(ctx android.BaseModuleContext, builtFile android.Path, bpfProgram bpf.BpfModule) apexFile {
-	dirInApex := filepath.Join("etc", "bpf")
+func apexFileForBpfProgram(ctx android.BaseModuleContext, builtFile android.Path, apex_sub_dir string, bpfProgram bpf.BpfModule) apexFile {
+	dirInApex := filepath.Join("etc", "bpf", apex_sub_dir)
 	return newApexFile(ctx, builtFile, builtFile.Base(), dirInApex, etc, bpfProgram)
 }
 
@@ -1756,8 +1777,12 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 					if ap.Privileged() {
 						appDir = "priv-app"
 					}
-					af := newApexFile(ctx, ap.OutputFile(), ap.BaseModuleName(),
-						filepath.Join(appDir, ap.BaseModuleName()), appSet, ap)
+					// TODO(b/224589412, b/226559955): Ensure that the dirname is
+					// suffixed so that PackageManager correctly invalidates the
+					// existing installed apk in favour of the new APK-in-APEX.
+					// See bugs for more information.
+					appDirName := filepath.Join(appDir, ap.BaseModuleName()+"@"+sanitizedBuildIdForPath(ctx))
+					af := newApexFile(ctx, ap.OutputFile(), ap.BaseModuleName(), appDirName, appSet, ap)
 					af.certificate = java.PresignedCertificate
 					filesInfo = append(filesInfo, af)
 				} else {
@@ -1772,8 +1797,9 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			case bpfTag:
 				if bpfProgram, ok := child.(bpf.BpfModule); ok {
 					filesToCopy, _ := bpfProgram.OutputFiles("")
+					apex_sub_dir := bpfProgram.SubDir()
 					for _, bpfFile := range filesToCopy {
-						filesInfo = append(filesInfo, apexFileForBpfProgram(ctx, bpfFile, bpfProgram))
+						filesInfo = append(filesInfo, apexFileForBpfProgram(ctx, bpfFile, apex_sub_dir, bpfProgram))
 					}
 				} else {
 					ctx.PropertyErrorf("bpfs", "%q is not a bpf module", depName)
@@ -2347,6 +2373,12 @@ func (a *apexBundle) checkUpdatable(ctx android.ModuleContext) {
 func (a *apexBundle) checkClasspathFragments(ctx android.ModuleContext) {
 	ctx.VisitDirectDeps(func(module android.Module) {
 		if tag := ctx.OtherModuleDependencyTag(module); tag == bcpfTag || tag == sscpfTag {
+			if tag == sscpfTag {
+				sscpf := module.(*java.SystemServerClasspathModule)
+				if sscpf.ShouldIgnore() {
+					return
+				}
+			}
 			info := ctx.OtherModuleProvider(module, java.ClasspathFragmentProtoContentInfoProvider).(java.ClasspathFragmentProtoContentInfo)
 			if !info.ClasspathFragmentProtoGenerated {
 				ctx.OtherModuleErrorf(module, "is included in updatable apex %v, it must not set generate_classpaths_proto to false", ctx.ModuleName())
