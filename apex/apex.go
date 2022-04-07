@@ -19,6 +19,7 @@ package apex
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -1656,13 +1657,33 @@ type androidApp interface {
 var _ androidApp = (*java.AndroidApp)(nil)
 var _ androidApp = (*java.AndroidAppImport)(nil)
 
+func sanitizedBuildIdForPath(ctx android.BaseModuleContext) string {
+	buildId := ctx.Config().BuildId()
+
+	// The build ID is used as a suffix for a filename, so ensure that
+	// the set of characters being used are sanitized.
+	// - any word character: [a-zA-Z0-9_]
+	// - dots: .
+	// - dashes: -
+	validRegex := regexp.MustCompile(`^[\w\.\-\_]+$`)
+	if !validRegex.MatchString(buildId) {
+		ctx.ModuleErrorf("Unable to use build id %s as filename suffix, valid characters are [a-z A-Z 0-9 _ . -].", buildId)
+	}
+	return buildId
+}
+
 func apexFileForAndroidApp(ctx android.BaseModuleContext, aapp androidApp) apexFile {
 	appDir := "app"
 	if aapp.Privileged() {
 		appDir = "priv-app"
 	}
-	dirInApex := filepath.Join(appDir, aapp.InstallApkName())
+
+	// TODO(b/224589412, b/226559955): Ensure that the subdirname is suffixed
+	// so that PackageManager correctly invalidates the existing installed apk
+	// in favour of the new APK-in-APEX.  See bugs for more information.
+	dirInApex := filepath.Join(appDir, aapp.InstallApkName()+"@"+sanitizedBuildIdForPath(ctx))
 	fileToCopy := aapp.OutputFile()
+
 	af := newApexFile(ctx, fileToCopy, aapp.BaseModuleName(), dirInApex, app, aapp)
 	af.jacocoReportClassesFile = aapp.JacocoReportClassesFile()
 	af.lintDepSets = aapp.LintDepSets()
@@ -1895,8 +1916,12 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 					if ap.Privileged() {
 						appDir = "priv-app"
 					}
-					af := newApexFile(ctx, ap.OutputFile(), ap.BaseModuleName(),
-						filepath.Join(appDir, ap.BaseModuleName()), appSet, ap)
+					// TODO(b/224589412, b/226559955): Ensure that the dirname is
+					// suffixed so that PackageManager correctly invalidates the
+					// existing installed apk in favour of the new APK-in-APEX.
+					// See bugs for more information.
+					appDirName := filepath.Join(appDir, ap.BaseModuleName()+"@"+sanitizedBuildIdForPath(ctx))
+					af := newApexFile(ctx, ap.OutputFile(), ap.BaseModuleName(), appDirName, appSet, ap)
 					af.certificate = java.PresignedCertificate
 					filesInfo = append(filesInfo, af)
 				} else {
@@ -2986,21 +3011,19 @@ func makeApexAvailableBaseline() map[string][]string {
 }
 
 func init() {
-	android.AddNeverAllowRules(createApexPermittedPackagesRules(qModulesPackages())...)
-	android.AddNeverAllowRules(createApexPermittedPackagesRules(rModulesPackages())...)
+	android.AddNeverAllowRules(createBcpPermittedPackagesRules(qBcpPackages())...)
+	android.AddNeverAllowRules(createBcpPermittedPackagesRules(rBcpPackages())...)
 }
 
-func createApexPermittedPackagesRules(modules_packages map[string][]string) []android.Rule {
-	rules := make([]android.Rule, 0, len(modules_packages))
-	for module_name, module_packages := range modules_packages {
+func createBcpPermittedPackagesRules(bcpPermittedPackages map[string][]string) []android.Rule {
+	rules := make([]android.Rule, 0, len(bcpPermittedPackages))
+	for jar, permittedPackages := range bcpPermittedPackages {
 		permittedPackagesRule := android.NeverAllow().
-			BootclasspathJar().
-			With("apex_available", module_name).
-			WithMatcher("permitted_packages", android.NotInList(module_packages)).
-			WithMatcher("min_sdk_version", android.LessThanSdkVersion("Tiramisu")).
-			Because("jars that are part of the " + module_name +
-				" module may only use these package prefixes: " + strings.Join(module_packages, ",") +
-				" with min_sdk < T. Please consider the following alternatives:\n" +
+			With("name", jar).
+			WithMatcher("permitted_packages", android.NotInList(permittedPackages)).
+			Because(jar +
+				" bootjar may only use these package prefixes: " + strings.Join(permittedPackages, ",") +
+				". Please consider the following alternatives:\n" +
 				"    1. If the offending code is from a statically linked library, consider " +
 				"removing that dependency and using an alternative already in the " +
 				"bootclasspath, or perhaps a shared library." +
@@ -3008,57 +3031,56 @@ func createApexPermittedPackagesRules(modules_packages map[string][]string) []an
 				"    3. Jarjar the offending code. Please be mindful of the potential system " +
 				"health implications of bundling that code, particularly if the offending jar " +
 				"is part of the bootclasspath.")
+
 		rules = append(rules, permittedPackagesRule)
 	}
 	return rules
 }
 
-// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART on Q/R/S.
+// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART.
 // Adding code to the bootclasspath in new packages will cause issues on module update.
-func qModulesPackages() map[string][]string {
+func qBcpPackages() map[string][]string {
 	return map[string][]string{
-		"com.android.conscrypt": []string{
+		"conscrypt": []string{
 			"android.net.ssl",
 			"com.android.org.conscrypt",
 		},
-		"com.android.media": []string{
+		"updatable-media": []string{
 			"android.media",
 		},
 	}
 }
 
-// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART on R/S.
+// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART.
 // Adding code to the bootclasspath in new packages will cause issues on module update.
-func rModulesPackages() map[string][]string {
+func rBcpPackages() map[string][]string {
 	return map[string][]string{
-		"com.android.mediaprovider": []string{
+		"framework-mediaprovider": []string{
 			"android.provider",
 		},
-		"com.android.permission": []string{
+		"framework-permission": []string{
 			"android.permission",
-			//TODO(b/205719989): remove, do not cherry-pick anywhere
-			"android.safetycenter",
 			"android.app.role",
 			"com.android.permission",
 			"com.android.role",
 		},
-		"com.android.sdkext": []string{
+		"framework-sdkextensions": []string{
 			"android.os.ext",
 		},
-		"com.android.os.statsd": []string{
+		"framework-statsd": []string{
 			"android.app",
 			"android.os",
 			"android.util",
 			"com.android.internal.statsd",
 			"com.android.server.stats",
 		},
-		"com.android.wifi": []string{
+		"framework-wifi": []string{
 			"com.android.server.wifi",
 			"com.android.wifi.x",
 			"android.hardware.wifi",
 			"android.net.wifi",
 		},
-		"com.android.tethering": []string{
+		"framework-tethering": []string{
 			"android.net",
 		},
 	}
