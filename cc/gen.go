@@ -34,9 +34,9 @@ func init() {
 var (
 	lex = pctx.AndroidStaticRule("lex",
 		blueprint.RuleParams{
-			Command:     "M4=$m4Cmd $lexCmd $flags -o$out $in",
+			Command:     "M4=$m4Cmd $lexCmd -o$out $in",
 			CommandDeps: []string{"$lexCmd", "$m4Cmd"},
-		}, "flags")
+		})
 
 	sysprop = pctx.AndroidStaticRule("sysprop",
 		blueprint.RuleParams{
@@ -75,10 +75,7 @@ func genYacc(ctx android.ModuleContext, rule *android.RuleBuilder, yaccFile andr
 	cmd := rule.Command()
 
 	// Fix up #line markers to not use the sbox temporary directory
-	// android.sboxPathForOutput(outDir, outDir) returns the sbox placeholder for the out
-	// directory itself, without any filename appended.
-	sboxOutDir := cmd.PathForOutput(outDir)
-	sedCmd := "sed -i.bak 's#" + sboxOutDir + "#" + outDir.String() + "#'"
+	sedCmd := "sed -i.bak 's#__SBOX_OUT_DIR__#" + outDir.String() + "#'"
 	rule.Command().Text(sedCmd).Input(outFile)
 	rule.Command().Text(sedCmd).Input(headerFile)
 
@@ -111,7 +108,9 @@ func genYacc(ctx android.ModuleContext, rule *android.RuleBuilder, yaccFile andr
 	return ret
 }
 
-func genAidl(ctx android.ModuleContext, rule *android.RuleBuilder, aidlFile android.Path, aidlFlags string) (cppFile android.OutputPath, headerFiles android.Paths) {
+func genAidl(ctx android.ModuleContext, rule *android.RuleBuilder, aidlFile android.Path,
+	outFile, depFile android.ModuleGenPath, aidlFlags string) android.Paths {
+
 	aidlPackage := strings.TrimSuffix(aidlFile.Rel(), aidlFile.Base())
 	baseName := strings.TrimSuffix(aidlFile.Base(), aidlFile.Ext())
 	shortName := baseName
@@ -124,8 +123,6 @@ func genAidl(ctx android.ModuleContext, rule *android.RuleBuilder, aidlFile andr
 	}
 
 	outDir := android.PathForModuleGen(ctx, "aidl")
-	cppFile = outDir.Join(ctx, aidlPackage, baseName+".cpp")
-	depFile := outDir.Join(ctx, aidlPackage, baseName+".cpp.d")
 	headerI := outDir.Join(ctx, aidlPackage, baseName+".h")
 	headerBn := outDir.Join(ctx, aidlPackage, "Bn"+shortName+".h")
 	headerBp := outDir.Join(ctx, aidlPackage, "Bp"+shortName+".h")
@@ -136,43 +133,32 @@ func genAidl(ctx android.ModuleContext, rule *android.RuleBuilder, aidlFile andr
 	}
 
 	cmd := rule.Command()
-	cmd.BuiltTool("aidl-cpp").
+	cmd.BuiltTool(ctx, "aidl-cpp").
 		FlagWithDepFile("-d", depFile).
 		Flag("--ninja").
 		Flag(aidlFlags).
 		Input(aidlFile).
 		OutputDir().
-		Output(cppFile).
+		Output(outFile).
 		ImplicitOutputs(android.WritablePaths{
 			headerI,
 			headerBn,
 			headerBp,
 		})
 
-	return cppFile, android.Paths{
+	return android.Paths{
 		headerI,
 		headerBn,
 		headerBp,
 	}
 }
 
-type LexProperties struct {
-	// list of module-specific flags that will be used for .l and .ll compiles
-	Flags []string
-}
-
-func genLex(ctx android.ModuleContext, lexFile android.Path, outFile android.ModuleGenPath, props *LexProperties) {
-	var flags []string
-	if props != nil {
-		flags = props.Flags
-	}
-	flagsString := strings.Join(flags[:], " ")
+func genLex(ctx android.ModuleContext, lexFile android.Path, outFile android.ModuleGenPath) {
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        lex,
 		Description: "lex " + lexFile.Rel(),
 		Output:      outFile,
 		Input:       lexFile,
-		Args:        map[string]string{"flags": flagsString},
 	})
 }
 
@@ -220,35 +206,8 @@ func genWinMsg(ctx android.ModuleContext, srcFile android.Path, flags builderFla
 	return rcFile, headerFile
 }
 
-// Used to communicate information from the genSources method back to the library code that uses
-// it.
-type generatedSourceInfo struct {
-	// The headers created from .proto files
-	protoHeaders android.Paths
-
-	// The files that can be used as order only dependencies in order to ensure that the proto header
-	// files are up to date.
-	protoOrderOnlyDeps android.Paths
-
-	// The headers created from .aidl files
-	aidlHeaders android.Paths
-
-	// The files that can be used as order only dependencies in order to ensure that the aidl header
-	// files are up to date.
-	aidlOrderOnlyDeps android.Paths
-
-	// The headers created from .sysprop files
-	syspropHeaders android.Paths
-
-	// The files that can be used as order only dependencies in order to ensure that the sysprop
-	// header files are up to date.
-	syspropOrderOnlyDeps android.Paths
-}
-
 func genSources(ctx android.ModuleContext, srcFiles android.Paths,
-	buildFlags builderFlags) (android.Paths, android.Paths, generatedSourceInfo) {
-
-	var info generatedSourceInfo
+	buildFlags builderFlags) (android.Paths, android.Paths) {
 
 	var deps android.Paths
 	var rsFiles android.Paths
@@ -258,8 +217,7 @@ func genSources(ctx android.ModuleContext, srcFiles android.Paths,
 	var yaccRule_ *android.RuleBuilder
 	yaccRule := func() *android.RuleBuilder {
 		if yaccRule_ == nil {
-			yaccRule_ = android.NewRuleBuilder(pctx, ctx).Sbox(android.PathForModuleGen(ctx, "yacc"),
-				android.PathForModuleGen(ctx, "yacc.sbox.textproto"))
+			yaccRule_ = android.NewRuleBuilder().Sbox(android.PathForModuleGen(ctx, "yacc"))
 		}
 		return yaccRule_
 	}
@@ -277,30 +235,23 @@ func genSources(ctx android.ModuleContext, srcFiles android.Paths,
 		case ".l":
 			cFile := android.GenPathWithExt(ctx, "lex", srcFile, "c")
 			srcFiles[i] = cFile
-			genLex(ctx, srcFile, cFile, buildFlags.lex)
+			genLex(ctx, srcFile, cFile)
 		case ".ll":
 			cppFile := android.GenPathWithExt(ctx, "lex", srcFile, "cpp")
 			srcFiles[i] = cppFile
-			genLex(ctx, srcFile, cppFile, buildFlags.lex)
+			genLex(ctx, srcFile, cppFile)
 		case ".proto":
 			ccFile, headerFile := genProto(ctx, srcFile, buildFlags)
 			srcFiles[i] = ccFile
-			info.protoHeaders = append(info.protoHeaders, headerFile)
-			// Use the generated header as an order only dep to ensure that it is up to date when needed.
-			info.protoOrderOnlyDeps = append(info.protoOrderOnlyDeps, headerFile)
+			deps = append(deps, headerFile)
 		case ".aidl":
 			if aidlRule == nil {
-				aidlRule = android.NewRuleBuilder(pctx, ctx).Sbox(android.PathForModuleGen(ctx, "aidl"),
-					android.PathForModuleGen(ctx, "aidl.sbox.textproto"))
+				aidlRule = android.NewRuleBuilder().Sbox(android.PathForModuleGen(ctx, "aidl"))
 			}
-			cppFile, aidlHeaders := genAidl(ctx, aidlRule, srcFile, buildFlags.aidlFlags)
+			cppFile := android.GenPathWithExt(ctx, "aidl", srcFile, "cpp")
+			depFile := android.GenPathWithExt(ctx, "aidl", srcFile, "cpp.d")
 			srcFiles[i] = cppFile
-
-			info.aidlHeaders = append(info.aidlHeaders, aidlHeaders...)
-			// Use the generated headers as order only deps to ensure that they are up to date when
-			// needed.
-			// TODO: Reduce the size of the ninja file by using one order only dep for the whole rule
-			info.aidlOrderOnlyDeps = append(info.aidlOrderOnlyDeps, aidlHeaders...)
+			deps = append(deps, genAidl(ctx, aidlRule, srcFile, cppFile, depFile, buildFlags.aidlFlags)...)
 		case ".rscript", ".fs":
 			cppFile := rsGeneratedCppFile(ctx, srcFile)
 			rsFiles = append(rsFiles, srcFiles[i])
@@ -312,28 +263,21 @@ func genSources(ctx android.ModuleContext, srcFiles android.Paths,
 		case ".sysprop":
 			cppFile, headerFiles := genSysprop(ctx, srcFile)
 			srcFiles[i] = cppFile
-			info.syspropHeaders = append(info.syspropHeaders, headerFiles...)
-			// Use the generated headers as order only deps to ensure that they are up to date when
-			// needed.
-			info.syspropOrderOnlyDeps = append(info.syspropOrderOnlyDeps, headerFiles...)
+			deps = append(deps, headerFiles...)
 		}
 	}
 
 	if aidlRule != nil {
-		aidlRule.Build("aidl", "gen aidl")
+		aidlRule.Build(pctx, ctx, "aidl", "gen aidl")
 	}
 
 	if yaccRule_ != nil {
-		yaccRule_.Build("yacc", "gen yacc")
+		yaccRule_.Build(pctx, ctx, "yacc", "gen yacc")
 	}
-
-	deps = append(deps, info.protoOrderOnlyDeps...)
-	deps = append(deps, info.aidlOrderOnlyDeps...)
-	deps = append(deps, info.syspropOrderOnlyDeps...)
 
 	if len(rsFiles) > 0 {
 		deps = append(deps, rsGenerateCpp(ctx, rsFiles, buildFlags.rsFlags)...)
 	}
 
-	return srcFiles, deps, info
+	return srcFiles, deps
 }

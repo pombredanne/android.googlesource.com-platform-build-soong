@@ -17,6 +17,7 @@ package cc
 import (
 	"android/soong/android"
 	"fmt"
+	"strconv"
 )
 
 func getNdkStlFamily(m LinkableInterface) string {
@@ -62,8 +63,6 @@ func (stl *stl) begin(ctx BaseModuleContext) {
 		s := ""
 		if stl.Properties.Stl != nil {
 			s = *stl.Properties.Stl
-		} else if ctx.header() {
-			s = "none"
 		}
 		if ctx.useSdk() && ctx.Device() {
 			switch s {
@@ -137,23 +136,31 @@ func (stl *stl) begin(ctx BaseModuleContext) {
 }
 
 func needsLibAndroidSupport(ctx BaseModuleContext) bool {
-	version := nativeApiLevelOrPanic(ctx, ctx.sdkVersion())
-	return version.LessThan(android.FirstNonLibAndroidSupportVersion)
+	versionStr, err := normalizeNdkApiLevel(ctx, ctx.sdkVersion(), ctx.Arch())
+	if err != nil {
+		ctx.PropertyErrorf("sdk_version", err.Error())
+	}
+
+	if versionStr == "current" {
+		return false
+	}
+
+	version, err := strconv.Atoi(versionStr)
+	if err != nil {
+		panic(fmt.Sprintf(
+			"invalid API level returned from normalizeNdkApiLevel: %q",
+			versionStr))
+	}
+
+	return version < 21
 }
 
 func staticUnwinder(ctx android.BaseModuleContext) string {
-	vndkVersion := ctx.Module().(*Module).VndkVersion()
-
-	// Modules using R vndk use different unwinder
-	if vndkVersion == "30" {
-		if ctx.Arch().ArchType == android.Arm {
-			return "libunwind_llvm"
-		} else {
-			return "libgcc_stripped"
-		}
+	if ctx.Arch().ArchType == android.Arm {
+		return "libunwind_llvm"
+	} else {
+		return "libgcc_stripped"
 	}
-
-	return "libunwind"
 }
 
 func (stl *stl) deps(ctx BaseModuleContext, deps Deps) Deps {
@@ -201,7 +208,11 @@ func (stl *stl) deps(ctx BaseModuleContext, deps Deps) Deps {
 		if needsLibAndroidSupport(ctx) {
 			deps.StaticLibs = append(deps.StaticLibs, "ndk_libandroid_support")
 		}
-		deps.StaticLibs = append(deps.StaticLibs, "ndk_libunwind")
+		if ctx.Arch().ArchType == android.Arm {
+			deps.StaticLibs = append(deps.StaticLibs, "ndk_libunwind")
+		} else {
+			deps.StaticLibs = append(deps.StaticLibs, "libgcc_stripped")
+		}
 	default:
 		panic(fmt.Errorf("Unknown stl: %q", stl.Properties.SelectedStl))
 	}
@@ -228,6 +239,16 @@ func (stl *stl) flags(ctx ModuleContext, flags Flags) Flags {
 			flags.Local.CppFlags = append(flags.Local.CppFlags, "-nostdinc++")
 			flags.extraLibFlags = append(flags.extraLibFlags, "-nostdlib++")
 			if ctx.Windows() {
+				if stl.Properties.SelectedStl == "libc++_static" {
+					// These are transitively needed by libc++_static.
+					flags.extraLibFlags = append(flags.extraLibFlags,
+						"-lmsvcrt", "-lucrt")
+				}
+				// Use SjLj exceptions for 32-bit.  libgcc_eh implements SjLj
+				// exception model for 32-bit.
+				if ctx.Arch().ArchType == android.X86 {
+					flags.Local.CppFlags = append(flags.Local.CppFlags, "-fsjlj-exceptions")
+				}
 				flags.Local.CppFlags = append(flags.Local.CppFlags,
 					// Disable visiblity annotations since we're using static
 					// libc++.
@@ -235,6 +256,10 @@ func (stl *stl) flags(ctx ModuleContext, flags Flags) Flags {
 					"-D_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS",
 					// Use Win32 threads in libc++.
 					"-D_LIBCPP_HAS_THREAD_API_WIN32")
+			}
+		} else {
+			if ctx.Arch().ArchType == android.Arm {
+				flags.Local.LdFlags = append(flags.Local.LdFlags, "-Wl,--exclude-libs,libunwind_llvm.a")
 			}
 		}
 	case "libstdc++":

@@ -75,7 +75,6 @@ func (j *jdepsGeneratorSingleton) GenerateBuildActions(ctx android.SingletonCont
 		dpInfo.Jarjar_rules = android.FirstUniqueStrings(dpInfo.Jarjar_rules)
 		dpInfo.Jars = android.FirstUniqueStrings(dpInfo.Jars)
 		dpInfo.SrcJars = android.FirstUniqueStrings(dpInfo.SrcJars)
-		dpInfo.Paths = android.FirstUniqueStrings(dpInfo.Paths)
 		moduleInfos[name] = dpInfo
 
 		mkProvider, ok := module.(android.AndroidMkDataProvider)
@@ -87,9 +86,8 @@ func (j *jdepsGeneratorSingleton) GenerateBuildActions(ctx android.SingletonCont
 			dpInfo.Classes = append(dpInfo.Classes, data.Class)
 		}
 
-		if ctx.ModuleHasProvider(module, JavaInfoProvider) {
-			dep := ctx.ModuleProvider(module, JavaInfoProvider).(JavaInfo)
-			dpInfo.Installed_paths = append(dpInfo.Installed_paths, dep.ImplementationJars.Strings()...)
+		if dep, ok := module.(Dependency); ok {
+			dpInfo.Installed_paths = append(dpInfo.Installed_paths, dep.ImplementationJars().Strings()...)
 		}
 		dpInfo.Classes = android.FirstUniqueStrings(dpInfo.Classes)
 		dpInfo.Installed_paths = android.FirstUniqueStrings(dpInfo.Installed_paths)

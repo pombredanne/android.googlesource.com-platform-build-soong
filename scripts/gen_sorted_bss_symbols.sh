@@ -18,11 +18,11 @@
 # their sizes.
 # Inputs:
 #  Environment:
-#   CLANG_BIN: path to the clang bin directory
+#   CROSS_COMPILE: prefix added to nm tools
 #  Arguments:
 #   $1: Input ELF file
 #   $2: Output symbol ordering file
 
 set -o pipefail
 
-${CLANG_BIN}/llvm-nm --size-sort $1 | awk '{if ($2 == "b" || $2 == "B") print $3}' > $2
+${CROSS_COMPILE}nm --size-sort $1 | awk '{if ($2 == "b" || $2 == "B") print $3}' > $2

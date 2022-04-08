@@ -17,6 +17,7 @@ package cc
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/google/blueprint"
 
@@ -75,6 +76,11 @@ type headerProperties struct {
 
 	// Path to the NOTICE file associated with the headers.
 	License *string `android:"path"`
+
+	// True if this API is not yet ready to be shipped in the NDK. It will be
+	// available in the platform for testing, but will be excluded from the
+	// sysroot provided to the NDK proper.
+	Draft bool
 }
 
 type headerModule struct {
@@ -124,6 +130,14 @@ func (m *headerModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 
 	m.licensePath = android.PathForModuleSrc(ctx, String(m.properties.License))
+
+	// When generating NDK prebuilts, skip installing MIPS headers,
+	// but keep them when doing regular platform build.
+	// Ndk_abis property is only set to true with build/soong/scripts/build-ndk-prebuilts.sh
+	// TODO: Revert this once MIPS is supported in NDK again.
+	if ctx.Config().NdkAbis() && strings.Contains(ctx.ModuleName(), "mips") {
+		return
+	}
 
 	srcFiles := android.PathsForModuleSrcExcludes(ctx, m.properties.Srcs, m.properties.Exclude_srcs)
 	for _, header := range srcFiles {
@@ -179,6 +193,11 @@ type versionedHeaderProperties struct {
 
 	// Path to the NOTICE file associated with the headers.
 	License *string
+
+	// True if this API is not yet ready to be shipped in the NDK. It will be
+	// available in the platform for testing, but will be excluded from the
+	// sysroot provided to the NDK proper.
+	Draft bool
 }
 
 // Like ndk_headers, but preprocesses the headers with the bionic versioner:
@@ -301,6 +320,11 @@ type preprocessedHeadersProperties struct {
 
 	// Path to the NOTICE file associated with the headers.
 	License *string
+
+	// True if this API is not yet ready to be shipped in the NDK. It will be
+	// available in the platform for testing, but will be excluded from the
+	// sysroot provided to the NDK proper.
+	Draft bool
 }
 
 type preprocessedHeadersModule struct {

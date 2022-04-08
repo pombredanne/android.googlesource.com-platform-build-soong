@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
-}
-
 bootstrap_go_package {
     name: "soong-ui-metrics",
     pkgPath: "android/soong/ui/metrics",
@@ -27,10 +23,10 @@ bootstrap_go_package {
     ],
     srcs: [
         "metrics.go",
-        "event.go",
+        "time.go",
     ],
     testSrcs: [
-        "event_test.go",
+        "time_test.go",
     ],
 }
 

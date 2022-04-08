@@ -17,6 +17,10 @@ package remoteexec
 import (
 	"sort"
 	"strings"
+
+	"android/soong/android"
+
+	"github.com/google/blueprint"
 )
 
 const (
@@ -50,14 +54,9 @@ const (
 )
 
 var (
-	defaultLabels               = map[string]string{"type": "tool"}
-	defaultExecStrategy         = LocalExecStrategy
-	defaultEnvironmentVariables = []string{
-		// This is a subset of the allowlist in ui/build/ninja.go that makes sense remotely.
-		"LANG",
-		"LC_MESSAGES",
-		"PYTHONDONTWRITEBYTECODE",
-	}
+	defaultLabels       = map[string]string{"type": "tool"}
+	defaultExecStrategy = LocalExecStrategy
+	pctx                = android.NewPackageContext("android/soong/remoteexec")
 )
 
 // REParams holds information pertinent to the remote execution of a rule.
@@ -70,8 +69,9 @@ type REParams struct {
 	ExecStrategy string
 	// Inputs is a list of input paths or ninja variables.
 	Inputs []string
-	// RSPFiles is the name of the files used by the rule as a placeholder for an rsp input.
-	RSPFiles []string
+	// RSPFile is the name of the ninja variable used by the rule as a placeholder for an rsp
+	// input.
+	RSPFile string
 	// OutputFiles is a list of output file paths or ninja variables as placeholders for rule
 	// outputs.
 	OutputFiles []string
@@ -81,24 +81,31 @@ type REParams struct {
 	// ToolchainInputs is a list of paths or ninja variables pointing to the location of
 	// toolchain binaries used by the rule.
 	ToolchainInputs []string
-	// EnvironmentVariables is a list of environment variables whose values should be passed through
-	// to the remote execution.
-	EnvironmentVariables []string
 }
 
 func init() {
+	pctx.VariableFunc("Wrapper", func(ctx android.PackageVarContext) string {
+		return wrapper(ctx.Config())
+	})
+}
+
+func wrapper(cfg android.Config) string {
+	if override := cfg.Getenv("RBE_WRAPPER"); override != "" {
+		return override
+	}
+	return DefaultWrapperPath
 }
 
 // Template generates the remote execution wrapper template to be added as a prefix to the rule's
 // command.
 func (r *REParams) Template() string {
-	return "${android.RBEWrapper}" + r.wrapperArgs()
+	return "${remoteexec.Wrapper}" + r.wrapperArgs()
 }
 
 // NoVarTemplate generates the remote execution wrapper template without variables, to be used in
 // RuleBuilder.
-func (r *REParams) NoVarTemplate(wrapper string) string {
-	return wrapper + r.wrapperArgs()
+func (r *REParams) NoVarTemplate(cfg android.Config) string {
+	return wrapper(cfg) + r.wrapperArgs()
 }
 
 func (r *REParams) wrapperArgs() string {
@@ -139,8 +146,8 @@ func (r *REParams) wrapperArgs() string {
 		args += " --inputs=" + strings.Join(r.Inputs, ",")
 	}
 
-	if len(r.RSPFiles) > 0 {
-		args += " --input_list_paths=" + strings.Join(r.RSPFiles, ",")
+	if r.RSPFile != "" {
+		args += " --input_list_paths=" + r.RSPFile
 	}
 
 	if len(r.OutputFiles) > 0 {
@@ -155,11 +162,45 @@ func (r *REParams) wrapperArgs() string {
 		args += " --toolchain_inputs=" + strings.Join(r.ToolchainInputs, ",")
 	}
 
-	envVarAllowlist := append(r.EnvironmentVariables, defaultEnvironmentVariables...)
+	return args + " -- "
+}
 
-	if len(envVarAllowlist) > 0 {
-		args += " --env_var_allowlist=" + strings.Join(envVarAllowlist, ",")
+// StaticRules returns a pair of rules based on the given RuleParams, where the first rule is a
+// locally executable rule and the second rule is a remotely executable rule. commonArgs are args
+// used for both the local and remotely executable rules. reArgs are used only for remote
+// execution.
+func StaticRules(ctx android.PackageContext, name string, ruleParams blueprint.RuleParams, reParams *REParams, commonArgs []string, reArgs []string) (blueprint.Rule, blueprint.Rule) {
+	ruleParamsRE := ruleParams
+	ruleParams.Command = strings.ReplaceAll(ruleParams.Command, "$reTemplate", "")
+	ruleParamsRE.Command = strings.ReplaceAll(ruleParamsRE.Command, "$reTemplate", reParams.Template())
+
+	return ctx.AndroidStaticRule(name, ruleParams, commonArgs...),
+		ctx.AndroidRemoteStaticRule(name+"RE", android.RemoteRuleSupports{RBE: true}, ruleParamsRE, append(commonArgs, reArgs...)...)
+}
+
+// MultiCommandStaticRules returns a pair of rules based on the given RuleParams, where the first
+// rule is a locally executable rule and the second rule is a remotely executable rule. This
+// function supports multiple remote execution wrappers placed in the template when commands are
+// chained together with &&. commonArgs are args used for both the local and remotely executable
+// rules. reArgs are args used only for remote execution.
+func MultiCommandStaticRules(ctx android.PackageContext, name string, ruleParams blueprint.RuleParams, reParams map[string]*REParams, commonArgs []string, reArgs []string) (blueprint.Rule, blueprint.Rule) {
+	ruleParamsRE := ruleParams
+	for k, v := range reParams {
+		ruleParams.Command = strings.ReplaceAll(ruleParams.Command, k, "")
+		ruleParamsRE.Command = strings.ReplaceAll(ruleParamsRE.Command, k, v.Template())
 	}
 
-	return args + " -- "
+	return ctx.AndroidStaticRule(name, ruleParams, commonArgs...),
+		ctx.AndroidRemoteStaticRule(name+"RE", android.RemoteRuleSupports{RBE: true}, ruleParamsRE, append(commonArgs, reArgs...)...)
+}
+
+// EnvOverrideFunc retrieves a variable func that evaluates to the value of the given environment
+// variable if set, otherwise the given default.
+func EnvOverrideFunc(envVar, defaultVal string) func(ctx android.PackageVarContext) string {
+	return func(ctx android.PackageVarContext) string {
+		if override := ctx.Config().Getenv(envVar); override != "" {
+			return override
+		}
+		return defaultVal
+	}
 }

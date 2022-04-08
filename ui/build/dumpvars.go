@@ -143,7 +143,6 @@ var BannerVars = []string{
 	"TARGET_BUILD_VARIANT",
 	"TARGET_BUILD_TYPE",
 	"TARGET_BUILD_APPS",
-	"TARGET_BUILD_UNBUNDLED",
 	"TARGET_ARCH",
 	"TARGET_ARCH_VARIANT",
 	"TARGET_CPU_VARIANT",
@@ -161,9 +160,9 @@ var BannerVars = []string{
 	"BUILD_ID",
 	"OUT_DIR",
 	"AUX_OS_VARIANT_LIST",
+	"TARGET_BUILD_PDK",
+	"PDK_FUSION_PLATFORM_ZIP",
 	"PRODUCT_SOONG_NAMESPACES",
-	"SOONG_SDK_SNAPSHOT_PREFER",
-	"SOONG_SDK_SNAPSHOT_VERSION",
 }
 
 func Banner(make_vars map[string]string) string {
@@ -188,7 +187,6 @@ func runMakeProductConfig(ctx Context, config Config) {
 		"TARGET_PRODUCT",
 		"TARGET_BUILD_VARIANT",
 		"TARGET_BUILD_APPS",
-		"TARGET_BUILD_UNBUNDLED",
 
 		// compiler wrappers set up by make
 		"CC_WRAPPER",
@@ -232,6 +230,8 @@ func runMakeProductConfig(ctx Context, config Config) {
 		"DEFAULT_ERROR_BUILD_MODULE_TYPES",
 		"BUILD_BROKEN_PREBUILT_ELF_FILES",
 		"BUILD_BROKEN_TREBLE_SYSPROP_NEVERALLOW",
+		"BUILD_BROKEN_USES_BUILD_AUX_EXECUTABLE",
+		"BUILD_BROKEN_USES_BUILD_AUX_STATIC_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_COPY_HEADERS",
 		"BUILD_BROKEN_USES_BUILD_EXECUTABLE",
 		"BUILD_BROKEN_USES_BUILD_FUZZ_TEST",
@@ -239,12 +239,17 @@ func runMakeProductConfig(ctx Context, config Config) {
 		"BUILD_BROKEN_USES_BUILD_HOST_DALVIK_JAVA_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_HOST_DALVIK_STATIC_JAVA_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_HOST_EXECUTABLE",
+		"BUILD_BROKEN_USES_BUILD_HOST_FUZZ_TEST",
 		"BUILD_BROKEN_USES_BUILD_HOST_JAVA_LIBRARY",
+		"BUILD_BROKEN_USES_BUILD_HOST_NATIVE_TEST",
 		"BUILD_BROKEN_USES_BUILD_HOST_PREBUILT",
 		"BUILD_BROKEN_USES_BUILD_HOST_SHARED_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_HOST_STATIC_LIBRARY",
+		"BUILD_BROKEN_USES_BUILD_HOST_STATIC_TEST_LIBRARY",
+		"BUILD_BROKEN_USES_BUILD_HOST_TEST_CONFIG",
 		"BUILD_BROKEN_USES_BUILD_JAVA_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_MULTI_PREBUILT",
+		"BUILD_BROKEN_USES_BUILD_NATIVE_BENCHMARK",
 		"BUILD_BROKEN_USES_BUILD_NATIVE_TEST",
 		"BUILD_BROKEN_USES_BUILD_NOTICE_FILE",
 		"BUILD_BROKEN_USES_BUILD_PACKAGE",
@@ -254,9 +259,11 @@ func runMakeProductConfig(ctx Context, config Config) {
 		"BUILD_BROKEN_USES_BUILD_SHARED_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_STATIC_JAVA_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_STATIC_LIBRARY",
+		"BUILD_BROKEN_USES_BUILD_STATIC_TEST_LIBRARY",
+		"BUILD_BROKEN_USES_BUILD_TARGET_TEST_CONFIG",
 	}, exportEnvVars...), BannerVars...)
 
-	makeVars, err := dumpMakeVars(ctx, config, config.Arguments(), allVars, true, "")
+	make_vars, err := dumpMakeVars(ctx, config, config.Arguments(), allVars, true, "")
 	if err != nil {
 		ctx.Fatalln("Error dumping make vars:", err)
 	}
@@ -264,24 +271,25 @@ func runMakeProductConfig(ctx Context, config Config) {
 	env := config.Environment()
 	// Print the banner like make does
 	if !env.IsEnvTrue("ANDROID_QUIET_BUILD") {
-		fmt.Fprintln(ctx.Writer, Banner(makeVars))
+		fmt.Fprintln(ctx.Writer, Banner(make_vars))
 	}
 
 	// Populate the environment
 	for _, name := range exportEnvVars {
-		if makeVars[name] == "" {
+		if make_vars[name] == "" {
 			env.Unset(name)
 		} else {
-			env.Set(name, makeVars[name])
+			env.Set(name, make_vars[name])
 		}
 	}
 
-	config.SetKatiArgs(strings.Fields(makeVars["KATI_GOALS"]))
-	config.SetNinjaArgs(strings.Fields(makeVars["NINJA_GOALS"]))
-	config.SetTargetDevice(makeVars["TARGET_DEVICE"])
-	config.SetTargetDeviceDir(makeVars["TARGET_DEVICE_DIR"])
+	config.SetKatiArgs(strings.Fields(make_vars["KATI_GOALS"]))
+	config.SetNinjaArgs(strings.Fields(make_vars["NINJA_GOALS"]))
+	config.SetTargetDevice(make_vars["TARGET_DEVICE"])
+	config.SetTargetDeviceDir(make_vars["TARGET_DEVICE_DIR"])
 
-	config.SetBuildBrokenDupRules(makeVars["BUILD_BROKEN_DUP_RULES"] == "true")
-	config.SetBuildBrokenUsesNetwork(makeVars["BUILD_BROKEN_USES_NETWORK"] == "true")
-	config.SetBuildBrokenNinjaUsesEnvVars(strings.Fields(makeVars["BUILD_BROKEN_NINJA_USES_ENV_VARS"]))
+	config.SetPdkBuild(make_vars["TARGET_BUILD_PDK"] == "true")
+	config.SetBuildBrokenDupRules(make_vars["BUILD_BROKEN_DUP_RULES"] == "true")
+	config.SetBuildBrokenUsesNetwork(make_vars["BUILD_BROKEN_USES_NETWORK"] == "true")
+	config.SetBuildBrokenNinjaUsesEnvVars(strings.Fields(make_vars["BUILD_BROKEN_NINJA_USES_ENV_VARS"]))
 }

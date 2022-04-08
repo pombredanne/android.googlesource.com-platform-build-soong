@@ -53,7 +53,7 @@ func (p *phonySingleton) GenerateBuildActions(ctx SingletonContext) {
 		p.phonyMap[phony] = SortedUniquePaths(p.phonyMap[phony])
 	}
 
-	if !ctx.Config().KatiEnabled() {
+	if !ctx.Config().EmbeddedInMake() {
 		for _, phony := range p.phonyList {
 			ctx.Build(pctx, BuildParams{
 				Rule:      blueprint.Phony,

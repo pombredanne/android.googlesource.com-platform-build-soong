@@ -1,4 +1,4 @@
-#!/usr/bin/env '%interpreter%'
+#!/usr/bin/env python
 
 import os
 import re
@@ -82,7 +82,7 @@ def Main():
 
     sys.stdout.flush()
     retCode = subprocess.call(args)
-    sys.exit(retCode)
+    exit(retCode)
   except:
     raise
   finally:

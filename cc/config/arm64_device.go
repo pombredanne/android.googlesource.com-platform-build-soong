@@ -31,21 +31,17 @@ var (
 		"armv8-a": []string{
 			"-march=armv8-a",
 		},
-		"armv8-a-branchprot": []string{
-			"-march=armv8-a",
-			"-mbranch-protection=standard",
-		},
 		"armv8-2a": []string{
-			"-march=armv8.2-a",
-		},
-		"armv8-2a-dotprod": []string{
-			"-march=armv8.2-a+dotprod",
+			"-march=armv8.2a",
 		},
 	}
 
 	arm64Ldflags = []string{
+		"-Wl,-m,aarch64_elf64_le_vec",
 		"-Wl,--hash-style=gnu",
 		"-Wl,-z,separate-code",
+		"-fuse-ld=gold",
+		"-Wl,--icf=safe",
 	}
 
 	arm64Lldflags = append(ClangFilterUnknownLldflags(arm64Ldflags),
@@ -98,6 +94,7 @@ func init() {
 
 	pctx.StaticVariable("Arm64Ldflags", strings.Join(arm64Ldflags, " "))
 	pctx.StaticVariable("Arm64Lldflags", strings.Join(arm64Lldflags, " "))
+	pctx.StaticVariable("Arm64IncludeFlags", bionicHeaders("arm64"))
 
 	pctx.StaticVariable("Arm64ClangCflags", strings.Join(ClangFilterUnknownCflags(arm64Cflags), " "))
 	pctx.StaticVariable("Arm64ClangLdflags", strings.Join(ClangFilterUnknownCflags(arm64Ldflags), " "))
@@ -105,9 +102,7 @@ func init() {
 	pctx.StaticVariable("Arm64ClangCppflags", strings.Join(ClangFilterUnknownCflags(arm64Cppflags), " "))
 
 	pctx.StaticVariable("Arm64ClangArmv8ACflags", strings.Join(arm64ArchVariantCflags["armv8-a"], " "))
-	pctx.StaticVariable("Arm64ClangArmv8ABranchProtCflags", strings.Join(arm64ArchVariantCflags["armv8-a-branchprot"], " "))
 	pctx.StaticVariable("Arm64ClangArmv82ACflags", strings.Join(arm64ArchVariantCflags["armv8-2a"], " "))
-	pctx.StaticVariable("Arm64ClangArmv82ADotprodCflags", strings.Join(arm64ArchVariantCflags["armv8-2a-dotprod"], " "))
 
 	pctx.StaticVariable("Arm64ClangCortexA53Cflags",
 		strings.Join(arm64ClangCpuVariantCflags["cortex-a53"], " "))
@@ -127,10 +122,8 @@ func init() {
 
 var (
 	arm64ClangArchVariantCflagsVar = map[string]string{
-		"armv8-a":            "${config.Arm64ClangArmv8ACflags}",
-		"armv8-a-branchprot": "${config.Arm64ClangArmv8ABranchProtCflags}",
-		"armv8-2a":           "${config.Arm64ClangArmv82ACflags}",
-		"armv8-2a-dotprod":   "${config.Arm64ClangArmv82ADotprodCflags}",
+		"armv8-a":  "${config.Arm64ClangArmv8ACflags}",
+		"armv8-2a": "${config.Arm64ClangArmv82ACflags}",
 	}
 
 	arm64ClangCpuVariantCflagsVar = map[string]string{
@@ -173,7 +166,7 @@ func (t *toolchainArm64) GccVersion() string {
 }
 
 func (t *toolchainArm64) IncludeFlags() string {
-	return ""
+	return "${config.Arm64IncludeFlags}"
 }
 
 func (t *toolchainArm64) ClangTriple() string {
@@ -207,9 +200,7 @@ func (toolchainArm64) LibclangRuntimeLibraryArch() string {
 func arm64ToolchainFactory(arch android.Arch) Toolchain {
 	switch arch.ArchVariant {
 	case "armv8-a":
-	case "armv8-a-branchprot":
 	case "armv8-2a":
-	case "armv8-2a-dotprod":
 		// Nothing extra for armv8-a/armv8-2a
 	default:
 		panic(fmt.Sprintf("Unknown ARM architecture version: %q", arch.ArchVariant))

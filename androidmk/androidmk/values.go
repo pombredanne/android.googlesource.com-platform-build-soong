@@ -60,7 +60,8 @@ func addValues(val1, val2 bpparser.Expression) (bpparser.Expression, error) {
 	}, nil
 }
 
-func makeToStringExpression(ms *mkparser.MakeString, file *bpFile) (bpparser.Expression, error) {
+func makeToStringExpression(ms *mkparser.MakeString, scope mkparser.Scope) (bpparser.Expression, error) {
+
 	var val bpparser.Expression
 	var err error
 
@@ -69,18 +70,18 @@ func makeToStringExpression(ms *mkparser.MakeString, file *bpFile) (bpparser.Exp
 	}
 
 	for i, s := range ms.Strings[1:] {
-		if ret, ok := ms.Variables[i].EvalFunction(file.scope); ok {
+		if ret, ok := ms.Variables[i].EvalFunction(scope); ok {
 			if len(ret) > 1 {
 				return nil, fmt.Errorf("Unexpected list value %s", ms.Dump())
 			}
 			val, err = addValues(val, stringToStringValue(ret[0]))
 		} else {
-			name, err := extractVariableName(ms.Variables[i].Name, file)
-			if err != nil {
-				return nil, err
+			name := ms.Variables[i].Name
+			if !name.Const() {
+				return nil, fmt.Errorf("Unsupported non-const variable name %s", name.Dump())
 			}
 			tmp := &bpparser.Variable{
-				Name:  name,
+				Name:  name.Value(nil),
 				Value: &bpparser.String{},
 			}
 
@@ -124,7 +125,8 @@ func stringToListValue(s string) bpparser.Expression {
 
 }
 
-func makeToListExpression(ms *mkparser.MakeString, file *bpFile) (bpparser.Expression, error) {
+func makeToListExpression(ms *mkparser.MakeString, scope mkparser.Scope) (bpparser.Expression, error) {
+
 	fields := ms.Split(" \t")
 
 	var listOfListValues []bpparser.Expression
@@ -133,14 +135,14 @@ func makeToListExpression(ms *mkparser.MakeString, file *bpFile) (bpparser.Expre
 
 	for _, f := range fields {
 		if len(f.Variables) == 1 && f.Strings[0] == "" && f.Strings[1] == "" {
-			if ret, ok := f.Variables[0].EvalFunction(file.scope); ok {
+			if ret, ok := f.Variables[0].EvalFunction(scope); ok {
 				listValue.Values = append(listValue.Values, stringListToStringValueList(ret)...)
 			} else {
-				name, err := extractVariableName(f.Variables[0].Name, file)
-				if err != nil {
-					return nil, err
+				// Variable by itself, variable is probably a list
+				if !f.Variables[0].Name.Const() {
+					return nil, fmt.Errorf("unsupported non-const variable name")
 				}
-				if name == "TOP" {
+				if f.Variables[0].Name.Value(nil) == "TOP" {
 					listValue.Values = append(listValue.Values, &bpparser.String{
 						Value: ".",
 					})
@@ -149,14 +151,14 @@ func makeToListExpression(ms *mkparser.MakeString, file *bpFile) (bpparser.Expre
 						listOfListValues = append(listOfListValues, listValue)
 					}
 					listOfListValues = append(listOfListValues, &bpparser.Variable{
-						Name:  name,
+						Name:  f.Variables[0].Name.Value(nil),
 						Value: &bpparser.List{},
 					})
 					listValue = &bpparser.List{}
 				}
 			}
 		} else {
-			s, err := makeToStringExpression(f, file)
+			s, err := makeToStringExpression(f, scope)
 			if err != nil {
 				return nil, err
 			}
@@ -206,15 +208,15 @@ func stringToBoolValue(s string) (bpparser.Expression, error) {
 	}, nil
 }
 
-func makeToBoolExpression(ms *mkparser.MakeString, file *bpFile) (bpparser.Expression, error) {
+func makeToBoolExpression(ms *mkparser.MakeString) (bpparser.Expression, error) {
 	if !ms.Const() {
 		if len(ms.Variables) == 1 && ms.Strings[0] == "" && ms.Strings[1] == "" {
-			name, err := extractVariableName(ms.Variables[0].Name, file)
-			if err != nil {
-				return nil, err
+			name := ms.Variables[0].Name
+			if !name.Const() {
+				return nil, fmt.Errorf("unsupported non-const variable name")
 			}
 			return &bpparser.Variable{
-				Name:  name,
+				Name:  name.Value(nil),
 				Value: &bpparser.Bool{},
 			}, nil
 		} else {
@@ -223,18 +225,4 @@ func makeToBoolExpression(ms *mkparser.MakeString, file *bpFile) (bpparser.Expre
 	}
 
 	return stringToBoolValue(ms.Value(nil))
-}
-
-func extractVariableName(name *mkparser.MakeString, file *bpFile) (string, error) {
-	if !name.Const() {
-		return "", fmt.Errorf("Unsupported non-const variable name %s", name.Dump())
-	}
-
-	variableName := name.Value(nil)
-
-	if newName, ok := file.variableRenames[variableName]; ok {
-		variableName = newName
-	}
-
-	return variableName, nil
 }

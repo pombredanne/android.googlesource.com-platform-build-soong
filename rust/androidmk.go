@@ -18,24 +18,23 @@ import (
 	"path/filepath"
 
 	"android/soong/android"
-	"android/soong/cc"
 )
 
 type AndroidMkContext interface {
 	Name() string
 	Target() android.Target
-	SubAndroidMk(*android.AndroidMkEntries, interface{})
+	subAndroidMk(*android.AndroidMkEntries, interface{})
 }
 
-type SubAndroidMkProvider interface {
+type subAndroidMkProvider interface {
 	AndroidMk(AndroidMkContext, *android.AndroidMkEntries)
 }
 
-func (mod *Module) SubAndroidMk(data *android.AndroidMkEntries, obj interface{}) {
+func (mod *Module) subAndroidMk(data *android.AndroidMkEntries, obj interface{}) {
 	if mod.subAndroidMkOnce == nil {
-		mod.subAndroidMkOnce = make(map[SubAndroidMkProvider]bool)
+		mod.subAndroidMkOnce = make(map[subAndroidMkProvider]bool)
 	}
-	if androidmk, ok := obj.(SubAndroidMkProvider); ok {
+	if androidmk, ok := obj.(subAndroidMkProvider); ok {
 		if !mod.subAndroidMkOnce[androidmk] {
 			mod.subAndroidMkOnce[androidmk] = true
 			androidmk.AndroidMk(mod, data)
@@ -44,89 +43,56 @@ func (mod *Module) SubAndroidMk(data *android.AndroidMkEntries, obj interface{})
 }
 
 func (mod *Module) AndroidMkEntries() []android.AndroidMkEntries {
-	if mod.Properties.HideFromMake || mod.hideApexVariantFromMake {
-
-		return []android.AndroidMkEntries{android.AndroidMkEntries{Disabled: true}}
-	}
-
 	ret := android.AndroidMkEntries{
-		OutputFile: mod.unstrippedOutputFile,
+		OutputFile: mod.outputFile,
 		Include:    "$(BUILD_SYSTEM)/soong_rust_prebuilt.mk",
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
-			func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
+			func(entries *android.AndroidMkEntries) {
 				entries.AddStrings("LOCAL_RLIB_LIBRARIES", mod.Properties.AndroidMkRlibs...)
 				entries.AddStrings("LOCAL_DYLIB_LIBRARIES", mod.Properties.AndroidMkDylibs...)
 				entries.AddStrings("LOCAL_PROC_MACRO_LIBRARIES", mod.Properties.AndroidMkProcMacroLibs...)
 				entries.AddStrings("LOCAL_SHARED_LIBRARIES", mod.Properties.AndroidMkSharedLibs...)
 				entries.AddStrings("LOCAL_STATIC_LIBRARIES", mod.Properties.AndroidMkStaticLibs...)
-				entries.AddStrings("LOCAL_SOONG_LINK_TYPE", mod.makeLinkType)
-				if mod.UseVndk() {
-					entries.SetBool("LOCAL_USE_VNDK", true)
-				}
-
 			},
 		},
 	}
 
-	if mod.compiler != nil && !mod.compiler.Disabled() {
-		mod.SubAndroidMk(&ret, mod.compiler)
-	} else if mod.sourceProvider != nil {
-		// If the compiler is disabled, this is a SourceProvider.
-		mod.SubAndroidMk(&ret, mod.sourceProvider)
-	}
+	mod.subAndroidMk(&ret, mod.compiler)
 
-	if mod.sanitize != nil {
-		mod.SubAndroidMk(&ret, mod.sanitize)
-	}
-
-	ret.SubName += mod.Properties.RustSubName
 	ret.SubName += mod.Properties.SubName
 
 	return []android.AndroidMkEntries{ret}
 }
 
 func (binary *binaryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkEntries) {
-	ctx.SubAndroidMk(ret, binary.baseCompiler)
+	ctx.subAndroidMk(ret, binary.baseCompiler)
 
 	if binary.distFile.Valid() {
 		ret.DistFiles = android.MakeDefaultDistFiles(binary.distFile.Path())
 	}
+
 	ret.Class = "EXECUTABLES"
+	ret.ExtraEntries = append(ret.ExtraEntries, func(entries *android.AndroidMkEntries) {
+		entries.SetPath("LOCAL_SOONG_UNSTRIPPED_BINARY", binary.unstrippedOutputFile)
+	})
 }
 
 func (test *testDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkEntries) {
-	ctx.SubAndroidMk(ret, test.binaryDecorator)
-
+	test.binaryDecorator.AndroidMk(ctx, ret)
 	ret.Class = "NATIVE_TESTS"
-	ret.ExtraEntries = append(ret.ExtraEntries,
-		func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-			entries.AddCompatibilityTestSuites(test.Properties.Test_suites...)
-			if test.testConfig != nil {
-				entries.SetString("LOCAL_FULL_TEST_CONFIG", test.testConfig.String())
-			}
-			entries.SetBoolIfTrue("LOCAL_DISABLE_AUTO_GENERATE_TEST_CONFIG", !BoolDefault(test.Properties.Auto_gen_config, true))
-			entries.SetBoolIfTrue("LOCAL_IS_UNIT_TEST", Bool(test.Properties.Test_options.Unit_test))
-		})
-
-	cc.AndroidMkWriteTestData(test.data, ret)
-}
-
-func (benchmark *benchmarkDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkEntries) {
-	benchmark.binaryDecorator.AndroidMk(ctx, ret)
-	ret.Class = "NATIVE_TESTS"
-	ret.ExtraEntries = append(ret.ExtraEntries,
-		func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-			entries.AddCompatibilityTestSuites(benchmark.Properties.Test_suites...)
-			if benchmark.testConfig != nil {
-				entries.SetString("LOCAL_FULL_TEST_CONFIG", benchmark.testConfig.String())
-			}
-			entries.SetBool("LOCAL_NATIVE_BENCHMARK", true)
-			entries.SetBoolIfTrue("LOCAL_DISABLE_AUTO_GENERATE_TEST_CONFIG", !BoolDefault(benchmark.Properties.Auto_gen_config, true))
-		})
+	ret.SubName = test.getMutatedModuleSubName(ctx.Name())
+	ret.ExtraEntries = append(ret.ExtraEntries, func(entries *android.AndroidMkEntries) {
+		entries.AddCompatibilityTestSuites(test.Properties.Test_suites...)
+		if test.testConfig != nil {
+			entries.SetString("LOCAL_FULL_TEST_CONFIG", test.testConfig.String())
+		}
+		entries.SetBoolIfTrue("LOCAL_DISABLE_AUTO_GENERATE_TEST_CONFIG", !BoolDefault(test.Properties.Auto_gen_config, true))
+	})
+	// TODO(chh): add test data with androidMkWriteTestData(test.data, ctx, ret)
 }
 
 func (library *libraryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkEntries) {
-	ctx.SubAndroidMk(ret, library.baseCompiler)
+	ctx.subAndroidMk(ret, library.baseCompiler)
 
 	if library.rlib() {
 		ret.Class = "RLIB_LIBRARIES"
@@ -141,10 +107,16 @@ func (library *libraryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.An
 	if library.distFile.Valid() {
 		ret.DistFiles = android.MakeDefaultDistFiles(library.distFile.Path())
 	}
+
+	ret.ExtraEntries = append(ret.ExtraEntries, func(entries *android.AndroidMkEntries) {
+		if !library.rlib() {
+			entries.SetPath("LOCAL_SOONG_UNSTRIPPED_BINARY", library.unstrippedOutputFile)
+		}
+	})
 }
 
 func (procMacro *procMacroDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkEntries) {
-	ctx.SubAndroidMk(ret, procMacro.baseCompiler)
+	ctx.subAndroidMk(ret, procMacro.baseCompiler)
 
 	ret.Class = "PROC_MACRO_LIBRARIES"
 	if procMacro.distFile.Valid() {
@@ -153,83 +125,17 @@ func (procMacro *procMacroDecorator) AndroidMk(ctx AndroidMkContext, ret *androi
 
 }
 
-func (sourceProvider *BaseSourceProvider) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkEntries) {
-	outFile := sourceProvider.OutputFiles[0]
-	ret.Class = "ETC"
-	ret.OutputFile = android.OptionalPathForPath(outFile)
-	ret.SubName += sourceProvider.subName
-	ret.ExtraEntries = append(ret.ExtraEntries,
-		func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-			_, file := filepath.Split(outFile.String())
-			stem, suffix, _ := android.SplitFileExt(file)
-			entries.SetString("LOCAL_MODULE_SUFFIX", suffix)
-			entries.SetString("LOCAL_MODULE_STEM", stem)
-			entries.SetBool("LOCAL_UNINSTALLABLE_MODULE", true)
-		})
-}
-
-func (bindgen *bindgenDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkEntries) {
-	ctx.SubAndroidMk(ret, bindgen.BaseSourceProvider)
-}
-
-func (proto *protobufDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkEntries) {
-	ctx.SubAndroidMk(ret, proto.BaseSourceProvider)
-}
-
 func (compiler *baseCompiler) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkEntries) {
-	if compiler.path == (android.InstallPath{}) {
-		return
-	}
-
-	var unstrippedOutputFile android.OptionalPath
 	// Soong installation is only supported for host modules. Have Make
 	// installation trigger Soong installation.
 	if ctx.Target().Os.Class == android.Host {
 		ret.OutputFile = android.OptionalPathForPath(compiler.path)
-	} else if compiler.strippedOutputFile.Valid() {
-		unstrippedOutputFile = ret.OutputFile
-		ret.OutputFile = compiler.strippedOutputFile
 	}
-	ret.ExtraEntries = append(ret.ExtraEntries,
-		func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-			entries.SetOptionalPath("LOCAL_SOONG_UNSTRIPPED_BINARY", unstrippedOutputFile)
-			path, file := filepath.Split(compiler.path.ToMakePath().String())
-			stem, suffix, _ := android.SplitFileExt(file)
-			entries.SetString("LOCAL_MODULE_SUFFIX", suffix)
-			entries.SetString("LOCAL_MODULE_PATH", path)
-			entries.SetString("LOCAL_MODULE_STEM", stem)
-		})
-}
-
-func (fuzz *fuzzDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
-	ctx.SubAndroidMk(entries, fuzz.binaryDecorator)
-
-	var fuzzFiles []string
-	for _, d := range fuzz.corpus {
-		fuzzFiles = append(fuzzFiles,
-			filepath.Dir(fuzz.corpusIntermediateDir.String())+":corpus/"+d.Base())
-	}
-
-	for _, d := range fuzz.data {
-		fuzzFiles = append(fuzzFiles,
-			filepath.Dir(fuzz.dataIntermediateDir.String())+":data/"+d.Rel())
-	}
-
-	if fuzz.dictionary != nil {
-		fuzzFiles = append(fuzzFiles,
-			filepath.Dir(fuzz.dictionary.String())+":"+fuzz.dictionary.Base())
-	}
-
-	if fuzz.config != nil {
-		fuzzFiles = append(fuzzFiles,
-			filepath.Dir(fuzz.config.String())+":config.json")
-	}
-
-	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext,
-		entries *android.AndroidMkEntries) {
-		entries.SetBool("LOCAL_IS_FUZZ_TARGET", true)
-		if len(fuzzFiles) > 0 {
-			entries.AddStrings("LOCAL_TEST_DATA", fuzzFiles...)
-		}
+	ret.ExtraEntries = append(ret.ExtraEntries, func(entries *android.AndroidMkEntries) {
+		path, file := filepath.Split(compiler.path.ToMakePath().String())
+		stem, suffix, _ := android.SplitFileExt(file)
+		entries.SetString("LOCAL_MODULE_SUFFIX", suffix)
+		entries.SetString("LOCAL_MODULE_PATH", path)
+		entries.SetString("LOCAL_MODULE_STEM", stem)
 	})
 }

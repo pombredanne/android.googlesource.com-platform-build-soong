@@ -1,7 +1,3 @@
-package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
-}
-
 bootstrap_go_package {
     name: "soong-tradefed",
     pkgPath: "android/soong/tradefed",
@@ -19,7 +15,7 @@ bootstrap_go_package {
 
 bootstrap_go_package {
     name: "soong-suite-harness",
-    pkgPath: "android/soong/tradefed/suite_harness",
+    pkgPath: "android/soong/suite_harness",
     deps: [
         "blueprint",
         "blueprint-pathtools",
@@ -29,7 +25,7 @@ bootstrap_go_package {
         "soong-java",
     ],
     srcs: [
-        "suite_harness/tradefed_binary.go",
+        "tradefed_binary.go",
     ],
     pluginFor: ["soong_build"],
 }

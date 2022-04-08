@@ -21,22 +21,18 @@ import (
 )
 
 func init() {
-	registerPythonLibraryComponents(android.InitRegistrationContext)
-}
-
-func registerPythonLibraryComponents(ctx android.RegistrationContext) {
-	ctx.RegisterModuleType("python_library_host", PythonLibraryHostFactory)
-	ctx.RegisterModuleType("python_library", PythonLibraryFactory)
+	android.RegisterModuleType("python_library_host", PythonLibraryHostFactory)
+	android.RegisterModuleType("python_library", PythonLibraryFactory)
 }
 
 func PythonLibraryHostFactory() android.Module {
-	module := newModule(android.HostSupported, android.MultilibFirst)
+	module := newModule(android.HostSupportedNoCross, android.MultilibFirst)
 
-	return module.init()
+	return module.Init()
 }
 
 func PythonLibraryFactory() android.Module {
 	module := newModule(android.HostAndDeviceSupported, android.MultilibBoth)
 
-	return module.init()
+	return module.Init()
 }

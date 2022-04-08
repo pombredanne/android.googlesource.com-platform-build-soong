@@ -16,31 +16,14 @@
 // mock filesystem
 //
 
-package {
-    default_applicable_licenses: [
-        "Android-Apache-2.0",
-        "build_soong_finder_fs_license",
-    ],
-}
-
-license {
-    name: "build_soong_finder_fs_license",
-    license_kinds: [
-        "SPDX-license-identifier-BSD",
-    ],
-    license_text: ["LICENSE"],
-}
-
 bootstrap_go_package {
     name: "soong-finder-fs",
     pkgPath: "android/soong/finder/fs",
     srcs: [
         "fs.go",
         "readdir.go",
-        "test.go",
     ],
     testSrcs: [
-        "fs_test.go",
         "readdir_test.go",
     ],
     darwin: {
@@ -54,3 +37,4 @@ bootstrap_go_package {
         ],
     },
 }
+

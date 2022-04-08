@@ -19,8 +19,6 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -28,49 +26,6 @@ import (
 
 	"android/soong/ui/logger"
 )
-
-func TestPruneMetricsFiles(t *testing.T) {
-	rootDir := t.TempDir()
-
-	dirs := []string{
-		filepath.Join(rootDir, "d1"),
-		filepath.Join(rootDir, "d1", "d2"),
-		filepath.Join(rootDir, "d1", "d2", "d3"),
-	}
-
-	files := []string{
-		filepath.Join(rootDir, "d1", "f1"),
-		filepath.Join(rootDir, "d1", "d2", "f1"),
-		filepath.Join(rootDir, "d1", "d2", "d3", "f1"),
-	}
-
-	for _, d := range dirs {
-		if err := os.MkdirAll(d, 0777); err != nil {
-			t.Fatalf("got %v, expecting nil error for making directory %q", err, d)
-		}
-	}
-
-	for _, f := range files {
-		if err := ioutil.WriteFile(f, []byte{}, 0777); err != nil {
-			t.Fatalf("got %v, expecting nil error on writing file %q", err, f)
-		}
-	}
-
-	want := []string{
-		filepath.Join(rootDir, "d1", "f1"),
-		filepath.Join(rootDir, "d1", "d2", "f1"),
-		filepath.Join(rootDir, "d1", "d2", "d3", "f1"),
-	}
-
-	got := pruneMetricsFiles([]string{rootDir})
-
-	sort.Strings(got)
-	sort.Strings(want)
-
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("got %q, want %q after pruning metrics files", got, want)
-	}
-}
 
 func TestUploadMetrics(t *testing.T) {
 	ctx := testContext()
@@ -107,16 +62,16 @@ func TestUploadMetrics(t *testing.T) {
 			}
 			defer os.RemoveAll(outDir)
 
-			// Supply our own tmpDir to delete the temp dir once the test is done.
-			orgTmpDir := tmpDir
-			tmpDir = func(string, string) (string, error) {
+			// Supply our own getTmpDir to delete the temp dir once the test is done.
+			orgGetTmpDir := getTmpDir
+			getTmpDir = func(string, string) (string, error) {
 				retDir := filepath.Join(outDir, "tmp_upload_dir")
 				if err := os.Mkdir(retDir, 0755); err != nil {
 					t.Fatalf("failed to create temporary directory %q: %v", retDir, err)
 				}
 				return retDir, nil
 			}
-			defer func() { tmpDir = orgTmpDir }()
+			defer func() { getTmpDir = orgGetTmpDir }()
 
 			metricsUploadDir := filepath.Join(outDir, ".metrics_uploader")
 			if err := os.Mkdir(metricsUploadDir, 0755); err != nil {
@@ -179,11 +134,11 @@ func TestUploadMetricsErrors(t *testing.T) {
 			}
 			defer os.RemoveAll(outDir)
 
-			orgTmpDir := tmpDir
-			tmpDir = func(string, string) (string, error) {
+			orgGetTmpDir := getTmpDir
+			getTmpDir = func(string, string) (string, error) {
 				return tt.tmpDir, tt.tmpDirErr
 			}
-			defer func() { tmpDir = orgTmpDir }()
+			defer func() { getTmpDir = orgGetTmpDir }()
 
 			metricsFile := filepath.Join(outDir, "metrics_file_1")
 			if err := ioutil.WriteFile(metricsFile, []byte("test file"), 0644); err != nil {

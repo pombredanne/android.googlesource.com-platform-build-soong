@@ -50,29 +50,11 @@ var onlySoong = flag.Bool("only-soong", false, "Only run product config and Soon
 
 var buildVariant = flag.String("variant", "eng", "build variant to use")
 
+var skipProducts = flag.String("skip-products", "", "comma-separated list of products to skip (known failures, etc)")
+var includeProducts = flag.String("products", "", "comma-separated list of products to build")
+
 var shardCount = flag.Int("shard-count", 1, "split the products into multiple shards (to spread the build onto multiple machines, etc)")
 var shard = flag.Int("shard", 1, "1-indexed shard to execute")
-
-var skipProducts multipleStringArg
-var includeProducts multipleStringArg
-
-func init() {
-	flag.Var(&skipProducts, "skip-products", "comma-separated list of products to skip (known failures, etc)")
-	flag.Var(&includeProducts, "products", "comma-separated list of products to build")
-}
-
-// multipleStringArg is a flag.Value that takes comma separated lists and converts them to a
-// []string.  The argument can be passed multiple times to append more values.
-type multipleStringArg []string
-
-func (m *multipleStringArg) String() string {
-	return strings.Join(*m, `, `)
-}
-
-func (m *multipleStringArg) Set(s string) error {
-	*m = append(*m, strings.Split(s, ",")...)
-	return nil
-}
 
 const errorLeadingLines = 20
 const errorTrailingLines = 20
@@ -203,11 +185,7 @@ func main() {
 		Status:  stat,
 	}}
 
-	args := ""
-	if *alternateResultDir {
-		args = "dist"
-	}
-	config := build.NewConfig(buildCtx, args)
+	config := build.NewConfig(buildCtx)
 	if *outDir == "" {
 		name := "multiproduct"
 		if !*incremental {
@@ -234,17 +212,22 @@ func main() {
 	os.MkdirAll(logsDir, 0777)
 
 	build.SetupOutDir(buildCtx, config)
-
-	os.MkdirAll(config.LogsDir(), 0777)
-	log.SetOutput(filepath.Join(config.LogsDir(), "soong.log"))
-	trace.SetOutput(filepath.Join(config.LogsDir(), "build.trace"))
+	if *alternateResultDir {
+		distLogsDir := filepath.Join(config.DistDir(), "logs")
+		os.MkdirAll(distLogsDir, 0777)
+		log.SetOutput(filepath.Join(distLogsDir, "soong.log"))
+		trace.SetOutput(filepath.Join(distLogsDir, "build.trace"))
+	} else {
+		log.SetOutput(filepath.Join(config.OutDir(), "soong.log"))
+		trace.SetOutput(filepath.Join(config.OutDir(), "build.trace"))
+	}
 
 	var jobs = *numJobs
 	if jobs < 1 {
 		jobs = runtime.NumCPU() / 4
 
 		ramGb := int(config.TotalRAM() / 1024 / 1024 / 1024)
-		if ramJobs := ramGb / 25; ramGb > 0 && jobs > ramJobs {
+		if ramJobs := ramGb / 20; ramGb > 0 && jobs > ramJobs {
 			jobs = ramJobs
 		}
 
@@ -268,9 +251,9 @@ func main() {
 	var productsList []string
 	allProducts := strings.Fields(vars["all_named_products"])
 
-	if len(includeProducts) > 0 {
-		var missingProducts []string
-		for _, product := range includeProducts {
+	if *includeProducts != "" {
+		missingProducts := []string{}
+		for _, product := range strings.Split(*includeProducts, ",") {
 			if inList(product, allProducts) {
 				productsList = append(productsList, product)
 			} else {
@@ -285,8 +268,9 @@ func main() {
 	}
 
 	finalProductsList := make([]string, 0, len(productsList))
+	skipList := strings.Split(*skipProducts, ",")
 	skipProduct := func(p string) bool {
-		for _, s := range skipProducts {
+		for _, s := range skipList {
 			if p == s {
 				return true
 			}
@@ -360,7 +344,7 @@ func main() {
 			FileArgs: []zip.FileArg{
 				{GlobDir: logsDir, SourcePrefixToStrip: logsDir},
 			},
-			OutputFilePath:   filepath.Join(config.RealDistDir(), "logs.zip"),
+			OutputFilePath:   filepath.Join(config.DistDir(), "logs.zip"),
 			NumParallelJobs:  runtime.NumCPU(),
 			CompressionLevel: 5,
 		}
@@ -428,12 +412,10 @@ func buildProduct(mpctx *mpContext, product string) {
 	ctx.Status.AddOutput(terminal.NewStatusOutput(ctx.Writer, "", false,
 		build.OsEnvironment().IsEnvTrue("ANDROID_QUIET_BUILD")))
 
-	args := append([]string(nil), flag.Args()...)
-	args = append(args, "--skip-soong-tests")
-	config := build.NewConfig(ctx, args...)
+	config := build.NewConfig(ctx, flag.Args()...)
 	config.Environment().Set("OUT_DIR", outDir)
 	if !*keepArtifacts {
-		config.SetEmptyNinjaFile(true)
+		config.Environment().Set("EMPTY_NINJA_FILE", "true")
 	}
 	build.FindSources(ctx, config, mpctx.Finder)
 	config.Lunch(ctx, product, *buildVariant)
@@ -460,21 +442,19 @@ func buildProduct(mpctx *mpContext, product string) {
 		}
 	}()
 
-	config.SetSkipNinja(true)
-
-	buildWhat := build.RunProductConfig
+	buildWhat := build.BuildProductConfig
 	if !*onlyConfig {
-		buildWhat |= build.RunSoong
+		buildWhat |= build.BuildSoong
 		if !*onlySoong {
-			buildWhat |= build.RunKati
+			buildWhat |= build.BuildKati
 		}
 	}
 
 	before := time.Now()
-	build.Build(ctx, config)
+	build.Build(ctx, config, buildWhat)
 
 	// Save std_full.log if Kati re-read the makefiles
-	if buildWhat&build.RunKati != 0 {
+	if buildWhat&build.BuildKati != 0 {
 		if after, err := os.Stat(config.KatiBuildNinjaFile()); err == nil && after.ModTime().After(before) {
 			err := copyFile(stdLog, filepath.Join(filepath.Dir(stdLog), "std_full.log"))
 			if err != nil {

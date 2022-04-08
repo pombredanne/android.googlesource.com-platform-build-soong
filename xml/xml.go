@@ -53,12 +53,8 @@ var (
 )
 
 func init() {
-	registerXmlBuildComponents(android.InitRegistrationContext)
+	android.RegisterModuleType("prebuilt_etc_xml", PrebuiltEtcXmlFactory)
 	pctx.HostBinToolVariable("XmlLintCmd", "xmllint")
-}
-
-func registerXmlBuildComponents(ctx android.RegistrationContext) {
-	ctx.RegisterModuleType("prebuilt_etc_xml", PrebuiltEtcXmlFactory)
 }
 
 type prebuiltEtcXmlProperties struct {

@@ -17,11 +17,7 @@ package java
 import "android/soong/android"
 
 func init() {
-	registerJavaPluginBuildComponents(android.InitRegistrationContext)
-}
-
-func registerJavaPluginBuildComponents(ctx android.RegistrationContext) {
-	ctx.RegisterModuleType("java_plugin", PluginFactory)
+	android.RegisterModuleType("java_plugin", PluginFactory)
 }
 
 // A java_plugin module describes a host java library that will be used by javac as an annotation processor.

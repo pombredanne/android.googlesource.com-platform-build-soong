@@ -12,10 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
-}
-
 bootstrap_go_package {
     name: "soong-ui-build-paths",
     pkgPath: "android/soong/ui/build/paths",
@@ -32,8 +28,6 @@ bootstrap_go_package {
     name: "soong-ui-build",
     pkgPath: "android/soong/ui/build",
     deps: [
-        "blueprint",
-        "blueprint-bootstrap",
         "soong-ui-build-paths",
         "soong-ui-logger",
         "soong-ui-metrics",
@@ -45,7 +39,6 @@ bootstrap_go_package {
         "blueprint-microfactory",
     ],
     srcs: [
-        "bazel.go",
         "build.go",
         "cleanbuild.go",
         "config.go",

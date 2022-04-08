@@ -28,13 +28,11 @@ import (
 var (
 	pctx = android.NewPackageContext("android/soong/java/config")
 
-	LegacyCorePlatformBootclasspathLibraries = []string{"legacy.core.platform.api.stubs", "core-lambda-stubs"}
-	LegacyCorePlatformSystemModules          = "legacy-core-platform-api-stubs-system-modules"
-	StableCorePlatformBootclasspathLibraries = []string{"stable.core.platform.api.stubs", "core-lambda-stubs"}
-	StableCorePlatformSystemModules          = "stable-core-platform-api-stubs-system-modules"
-	FrameworkLibraries                       = []string{"ext", "framework"}
-	DefaultLambdaStubsLibrary                = "core-lambda-stubs"
-	SdkLambdaStubsPath                       = "prebuilts/sdk/tools/core-lambda-stubs.jar"
+	DefaultBootclasspathLibraries = []string{"core.platform.api.stubs", "core-lambda-stubs"}
+	DefaultSystemModules          = "core-platform-api-stubs-system-modules"
+	DefaultLibraries              = []string{"ext", "framework"}
+	DefaultLambdaStubsLibrary     = "core-lambda-stubs"
+	SdkLambdaStubsPath            = "prebuilts/sdk/tools/core-lambda-stubs.jar"
 
 	DefaultMakeJacocoExcludeFilter = []string{"org.junit.*", "org.jacoco.*", "org.mockito.*"}
 	DefaultJacocoExcludeFilter     = []string{"org.junit.**", "org.jacoco.**", "org.mockito.**"}
@@ -69,8 +67,6 @@ func init() {
 	pctx.StaticVariable("JavacHeapSize", "2048M")
 	pctx.StaticVariable("JavacHeapFlags", "-J-Xmx${JavacHeapSize}")
 	pctx.StaticVariable("DexFlags", "-JXX:OnError='cat hs_err_pid%p.log' -JXX:CICompilerCount=6 -JXX:+UseDynamicNumberOfGCThreads")
-	// TODO(b/181095653): remove duplicated flags.
-	pctx.StaticVariable("DexJavaFlags", "-XX:OnError='cat hs_err_pid%p.log' -XX:CICompilerCount=6 -XX:+UseDynamicNumberOfGCThreads -Xmx2G")
 
 	pctx.StaticVariable("CommonJdkFlags", strings.Join([]string{
 		`-Xmaxerrs 9999999`,
@@ -116,7 +112,7 @@ func init() {
 	pctx.SourcePathVariable("JavaKytheExtractorJar", "prebuilts/build-tools/common/framework/javac_extractor.jar")
 	pctx.SourcePathVariable("Ziptime", "prebuilts/build-tools/${hostPrebuiltTag}/bin/ziptime")
 
-	pctx.HostBinToolVariable("GenKotlinBuildFileCmd", "gen-kotlin-build-file.py")
+	pctx.SourcePathVariable("GenKotlinBuildFileCmd", "build/soong/scripts/gen-kotlin-build-file.sh")
 
 	pctx.SourcePathVariable("JarArgsCmd", "build/soong/scripts/jar-args.sh")
 	pctx.SourcePathVariable("PackageCheckCmd", "build/soong/scripts/package-check.sh")
@@ -132,7 +128,7 @@ func init() {
 	pctx.HostBinToolVariable("ExtractApksCmd", "extract_apks")
 	pctx.VariableFunc("TurbineJar", func(ctx android.PackageVarContext) string {
 		turbine := "turbine.jar"
-		if ctx.Config().AlwaysUsePrebuiltSdks() {
+		if ctx.Config().UnbundledBuild() {
 			return "prebuilts/build-tools/common/framework/" + turbine
 		} else {
 			return ctx.Config().HostJavaToolPath(ctx, turbine).String()
@@ -151,14 +147,14 @@ func init() {
 	pctx.HostBinToolVariable("SoongJavacWrapper", "soong_javac_wrapper")
 	pctx.HostBinToolVariable("DexpreoptGen", "dexpreopt_gen")
 
-	pctx.StaticVariableWithEnvOverride("REJavaPool", "RBE_JAVA_POOL", "java16")
-	pctx.StaticVariableWithEnvOverride("REJavacExecStrategy", "RBE_JAVAC_EXEC_STRATEGY", remoteexec.RemoteLocalFallbackExecStrategy)
-	pctx.StaticVariableWithEnvOverride("RED8ExecStrategy", "RBE_D8_EXEC_STRATEGY", remoteexec.RemoteLocalFallbackExecStrategy)
-	pctx.StaticVariableWithEnvOverride("RER8ExecStrategy", "RBE_R8_EXEC_STRATEGY", remoteexec.RemoteLocalFallbackExecStrategy)
-	pctx.StaticVariableWithEnvOverride("RETurbineExecStrategy", "RBE_TURBINE_EXEC_STRATEGY", remoteexec.LocalExecStrategy)
-	pctx.StaticVariableWithEnvOverride("RESignApkExecStrategy", "RBE_SIGNAPK_EXEC_STRATEGY", remoteexec.LocalExecStrategy)
-	pctx.StaticVariableWithEnvOverride("REJarExecStrategy", "RBE_JAR_EXEC_STRATEGY", remoteexec.LocalExecStrategy)
-	pctx.StaticVariableWithEnvOverride("REZipExecStrategy", "RBE_ZIP_EXEC_STRATEGY", remoteexec.LocalExecStrategy)
+	pctx.VariableFunc("REJavaPool", remoteexec.EnvOverrideFunc("RBE_JAVA_POOL", "java16"))
+	pctx.VariableFunc("REJavacExecStrategy", remoteexec.EnvOverrideFunc("RBE_JAVAC_EXEC_STRATEGY", remoteexec.RemoteLocalFallbackExecStrategy))
+	pctx.VariableFunc("RED8ExecStrategy", remoteexec.EnvOverrideFunc("RBE_D8_EXEC_STRATEGY", remoteexec.RemoteLocalFallbackExecStrategy))
+	pctx.VariableFunc("RER8ExecStrategy", remoteexec.EnvOverrideFunc("RBE_R8_EXEC_STRATEGY", remoteexec.RemoteLocalFallbackExecStrategy))
+	pctx.VariableFunc("RETurbineExecStrategy", remoteexec.EnvOverrideFunc("RBE_TURBINE_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
+	pctx.VariableFunc("RESignApkExecStrategy", remoteexec.EnvOverrideFunc("RBE_SIGNAPK_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
+	pctx.VariableFunc("REJarExecStrategy", remoteexec.EnvOverrideFunc("RBE_JAR_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
+	pctx.VariableFunc("REZipExecStrategy", remoteexec.EnvOverrideFunc("RBE_ZIP_EXEC_STRATEGY", remoteexec.LocalExecStrategy))
 
 	pctx.HostJavaToolVariable("JacocoCLIJar", "jacoco-cli.jar")
 
@@ -167,7 +163,7 @@ func init() {
 
 	pctx.HostBinToolVariable("ManifestMergerCmd", "manifest-merger")
 
-	pctx.HostBinToolVariable("Class2NonSdkList", "class2nonsdklist")
+	pctx.HostBinToolVariable("Class2Greylist", "class2greylist")
 	pctx.HostBinToolVariable("HiddenAPI", "hiddenapi")
 
 	hostBinToolVariableWithSdkToolsPrebuilt("Aapt2Cmd", "aapt2")
@@ -182,7 +178,7 @@ func init() {
 
 func hostBinToolVariableWithSdkToolsPrebuilt(name, tool string) {
 	pctx.VariableFunc(name, func(ctx android.PackageVarContext) string {
-		if ctx.Config().AlwaysUsePrebuiltSdks() {
+		if ctx.Config().UnbundledBuild() || ctx.Config().IsPdkBuild() {
 			return filepath.Join("prebuilts/sdk/tools", runtime.GOOS, "bin", tool)
 		} else {
 			return ctx.Config().HostToolPath(ctx, tool).String()
@@ -192,7 +188,7 @@ func hostBinToolVariableWithSdkToolsPrebuilt(name, tool string) {
 
 func hostJavaToolVariableWithSdkToolsPrebuilt(name, tool string) {
 	pctx.VariableFunc(name, func(ctx android.PackageVarContext) string {
-		if ctx.Config().AlwaysUsePrebuiltSdks() {
+		if ctx.Config().UnbundledBuild() || ctx.Config().IsPdkBuild() {
 			return filepath.Join("prebuilts/sdk/tools/lib", tool+".jar")
 		} else {
 			return ctx.Config().HostJavaToolPath(ctx, tool+".jar").String()
@@ -202,7 +198,7 @@ func hostJavaToolVariableWithSdkToolsPrebuilt(name, tool string) {
 
 func hostJNIToolVariableWithSdkToolsPrebuilt(name, tool string) {
 	pctx.VariableFunc(name, func(ctx android.PackageVarContext) string {
-		if ctx.Config().AlwaysUsePrebuiltSdks() {
+		if ctx.Config().UnbundledBuild() || ctx.Config().IsPdkBuild() {
 			ext := ".so"
 			if runtime.GOOS == "darwin" {
 				ext = ".dylib"
@@ -216,7 +212,7 @@ func hostJNIToolVariableWithSdkToolsPrebuilt(name, tool string) {
 
 func hostBinToolVariableWithBuildToolsPrebuilt(name, tool string) {
 	pctx.VariableFunc(name, func(ctx android.PackageVarContext) string {
-		if ctx.Config().AlwaysUsePrebuiltSdks() {
+		if ctx.Config().UnbundledBuild() || ctx.Config().IsPdkBuild() {
 			return filepath.Join("prebuilts/build-tools", ctx.Config().PrebuiltOS(), "bin", tool)
 		} else {
 			return ctx.Config().HostToolPath(ctx, tool).String()

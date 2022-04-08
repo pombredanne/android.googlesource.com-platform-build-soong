@@ -35,8 +35,9 @@ func init() {
 	// Register sdk member types.
 	android.RegisterSdkMemberType(&systemModulesSdkMemberType{
 		android.SdkMemberTypeBase{
-			PropertyName: "java_system_modules",
-			SupportsSdk:  true,
+			PropertyName:         "java_system_modules",
+			SupportsSdk:          true,
+			TransitiveSdkMembers: true,
 		},
 	})
 }
@@ -76,9 +77,8 @@ var (
 		"classpath", "outDir", "workDir")
 
 	// Dependency tag that causes the added dependencies to be added as java_header_libs
-	// to the sdk/module_exports/snapshot. Dependencies that are added automatically via this tag are
-	// not automatically exported.
-	systemModulesLibsTag = android.DependencyTagForSdkMemberType(javaHeaderLibsSdkMemberType, false)
+	// to the sdk/module_exports/snapshot.
+	systemModulesLibsTag = android.DependencyTagForSdkMemberType(javaHeaderLibsSdkMemberType)
 )
 
 func TransformJarsToSystemModules(ctx android.ModuleContext, jars android.Paths) (android.Path, android.Paths) {
@@ -114,7 +114,6 @@ func SystemModulesFactory() android.Module {
 	module.AddProperties(&module.properties)
 	android.InitAndroidArchModule(module, android.HostAndDeviceSupported, android.MultilibCommon)
 	android.InitDefaultableModule(module)
-	android.InitSdkAwareModule(module)
 	return module
 }
 
@@ -161,8 +160,8 @@ func (system *SystemModules) GenerateAndroidBuildActions(ctx android.ModuleConte
 	var jars android.Paths
 
 	ctx.VisitDirectDepsWithTag(systemModulesLibsTag, func(module android.Module) {
-		dep, _ := ctx.OtherModuleProvider(module, JavaInfoProvider).(JavaInfo)
-		jars = append(jars, dep.HeaderJars...)
+		dep, _ := module.(Dependency)
+		jars = append(jars, dep.HeaderJars()...)
 	})
 
 	system.headerJars = jars
@@ -170,13 +169,7 @@ func (system *SystemModules) GenerateAndroidBuildActions(ctx android.ModuleConte
 	system.outputDir, system.outputDeps = TransformJarsToSystemModules(ctx, jars)
 }
 
-// ComponentDepsMutator is called before prebuilt modules without a corresponding source module are
-// renamed so unless the supplied libs specifically includes the prebuilt_ prefix this is guaranteed
-// to only add dependencies on source modules.
-//
-// The systemModuleLibsTag will prevent the prebuilt mutators from replacing this dependency so it
-// will never be changed to depend on a prebuilt either.
-func (system *SystemModules) ComponentDepsMutator(ctx android.BottomUpMutatorContext) {
+func (system *SystemModules) DepsMutator(ctx android.BottomUpMutatorContext) {
 	ctx.AddVariationDependencies(nil, systemModulesLibsTag, system.properties.Libs...)
 }
 
@@ -230,15 +223,6 @@ func (system *systemModulesImport) Name() string {
 
 func (system *systemModulesImport) Prebuilt() *android.Prebuilt {
 	return &system.prebuilt
-}
-
-// ComponentDepsMutator is called before prebuilt modules without a corresponding source module are
-// renamed so as this adds a prebuilt_ prefix this is guaranteed to only add dependencies on source
-// modules.
-func (system *systemModulesImport) ComponentDepsMutator(ctx android.BottomUpMutatorContext) {
-	for _, lib := range system.properties.Libs {
-		ctx.AddVariationDependencies(nil, systemModulesLibsTag, android.PrebuiltNameFromSource(lib))
-	}
 }
 
 type systemModulesSdkMemberType struct {

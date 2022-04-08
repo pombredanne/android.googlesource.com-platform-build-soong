@@ -86,10 +86,6 @@ type BaseCompilerProperties struct {
 	// genrule modules.
 	Generated_sources []string `android:"arch_variant"`
 
-	// list of generated sources that should not be used to build the C/C++ module.
-	// This is most useful in the arch/multilib variants to remove non-common files
-	Exclude_generated_sources []string `android:"arch_variant"`
-
 	// list of generated headers to add to the include path. These are the names
 	// of genrule modules.
 	Generated_headers []string `android:"arch_variant"`
@@ -111,7 +107,6 @@ type BaseCompilerProperties struct {
 	Gnu_extensions *bool
 
 	Yacc *YaccProperties
-	Lex  *LexProperties
 
 	Aidl struct {
 		// list of directories that will be added to the aidl include paths.
@@ -123,9 +118,6 @@ type BaseCompilerProperties struct {
 
 		// whether to generate traces (for systrace) for this interface
 		Generate_traces *bool
-
-		// list of flags that will be passed to the AIDL compiler
-		Flags []string
 	}
 
 	Renderscript struct {
@@ -146,22 +138,18 @@ type BaseCompilerProperties struct {
 	} `android:"arch_variant"`
 
 	Target struct {
-		Vendor, Product struct {
-			// list of source files that should only be used in vendor or
-			// product variant of the C/C++ module.
+		Vendor struct {
+			// list of source files that should only be used in the
+			// vendor variant of the C/C++ module.
 			Srcs []string `android:"path"`
 
-			// list of source files that should not be used to build vendor
-			// or product variant of the C/C++ module.
+			// list of source files that should not be used to
+			// build the vendor variant of the C/C++ module.
 			Exclude_srcs []string `android:"path"`
 
-			// List of additional cflags that should be used to build vendor
-			// or product variant of the C/C++ module.
+			// List of additional cflags that should be used to build the vendor
+			// variant of the C/C++ module.
 			Cflags []string
-
-			// list of generated sources that should not be used to build
-			// vendor or product variant of the C/C++ module.
-			Exclude_generated_sources []string
 		}
 		Recovery struct {
 			// list of source files that should only be used in the
@@ -173,24 +161,6 @@ type BaseCompilerProperties struct {
 			Exclude_srcs []string `android:"path"`
 
 			// List of additional cflags that should be used to build the recovery
-			// variant of the C/C++ module.
-			Cflags []string
-
-			// list of generated sources that should not be used to
-			// build the recovery variant of the C/C++ module.
-			Exclude_generated_sources []string
-		}
-		Vendor_ramdisk struct {
-			// list of source files that should not be used to
-			// build the vendor ramdisk variant of the C/C++ module.
-			Exclude_srcs []string `android:"path"`
-
-			// List of additional cflags that should be used to build the vendor ramdisk
-			// variant of the C/C++ module.
-			Cflags []string
-		}
-		Platform struct {
-			// List of additional cflags that should be used to build the platform
 			// variant of the C/C++ module.
 			Cflags []string
 		}
@@ -207,14 +177,8 @@ type BaseCompilerProperties struct {
 	// Build and link with OpenMP
 	Openmp *bool `android:"arch_variant"`
 
-	// Deprecated.
 	// Adds __ANDROID_APEX_<APEX_MODULE_NAME>__ macro defined for apex variants in addition to __ANDROID_APEX__
 	Use_apex_name_macro *bool
-
-	// Adds two macros for apex variants in addition to __ANDROID_APEX__
-	// * __ANDROID_APEX_COM_ANDROID_FOO__
-	// * __ANDROID_APEX_NAME__="com.android.foo"
-	UseApexNameMacro bool `blueprint:"mutated"`
 }
 
 func NewBaseCompiler() *baseCompiler {
@@ -235,8 +199,6 @@ type baseCompiler struct {
 	// other modules and filegroups. May include source files that have not yet been translated to
 	// C/C++ (.aidl, .proto, etc.)
 	srcsBeforeGen android.Paths
-
-	generatedSourceInfo
 }
 
 var _ compiler = (*baseCompiler)(nil)
@@ -261,15 +223,10 @@ func (compiler *baseCompiler) compilerProps() []interface{} {
 	return []interface{}{&compiler.Properties, &compiler.Proto}
 }
 
-func (compiler *baseCompiler) includeBuildDirectory() bool {
-	return proptools.BoolDefault(compiler.Properties.Include_build_directory, true)
-}
-
 func (compiler *baseCompiler) compilerInit(ctx BaseModuleContext) {}
 
 func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	deps.GeneratedSources = append(deps.GeneratedSources, compiler.Properties.Generated_sources...)
-	deps.GeneratedSources = removeListFromList(deps.GeneratedSources, compiler.Properties.Exclude_generated_sources)
 	deps.GeneratedHeaders = append(deps.GeneratedHeaders, compiler.Properties.Generated_headers...)
 
 	android.ProtoDeps(ctx, &compiler.Proto)
@@ -282,10 +239,6 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	}
 
 	return deps
-}
-
-func (compiler *baseCompiler) useApexNameMacro() bool {
-	return Bool(compiler.Properties.Use_apex_name_macro) || compiler.Properties.UseApexNameMacro
 }
 
 // Return true if the module is in the WarningAllowedProjects.
@@ -312,10 +265,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	CheckBadCompilerFlags(ctx, "conlyflags", compiler.Properties.Conlyflags)
 	CheckBadCompilerFlags(ctx, "asflags", compiler.Properties.Asflags)
 	CheckBadCompilerFlags(ctx, "vendor.cflags", compiler.Properties.Target.Vendor.Cflags)
-	CheckBadCompilerFlags(ctx, "product.cflags", compiler.Properties.Target.Product.Cflags)
 	CheckBadCompilerFlags(ctx, "recovery.cflags", compiler.Properties.Target.Recovery.Cflags)
-	CheckBadCompilerFlags(ctx, "vendor_ramdisk.cflags", compiler.Properties.Target.Vendor_ramdisk.Cflags)
-	CheckBadCompilerFlags(ctx, "platform.cflags", compiler.Properties.Target.Platform.Cflags)
 
 	esc := proptools.NinjaAndShellEscapeList
 
@@ -326,7 +276,6 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	flags.Local.YasmFlags = append(flags.Local.YasmFlags, esc(compiler.Properties.Asflags)...)
 
 	flags.Yacc = compiler.Properties.Yacc
-	flags.Lex = compiler.Properties.Lex
 
 	// Include dir cflags
 	localIncludeDirs := android.PathsForModuleSrc(ctx, compiler.Properties.Local_include_dirs)
@@ -342,7 +291,8 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		flags.Local.YasmFlags = append(flags.Local.YasmFlags, f)
 	}
 
-	if compiler.includeBuildDirectory() {
+	if compiler.Properties.Include_build_directory == nil ||
+		*compiler.Properties.Include_build_directory {
 		flags.Local.CommonFlags = append(flags.Local.CommonFlags, "-I"+modulePath)
 		flags.Local.YasmFlags = append(flags.Local.YasmFlags, "-I"+modulePath)
 	}
@@ -350,7 +300,8 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	if !(ctx.useSdk() || ctx.useVndk()) || ctx.Host() {
 		flags.SystemIncludeFlags = append(flags.SystemIncludeFlags,
 			"${config.CommonGlobalIncludes}",
-			tc.IncludeFlags())
+			tc.IncludeFlags(),
+			"${config.CommonNativehelperInclude}")
 	}
 
 	if ctx.useSdk() {
@@ -366,27 +317,19 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 
 	if ctx.useVndk() {
 		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_VNDK__")
-		if ctx.inVendor() {
-			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_VENDOR__")
-		} else if ctx.inProduct() {
-			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_PRODUCT__")
-		}
 	}
 
 	if ctx.inRecovery() {
 		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_RECOVERY__")
 	}
 
-	if ctx.apexVariationName() != "" {
+	if ctx.apexName() != "" {
 		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX__")
-		if compiler.useApexNameMacro() {
-			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX_"+makeDefineString(ctx.apexVariationName())+"__")
-			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX_NAME__='\""+ctx.apexVariationName()+"\"'")
+		if Bool(compiler.Properties.Use_apex_name_macro) {
+			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_APEX_"+makeDefineString(ctx.apexName())+"__")
 		}
 		if ctx.Device() {
-			flags.Global.CommonFlags = append(flags.Global.CommonFlags,
-				fmt.Sprintf("-D__ANDROID_APEX_MIN_SDK_VERSION__=%d",
-					ctx.apexSdkVersion().FinalOrFutureInt()))
+			flags.Global.CommonFlags = append(flags.Global.CommonFlags, "-D__ANDROID_SDK_VERSION__="+strconv.Itoa(ctx.apexSdkVersion()))
 		}
 	}
 
@@ -420,9 +363,9 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 
 	target := "-target " + tc.ClangTriple()
 	if ctx.Os().Class == android.Device {
-		version := ctx.minSdkVersion()
+		version := ctx.sdkVersion()
 		if version == "" || version == "current" {
-			target += strconv.Itoa(android.FutureApiLevelInt)
+			target += strconv.Itoa(android.FutureApiLevel)
 		} else {
 			target += version
 		}
@@ -451,7 +394,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 		fmt.Sprintf("${config.%sClangGlobalCflags}", hod))
 
 	if isThirdParty(modulePath) {
-		flags.Global.CommonFlags = append(flags.Global.CommonFlags, "${config.ClangExternalCflags}")
+		flags.Global.CommonFlags = append([]string{"${config.ClangExternalCflags}"}, flags.Global.CommonFlags...)
 	}
 
 	if tc.Bionic() {
@@ -493,23 +436,12 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	flags.Local.ConlyFlags = append([]string{"-std=" + cStd}, flags.Local.ConlyFlags...)
 	flags.Local.CppFlags = append([]string{"-std=" + cppStd}, flags.Local.CppFlags...)
 
-	if ctx.inVendor() {
+	if ctx.useVndk() {
 		flags.Local.CFlags = append(flags.Local.CFlags, esc(compiler.Properties.Target.Vendor.Cflags)...)
-	}
-
-	if ctx.inProduct() {
-		flags.Local.CFlags = append(flags.Local.CFlags, esc(compiler.Properties.Target.Product.Cflags)...)
 	}
 
 	if ctx.inRecovery() {
 		flags.Local.CFlags = append(flags.Local.CFlags, esc(compiler.Properties.Target.Recovery.Cflags)...)
-	}
-
-	if ctx.inVendorRamdisk() {
-		flags.Local.CFlags = append(flags.Local.CFlags, esc(compiler.Properties.Target.Vendor_ramdisk.Cflags)...)
-	}
-	if !ctx.useSdk() {
-		flags.Local.CFlags = append(flags.Local.CFlags, esc(compiler.Properties.Target.Platform.Cflags)...)
 	}
 
 	// We can enforce some rules more strictly in the code we own. strict
@@ -543,7 +475,6 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags, deps
 	}
 
 	if compiler.hasSrcExt(".aidl") {
-		flags.aidlFlags = append(flags.aidlFlags, compiler.Properties.Aidl.Flags...)
 		if len(compiler.Properties.Aidl.Local_include_dirs) > 0 {
 			localAidlIncludeDirs := android.PathsForModuleSrc(ctx, compiler.Properties.Aidl.Local_include_dirs)
 			flags.aidlFlags = append(flags.aidlFlags, includeDirsToFlags(localAidlIncludeDirs))
@@ -617,22 +548,16 @@ func (compiler *baseCompiler) hasSrcExt(ext string) bool {
 	return false
 }
 
-func (compiler *baseCompiler) uniqueApexVariations() bool {
-	return compiler.useApexNameMacro()
-}
-
-var invalidDefineCharRegex = regexp.MustCompile("[^a-zA-Z0-9_]")
-
 // makeDefineString transforms a name of an APEX module into a value to be used as value for C define
 // For example, com.android.foo => COM_ANDROID_FOO
 func makeDefineString(name string) string {
-	return invalidDefineCharRegex.ReplaceAllString(strings.ToUpper(name), "_")
+	return strings.ReplaceAll(strings.ToUpper(name), ".", "_")
 }
 
 var gnuToCReplacer = strings.NewReplacer("gnu", "c")
 
 func ndkPathDeps(ctx ModuleContext) android.Paths {
-	if ctx.Module().(*Module).IsSdkVariant() {
+	if ctx.useSdk() {
 		// The NDK sysroot timestamp file depends on all the NDK sysroot files
 		// (headers and libraries).
 		return android.Paths{getNdkBaseTimestampFile(ctx)}
@@ -648,11 +573,10 @@ func (compiler *baseCompiler) compile(ctx ModuleContext, flags Flags, deps PathD
 
 	srcs := append(android.Paths(nil), compiler.srcsBeforeGen...)
 
-	srcs, genDeps, info := genSources(ctx, srcs, buildFlags)
+	srcs, genDeps := genSources(ctx, srcs, buildFlags)
 	pathDeps = append(pathDeps, genDeps...)
 
 	compiler.pathDeps = pathDeps
-	compiler.generatedSourceInfo = info
 	compiler.cFlagsDeps = flags.CFlagsDeps
 
 	// Save src, buildFlags and context
@@ -672,7 +596,7 @@ func (compiler *baseCompiler) compile(ctx ModuleContext, flags Flags, deps PathD
 func compileObjs(ctx android.ModuleContext, flags builderFlags,
 	subdir string, srcFiles, pathDeps android.Paths, cFlagsDeps android.Paths) Objects {
 
-	return transformSourceToObj(ctx, subdir, srcFiles, flags, pathDeps, cFlagsDeps)
+	return TransformSourceToObj(ctx, subdir, srcFiles, flags, pathDeps, cFlagsDeps)
 }
 
 var thirdPartyDirPrefixExceptions = []*regexp.Regexp{
@@ -694,47 +618,4 @@ func isThirdParty(path string) bool {
 		}
 	}
 	return true
-}
-
-// Properties for rust_bindgen related to generating rust bindings.
-// This exists here so these properties can be included in a cc_default
-// which can be used in both cc and rust modules.
-type RustBindgenClangProperties struct {
-	// list of directories relative to the Blueprints file that will
-	// be added to the include path using -I
-	Local_include_dirs []string `android:"arch_variant,variant_prepend"`
-
-	// list of static libraries that provide headers for this binding.
-	Static_libs []string `android:"arch_variant,variant_prepend"`
-
-	// list of shared libraries that provide headers for this binding.
-	Shared_libs []string `android:"arch_variant"`
-
-	// List of libraries which export include paths required for this module
-	Header_libs []string `android:"arch_variant,variant_prepend"`
-
-	// list of clang flags required to correctly interpret the headers.
-	Cflags []string `android:"arch_variant"`
-
-	// list of c++ specific clang flags required to correctly interpret the headers.
-	// This is provided primarily to make sure cppflags defined in cc_defaults are pulled in.
-	Cppflags []string `android:"arch_variant"`
-
-	// C standard version to use. Can be a specific version (such as "gnu11"),
-	// "experimental" (which will use draft versions like C1x when available),
-	// or the empty string (which will use the default).
-	//
-	// If this is set, the file extension will be ignored and this will be used as the std version value. Setting this
-	// to "default" will use the build system default version. This cannot be set at the same time as cpp_std.
-	C_std *string
-
-	// C++ standard version to use. Can be a specific version (such as
-	// "gnu++11"), "experimental" (which will use draft versions like C++1z when
-	// available), or the empty string (which will use the default).
-	//
-	// If this is set, the file extension will be ignored and this will be used as the std version value. Setting this
-	// to "default" will use the build system default version. This cannot be set at the same time as c_std.
-	Cpp_std *string
-
-	//TODO(b/161141999) Add support for headers from cc_library_header modules.
 }

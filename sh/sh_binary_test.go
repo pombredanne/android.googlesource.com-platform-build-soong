@@ -1,64 +1,66 @@
 package sh
 
 import (
+	"io/ioutil"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"android/soong/android"
 	"android/soong/cc"
 )
 
-func TestMain(m *testing.M) {
-	os.Exit(m.Run())
+var buildDir string
+
+func setUp() {
+	var err error
+	buildDir, err = ioutil.TempDir("", "soong_sh_test")
+	if err != nil {
+		panic(err)
+	}
 }
 
-var prepareForShTest = android.GroupFixturePreparers(
-	cc.PrepareForTestWithCcBuildComponents,
-	PrepareForTestWithShBuildComponents,
-	android.FixtureMergeMockFs(android.MockFS{
+func tearDown() {
+	os.RemoveAll(buildDir)
+}
+
+func TestMain(m *testing.M) {
+	run := func() int {
+		setUp()
+		defer tearDown()
+
+		return m.Run()
+	}
+
+	os.Exit(run())
+}
+
+func testShBinary(t *testing.T, bp string) (*android.TestContext, android.Config) {
+	fs := map[string][]byte{
 		"test.sh":            nil,
 		"testdata/data1":     nil,
 		"testdata/sub/data2": nil,
-	}),
-)
+	}
 
-// testShBinary runs tests using the prepareForShTest
-//
-// Do not add any new usages of this, instead use the prepareForShTest directly as it makes it much
-// easier to customize the test behavior.
-//
-// If it is necessary to customize the behavior of an existing test that uses this then please first
-// convert the test to using prepareForShTest first and then in a following change add the
-// appropriate fixture preparers. Keeping the conversion change separate makes it easy to verify
-// that it did not change the test behavior unexpectedly.
-//
-// deprecated
-func testShBinary(t *testing.T, bp string) (*android.TestContext, android.Config) {
-	result := prepareForShTest.RunTestWithBp(t, bp)
+	config := android.TestArchConfig(buildDir, nil, bp, fs)
 
-	return result.TestContext, result.Config
+	ctx := android.NewTestArchContext()
+	ctx.RegisterModuleType("sh_test", ShTestFactory)
+	ctx.RegisterModuleType("sh_test_host", ShTestHostFactory)
+
+	cc.RegisterRequiredBuildComponentsForTest(ctx)
+
+	ctx.Register(config)
+	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
+	android.FailIfErrored(t, errs)
+	_, errs = ctx.PrepareBuildActions(config)
+	android.FailIfErrored(t, errs)
+
+	return ctx, config
 }
 
-func TestShTestSubDir(t *testing.T) {
-	ctx, config := testShBinary(t, `
-		sh_test {
-			name: "foo",
-			src: "test.sh",
-			sub_dir: "foo_test"
-		}
-	`)
-
-	mod := ctx.ModuleForTests("foo", "android_arm64_armv8-a").Module().(*ShTest)
-
-	entries := android.AndroidMkEntriesForTest(t, ctx, mod)[0]
-
-	expectedPath := "out/target/product/test_device/data/nativetest64/foo_test"
-	actualPath := entries.EntryMap["LOCAL_MODULE_PATH"][0]
-	android.AssertStringPathRelativeToTopEquals(t, "LOCAL_MODULE_PATH[0]", config, expectedPath, actualPath)
-}
-
-func TestShTest(t *testing.T) {
+func TestShTestTestData(t *testing.T) {
 	ctx, config := testShBinary(t, `
 		sh_test {
 			name: "foo",
@@ -73,15 +75,12 @@ func TestShTest(t *testing.T) {
 
 	mod := ctx.ModuleForTests("foo", "android_arm64_armv8-a").Module().(*ShTest)
 
-	entries := android.AndroidMkEntriesForTest(t, ctx, mod)[0]
-
-	expectedPath := "out/target/product/test_device/data/nativetest64/foo"
-	actualPath := entries.EntryMap["LOCAL_MODULE_PATH"][0]
-	android.AssertStringPathRelativeToTopEquals(t, "LOCAL_MODULE_PATH[0]", config, expectedPath, actualPath)
-
-	expectedData := []string{":testdata/data1", ":testdata/sub/data2"}
-	actualData := entries.EntryMap["LOCAL_TEST_DATA"]
-	android.AssertDeepEquals(t, "LOCAL_TEST_DATA", expectedData, actualData)
+	entries := android.AndroidMkEntriesForTest(t, config, "", mod)[0]
+	expected := []string{":testdata/data1", ":testdata/sub/data2"}
+	actual := entries.EntryMap["LOCAL_TEST_DATA"]
+	if !reflect.DeepEqual(expected, actual) {
+		t.Errorf("Unexpected test data expected: %q, actual: %q", expected, actual)
+	}
 }
 
 func TestShTest_dataModules(t *testing.T) {
@@ -124,17 +123,22 @@ func TestShTest_dataModules(t *testing.T) {
 			libExt = ".dylib"
 		}
 		relocated := variant.Output("relocated/lib64/libbar" + libExt)
-		expectedInput := "out/soong/.intermediates/libbar/" + arch + "_shared/libbar" + libExt
-		android.AssertPathRelativeToTopEquals(t, "relocation input", expectedInput, relocated.Input)
+		expectedInput := filepath.Join(buildDir, ".intermediates/libbar/"+arch+"_shared/libbar"+libExt)
+		if relocated.Input.String() != expectedInput {
+			t.Errorf("Unexpected relocation input, expected: %q, actual: %q",
+				expectedInput, relocated.Input.String())
+		}
 
 		mod := variant.Module().(*ShTest)
-		entries := android.AndroidMkEntriesForTest(t, ctx, mod)[0]
+		entries := android.AndroidMkEntriesForTest(t, config, "", mod)[0]
 		expectedData := []string{
-			filepath.Join("out/soong/.intermediates/bar", arch, ":bar"),
-			filepath.Join("out/soong/.intermediates/foo", arch, "relocated/:lib64/libbar"+libExt),
+			filepath.Join(buildDir, ".intermediates/bar", arch, ":bar"),
+			filepath.Join(buildDir, ".intermediates/foo", arch, "relocated/:lib64/libbar"+libExt),
 		}
 		actualData := entries.EntryMap["LOCAL_TEST_DATA"]
-		android.AssertStringPathsRelativeToTopEquals(t, "LOCAL_TEST_DATA", config, expectedData, actualData)
+		if !reflect.DeepEqual(expectedData, actualData) {
+			t.Errorf("Unexpected test data, expected: %q, actual: %q", expectedData, actualData)
+		}
 	}
 }
 
@@ -189,16 +193,21 @@ func TestShTestHost_dataDeviceModules(t *testing.T) {
 	variant := ctx.ModuleForTests("foo", buildOS+"_x86_64")
 
 	relocated := variant.Output("relocated/lib64/libbar.so")
-	expectedInput := "out/soong/.intermediates/libbar/android_arm64_armv8-a_shared/libbar.so"
-	android.AssertPathRelativeToTopEquals(t, "relocation input", expectedInput, relocated.Input)
+	expectedInput := filepath.Join(buildDir, ".intermediates/libbar/android_arm64_armv8-a_shared/libbar.so")
+	if relocated.Input.String() != expectedInput {
+		t.Errorf("Unexpected relocation input, expected: %q, actual: %q",
+			expectedInput, relocated.Input.String())
+	}
 
 	mod := variant.Module().(*ShTest)
-	entries := android.AndroidMkEntriesForTest(t, ctx, mod)[0]
+	entries := android.AndroidMkEntriesForTest(t, config, "", mod)[0]
 	expectedData := []string{
-		"out/soong/.intermediates/bar/android_arm64_armv8-a/:bar",
+		filepath.Join(buildDir, ".intermediates/bar/android_arm64_armv8-a/:bar"),
 		// libbar has been relocated, and so has a variant that matches the host arch.
-		"out/soong/.intermediates/foo/" + buildOS + "_x86_64/relocated/:lib64/libbar.so",
+		filepath.Join(buildDir, ".intermediates/foo/"+buildOS+"_x86_64/relocated/:lib64/libbar.so"),
 	}
 	actualData := entries.EntryMap["LOCAL_TEST_DATA"]
-	android.AssertStringPathsRelativeToTopEquals(t, "LOCAL_TEST_DATA", config, expectedData, actualData)
+	if !reflect.DeepEqual(expectedData, actualData) {
+		t.Errorf("Unexpected test data, expected: %q, actual: %q", expectedData, actualData)
+	}
 }

@@ -66,7 +66,6 @@ func TestSdkMutator(t *testing.T) {
 		} else {
 			toFile = m.outputFile.Path()
 		}
-		toFile = toFile.RelativeToTop()
 
 		rule := from.Description("link")
 		for _, dep := range rule.Implicits {

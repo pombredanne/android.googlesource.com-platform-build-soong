@@ -15,6 +15,7 @@
 package xml
 
 import (
+	"io/ioutil"
 	"os"
 	"testing"
 
@@ -22,31 +23,62 @@ import (
 	"android/soong/etc"
 )
 
-func TestMain(m *testing.M) {
-	os.Exit(m.Run())
+var buildDir string
+
+func setUp() {
+	var err error
+	buildDir, err = ioutil.TempDir("", "soong_xml_test")
+	if err != nil {
+		panic(err)
+	}
 }
 
-func testXml(t *testing.T, bp string) *android.TestResult {
-	fs := android.MockFS{
+func tearDown() {
+	os.RemoveAll(buildDir)
+}
+
+func TestMain(m *testing.M) {
+	run := func() int {
+		setUp()
+		defer tearDown()
+
+		return m.Run()
+	}
+
+	os.Exit(run())
+}
+
+func testXml(t *testing.T, bp string) *android.TestContext {
+	fs := map[string][]byte{
 		"foo.xml": nil,
 		"foo.dtd": nil,
 		"bar.xml": nil,
 		"bar.xsd": nil,
 		"baz.xml": nil,
 	}
+	config := android.TestArchConfig(buildDir, nil, bp, fs)
+	ctx := android.NewTestArchContext()
+	ctx.RegisterModuleType("prebuilt_etc", etc.PrebuiltEtcFactory)
+	ctx.RegisterModuleType("prebuilt_etc_xml", PrebuiltEtcXmlFactory)
+	ctx.Register(config)
+	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
+	android.FailIfErrored(t, errs)
+	_, errs = ctx.PrepareBuildActions(config)
+	android.FailIfErrored(t, errs)
 
-	return android.GroupFixturePreparers(
-		android.PrepareForTestWithArchMutator,
-		etc.PrepareForTestWithPrebuiltEtc,
-		PreparerForTestWithXmlBuildComponents,
-		fs.AddToFixture(),
-		android.FixtureWithRootAndroidBp(bp),
-	).RunTest(t)
+	return ctx
+}
+
+func assertEqual(t *testing.T, name, expected, actual string) {
+	t.Helper()
+	if expected != actual {
+		t.Errorf(name+" expected %q != got %q", expected, actual)
+	}
 }
 
 // Minimal test
 func TestPrebuiltEtcXml(t *testing.T) {
-	result := testXml(t, `
+	ctx := testXml(t, `
 		prebuilt_etc_xml {
 			name: "foo.xml",
 			src: "foo.xml",
@@ -71,14 +103,14 @@ func TestPrebuiltEtcXml(t *testing.T) {
 		{rule: "xmllint-minimal", input: "baz.xml"},
 	} {
 		t.Run(tc.schemaType, func(t *testing.T) {
-			rule := result.ModuleForTests(tc.input, "android_arm64_armv8-a").Rule(tc.rule)
-			android.AssertStringEquals(t, "input", tc.input, rule.Input.String())
+			rule := ctx.ModuleForTests(tc.input, "android_arm64_armv8-a").Rule(tc.rule)
+			assertEqual(t, "input", tc.input, rule.Input.String())
 			if tc.schemaType != "" {
-				android.AssertStringEquals(t, "schema", tc.schema, rule.Args[tc.schemaType])
+				assertEqual(t, "schema", tc.schema, rule.Args[tc.schemaType])
 			}
 		})
 	}
 
-	m := result.ModuleForTests("foo.xml", "android_arm64_armv8-a").Module().(*prebuiltEtcXml)
-	android.AssertPathRelativeToTopEquals(t, "installDir", "out/soong/target/product/test_device/system/etc", m.InstallDirPath())
+	m := ctx.ModuleForTests("foo.xml", "android_arm64_armv8-a").Module().(*prebuiltEtcXml)
+	assertEqual(t, "installDir", buildDir+"/target/product/test_device/system/etc", m.InstallDirPath().String())
 }

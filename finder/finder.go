@@ -103,9 +103,6 @@ type CacheParams struct {
 
 	// IncludeFiles are file names to include as matches
 	IncludeFiles []string
-
-	// IncludeSuffixes are filename suffixes to include as matches.
-	IncludeSuffixes []string
 }
 
 // a cacheConfig stores the inputs that determine what should be included in the cache
@@ -328,12 +325,7 @@ func (f *Finder) FindMatching(rootPath string, filter WalkFunc) []string {
 // Shutdown declares that the finder is no longer needed and waits for its cleanup to complete
 // Currently, that only entails waiting for the database dump to complete.
 func (f *Finder) Shutdown() {
-	f.WaitForDbDump()
-}
-
-// WaitForDbDump returns once the database has been written to f.DbPath.
-func (f *Finder) WaitForDbDump() {
-	f.shutdownWaitgroup.Wait()
+	f.waitForDbDump()
 }
 
 // End of public api
@@ -351,6 +343,10 @@ func (f *Finder) goDumpDb() {
 	} else {
 		f.verbosef("Skipping dumping unmodified db\n")
 	}
+}
+
+func (f *Finder) waitForDbDump() {
+	f.shutdownWaitgroup.Wait()
 }
 
 // joinCleanPaths is like filepath.Join but is faster because
@@ -1313,20 +1309,6 @@ func (f *Finder) statDirSync(path string) statResponse {
 	return stats
 }
 
-func (f *Finder) shouldIncludeFile(fileName string) bool {
-	for _, includedName := range f.cacheMetadata.Config.IncludeFiles {
-		if fileName == includedName {
-			return true
-		}
-	}
-	for _, includeSuffix := range f.cacheMetadata.Config.IncludeSuffixes {
-		if strings.HasSuffix(fileName, includeSuffix) {
-			return true
-		}
-	}
-	return false
-}
-
 // pruneCacheCandidates removes the items that we don't want to include in our persistent cache
 func (f *Finder) pruneCacheCandidates(items *DirEntries) {
 
@@ -1343,9 +1325,13 @@ func (f *Finder) pruneCacheCandidates(items *DirEntries) {
 	// remove any files that aren't the ones we want to include
 	writeIndex := 0
 	for _, fileName := range items.FileNames {
-		if f.shouldIncludeFile(fileName) {
-			items.FileNames[writeIndex] = fileName
-			writeIndex++
+		// include only these files
+		for _, includedName := range f.cacheMetadata.Config.IncludeFiles {
+			if fileName == includedName {
+				items.FileNames[writeIndex] = fileName
+				writeIndex++
+				break
+			}
 		}
 	}
 	// resize
@@ -1407,25 +1393,17 @@ func (f *Finder) listDirSync(dir *pathMap) {
 	for _, child := range children {
 		linkBits := child.Mode() & os.ModeSymlink
 		isLink := linkBits != 0
-		if isLink {
-			childPath := filepath.Join(path, child.Name())
-			childStat, err := f.filesystem.Stat(childPath)
-			if err != nil {
-				// If stat fails this is probably a broken or dangling symlink, treat it as a file.
-				subfiles = append(subfiles, child.Name())
-			} else if childStat.IsDir() {
+		if child.IsDir() {
+			if !isLink {
 				// Skip symlink dirs.
 				// We don't have to support symlink dirs because
 				// that would cause duplicates.
-			} else {
-				// We do have to support symlink files because the link name might be
-				// different than the target name
-				// (for example, Android.bp -> build/soong/root.bp)
-				subfiles = append(subfiles, child.Name())
+				subdirs = append(subdirs, child.Name())
 			}
-		} else if child.IsDir() {
-			subdirs = append(subdirs, child.Name())
 		} else {
+			// We do have to support symlink files because the link name might be
+			// different than the target name
+			// (for example, Android.bp -> build/soong/root.bp)
 			subfiles = append(subfiles, child.Name())
 		}
 

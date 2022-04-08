@@ -40,9 +40,9 @@ var (
 	// (if the rule produces .class files) or a .srcjar file (if the rule produces .java files).
 	// .srcjar files are unzipped into a temporary directory when compiled with javac.
 	// TODO(b/143658984): goma can't handle the --system argument to javac.
-	javac, javacRE = pctx.MultiCommandRemoteStaticRules("javac",
+	javac, javacRE = remoteexec.MultiCommandStaticRules(pctx, "javac",
 		blueprint.RuleParams{
-			Command: `rm -rf "$outDir" "$annoDir" "$srcJarDir" "$out" && mkdir -p "$outDir" "$annoDir" "$srcJarDir" && ` +
+			Command: `rm -rf "$outDir" "$annoDir" "$srcJarDir" && mkdir -p "$outDir" "$annoDir" "$srcJarDir" && ` +
 				`${config.ZipSyncCmd} -d $srcJarDir -l $srcJarDir/list -f "*.java" $srcJars && ` +
 				`(if [ -s $srcJarDir/list ] || [ -s $out.rsp ] ; then ` +
 				`${config.SoongJavacWrapper} $javaTemplate${config.JavacCmd} ` +
@@ -80,8 +80,6 @@ var (
 		func(ctx android.PackageVarContext) string { return ctx.Config().XrefCorpusName() })
 	_ = pctx.VariableFunc("kytheCuEncoding",
 		func(ctx android.PackageVarContext) string { return ctx.Config().XrefCuEncoding() })
-	_ = pctx.VariableFunc("kytheCuJavaSourceMax",
-		func(ctx android.PackageVarContext) string { return ctx.Config().XrefCuJavaSourceMax() })
 	_ = pctx.SourcePathVariable("kytheVnames", "build/soong/vnames.json")
 	// Run it with -add-opens=java.base/java.nio=ALL-UNNAMED to avoid JDK9's warning about
 	// "Illegal reflective access by com.google.protobuf.Utf8$UnsafeProcessor ...
@@ -95,7 +93,6 @@ var (
 				`KYTHE_CORPUS=${kytheCorpus} ` +
 				`KYTHE_VNAMES=${kytheVnames} ` +
 				`KYTHE_KZIP_ENCODING=${kytheCuEncoding} ` +
-				`KYTHE_JAVA_SOURCE_BATCH_SIZE=${kytheCuJavaSourceMax} ` +
 				`${config.SoongJavacWrapper} ${config.JavaCmd} ` +
 				`--add-opens=java.base/java.nio=ALL-UNNAMED ` +
 				`-jar ${config.JavaKytheExtractorJar} ` +
@@ -129,7 +126,7 @@ var (
 		},
 		"abis", "allow-prereleased", "screen-densities", "sdk-version", "stem", "apkcerts", "partition")
 
-	turbine, turbineRE = pctx.RemoteStaticRules("turbine",
+	turbine, turbineRE = remoteexec.StaticRules(pctx, "turbine",
 		blueprint.RuleParams{
 			Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
 				`$reTemplate${config.JavaCmd} ${config.JavaVmFlags} -jar ${config.TurbineJar} --output $out.tmp ` +
@@ -150,14 +147,14 @@ var (
 		&remoteexec.REParams{Labels: map[string]string{"type": "tool", "name": "turbine"},
 			ExecStrategy:      "${config.RETurbineExecStrategy}",
 			Inputs:            []string{"${config.TurbineJar}", "${out}.rsp", "$implicits"},
-			RSPFiles:          []string{"${out}.rsp"},
+			RSPFile:           "${out}.rsp",
 			OutputFiles:       []string{"$out.tmp"},
 			OutputDirectories: []string{"$outDir"},
 			ToolchainInputs:   []string{"${config.JavaCmd}"},
 			Platform:          map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
 		}, []string{"javacFlags", "bootClasspath", "classpath", "srcJars", "outDir", "javaVersion"}, []string{"implicits"})
 
-	jar, jarRE = pctx.RemoteStaticRules("jar",
+	jar, jarRE = remoteexec.StaticRules(pctx, "jar",
 		blueprint.RuleParams{
 			Command:        `$reTemplate${config.SoongZipCmd} -jar -o $out @$out.rsp`,
 			CommandDeps:    []string{"${config.SoongZipCmd}"},
@@ -167,12 +164,12 @@ var (
 		&remoteexec.REParams{
 			ExecStrategy: "${config.REJarExecStrategy}",
 			Inputs:       []string{"${config.SoongZipCmd}", "${out}.rsp"},
-			RSPFiles:     []string{"${out}.rsp"},
+			RSPFile:      "${out}.rsp",
 			OutputFiles:  []string{"$out"},
 			Platform:     map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
 		}, []string{"jarArgs"}, nil)
 
-	zip, zipRE = pctx.RemoteStaticRules("zip",
+	zip, zipRE = remoteexec.StaticRules(pctx, "zip",
 		blueprint.RuleParams{
 			Command:        `${config.SoongZipCmd} -o $out @$out.rsp`,
 			CommandDeps:    []string{"${config.SoongZipCmd}"},
@@ -182,7 +179,7 @@ var (
 		&remoteexec.REParams{
 			ExecStrategy: "${config.REZipExecStrategy}",
 			Inputs:       []string{"${config.SoongZipCmd}", "${out}.rsp", "$implicits"},
-			RSPFiles:     []string{"${out}.rsp"},
+			RSPFile:      "${out}.rsp",
 			OutputFiles:  []string{"$out"},
 			Platform:     map[string]string{remoteexec.PoolKey: "${config.REJavaPool}"},
 		}, []string{"jarArgs"}, []string{"implicits"})
@@ -196,19 +193,12 @@ var (
 
 	jarjar = pctx.AndroidStaticRule("jarjar",
 		blueprint.RuleParams{
-			Command: "" +
-				// Jarjar doesn't exit with an error when the rules file contains a syntax error,
-				// leading to stale or missing files later in the build.  Remove the output file
-				// before running jarjar.
-				"rm -f ${out} && " +
-				"${config.JavaCmd} ${config.JavaVmFlags}" +
+			Command: "${config.JavaCmd} ${config.JavaVmFlags}" +
 				// b/146418363 Enable Android specific jarjar transformer to drop compat annotations
 				// for newly repackaged classes. Dropping @UnsupportedAppUsage on repackaged classes
 				// avoids adding new hiddenapis after jarjar'ing.
 				" -DremoveAndroidCompatAnnotations=true" +
-				" -jar ${config.JarjarCmd} process $rulesFile $in $out && " +
-				// Turn a missing output file into a ninja error
-				`[ -e ${out} ] || (echo "Missing output file"; exit 1)`,
+				" -jar ${config.JarjarCmd} process $rulesFile $in $out",
 			CommandDeps: []string{"${config.JavaCmd}", "${config.JarjarCmd}", "$rulesFile"},
 		},
 		"rulesFile")
@@ -244,6 +234,7 @@ var (
 func init() {
 	pctx.Import("android/soong/android")
 	pctx.Import("android/soong/java/config")
+	pctx.Import("android/soong/remoteexec")
 }
 
 type javaBuilderFlags struct {
@@ -394,7 +385,7 @@ func TransformJavaToHeaderClasses(ctx android.ModuleContext, outputFile android.
 		"outDir":        android.PathForModuleOut(ctx, "turbine", "classes").String(),
 		"javaVersion":   flags.javaVersion.String(),
 	}
-	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_TURBINE") {
+	if ctx.Config().IsEnvTrue("RBE_TURBINE") {
 		rule = turbineRE
 		args["implicits"] = strings.Join(deps.Strings(), ",")
 	}
@@ -489,7 +480,7 @@ func TransformResourcesToJar(ctx android.ModuleContext, outputFile android.Writa
 	jarArgs []string, deps android.Paths) {
 
 	rule := jar
-	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_JAR") {
+	if ctx.Config().IsEnvTrue("RBE_JAR") {
 		rule = jarRE
 	}
 	ctx.Build(pctx, android.BuildParams{
@@ -581,7 +572,14 @@ func TransformJetifier(ctx android.ModuleContext, outputFile android.WritablePat
 }
 
 func GenerateMainClassManifest(ctx android.ModuleContext, outputFile android.WritablePath, mainClass string) {
-	android.WriteFileRule(ctx, outputFile, "Main-Class: "+mainClass+"\n")
+	ctx.Build(pctx, android.BuildParams{
+		Rule:        android.WriteFile,
+		Description: "manifest",
+		Output:      outputFile,
+		Args: map[string]string{
+			"content": "Main-Class: " + mainClass + "\n",
+		},
+	})
 }
 
 func TransformZipAlign(ctx android.ModuleContext, outputFile android.WritablePath, inputFile android.Path) {

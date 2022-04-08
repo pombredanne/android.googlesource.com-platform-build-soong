@@ -26,9 +26,6 @@ import (
 )
 
 func TestSendLog(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping in short mode, sometimes hangs")
-	}
 	t.Run("Short name", func(t *testing.T) {
 		d, err := ioutil.TempDir("", "s")
 		if err != nil {

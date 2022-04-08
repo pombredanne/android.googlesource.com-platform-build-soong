@@ -15,12 +15,10 @@
 package android
 
 import (
-	"android/soong/bazel"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"text/scanner"
 
@@ -44,8 +42,6 @@ type BuildParams struct {
 	Description     string
 	Output          WritablePath
 	Outputs         WritablePaths
-	SymlinkOutput   WritablePath
-	SymlinkOutputs  WritablePaths
 	ImplicitOutput  WritablePath
 	ImplicitOutputs WritablePaths
 	Input           Path
@@ -53,8 +49,6 @@ type BuildParams struct {
 	Implicit        Path
 	Implicits       Paths
 	OrderOnly       Paths
-	Validation      Path
-	Validations     Paths
 	Default         bool
 	Args            map[string]string
 }
@@ -64,44 +58,18 @@ type ModuleBuildParams BuildParams
 // EarlyModuleContext provides methods that can be called early, as soon as the properties have
 // been parsed into the module and before any mutators have run.
 type EarlyModuleContext interface {
-	// Module returns the current module as a Module.  It should rarely be necessary, as the module already has a
-	// reference to itself.
 	Module() Module
-
-	// ModuleName returns the name of the module.  This is generally the value that was returned by Module.Name() when
-	// the module was created, but may have been modified by calls to BaseMutatorContext.Rename.
 	ModuleName() string
-
-	// ModuleDir returns the path to the directory that contains the definition of the module.
 	ModuleDir() string
-
-	// ModuleType returns the name of the module type that was used to create the module, as specified in
-	// RegisterModuleType.
 	ModuleType() string
-
-	// BlueprintFile returns the name of the blueprint file that contains the definition of this
-	// module.
 	BlueprintsFile() string
 
-	// ContainsProperty returns true if the specified property name was set in the module definition.
 	ContainsProperty(name string) bool
-
-	// Errorf reports an error at the specified position of the module definition file.
 	Errorf(pos scanner.Position, fmt string, args ...interface{})
-
-	// ModuleErrorf reports an error at the line number of the module type in the module definition.
 	ModuleErrorf(fmt string, args ...interface{})
-
-	// PropertyErrorf reports an error at the line number of a property in the module definition.
 	PropertyErrorf(property, fmt string, args ...interface{})
-
-	// Failed returns true if any errors have been reported.  In most cases the module can continue with generating
-	// build rules after an error, allowing it to report additional errors in a single run, but in cases where the error
-	// has prevented the module from creating necessary data it can return early when Failed returns true.
 	Failed() bool
 
-	// AddNinjaFileDeps adds dependencies on the specified files to the rule that creates the ninja manifest.  The
-	// primary builder will be rerun whenever the specified files are modified.
 	AddNinjaFileDeps(deps ...string)
 
 	DeviceSpecific() bool
@@ -127,8 +95,6 @@ type EarlyModuleContext interface {
 	IsSymlink(path Path) bool
 	Readlink(path Path) string
 
-	// Namespace returns the Namespace object provided by the NameInterface set by Context.SetNameInterface, or the
-	// default SimpleNameInterface if Context.SetNameInterface was not called.
 	Namespace() *Namespace
 }
 
@@ -139,164 +105,30 @@ type EarlyModuleContext interface {
 type BaseModuleContext interface {
 	EarlyModuleContext
 
-	blueprintBaseModuleContext() blueprint.BaseModuleContext
-
-	// OtherModuleName returns the name of another Module.  See BaseModuleContext.ModuleName for more information.
-	// It is intended for use inside the visit functions of Visit* and WalkDeps.
 	OtherModuleName(m blueprint.Module) string
-
-	// OtherModuleDir returns the directory of another Module.  See BaseModuleContext.ModuleDir for more information.
-	// It is intended for use inside the visit functions of Visit* and WalkDeps.
 	OtherModuleDir(m blueprint.Module) string
-
-	// OtherModuleErrorf reports an error on another Module.  See BaseModuleContext.ModuleErrorf for more information.
-	// It is intended for use inside the visit functions of Visit* and WalkDeps.
 	OtherModuleErrorf(m blueprint.Module, fmt string, args ...interface{})
-
-	// OtherModuleDependencyTag returns the dependency tag used to depend on a module, or nil if there is no dependency
-	// on the module.  When called inside a Visit* method with current module being visited, and there are multiple
-	// dependencies on the module being visited, it returns the dependency tag used for the current dependency.
 	OtherModuleDependencyTag(m blueprint.Module) blueprint.DependencyTag
-
-	// OtherModuleExists returns true if a module with the specified name exists, as determined by the NameInterface
-	// passed to Context.SetNameInterface, or SimpleNameInterface if it was not called.
 	OtherModuleExists(name string) bool
-
-	// OtherModuleDependencyVariantExists returns true if a module with the
-	// specified name and variant exists. The variant must match the given
-	// variations. It must also match all the non-local variations of the current
-	// module. In other words, it checks for the module that AddVariationDependencies
-	// would add a dependency on with the same arguments.
-	OtherModuleDependencyVariantExists(variations []blueprint.Variation, name string) bool
-
-	// OtherModuleFarDependencyVariantExists returns true if a module with the
-	// specified name and variant exists. The variant must match the given
-	// variations, but not the non-local variations of the current module. In
-	// other words, it checks for the module that AddFarVariationDependencies
-	// would add a dependency on with the same arguments.
-	OtherModuleFarDependencyVariantExists(variations []blueprint.Variation, name string) bool
-
-	// OtherModuleReverseDependencyVariantExists returns true if a module with the
-	// specified name exists with the same variations as the current module. In
-	// other words, it checks for the module that AddReverseDependency would add a
-	// dependency on with the same argument.
-	OtherModuleReverseDependencyVariantExists(name string) bool
-
-	// OtherModuleType returns the type of another Module.  See BaseModuleContext.ModuleType for more information.
-	// It is intended for use inside the visit functions of Visit* and WalkDeps.
 	OtherModuleType(m blueprint.Module) string
 
-	// OtherModuleProvider returns the value for a provider for the given module.  If the value is
-	// not set it returns the zero value of the type of the provider, so the return value can always
-	// be type asserted to the type of the provider.  The value returned may be a deep copy of the
-	// value originally passed to SetProvider.
-	OtherModuleProvider(m blueprint.Module, provider blueprint.ProviderKey) interface{}
-
-	// OtherModuleHasProvider returns true if the provider for the given module has been set.
-	OtherModuleHasProvider(m blueprint.Module, provider blueprint.ProviderKey) bool
-
-	// Provider returns the value for a provider for the current module.  If the value is
-	// not set it returns the zero value of the type of the provider, so the return value can always
-	// be type asserted to the type of the provider.  It panics if called before the appropriate
-	// mutator or GenerateBuildActions pass for the provider.  The value returned may be a deep
-	// copy of the value originally passed to SetProvider.
-	Provider(provider blueprint.ProviderKey) interface{}
-
-	// HasProvider returns true if the provider for the current module has been set.
-	HasProvider(provider blueprint.ProviderKey) bool
-
-	// SetProvider sets the value for a provider for the current module.  It panics if not called
-	// during the appropriate mutator or GenerateBuildActions pass for the provider, if the value
-	// is not of the appropriate type, or if the value has already been set.  The value should not
-	// be modified after being passed to SetProvider.
-	SetProvider(provider blueprint.ProviderKey, value interface{})
-
 	GetDirectDepsWithTag(tag blueprint.DependencyTag) []Module
-
-	// GetDirectDepWithTag returns the Module the direct dependency with the specified name, or nil if
-	// none exists.  It panics if the dependency does not have the specified tag.  It skips any
-	// dependencies that are not an android.Module.
 	GetDirectDepWithTag(name string, tag blueprint.DependencyTag) blueprint.Module
-
-	// GetDirectDep returns the Module and DependencyTag for the  direct dependency with the specified
-	// name, or nil if none exists.  If there are multiple dependencies on the same module it returns
-	// the first DependencyTag.
 	GetDirectDep(name string) (blueprint.Module, blueprint.DependencyTag)
 
-	// VisitDirectDepsBlueprint calls visit for each direct dependency.  If there are multiple
-	// direct dependencies on the same module visit will be called multiple times on that module
-	// and OtherModuleDependencyTag will return a different tag for each.
-	//
-	// The Module passed to the visit function should not be retained outside of the visit
-	// function, it may be invalidated by future mutators.
 	VisitDirectDepsBlueprint(visit func(blueprint.Module))
-
-	// VisitDirectDeps calls visit for each direct dependency.  If there are multiple
-	// direct dependencies on the same module visit will be called multiple times on that module
-	// and OtherModuleDependencyTag will return a different tag for each.  It skips any
-	// dependencies that are not an android.Module.
-	//
-	// The Module passed to the visit function should not be retained outside of the visit
-	// function, it may be invalidated by future mutators.
 	VisitDirectDeps(visit func(Module))
-
 	VisitDirectDepsWithTag(tag blueprint.DependencyTag, visit func(Module))
-
-	// VisitDirectDepsIf calls pred for each direct dependency, and if pred returns true calls visit.  If there are
-	// multiple direct dependencies on the same module pred and visit will be called multiple times on that module and
-	// OtherModuleDependencyTag will return a different tag for each.  It skips any
-	// dependencies that are not an android.Module.
-	//
-	// The Module passed to the visit function should not be retained outside of the visit function, it may be
-	// invalidated by future mutators.
 	VisitDirectDepsIf(pred func(Module) bool, visit func(Module))
 	// Deprecated: use WalkDeps instead to support multiple dependency tags on the same module
 	VisitDepsDepthFirst(visit func(Module))
 	// Deprecated: use WalkDeps instead to support multiple dependency tags on the same module
 	VisitDepsDepthFirstIf(pred func(Module) bool, visit func(Module))
-
-	// WalkDeps calls visit for each transitive dependency, traversing the dependency tree in top down order.  visit may
-	// be called multiple times for the same (child, parent) pair if there are multiple direct dependencies between the
-	// child and parent with different tags.  OtherModuleDependencyTag will return the tag for the currently visited
-	// (child, parent) pair.  If visit returns false WalkDeps will not continue recursing down to child.  It skips
-	// any dependencies that are not an android.Module.
-	//
-	// The Modules passed to the visit function should not be retained outside of the visit function, they may be
-	// invalidated by future mutators.
 	WalkDeps(visit func(Module, Module) bool)
-
-	// WalkDepsBlueprint calls visit for each transitive dependency, traversing the dependency
-	// tree in top down order.  visit may be called multiple times for the same (child, parent)
-	// pair if there are multiple direct dependencies between the child and parent with different
-	// tags.  OtherModuleDependencyTag will return the tag for the currently visited
-	// (child, parent) pair.  If visit returns false WalkDeps will not continue recursing down
-	// to child.
-	//
-	// The Modules passed to the visit function should not be retained outside of the visit function, they may be
-	// invalidated by future mutators.
 	WalkDepsBlueprint(visit func(blueprint.Module, blueprint.Module) bool)
-
 	// GetWalkPath is supposed to be called in visit function passed in WalkDeps()
 	// and returns a top-down dependency path from a start module to current child module.
 	GetWalkPath() []Module
-
-	// PrimaryModule returns the first variant of the current module.  Variants of a module are always visited in
-	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from the
-	// Module returned by PrimaryModule without data races.  This can be used to perform singleton actions that are
-	// only done once for all variants of a module.
-	PrimaryModule() Module
-
-	// FinalModule returns the last variant of the current module.  Variants of a module are always visited in
-	// order by mutators and GenerateBuildActions, so the data created by the current mutator can be read from all
-	// variants using VisitAllModuleVariants if the current module == FinalModule().  This can be used to perform
-	// singleton actions that are only done once for all variants of a module.
-	FinalModule() Module
-
-	// VisitAllModuleVariants calls visit for each variant of the current module.  Variants of a module are always
-	// visited in order by mutators and GenerateBuildActions, so the data created by the current mutator can be read
-	// from all variants if the current module == FinalModule().  Otherwise, care must be taken to not access any
-	// data modified by the current mutator.
-	VisitAllModuleVariants(visit func(Module))
 
 	// GetTagPath is supposed to be called in visit function passed in WalkDeps()
 	// and returns a top-down dependency tags path from a start module to current child module.
@@ -304,13 +136,6 @@ type BaseModuleContext interface {
 	// exist between each adjacent pair of modules in the GetWalkPath().
 	// GetTagPath()[i] is the tag between GetWalkPath()[i] and GetWalkPath()[i+1]
 	GetTagPath() []blueprint.DependencyTag
-
-	// GetPathString is supposed to be called in visit function passed in WalkDeps()
-	// and returns a multi-line string showing the modules and dependency tags
-	// among them along the top-down dependency path from a start module to current child module.
-	// skipFirst when set to true, the output doesn't include the start module,
-	// which is already printed when this function is used along with ModuleErrorf().
-	GetPathString(skipFirst bool) string
 
 	AddMissingDependencies(missingDeps []string)
 
@@ -339,8 +164,6 @@ type BaseContext interface {
 type ModuleContext interface {
 	BaseModuleContext
 
-	blueprintModuleContext() blueprint.ModuleContext
-
 	// Deprecated: use ModuleContext.Build instead.
 	ModuleBuild(pctx PackageContext, params ModuleBuildParams)
 
@@ -348,63 +171,19 @@ type ModuleContext interface {
 	ExpandSource(srcFile, prop string) Path
 	ExpandOptionalSource(srcFile *string, prop string) OptionalPath
 
-	// InstallExecutable creates a rule to copy srcPath to name in the installPath directory,
-	// with the given additional dependencies.  The file is marked executable after copying.
-	//
-	// The installed file will be returned by FilesToInstall(), and the PackagingSpec for the
-	// installed file will be returned by PackagingSpecs() on this module or by
-	// TransitivePackagingSpecs() on modules that depend on this module through dependency tags
-	// for which IsInstallDepNeeded returns true.
 	InstallExecutable(installPath InstallPath, name string, srcPath Path, deps ...Path) InstallPath
-
-	// InstallFile creates a rule to copy srcPath to name in the installPath directory,
-	// with the given additional dependencies.
-	//
-	// The installed file will be returned by FilesToInstall(), and the PackagingSpec for the
-	// installed file will be returned by PackagingSpecs() on this module or by
-	// TransitivePackagingSpecs() on modules that depend on this module through dependency tags
-	// for which IsInstallDepNeeded returns true.
 	InstallFile(installPath InstallPath, name string, srcPath Path, deps ...Path) InstallPath
-
-	// InstallSymlink creates a rule to create a symlink from src srcPath to name in the installPath
-	// directory.
-	//
-	// The installed symlink will be returned by FilesToInstall(), and the PackagingSpec for the
-	// installed file will be returned by PackagingSpecs() on this module or by
-	// TransitivePackagingSpecs() on modules that depend on this module through dependency tags
-	// for which IsInstallDepNeeded returns true.
 	InstallSymlink(installPath InstallPath, name string, srcPath InstallPath) InstallPath
-
-	// InstallAbsoluteSymlink creates a rule to create an absolute symlink from src srcPath to name
-	// in the installPath directory.
-	//
-	// The installed symlink will be returned by FilesToInstall(), and the PackagingSpec for the
-	// installed file will be returned by PackagingSpecs() on this module or by
-	// TransitivePackagingSpecs() on modules that depend on this module through dependency tags
-	// for which IsInstallDepNeeded returns true.
 	InstallAbsoluteSymlink(installPath InstallPath, name string, absPath string) InstallPath
-
-	// PackageFile creates a PackagingSpec as if InstallFile was called, but without creating
-	// the rule to copy the file.  This is useful to define how a module would be packaged
-	// without installing it into the global installation directories.
-	//
-	// The created PackagingSpec for the will be returned by PackagingSpecs() on this module or by
-	// TransitivePackagingSpecs() on modules that depend on this module through dependency tags
-	// for which IsInstallDepNeeded returns true.
-	PackageFile(installPath InstallPath, name string, srcPath Path) PackagingSpec
-
 	CheckbuildFile(srcPath Path)
 
 	InstallInData() bool
 	InstallInTestcases() bool
 	InstallInSanitizerDir() bool
 	InstallInRamdisk() bool
-	InstallInVendorRamdisk() bool
-	InstallInDebugRamdisk() bool
 	InstallInRecovery() bool
 	InstallInRoot() bool
 	InstallBypassMake() bool
-	InstallForceOS() (*OsType, *ArchType)
 
 	RequiredModuleNames() []string
 	HostRequiredModuleNames() []string
@@ -422,8 +201,10 @@ type ModuleContext interface {
 	// additional dependencies.
 	Phony(phony string, deps ...Path)
 
-	// GetMissingDependencies returns the list of dependencies that were passed to AddDependencies or related methods,
-	// but do not exist.
+	PrimaryModule() Module
+	FinalModule() Module
+	VisitAllModuleVariants(visit func(Module))
+
 	GetMissingDependencies() []string
 }
 
@@ -435,44 +216,28 @@ type Module interface {
 	// For more information, see Module.GenerateBuildActions within Blueprint's module_ctx.go
 	GenerateAndroidBuildActions(ModuleContext)
 
-	// Add dependencies to the components of a module, i.e. modules that are created
-	// by the module and which are considered to be part of the creating module.
-	//
-	// This is called before prebuilts are renamed so as to allow a dependency to be
-	// added directly to a prebuilt child module instead of depending on a source module
-	// and relying on prebuilt processing to switch to the prebuilt module if preferred.
-	//
-	// A dependency on a prebuilt must include the "prebuilt_" prefix.
-	ComponentDepsMutator(ctx BottomUpMutatorContext)
-
 	DepsMutator(BottomUpMutatorContext)
 
 	base() *ModuleBase
 	Disable()
 	Enabled() bool
 	Target() Target
-	MultiTargets() []Target
 	Owner() string
 	InstallInData() bool
 	InstallInTestcases() bool
 	InstallInSanitizerDir() bool
 	InstallInRamdisk() bool
-	InstallInVendorRamdisk() bool
-	InstallInDebugRamdisk() bool
 	InstallInRecovery() bool
 	InstallInRoot() bool
 	InstallBypassMake() bool
-	InstallForceOS() (*OsType, *ArchType)
-	HideFromMake()
-	IsHideFromMake() bool
+	SkipInstall()
 	IsSkipInstall() bool
-	MakeUninstallable()
 	ReplacedByPrebuilt()
 	IsReplacedByPrebuilt() bool
 	ExportedToMake() bool
 	InitRc() Paths
 	VintfFragments() Paths
-	NoticeFiles() Paths
+	NoticeFile() OptionalPath
 
 	AddProperties(props ...interface{})
 	GetProperties() []interface{}
@@ -493,69 +258,6 @@ type Module interface {
 	RequiredModuleNames() []string
 	HostRequiredModuleNames() []string
 	TargetRequiredModuleNames() []string
-
-	FilesToInstall() InstallPaths
-	PackagingSpecs() []PackagingSpec
-
-	// TransitivePackagingSpecs returns the PackagingSpecs for this module and any transitive
-	// dependencies with dependency tags for which IsInstallDepNeeded() returns true.
-	TransitivePackagingSpecs() []PackagingSpec
-}
-
-// BazelTargetModule is a lightweight wrapper interface around Module for
-// bp2build conversion purposes.
-//
-// In bp2build's bootstrap.Main execution, Soong runs an alternate pipeline of
-// mutators that creates BazelTargetModules from regular Module objects,
-// performing the mapping from Soong properties to Bazel rule attributes in the
-// process. This process may optionally create additional BazelTargetModules,
-// resulting in a 1:many mapping.
-//
-// bp2build.Codegen is then responsible for visiting all modules in the graph,
-// filtering for BazelTargetModules, and code-generating BUILD targets from
-// them.
-type BazelTargetModule interface {
-	Module
-
-	bazelTargetModuleProperties() *bazel.BazelTargetModuleProperties
-	SetBazelTargetModuleProperties(props bazel.BazelTargetModuleProperties)
-
-	RuleClass() string
-	BzlLoadLocation() string
-}
-
-// InitBazelTargetModule is a wrapper function that decorates BazelTargetModule
-// with property structs containing metadata for bp2build conversion.
-func InitBazelTargetModule(module BazelTargetModule) {
-	module.AddProperties(module.bazelTargetModuleProperties())
-	InitAndroidModule(module)
-}
-
-// BazelTargetModuleBase contains the property structs with metadata for
-// bp2build conversion.
-type BazelTargetModuleBase struct {
-	ModuleBase
-	Properties bazel.BazelTargetModuleProperties
-}
-
-// bazelTargetModuleProperties getter.
-func (btmb *BazelTargetModuleBase) bazelTargetModuleProperties() *bazel.BazelTargetModuleProperties {
-	return &btmb.Properties
-}
-
-// SetBazelTargetModuleProperties setter for BazelTargetModuleProperties
-func (btmb *BazelTargetModuleBase) SetBazelTargetModuleProperties(props bazel.BazelTargetModuleProperties) {
-	btmb.Properties = props
-}
-
-// RuleClass returns the rule class for this Bazel target
-func (b *BazelTargetModuleBase) RuleClass() string {
-	return b.bazelTargetModuleProperties().Rule_class
-}
-
-// BzlLoadLocation returns the rule class for this Bazel target
-func (b *BazelTargetModuleBase) BzlLoadLocation() string {
-	return b.bazelTargetModuleProperties().Bzl_load_location
 }
 
 // Qualified id for a module
@@ -618,12 +320,8 @@ type Dist struct {
 	// A suffix to add to the artifact file name (before any extension).
 	Suffix *string `android:"arch_variant"`
 
-	// A string tag to select the OutputFiles associated with the tag.
-	//
-	// If no tag is specified then it will select the default dist paths provided
-	// by the module type. If a tag of "" is specified then it will return the
-	// default output files provided by the modules, i.e. the result of calling
-	// OutputFiles("").
+	// A string tag to select the OutputFiles associated with the tag. Defaults to the
+	// the empty "" string.
 	Tag *string `android:"arch_variant"`
 }
 
@@ -695,7 +393,7 @@ type commonProperties struct {
 	// Override of module name when reporting licenses
 	Effective_package_name *string `blueprint:"mutated"`
 	// Notice files
-	Effective_license_text Paths `blueprint:"mutated"`
+	Effective_license_text []string `blueprint:"mutated"`
 	// License names
 	Effective_license_kinds []string `blueprint:"mutated"`
 	// License conditions
@@ -704,7 +402,7 @@ type commonProperties struct {
 	// control whether this module compiles for 32-bit, 64-bit, or both.  Possible values
 	// are "32" (compile for 32-bit only), "64" (compile for 64-bit only), "both" (compile for both
 	// architectures), or "first" (compile for 64-bit on a 64-bit platform, and 32-bit on a 32-bit
-	// platform).
+	// platform
 	Compile_multilib *string `android:"arch_variant"`
 
 	Target struct {
@@ -759,17 +457,11 @@ type commonProperties struct {
 	// Whether this module is installed to ramdisk
 	Ramdisk *bool
 
-	// Whether this module is installed to vendor ramdisk
-	Vendor_ramdisk *bool
-
-	// Whether this module is installed to debug ramdisk
-	Debug_ramdisk *bool
-
-	// Whether this module is built for non-native architectures (also known as native bridge binary)
+	// Whether this module is built for non-native architecures (also known as native bridge binary)
 	Native_bridge_supported *bool `android:"arch_variant"`
 
 	// init.rc files to be installed if this module is installed
-	Init_rc []string `android:"arch_variant,path"`
+	Init_rc []string `android:"path"`
 
 	// VINTF manifest fragments to be installed if this module is installed
 	Vintf_fragments []string `android:"path"`
@@ -836,20 +528,10 @@ type commonProperties struct {
 	// Set by osMutator.
 	CommonOSVariant bool `blueprint:"mutated"`
 
-	// When HideFromMake is set to true, no entry for this variant will be emitted in the
-	// generated Android.mk file.
-	HideFromMake bool `blueprint:"mutated"`
-
-	// When SkipInstall is set to true, calls to ctx.InstallFile, ctx.InstallExecutable,
-	// ctx.InstallSymlink and ctx.InstallAbsoluteSymlink act like calls to ctx.PackageFile
-	// and don't create a rule to install the file.
 	SkipInstall bool `blueprint:"mutated"`
 
 	// Whether the module has been replaced by a prebuilt
 	ReplacedByPrebuilt bool `blueprint:"mutated"`
-
-	// Disabled by mutators. If set to true, it overrides Enabled property.
-	ForcedDisabled bool `blueprint:"mutated"`
 
 	NamespaceExportedToMake bool `blueprint:"mutated"`
 
@@ -860,9 +542,7 @@ type commonProperties struct {
 	DebugMutators   []string `blueprint:"mutated"`
 	DebugVariations []string `blueprint:"mutated"`
 
-	// ImageVariation is set by ImageMutator to specify which image this variation is for,
-	// for example "" for core or "recovery" for recovery.  It will often be set to one of the
-	// constants in image.go, but can also be set to a custom value by individual module types.
+	// set by ImageMutator
 	ImageVariation string `blueprint:"mutated"`
 }
 
@@ -876,44 +556,8 @@ type distProperties struct {
 	Dists []Dist `android:"arch_variant"`
 }
 
-// The key to use in TaggedDistFiles when a Dist structure does not specify a
-// tag property. This intentionally does not use "" as the default because that
-// would mean that an empty tag would have a different meaning when used in a dist
-// structure that when used to reference a specific set of output paths using the
-// :module{tag} syntax, which passes tag to the OutputFiles(tag) method.
-const DefaultDistTag = "<default-dist-tag>"
-
 // A map of OutputFile tag keys to Paths, for disting purposes.
 type TaggedDistFiles map[string]Paths
-
-// addPathsForTag adds a mapping from the tag to the paths. If the map is nil
-// then it will create a map, update it and then return it. If a mapping already
-// exists for the tag then the paths are appended to the end of the current list
-// of paths, ignoring any duplicates.
-func (t TaggedDistFiles) addPathsForTag(tag string, paths ...Path) TaggedDistFiles {
-	if t == nil {
-		t = make(TaggedDistFiles)
-	}
-
-	for _, distFile := range paths {
-		if distFile != nil && !t[tag].containsPath(distFile) {
-			t[tag] = append(t[tag], distFile)
-		}
-	}
-
-	return t
-}
-
-// merge merges the entries from the other TaggedDistFiles object into this one.
-// If the TaggedDistFiles is nil then it will create a new instance, merge the
-// other into it, and then return it.
-func (t TaggedDistFiles) merge(other TaggedDistFiles) TaggedDistFiles {
-	for tag, paths := range other {
-		t = t.addPathsForTag(tag, paths...)
-	}
-
-	return t
-}
 
 func MakeDefaultDistFiles(paths ...Path) TaggedDistFiles {
 	for _, path := range paths {
@@ -923,7 +567,7 @@ func MakeDefaultDistFiles(paths ...Path) TaggedDistFiles {
 	}
 
 	// The default OutputFile tag is the empty "" string.
-	return TaggedDistFiles{DefaultDistTag: paths}
+	return TaggedDistFiles{"": paths}
 }
 
 type hostAndDeviceProperties struct {
@@ -947,32 +591,27 @@ const (
 type HostOrDeviceSupported int
 
 const (
-	hostSupported = 1 << iota
-	hostCrossSupported
-	deviceSupported
-	hostDefault
-	deviceDefault
+	_ HostOrDeviceSupported = iota
 
 	// Host and HostCross are built by default. Device is not supported.
-	HostSupported = hostSupported | hostCrossSupported | hostDefault
+	HostSupported
 
 	// Host is built by default. HostCross and Device are not supported.
-	HostSupportedNoCross = hostSupported | hostDefault
+	HostSupportedNoCross
 
 	// Device is built by default. Host and HostCross are not supported.
-	DeviceSupported = deviceSupported | deviceDefault
+	DeviceSupported
 
 	// Device is built by default. Host and HostCross are supported.
-	HostAndDeviceSupported = hostSupported | hostCrossSupported | deviceSupported | deviceDefault
+	HostAndDeviceSupported
 
 	// Host, HostCross, and Device are built by default.
-	HostAndDeviceDefault = hostSupported | hostCrossSupported | hostDefault |
-		deviceSupported | deviceDefault
+	HostAndDeviceDefault
 
 	// Nothing is supported. This is not exposed to the user, but used to mark a
 	// host only module as unsupported when the module type is not supported on
 	// the host OS. E.g. benchmarks are supported on Linux but not Darwin.
-	NeitherHostNorDeviceSupported = 0
+	NeitherHostNorDeviceSupported
 )
 
 type moduleKind int
@@ -1006,8 +645,6 @@ func initAndroidModuleBase(m Module) {
 	m.base().module = m
 }
 
-// InitAndroidModule initializes the Module as an Android module that is not architecture-specific.
-// It adds the common properties, for example "name" and "enabled".
 func InitAndroidModule(m Module) {
 	initAndroidModuleBase(m)
 	base := m.base()
@@ -1031,12 +668,6 @@ func InitAndroidModule(m Module) {
 	setPrimaryLicensesProperty(m, "licenses", &base.commonProperties.Licenses)
 }
 
-// InitAndroidArchModule initializes the Module as an Android module that is architecture-specific.
-// It adds the common properties, for example "name" and "enabled", as well as runtime generated
-// property structs for architecture-specific versions of generic properties tagged with
-// `android:"arch_variant"`.
-//
-//  InitAndroidModule should not be called if InitAndroidArchModule was called.
 func InitAndroidArchModule(m Module, hod HostOrDeviceSupported, defaultMultilib Multilib) {
 	InitAndroidModule(m)
 
@@ -1046,37 +677,21 @@ func InitAndroidArchModule(m Module, hod HostOrDeviceSupported, defaultMultilib 
 	base.commonProperties.ArchSpecific = true
 	base.commonProperties.UseTargetVariants = true
 
-	if hod&hostSupported != 0 && hod&deviceSupported != 0 {
+	switch hod {
+	case HostAndDeviceSupported, HostAndDeviceDefault:
 		m.AddProperties(&base.hostAndDeviceProperties)
 	}
 
-	initArchModule(m)
+	InitArchModule(m)
 }
 
-// InitAndroidMultiTargetsArchModule initializes the Module as an Android module that is
-// architecture-specific, but will only have a single variant per OS that handles all the
-// architectures simultaneously.  The list of Targets that it must handle will be available from
-// ModuleContext.MultiTargets. It adds the common properties, for example "name" and "enabled", as
-// well as runtime generated property structs for architecture-specific versions of generic
-// properties tagged with `android:"arch_variant"`.
-//
-// InitAndroidModule or InitAndroidArchModule should not be called if
-// InitAndroidMultiTargetsArchModule was called.
 func InitAndroidMultiTargetsArchModule(m Module, hod HostOrDeviceSupported, defaultMultilib Multilib) {
 	InitAndroidArchModule(m, hod, defaultMultilib)
 	m.base().commonProperties.UseTargetVariants = false
 }
 
-// InitCommonOSAndroidMultiTargetsArchModule initializes the Module as an Android module that is
-// architecture-specific, but will only have a single variant per OS that handles all the
-// architectures simultaneously, and will also have an additional CommonOS variant that has
-// dependencies on all the OS-specific variants.  The list of Targets that it must handle will be
-// available from ModuleContext.MultiTargets.  It adds the common properties, for example "name" and
-// "enabled", as well as runtime generated property structs for architecture-specific versions of
-// generic properties tagged with `android:"arch_variant"`.
-//
-// InitAndroidModule, InitAndroidArchModule or InitAndroidMultiTargetsArchModule should not be
-// called if InitCommonOSAndroidMultiTargetsArchModule was called.
+// As InitAndroidMultiTargetsArchModule except it creates an additional CommonOS variant that
+// has dependencies on all the OsType specific variants.
 func InitCommonOSAndroidMultiTargetsArchModule(m Module, hod HostOrDeviceSupported, defaultMultilib Multilib) {
 	InitAndroidArchModule(m, hod, defaultMultilib)
 	m.base().commonProperties.UseTargetVariants = false
@@ -1136,18 +751,8 @@ type ModuleBase struct {
 	variableProperties      interface{}
 	hostAndDeviceProperties hostAndDeviceProperties
 	generalProperties       []interface{}
-
-	// Arch specific versions of structs in generalProperties. The outer index
-	// has the same order as generalProperties as initialized in
-	// InitAndroidArchModule, and the inner index chooses the props specific to
-	// the architecture. The interface{} value is an archPropRoot that is
-	// filled with arch specific values by the arch mutator.
-	archProperties [][]interface{}
-
-	customizableProperties []interface{}
-
-	// Properties specific to the Blueprint to BUILD migration.
-	bazelTargetModuleProperties bazel.BazelTargetModuleProperties
+	archProperties          [][]interface{}
+	customizableProperties  []interface{}
 
 	// Information about all the properties on the module that contains visibility rules that need
 	// checking.
@@ -1159,17 +764,11 @@ type ModuleBase struct {
 	// The primary licenses property, may be nil, records license metadata for the module.
 	primaryLicensesProperty applicableLicensesProperty
 
-	noAddressSanitizer   bool
-	installFiles         InstallPaths
-	installFilesDepSet   *installPathsDepSet
-	checkbuildFiles      Paths
-	packagingSpecs       []PackagingSpec
-	packagingSpecsDepSet *packagingSpecsDepSet
-	noticeFiles          Paths
-	phonies              map[string]Paths
-
-	// The files to copy to the dist as explicitly specified in the .bp file.
-	distFiles TaggedDistFiles
+	noAddressSanitizer bool
+	installFiles       Paths
+	checkbuildFiles    Paths
+	noticeFile         OptionalPath
+	phonies            map[string]Paths
 
 	// Used by buildTargetSingleton to create checkbuild and per-directory build targets
 	// Only set on the final variant of each module
@@ -1188,9 +787,9 @@ type ModuleBase struct {
 
 	initRcPaths         Paths
 	vintfFragmentsPaths Paths
-}
 
-func (m *ModuleBase) ComponentDepsMutator(BottomUpMutatorContext) {}
+	prefer32 func(ctx BaseModuleContext, base *ModuleBase, class OsClass) bool
+}
 
 func (m *ModuleBase) DepsMutator(BottomUpMutatorContext) {}
 
@@ -1212,6 +811,10 @@ func (m *ModuleBase) RuleParamsForTests() map[blueprint.Rule]blueprint.RuleParam
 
 func (m *ModuleBase) VariablesForTests() map[string]string {
 	return m.variables
+}
+
+func (m *ModuleBase) Prefer32(prefer32 func(ctx BaseModuleContext, base *ModuleBase, class OsClass) bool) {
+	m.prefer32 = prefer32
 }
 
 // Name returns the name of the module.  It may be overridden by individual module types, for
@@ -1266,30 +869,23 @@ func (m *ModuleBase) Dists() []Dist {
 }
 
 func (m *ModuleBase) GenerateTaggedDistFiles(ctx BaseModuleContext) TaggedDistFiles {
-	var distFiles TaggedDistFiles
+	distFiles := make(TaggedDistFiles)
 	for _, dist := range m.Dists() {
-		// If no tag is specified then it means to use the default dist paths so use
-		// the special tag name which represents that.
-		tag := proptools.StringDefault(dist.Tag, DefaultDistTag)
-
-		if outputFileProducer, ok := m.module.(OutputFileProducer); ok {
-			// Call the OutputFiles(tag) method to get the paths associated with the tag.
-			distFilesForTag, err := outputFileProducer.OutputFiles(tag)
-
-			// If the tag was not supported and is not DefaultDistTag then it is an error.
-			// Failing to find paths for DefaultDistTag is not an error. It just means
-			// that the module type requires the legacy behavior.
-			if err != nil && tag != DefaultDistTag {
-				ctx.PropertyErrorf("dist.tag", "%s", err.Error())
+		var tag string
+		var distFilesForTag Paths
+		if dist.Tag == nil {
+			tag = ""
+		} else {
+			tag = *dist.Tag
+		}
+		distFilesForTag, err := m.base().module.(OutputFileProducer).OutputFiles(tag)
+		if err != nil {
+			ctx.PropertyErrorf("dist.tag", "%s", err.Error())
+		}
+		for _, distFile := range distFilesForTag {
+			if distFile != nil && !distFiles[tag].containsPath(distFile) {
+				distFiles[tag] = append(distFiles[tag], distFile)
 			}
-
-			distFiles = distFiles.addPathsForTag(tag, distFilesForTag...)
-		} else if tag != DefaultDistTag {
-			// If the tag was specified then it is an error if the module does not
-			// implement OutputFileProducer because there is no other way of accessing
-			// the paths for the specified tag.
-			ctx.PropertyErrorf("dist.tag",
-				"tag %s not supported because the module does not implement OutputFileProducer", tag)
 		}
 	}
 
@@ -1313,7 +909,7 @@ func (m *ModuleBase) Os() OsType {
 }
 
 func (m *ModuleBase) Host() bool {
-	return m.Os().Class == Host
+	return m.Os().Class == Host || m.Os().Class == HostCross
 }
 
 func (m *ModuleBase) Device() bool {
@@ -1333,54 +929,43 @@ func (m *ModuleBase) IsCommonOSVariant() bool {
 	return m.commonProperties.CommonOSVariant
 }
 
-// supportsTarget returns true if the given Target is supported by the current module.
-func (m *ModuleBase) supportsTarget(target Target) bool {
-	switch target.Os.Class {
-	case Host:
-		if target.HostCross {
-			return m.HostCrossSupported()
-		} else {
-			return m.HostSupported()
+func (m *ModuleBase) OsClassSupported() []OsClass {
+	switch m.commonProperties.HostOrDeviceSupported {
+	case HostSupported:
+		return []OsClass{Host, HostCross}
+	case HostSupportedNoCross:
+		return []OsClass{Host}
+	case DeviceSupported:
+		return []OsClass{Device}
+	case HostAndDeviceSupported, HostAndDeviceDefault:
+		var supported []OsClass
+		if Bool(m.hostAndDeviceProperties.Host_supported) ||
+			(m.commonProperties.HostOrDeviceSupported == HostAndDeviceDefault &&
+				m.hostAndDeviceProperties.Host_supported == nil) {
+			supported = append(supported, Host, HostCross)
 		}
-	case Device:
-		return m.DeviceSupported()
+		if m.hostAndDeviceProperties.Device_supported == nil ||
+			*m.hostAndDeviceProperties.Device_supported {
+			supported = append(supported, Device)
+		}
+		return supported
 	default:
-		return false
+		return nil
 	}
 }
 
-// DeviceSupported returns true if the current module is supported and enabled for device targets,
-// i.e. the factory method set the HostOrDeviceSupported value to include device support and
-// the device support is enabled by default or enabled by the device_supported property.
 func (m *ModuleBase) DeviceSupported() bool {
-	hod := m.commonProperties.HostOrDeviceSupported
-	// deviceEnabled is true if the device_supported property is true or the HostOrDeviceSupported
-	// value has the deviceDefault bit set.
-	deviceEnabled := proptools.BoolDefault(m.hostAndDeviceProperties.Device_supported, hod&deviceDefault != 0)
-	return hod&deviceSupported != 0 && deviceEnabled
+	return m.commonProperties.HostOrDeviceSupported == DeviceSupported ||
+		m.commonProperties.HostOrDeviceSupported == HostAndDeviceSupported &&
+			(m.hostAndDeviceProperties.Device_supported == nil ||
+				*m.hostAndDeviceProperties.Device_supported)
 }
 
-// HostSupported returns true if the current module is supported and enabled for host targets,
-// i.e. the factory method set the HostOrDeviceSupported value to include host support and
-// the host support is enabled by default or enabled by the host_supported property.
 func (m *ModuleBase) HostSupported() bool {
-	hod := m.commonProperties.HostOrDeviceSupported
-	// hostEnabled is true if the host_supported property is true or the HostOrDeviceSupported
-	// value has the hostDefault bit set.
-	hostEnabled := proptools.BoolDefault(m.hostAndDeviceProperties.Host_supported, hod&hostDefault != 0)
-	return hod&hostSupported != 0 && hostEnabled
-}
-
-// HostCrossSupported returns true if the current module is supported and enabled for host cross
-// targets, i.e. the factory method set the HostOrDeviceSupported value to include host cross
-// support and the host cross support is enabled by default or enabled by the
-// host_supported property.
-func (m *ModuleBase) HostCrossSupported() bool {
-	hod := m.commonProperties.HostOrDeviceSupported
-	// hostEnabled is true if the host_supported property is true or the HostOrDeviceSupported
-	// value has the hostDefault bit set.
-	hostEnabled := proptools.BoolDefault(m.hostAndDeviceProperties.Host_supported, hod&hostDefault != 0)
-	return hod&hostCrossSupported != 0 && hostEnabled
+	return m.commonProperties.HostOrDeviceSupported == HostSupported ||
+		m.commonProperties.HostOrDeviceSupported == HostAndDeviceSupported &&
+			(m.hostAndDeviceProperties.Host_supported != nil &&
+				*m.hostAndDeviceProperties.Host_supported)
 }
 
 func (m *ModuleBase) Platform() bool {
@@ -1445,9 +1030,6 @@ func (m *ModuleBase) PartitionTag(config DeviceConfig) string {
 }
 
 func (m *ModuleBase) Enabled() bool {
-	if m.commonProperties.ForcedDisabled {
-		return false
-	}
 	if m.commonProperties.Enabled == nil {
 		return !m.Os().DefaultDisabled
 	}
@@ -1455,42 +1037,20 @@ func (m *ModuleBase) Enabled() bool {
 }
 
 func (m *ModuleBase) Disable() {
-	m.commonProperties.ForcedDisabled = true
+	m.commonProperties.Enabled = proptools.BoolPtr(false)
 }
 
-// HideFromMake marks this variant so that it is not emitted in the generated Android.mk file.
-func (m *ModuleBase) HideFromMake() {
-	m.commonProperties.HideFromMake = true
-}
-
-// IsHideFromMake returns true if HideFromMake was previously called.
-func (m *ModuleBase) IsHideFromMake() bool {
-	return m.commonProperties.HideFromMake == true
-}
-
-// SkipInstall marks this variant to not create install rules when ctx.Install* are called.
 func (m *ModuleBase) SkipInstall() {
 	m.commonProperties.SkipInstall = true
 }
 
-// IsSkipInstall returns true if this variant is marked to not create install
-// rules when ctx.Install* are called.
 func (m *ModuleBase) IsSkipInstall() bool {
-	return m.commonProperties.SkipInstall
-}
-
-// Similar to HideFromMake, but if the AndroidMk entry would set
-// LOCAL_UNINSTALLABLE_MODULE then this variant may still output that entry
-// rather than leaving it out altogether. That happens in cases where it would
-// have other side effects, in particular when it adds a NOTICE file target,
-// which other install targets might depend on.
-func (m *ModuleBase) MakeUninstallable() {
-	m.HideFromMake()
+	return m.commonProperties.SkipInstall == true
 }
 
 func (m *ModuleBase) ReplacedByPrebuilt() {
 	m.commonProperties.ReplacedByPrebuilt = true
-	m.HideFromMake()
+	m.SkipInstall()
 }
 
 func (m *ModuleBase) IsReplacedByPrebuilt() bool {
@@ -1501,31 +1061,23 @@ func (m *ModuleBase) ExportedToMake() bool {
 	return m.commonProperties.NamespaceExportedToMake
 }
 
-// computeInstallDeps finds the installed paths of all dependencies that have a dependency
-// tag that is annotated as needing installation via the IsInstallDepNeeded method.
-func (m *ModuleBase) computeInstallDeps(ctx ModuleContext) ([]*installPathsDepSet, []*packagingSpecsDepSet) {
-	var installDeps []*installPathsDepSet
-	var packagingSpecs []*packagingSpecsDepSet
-	ctx.VisitDirectDeps(func(dep Module) {
-		if IsInstallDepNeeded(ctx.OtherModuleDependencyTag(dep)) && !dep.IsHideFromMake() {
-			installDeps = append(installDeps, dep.base().installFilesDepSet)
-			packagingSpecs = append(packagingSpecs, dep.base().packagingSpecsDepSet)
-		}
-	})
+func (m *ModuleBase) computeInstallDeps(
+	ctx blueprint.ModuleContext) Paths {
 
-	return installDeps, packagingSpecs
+	result := Paths{}
+	// TODO(ccross): we need to use WalkDeps and have some way to know which dependencies require installation
+	ctx.VisitDepsDepthFirstIf(isFileInstaller,
+		func(m blueprint.Module) {
+			fileInstaller := m.(fileInstaller)
+			files := fileInstaller.filesToInstall()
+			result = append(result, files...)
+		})
+
+	return result
 }
 
-func (m *ModuleBase) FilesToInstall() InstallPaths {
+func (m *ModuleBase) filesToInstall() Paths {
 	return m.installFiles
-}
-
-func (m *ModuleBase) PackagingSpecs() []PackagingSpec {
-	return m.packagingSpecs
-}
-
-func (m *ModuleBase) TransitivePackagingSpecs() []PackagingSpec {
-	return m.packagingSpecsDepSet.ToList()
 }
 
 func (m *ModuleBase) NoAddressSanitizer() bool {
@@ -1548,14 +1100,6 @@ func (m *ModuleBase) InstallInRamdisk() bool {
 	return Bool(m.commonProperties.Ramdisk)
 }
 
-func (m *ModuleBase) InstallInVendorRamdisk() bool {
-	return Bool(m.commonProperties.Vendor_ramdisk)
-}
-
-func (m *ModuleBase) InstallInDebugRamdisk() bool {
-	return Bool(m.commonProperties.Debug_ramdisk)
-}
-
 func (m *ModuleBase) InstallInRecovery() bool {
 	return Bool(m.commonProperties.Recovery)
 }
@@ -1568,16 +1112,12 @@ func (m *ModuleBase) InstallBypassMake() bool {
 	return false
 }
 
-func (m *ModuleBase) InstallForceOS() (*OsType, *ArchType) {
-	return nil, nil
-}
-
 func (m *ModuleBase) Owner() string {
 	return String(m.commonProperties.Owner)
 }
 
-func (m *ModuleBase) NoticeFiles() Paths {
-	return m.noticeFiles
+func (m *ModuleBase) NoticeFile() OptionalPath {
+	return m.noticeFile
 }
 
 func (m *ModuleBase) setImageVariation(variant string) {
@@ -1605,14 +1145,6 @@ func (m *ModuleBase) InRamdisk() bool {
 	return m.base().commonProperties.ImageVariation == RamdiskVariation
 }
 
-func (m *ModuleBase) InVendorRamdisk() bool {
-	return m.base().commonProperties.ImageVariation == VendorRamdiskVariation
-}
-
-func (m *ModuleBase) InDebugRamdisk() bool {
-	return m.base().commonProperties.ImageVariation == DebugRamdiskVariation
-}
-
 func (m *ModuleBase) InRecovery() bool {
 	return m.base().commonProperties.ImageVariation == RecoveryVariation
 }
@@ -1638,8 +1170,8 @@ func (m *ModuleBase) VintfFragments() Paths {
 }
 
 func (m *ModuleBase) generateModuleTarget(ctx ModuleContext) {
-	var allInstalledFiles InstallPaths
-	var allCheckbuildFiles Paths
+	allInstalledFiles := Paths{}
+	allCheckbuildFiles := Paths{}
 	ctx.VisitAllModuleVariants(func(module Module) {
 		a := module.base()
 		allInstalledFiles = append(allInstalledFiles, a.installFiles...)
@@ -1655,7 +1187,7 @@ func (m *ModuleBase) generateModuleTarget(ctx ModuleContext) {
 
 	if len(allInstalledFiles) > 0 {
 		name := namespacePrefix + ctx.ModuleName() + "-install"
-		ctx.Phony(name, allInstalledFiles.Paths()...)
+		ctx.Phony(name, allInstalledFiles...)
 		m.installTarget = PathForPhony(ctx, name)
 		deps = append(deps, m.installTarget)
 	}
@@ -1669,7 +1201,7 @@ func (m *ModuleBase) generateModuleTarget(ctx ModuleContext) {
 
 	if len(deps) > 0 {
 		suffix := ""
-		if ctx.Config().KatiEnabled() {
+		if ctx.Config().EmbeddedInMake() {
 			suffix = "-soong"
 		}
 
@@ -1762,14 +1294,10 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 		module:            m.module,
 		bp:                blueprintCtx,
 		baseModuleContext: m.baseModuleContextFactory(blueprintCtx),
+		installDeps:       m.computeInstallDeps(blueprintCtx),
+		installFiles:      m.installFiles,
 		variables:         make(map[string]string),
 	}
-
-	dependencyInstallFiles, dependencyPackagingSpecs := m.computeInstallDeps(ctx)
-	// set m.installFilesDepSet to only the transitive dependencies to be used as the dependencies
-	// of installed files of this module.  It will be replaced by a depset including the installed
-	// files of this module at the end for use by modules that depend on this one.
-	m.installFilesDepSet = newInstallPathsDepSet(nil, dependencyInstallFiles)
 
 	// Temporarily continue to call blueprintCtx.GetMissingDependencies() to maintain the previous behavior of never
 	// reporting missing dependency errors in Blueprint when AllowMissingDependencies == true.
@@ -1795,8 +1323,8 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 	if !ctx.PrimaryArch() {
 		suffix = append(suffix, ctx.Arch().ArchType.String())
 	}
-	if apexInfo := ctx.Provider(ApexInfoProvider).(ApexInfo); !apexInfo.IsForPlatform() {
-		suffix = append(suffix, apexInfo.ApexVariationName)
+	if apex, ok := m.module.(ApexModule); ok && !apex.IsForPlatform() {
+		suffix = append(suffix, apex.ApexName())
 	}
 
 	ctx.Variable(pctx, "moduleDesc", desc)
@@ -1808,38 +1336,38 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 	ctx.Variable(pctx, "moduleDescSuffix", s)
 
 	// Some common property checks for properties that will be used later in androidmk.go
-	checkDistProperties(ctx, "dist", &m.distProperties.Dist)
-	for i, _ := range m.distProperties.Dists {
-		checkDistProperties(ctx, fmt.Sprintf("dists[%d]", i), &m.distProperties.Dists[i])
+	if m.distProperties.Dist.Dest != nil {
+		_, err := validateSafePath(*m.distProperties.Dist.Dest)
+		if err != nil {
+			ctx.PropertyErrorf("dist.dest", "%s", err.Error())
+		}
+	}
+	if m.distProperties.Dist.Dir != nil {
+		_, err := validateSafePath(*m.distProperties.Dist.Dir)
+		if err != nil {
+			ctx.PropertyErrorf("dist.dir", "%s", err.Error())
+		}
+	}
+	if m.distProperties.Dist.Suffix != nil {
+		if strings.Contains(*m.distProperties.Dist.Suffix, "/") {
+			ctx.PropertyErrorf("dist.suffix", "Suffix may not contain a '/' character.")
+		}
 	}
 
 	if m.Enabled() {
 		// ensure all direct android.Module deps are enabled
 		ctx.VisitDirectDepsBlueprint(func(bm blueprint.Module) {
-			if m, ok := bm.(Module); ok {
-				ctx.validateAndroidModule(bm, ctx.OtherModuleDependencyTag(m), ctx.baseModuleContext.strictVisitDeps)
+			if _, ok := bm.(Module); ok {
+				ctx.validateAndroidModule(bm, ctx.baseModuleContext.strictVisitDeps)
 			}
 		})
 
-		m.noticeFiles = make([]Path, 0)
-		optPath := OptionalPath{}
-		notice := proptools.StringDefault(m.commonProperties.Notice, "")
+		notice := proptools.StringDefault(m.commonProperties.Notice, "NOTICE")
 		if module := SrcIsModule(notice); module != "" {
-			optPath = ctx.ExpandOptionalSource(&notice, "notice")
+			m.noticeFile = ctx.ExpandOptionalSource(&notice, "notice")
 		} else if notice != "" {
 			noticePath := filepath.Join(ctx.ModuleDir(), notice)
-			optPath = ExistentPathForSource(ctx, noticePath)
-		}
-		if optPath.Valid() {
-			m.noticeFiles = append(m.noticeFiles, optPath.Path())
-		} else {
-			for _, notice = range []string{"LICENSE", "LICENCE", "NOTICE"} {
-				noticePath := filepath.Join(ctx.ModuleDir(), notice)
-				optPath = ExistentPathForSource(ctx, noticePath)
-				if optPath.Valid() {
-					m.noticeFiles = append(m.noticeFiles, optPath.Path())
-				}
-			}
+			m.noticeFile = ExistentPathForSource(ctx, noticePath)
 		}
 
 		licensesPropertyFlattener(ctx)
@@ -1852,30 +1380,10 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 			return
 		}
 
-		m.initRcPaths = PathsForModuleSrc(ctx, m.commonProperties.Init_rc)
-		rcDir := PathForModuleInstall(ctx, "etc", "init")
-		for _, src := range m.initRcPaths {
-			ctx.PackageFile(rcDir, filepath.Base(src.String()), src)
-		}
-
-		m.vintfFragmentsPaths = PathsForModuleSrc(ctx, m.commonProperties.Vintf_fragments)
-		vintfDir := PathForModuleInstall(ctx, "etc", "vintf", "manifest")
-		for _, src := range m.vintfFragmentsPaths {
-			ctx.PackageFile(vintfDir, filepath.Base(src.String()), src)
-		}
-
-		// Create the set of tagged dist files after calling GenerateAndroidBuildActions
-		// as GenerateTaggedDistFiles() calls OutputFiles(tag) and so relies on the
-		// output paths being set which must be done before or during
-		// GenerateAndroidBuildActions.
-		m.distFiles = m.GenerateTaggedDistFiles(ctx)
-		if ctx.Failed() {
-			return
-		}
-
 		m.installFiles = append(m.installFiles, ctx.installFiles...)
 		m.checkbuildFiles = append(m.checkbuildFiles, ctx.checkbuildFiles...)
-		m.packagingSpecs = append(m.packagingSpecs, ctx.packagingSpecs...)
+		m.initRcPaths = PathsForModuleSrc(ctx, m.commonProperties.Init_rc)
+		m.vintfFragmentsPaths = PathsForModuleSrc(ctx, m.commonProperties.Vintf_fragments)
 		for k, v := range ctx.phonies {
 			m.phonies[k] = append(m.phonies[k], v...)
 		}
@@ -1894,38 +1402,9 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 		}
 	}
 
-	m.installFilesDepSet = newInstallPathsDepSet(m.installFiles, dependencyInstallFiles)
-	m.packagingSpecsDepSet = newPackagingSpecsDepSet(m.packagingSpecs, dependencyPackagingSpecs)
-
 	m.buildParams = ctx.buildParams
 	m.ruleParams = ctx.ruleParams
 	m.variables = ctx.variables
-}
-
-// Check the supplied dist structure to make sure that it is valid.
-//
-// property - the base property, e.g. dist or dists[1], which is combined with the
-// name of the nested property to produce the full property, e.g. dist.dest or
-// dists[1].dir.
-func checkDistProperties(ctx *moduleContext, property string, dist *Dist) {
-	if dist.Dest != nil {
-		_, err := validateSafePath(*dist.Dest)
-		if err != nil {
-			ctx.PropertyErrorf(property+".dest", "%s", err.Error())
-		}
-	}
-	if dist.Dir != nil {
-		_, err := validateSafePath(*dist.Dir)
-		if err != nil {
-			ctx.PropertyErrorf(property+".dir", "%s", err.Error())
-		}
-	}
-	if dist.Suffix != nil {
-		if strings.Contains(*dist.Suffix, "/") {
-			ctx.PropertyErrorf(property+".suffix", "Suffix may not contain a '/' character.")
-		}
-	}
-
 }
 
 type earlyModuleContext struct {
@@ -1936,11 +1415,19 @@ type earlyModuleContext struct {
 }
 
 func (e *earlyModuleContext) Glob(globPattern string, excludes []string) Paths {
-	return Glob(e, globPattern, excludes)
+	ret, err := e.GlobWithDeps(globPattern, excludes)
+	if err != nil {
+		e.ModuleErrorf("glob: %s", err.Error())
+	}
+	return pathsForModuleSrcFromFullPath(e, ret, true)
 }
 
 func (e *earlyModuleContext) GlobFiles(globPattern string, excludes []string) Paths {
-	return GlobFiles(e, globPattern, excludes)
+	ret, err := e.GlobWithDeps(globPattern, excludes)
+	if err != nil {
+		e.ModuleErrorf("glob: %s", err.Error())
+	}
+	return pathsForModuleSrcFromFullPath(e, ret, false)
 }
 
 func (b *earlyModuleContext) IsSymlink(path Path) bool {
@@ -2026,47 +1513,19 @@ func (b *baseModuleContext) OtherModuleDependencyTag(m blueprint.Module) bluepri
 	return b.bp.OtherModuleDependencyTag(m)
 }
 func (b *baseModuleContext) OtherModuleExists(name string) bool { return b.bp.OtherModuleExists(name) }
-func (b *baseModuleContext) OtherModuleDependencyVariantExists(variations []blueprint.Variation, name string) bool {
-	return b.bp.OtherModuleDependencyVariantExists(variations, name)
-}
-func (b *baseModuleContext) OtherModuleFarDependencyVariantExists(variations []blueprint.Variation, name string) bool {
-	return b.bp.OtherModuleFarDependencyVariantExists(variations, name)
-}
-func (b *baseModuleContext) OtherModuleReverseDependencyVariantExists(name string) bool {
-	return b.bp.OtherModuleReverseDependencyVariantExists(name)
-}
 func (b *baseModuleContext) OtherModuleType(m blueprint.Module) string {
 	return b.bp.OtherModuleType(m)
-}
-func (b *baseModuleContext) OtherModuleProvider(m blueprint.Module, provider blueprint.ProviderKey) interface{} {
-	return b.bp.OtherModuleProvider(m, provider)
-}
-func (b *baseModuleContext) OtherModuleHasProvider(m blueprint.Module, provider blueprint.ProviderKey) bool {
-	return b.bp.OtherModuleHasProvider(m, provider)
-}
-func (b *baseModuleContext) Provider(provider blueprint.ProviderKey) interface{} {
-	return b.bp.Provider(provider)
-}
-func (b *baseModuleContext) HasProvider(provider blueprint.ProviderKey) bool {
-	return b.bp.HasProvider(provider)
-}
-func (b *baseModuleContext) SetProvider(provider blueprint.ProviderKey, value interface{}) {
-	b.bp.SetProvider(provider, value)
 }
 
 func (b *baseModuleContext) GetDirectDepWithTag(name string, tag blueprint.DependencyTag) blueprint.Module {
 	return b.bp.GetDirectDepWithTag(name, tag)
 }
 
-func (b *baseModuleContext) blueprintBaseModuleContext() blueprint.BaseModuleContext {
-	return b.bp
-}
-
 type moduleContext struct {
 	bp blueprint.ModuleContext
 	baseModuleContext
-	packagingSpecs  []PackagingSpec
-	installFiles    InstallPaths
+	installDeps     Paths
+	installFiles    Paths
 	checkbuildFiles Paths
 	module          Module
 	phonies         map[string]Paths
@@ -2095,27 +1554,6 @@ func (m *moduleContext) ModuleBuild(pctx PackageContext, params ModuleBuildParam
 	m.Build(pctx, BuildParams(params))
 }
 
-func validateBuildParams(params blueprint.BuildParams) error {
-	// Validate that the symlink outputs are declared outputs or implicit outputs
-	allOutputs := map[string]bool{}
-	for _, output := range params.Outputs {
-		allOutputs[output] = true
-	}
-	for _, output := range params.ImplicitOutputs {
-		allOutputs[output] = true
-	}
-	for _, symlinkOutput := range params.SymlinkOutputs {
-		if !allOutputs[symlinkOutput] {
-			return fmt.Errorf(
-				"Symlink output %s is not a declared output or implicit output",
-				symlinkOutput)
-		}
-	}
-	return nil
-}
-
-// Convert build parameters from their concrete Android types into their string representations,
-// and combine the singular and plural fields of the same type (e.g. Output and Outputs).
 func convertBuildParams(params BuildParams) blueprint.BuildParams {
 	bparams := blueprint.BuildParams{
 		Rule:            params.Rule,
@@ -2123,11 +1561,9 @@ func convertBuildParams(params BuildParams) blueprint.BuildParams {
 		Deps:            params.Deps,
 		Outputs:         params.Outputs.Strings(),
 		ImplicitOutputs: params.ImplicitOutputs.Strings(),
-		SymlinkOutputs:  params.SymlinkOutputs.Strings(),
 		Inputs:          params.Inputs.Strings(),
 		Implicits:       params.Implicits.Strings(),
 		OrderOnly:       params.OrderOnly.Strings(),
-		Validations:     params.Validations.Strings(),
 		Args:            params.Args,
 		Optional:        !params.Default,
 	}
@@ -2138,9 +1574,6 @@ func convertBuildParams(params BuildParams) blueprint.BuildParams {
 	if params.Output != nil {
 		bparams.Outputs = append(bparams.Outputs, params.Output.String())
 	}
-	if params.SymlinkOutput != nil {
-		bparams.SymlinkOutputs = append(bparams.SymlinkOutputs, params.SymlinkOutput.String())
-	}
 	if params.ImplicitOutput != nil {
 		bparams.ImplicitOutputs = append(bparams.ImplicitOutputs, params.ImplicitOutput.String())
 	}
@@ -2150,18 +1583,13 @@ func convertBuildParams(params BuildParams) blueprint.BuildParams {
 	if params.Implicit != nil {
 		bparams.Implicits = append(bparams.Implicits, params.Implicit.String())
 	}
-	if params.Validation != nil {
-		bparams.Validations = append(bparams.Validations, params.Validation.String())
-	}
 
 	bparams.Outputs = proptools.NinjaEscapeList(bparams.Outputs)
 	bparams.ImplicitOutputs = proptools.NinjaEscapeList(bparams.ImplicitOutputs)
-	bparams.SymlinkOutputs = proptools.NinjaEscapeList(bparams.SymlinkOutputs)
 	bparams.Inputs = proptools.NinjaEscapeList(bparams.Inputs)
 	bparams.Implicits = proptools.NinjaEscapeList(bparams.Implicits)
 	bparams.OrderOnly = proptools.NinjaEscapeList(bparams.OrderOnly)
-	bparams.Validations = proptools.NinjaEscapeList(bparams.Validations)
-	bparams.Depfile = proptools.NinjaEscape(bparams.Depfile)
+	bparams.Depfile = proptools.NinjaEscapeList([]string{bparams.Depfile})[0]
 
 	return bparams
 }
@@ -2213,15 +1641,7 @@ func (m *moduleContext) Build(pctx PackageContext, params BuildParams) {
 		m.buildParams = append(m.buildParams, params)
 	}
 
-	bparams := convertBuildParams(params)
-	err := validateBuildParams(bparams)
-	if err != nil {
-		m.ModuleErrorf(
-			"%s: build parameter validation failed: %s",
-			m.ModuleName(),
-			err.Error())
-	}
-	m.bp.Build(pctx.PackageContext, bparams)
+	m.bp.Build(pctx.PackageContext, convertBuildParams(params))
 }
 
 func (m *moduleContext) Phony(name string, deps ...Path) {
@@ -2244,12 +1664,7 @@ func (b *baseModuleContext) AddMissingDependencies(deps []string) {
 	}
 }
 
-type AllowDisabledModuleDependency interface {
-	blueprint.DependencyTag
-	AllowDisabledModuleDependency(target Module) bool
-}
-
-func (b *baseModuleContext) validateAndroidModule(module blueprint.Module, tag blueprint.DependencyTag, strict bool) Module {
+func (b *baseModuleContext) validateAndroidModule(module blueprint.Module, strict bool) Module {
 	aModule, _ := module.(Module)
 
 	if !strict {
@@ -2262,67 +1677,33 @@ func (b *baseModuleContext) validateAndroidModule(module blueprint.Module, tag b
 	}
 
 	if !aModule.Enabled() {
-		if t, ok := tag.(AllowDisabledModuleDependency); !ok || !t.AllowDisabledModuleDependency(aModule) {
-			if b.Config().AllowMissingDependencies() {
-				b.AddMissingDependencies([]string{b.OtherModuleName(aModule)})
-			} else {
-				b.ModuleErrorf("depends on disabled module %q", b.OtherModuleName(aModule))
-			}
+		if b.Config().AllowMissingDependencies() {
+			b.AddMissingDependencies([]string{b.OtherModuleName(aModule)})
+		} else {
+			b.ModuleErrorf("depends on disabled module %q", b.OtherModuleName(aModule))
 		}
 		return nil
 	}
 	return aModule
 }
 
-type dep struct {
-	mod blueprint.Module
-	tag blueprint.DependencyTag
-}
-
-func (b *baseModuleContext) getDirectDepsInternal(name string, tag blueprint.DependencyTag) []dep {
+func (b *baseModuleContext) getDirectDepInternal(name string, tag blueprint.DependencyTag) (blueprint.Module, blueprint.DependencyTag) {
+	type dep struct {
+		mod blueprint.Module
+		tag blueprint.DependencyTag
+	}
 	var deps []dep
 	b.VisitDirectDepsBlueprint(func(module blueprint.Module) {
-		if aModule, _ := module.(Module); aModule != nil {
-			if aModule.base().BaseModuleName() == name {
-				returnedTag := b.bp.OtherModuleDependencyTag(aModule)
-				if tag == nil || returnedTag == tag {
-					deps = append(deps, dep{aModule, returnedTag})
-				}
-			}
-		} else if b.bp.OtherModuleName(module) == name {
-			returnedTag := b.bp.OtherModuleDependencyTag(module)
+		if aModule, _ := module.(Module); aModule != nil && aModule.base().BaseModuleName() == name {
+			returnedTag := b.bp.OtherModuleDependencyTag(aModule)
 			if tag == nil || returnedTag == tag {
-				deps = append(deps, dep{module, returnedTag})
+				deps = append(deps, dep{aModule, returnedTag})
 			}
 		}
 	})
-	return deps
-}
-
-func (b *baseModuleContext) getDirectDepInternal(name string, tag blueprint.DependencyTag) (blueprint.Module, blueprint.DependencyTag) {
-	deps := b.getDirectDepsInternal(name, tag)
 	if len(deps) == 1 {
 		return deps[0].mod, deps[0].tag
 	} else if len(deps) >= 2 {
-		panic(fmt.Errorf("Multiple dependencies having same BaseModuleName() %q found from %q",
-			name, b.ModuleName()))
-	} else {
-		return nil, nil
-	}
-}
-
-func (b *baseModuleContext) getDirectDepFirstTag(name string) (blueprint.Module, blueprint.DependencyTag) {
-	foundDeps := b.getDirectDepsInternal(name, nil)
-	deps := map[blueprint.Module]bool{}
-	for _, dep := range foundDeps {
-		deps[dep.mod] = true
-	}
-	if len(deps) == 1 {
-		return foundDeps[0].mod, foundDeps[0].tag
-	} else if len(deps) >= 2 {
-		// this could happen if two dependencies have the same name in different namespaces
-		// TODO(b/186554727): this should not occur if namespaces are handled within
-		// getDirectDepsInternal.
 		panic(fmt.Errorf("Multiple dependencies having same BaseModuleName() %q found from %q",
 			name, b.ModuleName()))
 	} else {
@@ -2347,11 +1728,8 @@ func (m *moduleContext) GetDirectDepWithTag(name string, tag blueprint.Dependenc
 	return module
 }
 
-// GetDirectDep returns the Module and DependencyTag for the direct dependency with the specified
-// name, or nil if none exists. If there are multiple dependencies on the same module it returns the
-// first DependencyTag.
 func (b *baseModuleContext) GetDirectDep(name string) (blueprint.Module, blueprint.DependencyTag) {
-	return b.getDirectDepFirstTag(name)
+	return b.getDirectDepInternal(name, nil)
 }
 
 func (b *baseModuleContext) VisitDirectDepsBlueprint(visit func(blueprint.Module)) {
@@ -2360,7 +1738,7 @@ func (b *baseModuleContext) VisitDirectDepsBlueprint(visit func(blueprint.Module
 
 func (b *baseModuleContext) VisitDirectDeps(visit func(Module)) {
 	b.bp.VisitDirectDeps(func(module blueprint.Module) {
-		if aModule := b.validateAndroidModule(module, b.bp.OtherModuleDependencyTag(module), b.strictVisitDeps); aModule != nil {
+		if aModule := b.validateAndroidModule(module, b.strictVisitDeps); aModule != nil {
 			visit(aModule)
 		}
 	})
@@ -2368,7 +1746,7 @@ func (b *baseModuleContext) VisitDirectDeps(visit func(Module)) {
 
 func (b *baseModuleContext) VisitDirectDepsWithTag(tag blueprint.DependencyTag, visit func(Module)) {
 	b.bp.VisitDirectDeps(func(module blueprint.Module) {
-		if aModule := b.validateAndroidModule(module, b.bp.OtherModuleDependencyTag(module), b.strictVisitDeps); aModule != nil {
+		if aModule := b.validateAndroidModule(module, b.strictVisitDeps); aModule != nil {
 			if b.bp.OtherModuleDependencyTag(aModule) == tag {
 				visit(aModule)
 			}
@@ -2380,7 +1758,7 @@ func (b *baseModuleContext) VisitDirectDepsIf(pred func(Module) bool, visit func
 	b.bp.VisitDirectDepsIf(
 		// pred
 		func(module blueprint.Module) bool {
-			if aModule := b.validateAndroidModule(module, b.bp.OtherModuleDependencyTag(module), b.strictVisitDeps); aModule != nil {
+			if aModule := b.validateAndroidModule(module, b.strictVisitDeps); aModule != nil {
 				return pred(aModule)
 			} else {
 				return false
@@ -2394,7 +1772,7 @@ func (b *baseModuleContext) VisitDirectDepsIf(pred func(Module) bool, visit func
 
 func (b *baseModuleContext) VisitDepsDepthFirst(visit func(Module)) {
 	b.bp.VisitDepsDepthFirst(func(module blueprint.Module) {
-		if aModule := b.validateAndroidModule(module, b.bp.OtherModuleDependencyTag(module), b.strictVisitDeps); aModule != nil {
+		if aModule := b.validateAndroidModule(module, b.strictVisitDeps); aModule != nil {
 			visit(aModule)
 		}
 	})
@@ -2404,7 +1782,7 @@ func (b *baseModuleContext) VisitDepsDepthFirstIf(pred func(Module) bool, visit 
 	b.bp.VisitDepsDepthFirstIf(
 		// pred
 		func(module blueprint.Module) bool {
-			if aModule := b.validateAndroidModule(module, b.bp.OtherModuleDependencyTag(module), b.strictVisitDeps); aModule != nil {
+			if aModule := b.validateAndroidModule(module, b.strictVisitDeps); aModule != nil {
 				return pred(aModule)
 			} else {
 				return false
@@ -2449,18 +1827,18 @@ func (b *baseModuleContext) GetTagPath() []blueprint.DependencyTag {
 	return b.tagPath
 }
 
-func (b *baseModuleContext) VisitAllModuleVariants(visit func(Module)) {
-	b.bp.VisitAllModuleVariants(func(module blueprint.Module) {
+func (m *moduleContext) VisitAllModuleVariants(visit func(Module)) {
+	m.bp.VisitAllModuleVariants(func(module blueprint.Module) {
 		visit(module.(Module))
 	})
 }
 
-func (b *baseModuleContext) PrimaryModule() Module {
-	return b.bp.PrimaryModule().(Module)
+func (m *moduleContext) PrimaryModule() Module {
+	return m.bp.PrimaryModule().(Module)
 }
 
-func (b *baseModuleContext) FinalModule() Module {
-	return b.bp.FinalModule().(Module)
+func (m *moduleContext) FinalModule() Module {
+	return m.bp.FinalModule().(Module)
 }
 
 // IsMetaDependencyTag returns true for cross-cutting metadata dependencies.
@@ -2471,41 +1849,6 @@ func IsMetaDependencyTag(tag blueprint.DependencyTag) bool {
 		return true
 	}
 	return false
-}
-
-// A regexp for removing boilerplate from BaseDependencyTag from the string representation of
-// a dependency tag.
-var tagCleaner = regexp.MustCompile(`\QBaseDependencyTag:{}\E(, )?`)
-
-// PrettyPrintTag returns string representation of the tag, but prefers
-// custom String() method if available.
-func PrettyPrintTag(tag blueprint.DependencyTag) string {
-	// Use tag's custom String() method if available.
-	if stringer, ok := tag.(fmt.Stringer); ok {
-		return stringer.String()
-	}
-
-	// Otherwise, get a default string representation of the tag's struct.
-	tagString := fmt.Sprintf("%T: %+v", tag, tag)
-
-	// Remove the boilerplate from BaseDependencyTag as it adds no value.
-	tagString = tagCleaner.ReplaceAllString(tagString, "")
-	return tagString
-}
-
-func (b *baseModuleContext) GetPathString(skipFirst bool) string {
-	sb := strings.Builder{}
-	tagPath := b.GetTagPath()
-	walkPath := b.GetWalkPath()
-	if !skipFirst {
-		sb.WriteString(walkPath[0].String())
-	}
-	for i, m := range walkPath[1:] {
-		sb.WriteString("\n")
-		sb.WriteString(fmt.Sprintf("           via tag %s\n", PrettyPrintTag(tagPath[i])))
-		sb.WriteString(fmt.Sprintf("    -> %s", m.String()))
-	}
-	return sb.String()
 }
 
 func (m *moduleContext) ModuleSubDir() string {
@@ -2533,7 +1876,7 @@ func (b *baseModuleContext) Os() OsType {
 }
 
 func (b *baseModuleContext) Host() bool {
-	return b.os.Class == Host
+	return b.os.Class == Host || b.os.Class == HostCross
 }
 
 func (b *baseModuleContext) Device() bool {
@@ -2573,6 +1916,10 @@ func (m *ModuleBase) MakeAsPlatform() {
 	m.commonProperties.System_ext_specific = boolPtr(false)
 }
 
+func (m *ModuleBase) EnableNativeBridgeSupportByDefault() {
+	m.commonProperties.Native_bridge_supported = boolPtr(true)
+}
+
 func (m *ModuleBase) MakeAsSystemExt() {
 	m.commonProperties.Vendor = boolPtr(false)
 	m.commonProperties.Proprietary = boolPtr(false)
@@ -2602,14 +1949,6 @@ func (m *moduleContext) InstallInRamdisk() bool {
 	return m.module.InstallInRamdisk()
 }
 
-func (m *moduleContext) InstallInVendorRamdisk() bool {
-	return m.module.InstallInVendorRamdisk()
-}
-
-func (m *moduleContext) InstallInDebugRamdisk() bool {
-	return m.module.InstallInDebugRamdisk()
-}
-
 func (m *moduleContext) InstallInRecovery() bool {
 	return m.module.InstallInRecovery()
 }
@@ -2622,16 +1961,8 @@ func (m *moduleContext) InstallBypassMake() bool {
 	return m.module.InstallBypassMake()
 }
 
-func (m *moduleContext) InstallForceOS() (*OsType, *ArchType) {
-	return m.module.InstallForceOS()
-}
-
-func (m *moduleContext) skipInstall() bool {
+func (m *moduleContext) skipInstall(fullInstallPath InstallPath) bool {
 	if m.module.base().commonProperties.SkipInstall {
-		return true
-	}
-
-	if m.module.base().commonProperties.HideFromMake {
 		return true
 	}
 
@@ -2643,7 +1974,11 @@ func (m *moduleContext) skipInstall() bool {
 	}
 
 	if m.Device() {
-		if m.Config().KatiEnabled() && !m.InstallBypassMake() {
+		if m.Config().EmbeddedInMake() && !m.InstallBypassMake() {
+			return true
+		}
+
+		if m.Config().SkipMegaDeviceInstall(fullInstallPath.String()) {
 			return true
 		}
 	}
@@ -2653,37 +1988,23 @@ func (m *moduleContext) skipInstall() bool {
 
 func (m *moduleContext) InstallFile(installPath InstallPath, name string, srcPath Path,
 	deps ...Path) InstallPath {
-	return m.installFile(installPath, name, srcPath, deps, false)
+	return m.installFile(installPath, name, srcPath, Cp, deps)
 }
 
 func (m *moduleContext) InstallExecutable(installPath InstallPath, name string, srcPath Path,
 	deps ...Path) InstallPath {
-	return m.installFile(installPath, name, srcPath, deps, true)
+	return m.installFile(installPath, name, srcPath, CpExecutable, deps)
 }
 
-func (m *moduleContext) PackageFile(installPath InstallPath, name string, srcPath Path) PackagingSpec {
-	fullInstallPath := installPath.Join(m, name)
-	return m.packageFile(fullInstallPath, srcPath, false)
-}
-
-func (m *moduleContext) packageFile(fullInstallPath InstallPath, srcPath Path, executable bool) PackagingSpec {
-	spec := PackagingSpec{
-		relPathInPackage: Rel(m, fullInstallPath.PartitionDir(), fullInstallPath.String()),
-		srcPath:          srcPath,
-		symlinkTarget:    "",
-		executable:       executable,
-	}
-	m.packagingSpecs = append(m.packagingSpecs, spec)
-	return spec
-}
-
-func (m *moduleContext) installFile(installPath InstallPath, name string, srcPath Path, deps []Path, executable bool) InstallPath {
+func (m *moduleContext) installFile(installPath InstallPath, name string, srcPath Path,
+	rule blueprint.Rule, deps []Path) InstallPath {
 
 	fullInstallPath := installPath.Join(m, name)
-	m.module.base().hooks.runInstallHooks(m, srcPath, fullInstallPath, false)
+	m.module.base().hooks.runInstallHooks(m, fullInstallPath, false)
 
-	if !m.skipInstall() {
-		deps = append(deps, m.module.base().installFilesDepSet.ToList().Paths()...)
+	if !m.skipInstall(fullInstallPath) {
+
+		deps = append(deps, m.installDeps...)
 
 		var implicitDeps, orderOnlyDeps Paths
 
@@ -2695,11 +2016,6 @@ func (m *moduleContext) installFile(installPath InstallPath, name string, srcPat
 			orderOnlyDeps = deps
 		}
 
-		rule := Cp
-		if executable {
-			rule = CpExecutable
-		}
-
 		m.Build(pctx, BuildParams{
 			Rule:        rule,
 			Description: "install " + fullInstallPath.Base(),
@@ -2707,35 +2023,31 @@ func (m *moduleContext) installFile(installPath InstallPath, name string, srcPat
 			Input:       srcPath,
 			Implicits:   implicitDeps,
 			OrderOnly:   orderOnlyDeps,
-			Default:     !m.Config().KatiEnabled(),
+			Default:     !m.Config().EmbeddedInMake(),
 		})
 
 		m.installFiles = append(m.installFiles, fullInstallPath)
 	}
-
-	m.packageFile(fullInstallPath, srcPath, executable)
-
 	m.checkbuildFiles = append(m.checkbuildFiles, srcPath)
-
 	return fullInstallPath
 }
 
 func (m *moduleContext) InstallSymlink(installPath InstallPath, name string, srcPath InstallPath) InstallPath {
 	fullInstallPath := installPath.Join(m, name)
-	m.module.base().hooks.runInstallHooks(m, srcPath, fullInstallPath, true)
+	m.module.base().hooks.runInstallHooks(m, fullInstallPath, true)
 
-	relPath, err := filepath.Rel(path.Dir(fullInstallPath.String()), srcPath.String())
-	if err != nil {
-		panic(fmt.Sprintf("Unable to generate symlink between %q and %q: %s", fullInstallPath.Base(), srcPath.Base(), err))
-	}
-	if !m.skipInstall() {
+	if !m.skipInstall(fullInstallPath) {
 
+		relPath, err := filepath.Rel(path.Dir(fullInstallPath.String()), srcPath.String())
+		if err != nil {
+			panic(fmt.Sprintf("Unable to generate symlink between %q and %q: %s", fullInstallPath.Base(), srcPath.Base(), err))
+		}
 		m.Build(pctx, BuildParams{
 			Rule:        Symlink,
 			Description: "install symlink " + fullInstallPath.Base(),
 			Output:      fullInstallPath,
 			Input:       srcPath,
-			Default:     !m.Config().KatiEnabled(),
+			Default:     !m.Config().EmbeddedInMake(),
 			Args: map[string]string{
 				"fromPath": relPath,
 			},
@@ -2744,14 +2056,6 @@ func (m *moduleContext) InstallSymlink(installPath InstallPath, name string, src
 		m.installFiles = append(m.installFiles, fullInstallPath)
 		m.checkbuildFiles = append(m.checkbuildFiles, srcPath)
 	}
-
-	m.packagingSpecs = append(m.packagingSpecs, PackagingSpec{
-		relPathInPackage: Rel(m, fullInstallPath.PartitionDir(), fullInstallPath.String()),
-		srcPath:          nil,
-		symlinkTarget:    relPath,
-		executable:       false,
-	})
-
 	return fullInstallPath
 }
 
@@ -2759,14 +2063,14 @@ func (m *moduleContext) InstallSymlink(installPath InstallPath, name string, src
 // (e.g. /apex/...)
 func (m *moduleContext) InstallAbsoluteSymlink(installPath InstallPath, name string, absPath string) InstallPath {
 	fullInstallPath := installPath.Join(m, name)
-	m.module.base().hooks.runInstallHooks(m, nil, fullInstallPath, true)
+	m.module.base().hooks.runInstallHooks(m, fullInstallPath, true)
 
-	if !m.skipInstall() {
+	if !m.skipInstall(fullInstallPath) {
 		m.Build(pctx, BuildParams{
 			Rule:        Symlink,
 			Description: "install symlink " + fullInstallPath.Base() + " -> " + absPath,
 			Output:      fullInstallPath,
-			Default:     !m.Config().KatiEnabled(),
+			Default:     !m.Config().EmbeddedInMake(),
 			Args: map[string]string{
 				"fromPath": absPath,
 			},
@@ -2774,14 +2078,6 @@ func (m *moduleContext) InstallAbsoluteSymlink(installPath InstallPath, name str
 
 		m.installFiles = append(m.installFiles, fullInstallPath)
 	}
-
-	m.packagingSpecs = append(m.packagingSpecs, PackagingSpec{
-		relPathInPackage: Rel(m, fullInstallPath.PartitionDir(), fullInstallPath.String()),
-		srcPath:          nil,
-		symlinkTarget:    absPath,
-		executable:       false,
-	})
-
 	return fullInstallPath
 }
 
@@ -2789,8 +2085,27 @@ func (m *moduleContext) CheckbuildFile(srcPath Path) {
 	m.checkbuildFiles = append(m.checkbuildFiles, srcPath)
 }
 
-func (m *moduleContext) blueprintModuleContext() blueprint.ModuleContext {
-	return m.bp
+type fileInstaller interface {
+	filesToInstall() Paths
+}
+
+func isFileInstaller(m blueprint.Module) bool {
+	_, ok := m.(fileInstaller)
+	return ok
+}
+
+func isAndroidModule(m blueprint.Module) bool {
+	_, ok := m.(Module)
+	return ok
+}
+
+func findStringInSlice(str string, slice []string) int {
+	for i, s := range slice {
+		if s == str {
+			return i
+		}
+	}
+	return -1
 }
 
 // SrcIsModule decodes module references in the format ":name" into the module name, or empty string if the input
@@ -2894,7 +2209,7 @@ func OutputFileForModule(ctx PathContext, module blueprint.Module, tag string) P
 		return nil
 	}
 	if len(paths) > 1 {
-		ReportPathErrorf(ctx, "got multiple output files from module %q, expected exactly one",
+		reportPathErrorf(ctx, "got multiple output files from module %q, expected exactly one",
 			pathContextName(ctx, module))
 		return nil
 	}
@@ -2912,26 +2227,12 @@ func outputFilesForModule(ctx PathContext, module blueprint.Module, tag string) 
 			return nil, fmt.Errorf("failed to get output files from module %q", pathContextName(ctx, module))
 		}
 		return paths, nil
-	} else if sourceFileProducer, ok := module.(SourceFileProducer); ok {
-		if tag != "" {
-			return nil, fmt.Errorf("module %q is a SourceFileProducer, not an OutputFileProducer, and so does not support tag %q", pathContextName(ctx, module), tag)
-		}
-		paths := sourceFileProducer.Srcs()
-		if len(paths) == 0 {
-			return nil, fmt.Errorf("failed to get output files from module %q", pathContextName(ctx, module))
-		}
-		return paths, nil
 	} else {
 		return nil, fmt.Errorf("module %q is not an OutputFileProducer", pathContextName(ctx, module))
 	}
 }
 
-// Modules can implement HostToolProvider and return a valid OptionalPath from HostToolPath() to
-// specify that they can be used as a tool by a genrule module.
 type HostToolProvider interface {
-	Module
-	// HostToolPath returns the path to the host tool for the module if it is one, or an invalid
-	// OptionalPath.
 	HostToolPath() OptionalPath
 }
 
@@ -3013,7 +2314,7 @@ func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 	})
 
 	suffix := ""
-	if ctx.Config().KatiEnabled() {
+	if ctx.Config().EmbeddedInMake() {
 		suffix = "-soong"
 	}
 
@@ -3021,7 +2322,7 @@ func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 	ctx.Phony("checkbuild"+suffix, checkbuildDeps...)
 
 	// Make will generate the MODULES-IN-* targets
-	if ctx.Config().KatiEnabled() {
+	if ctx.Config().EmbeddedInMake() {
 		return
 	}
 
@@ -3054,36 +2355,30 @@ func (c *buildTargetSingleton) GenerateBuildActions(ctx SingletonContext) {
 	}
 
 	// Create (host|host-cross|target)-<OS> phony rules to build a reduced checkbuild.
-	type osAndCross struct {
-		os        OsType
-		hostCross bool
-	}
-	osDeps := map[osAndCross]Paths{}
+	osDeps := map[OsType]Paths{}
 	ctx.VisitAllModules(func(module Module) {
 		if module.Enabled() {
-			key := osAndCross{os: module.Target().Os, hostCross: module.Target().HostCross}
-			osDeps[key] = append(osDeps[key], module.base().checkbuildFiles...)
+			os := module.Target().Os
+			osDeps[os] = append(osDeps[os], module.base().checkbuildFiles...)
 		}
 	})
 
 	osClass := make(map[string]Paths)
-	for key, deps := range osDeps {
+	for os, deps := range osDeps {
 		var className string
 
-		switch key.os.Class {
+		switch os.Class {
 		case Host:
-			if key.hostCross {
-				className = "host-cross"
-			} else {
-				className = "host"
-			}
+			className = "host"
+		case HostCross:
+			className = "host-cross"
 		case Device:
 			className = "target"
 		default:
 			continue
 		}
 
-		name := className + "-" + key.os.Name
+		name := className + "-" + os.Name
 		osClass[className] = append(osClass[className], PathForPhony(ctx, name))
 
 		ctx.Phony(name, deps...)
@@ -3118,30 +2413,4 @@ type IdeInfo struct {
 	Classes           []string `json:"class,omitempty"`
 	Installed_paths   []string `json:"installed,omitempty"`
 	SrcJars           []string `json:"srcjars,omitempty"`
-	Paths             []string `json:"path,omitempty"`
-}
-
-func CheckBlueprintSyntax(ctx BaseModuleContext, filename string, contents string) []error {
-	bpctx := ctx.blueprintBaseModuleContext()
-	return blueprint.CheckBlueprintSyntax(bpctx.ModuleFactories(), filename, contents)
-}
-
-// installPathsDepSet is a thin type-safe wrapper around the generic depSet.  It always uses
-// topological order.
-type installPathsDepSet struct {
-	depSet
-}
-
-// newInstallPathsDepSet returns an immutable packagingSpecsDepSet with the given direct and
-// transitive contents.
-func newInstallPathsDepSet(direct InstallPaths, transitive []*installPathsDepSet) *installPathsDepSet {
-	return &installPathsDepSet{*newDepSet(TOPOLOGICAL, direct, transitive)}
-}
-
-// ToList returns the installPathsDepSet flattened to a list in topological order.
-func (d *installPathsDepSet) ToList() InstallPaths {
-	if d == nil {
-		return nil
-	}
-	return d.depSet.ToList().(InstallPaths)
 }

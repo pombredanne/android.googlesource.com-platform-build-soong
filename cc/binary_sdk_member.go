@@ -20,7 +20,6 @@ import (
 	"android/soong/android"
 
 	"github.com/google/blueprint"
-	"github.com/google/blueprint/proptools"
 )
 
 func init() {
@@ -29,8 +28,7 @@ func init() {
 
 var ccBinarySdkMemberType = &binarySdkMemberType{
 	SdkMemberTypeBase: android.SdkMemberTypeBase{
-		PropertyName:    "native_binaries",
-		HostOsDependent: true,
+		PropertyName: "native_binaries",
 	},
 }
 
@@ -40,14 +38,15 @@ type binarySdkMemberType struct {
 
 func (mt *binarySdkMemberType) AddDependencies(mctx android.BottomUpMutatorContext, dependencyTag blueprint.DependencyTag, names []string) {
 	targets := mctx.MultiTargets()
-	for _, bin := range names {
+	for _, lib := range names {
 		for _, target := range targets {
-			variations := target.Variations()
-			if mctx.Device() {
-				variations = append(variations,
-					blueprint.Variation{Mutator: "image", Variation: android.CoreVariation})
+			name, version := StubsLibNameAndVersion(lib)
+			if version == "" {
+				version = LatestStubsVersionFor(mctx.Config(), name)
 			}
-			mctx.AddFarVariationDependencies(variations, dependencyTag, bin)
+			mctx.AddFarVariationDependencies(append(target.Variations(), []blueprint.Variation{
+				{Mutator: "version", Variation: version},
+			}...), dependencyTag, name)
 		}
 	}
 }
@@ -66,15 +65,7 @@ func (mt *binarySdkMemberType) IsInstance(module android.Module) bool {
 }
 
 func (mt *binarySdkMemberType) AddPrebuiltModule(ctx android.SdkMemberContext, member android.SdkMember) android.BpModule {
-	pbm := ctx.SnapshotBuilder().AddPrebuiltModule(member, "cc_prebuilt_binary")
-
-	ccModule := member.Variants()[0].(*Module)
-
-	if stl := ccModule.stl.Properties.Stl; stl != nil {
-		pbm.AddProperty("stl", proptools.String(stl))
-	}
-
-	return pbm
+	return ctx.SnapshotBuilder().AddPrebuiltModule(member, "cc_prebuilt_binary")
 }
 
 func (mt *binarySdkMemberType) CreateVariantPropertiesStruct() android.SdkMemberProperties {
@@ -114,10 +105,6 @@ type nativeBinaryInfoProperties struct {
 	//
 	// This field is exported as its contents may not be arch specific.
 	SystemSharedLibs []string
-
-	// Arch specific flags.
-	StaticExecutable bool
-	Nocrt            bool
 }
 
 func (p *nativeBinaryInfoProperties) PopulateFromVariant(ctx android.SdkMemberContext, variant android.Module) {
@@ -125,10 +112,6 @@ func (p *nativeBinaryInfoProperties) PopulateFromVariant(ctx android.SdkMemberCo
 
 	p.archType = ccModule.Target().Arch.ArchType.String()
 	p.outputFile = getRequiredMemberOutputFile(ctx, ccModule)
-
-	binaryLinker := ccModule.linker.(*binaryDecorator)
-	p.StaticExecutable = binaryLinker.static()
-	p.Nocrt = Bool(binaryLinker.baseLinker.Properties.Nocrt)
 
 	if ccModule.linker != nil {
 		specifiedDeps := specifiedDeps{}
@@ -140,6 +123,10 @@ func (p *nativeBinaryInfoProperties) PopulateFromVariant(ctx android.SdkMemberCo
 }
 
 func (p *nativeBinaryInfoProperties) AddToPropertySet(ctx android.SdkMemberContext, propertySet android.BpPropertySet) {
+	if p.Compile_multilib != "" {
+		propertySet.AddProperty("compile_multilib", p.Compile_multilib)
+	}
+
 	builder := ctx.SnapshotBuilder()
 	if p.outputFile != nil {
 		propertySet.AddProperty("srcs", []string{nativeBinaryPathFor(*p)})
@@ -155,12 +142,5 @@ func (p *nativeBinaryInfoProperties) AddToPropertySet(ctx android.SdkMemberConte
 	// so check for non-nil instead of nonzero length.
 	if p.SystemSharedLibs != nil {
 		propertySet.AddPropertyWithTag("system_shared_libs", p.SystemSharedLibs, builder.SdkMemberReferencePropertyTag(false))
-	}
-
-	if p.StaticExecutable {
-		propertySet.AddProperty("static_executable", p.StaticExecutable)
-	}
-	if p.Nocrt {
-		propertySet.AddProperty("nocrt", p.Nocrt)
 	}
 }

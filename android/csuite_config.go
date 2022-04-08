@@ -15,11 +15,7 @@
 package android
 
 func init() {
-	registerCSuiteBuildComponents(InitRegistrationContext)
-}
-
-func registerCSuiteBuildComponents(ctx RegistrationContext) {
-	ctx.RegisterModuleType("csuite_config", CSuiteConfigFactory)
+	RegisterModuleType("csuite_config", CSuiteConfigFactory)
 }
 
 type csuiteConfigProperties struct {
@@ -44,7 +40,7 @@ func (me *CSuiteConfig) AndroidMkEntries() []AndroidMkEntries {
 		OutputFile: OptionalPathForPath(me.OutputFilePath),
 	}
 	androidMkEntries.ExtraEntries = []AndroidMkExtraEntriesFunc{
-		func(ctx AndroidMkExtraEntriesContext, entries *AndroidMkEntries) {
+		func(entries *AndroidMkEntries) {
 			if me.properties.Test_config != nil {
 				entries.SetString("LOCAL_TEST_CONFIG", *me.properties.Test_config)
 			}

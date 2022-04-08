@@ -34,6 +34,7 @@ var (
 	armCppflags = []string{}
 
 	armLdflags = []string{
+		"-Wl,--icf=safe",
 		"-Wl,--hash-style=gnu",
 		"-Wl,-m,armelf",
 	}
@@ -174,6 +175,7 @@ func init() {
 
 	pctx.StaticVariable("ArmLdflags", strings.Join(armLdflags, " "))
 	pctx.StaticVariable("ArmLldflags", strings.Join(armLldflags, " "))
+	pctx.StaticVariable("ArmIncludeFlags", bionicHeaders("arm"))
 
 	// Clang cflags
 	pctx.StaticVariable("ArmToolchainClangCflags", strings.Join(ClangFilterUnknownCflags(armToolchainCflags), " "))
@@ -267,7 +269,7 @@ func (t *toolchainArm) GccVersion() string {
 }
 
 func (t *toolchainArm) IncludeFlags() string {
-	return ""
+	return "${config.ArmIncludeFlags}"
 }
 
 func (t *toolchainArm) ClangTriple() string {

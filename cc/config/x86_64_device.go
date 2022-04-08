@@ -103,6 +103,7 @@ func init() {
 
 	pctx.StaticVariable("X86_64Ldflags", strings.Join(x86_64Ldflags, " "))
 	pctx.StaticVariable("X86_64Lldflags", strings.Join(x86_64Lldflags, " "))
+	pctx.StaticVariable("X86_64IncludeFlags", bionicHeaders("x86"))
 
 	// Clang cflags
 	pctx.StaticVariable("X86_64ClangCflags", strings.Join(ClangFilterUnknownCflags(x86_64Cflags), " "))
@@ -144,7 +145,7 @@ func (t *toolchainX86_64) GccVersion() string {
 }
 
 func (t *toolchainX86_64) IncludeFlags() string {
-	return ""
+	return "${config.X86_64IncludeFlags}"
 }
 
 func (t *toolchainX86_64) ClangTriple() string {

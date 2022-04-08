@@ -53,16 +53,6 @@ func writeFile(filename string, in io.Reader, perm os.FileMode) error {
 	return out.Close()
 }
 
-func writeSymlink(filename string, in io.Reader) error {
-	b, err := ioutil.ReadAll(in)
-	if err != nil {
-		return err
-	}
-	dest := string(b)
-	err = os.Symlink(dest, filename)
-	return err
-}
-
 func main() {
 	flag.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: zipsync -d <output dir> [-l <output file>] [-f <pattern>] [zip]...")
@@ -132,11 +122,7 @@ func main() {
 				if err != nil {
 					log.Fatal(err)
 				}
-				if f.FileInfo().Mode()&os.ModeSymlink != 0 {
-					must(writeSymlink(filename, in))
-				} else {
-					must(writeFile(filename, in, f.FileInfo().Mode()))
-				}
+				must(writeFile(filename, in, f.FileInfo().Mode()))
 				in.Close()
 				files = append(files, filename)
 			}

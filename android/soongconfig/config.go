@@ -14,10 +14,7 @@
 
 package soongconfig
 
-import (
-	"fmt"
-	"strings"
-)
+import "strings"
 
 type SoongConfig interface {
 	// Bool interprets the variable named `name` as a boolean, returning true if, after
@@ -34,16 +31,7 @@ type SoongConfig interface {
 }
 
 func Config(vars map[string]string) SoongConfig {
-	configVars := make(map[string]string)
-	if len(vars) > 0 {
-		for k, v := range vars {
-			configVars[k] = v
-		}
-		if _, exists := configVars[conditionsDefault]; exists {
-			panic(fmt.Sprintf("%q is a reserved soong config variable name", conditionsDefault))
-		}
-	}
-	return soongConfig(configVars)
+	return soongConfig(vars)
 }
 
 type soongConfig map[string]string

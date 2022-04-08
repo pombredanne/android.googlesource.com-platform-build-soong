@@ -19,7 +19,6 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
-	"syscall"
 	"time"
 
 	"android/soong/ui/metrics"
@@ -34,8 +33,6 @@ const (
 
 	// RBE metrics proto buffer file
 	rbeMetricsPBFilename = "rbe_metrics.pb"
-
-	defaultOutDir = "out"
 )
 
 func rbeCommand(ctx Context, config Config, rbeCmd string) string {
@@ -53,39 +50,17 @@ func rbeCommand(ctx Context, config Config, rbeCmd string) string {
 	return cmdPath
 }
 
-func sockAddr(dir string) (string, error) {
-	maxNameLen := len(syscall.RawSockaddrUnix{}.Path)
-	rand.Seed(time.Now().UnixNano())
-	base := fmt.Sprintf("reproxy_%v.sock", rand.Intn(1000))
-
-	name := filepath.Join(dir, base)
-	if len(name) < maxNameLen {
-		return name, nil
-	}
-
-	name = filepath.Join("/tmp", base)
-	if len(name) < maxNameLen {
-		return name, nil
-	}
-
-	return "", fmt.Errorf("cannot generate a proxy socket address shorter than the limit of %v", maxNameLen)
-}
-
 func getRBEVars(ctx Context, config Config) map[string]string {
+	rand.Seed(time.Now().UnixNano())
 	vars := map[string]string{
 		"RBE_log_path":   config.rbeLogPath(),
-		"RBE_log_dir":    config.rbeLogDir(),
+		"RBE_log_dir":    config.logDir(),
 		"RBE_re_proxy":   config.rbeReproxy(),
 		"RBE_exec_root":  config.rbeExecRoot(),
 		"RBE_output_dir": config.rbeStatsOutputDir(),
 	}
 	if config.StartRBE() {
-		name, err := sockAddr(absPath(ctx, config.TempDir()))
-		if err != nil {
-			ctx.Fatalf("Error retrieving socket address: %v", err)
-			return nil
-		}
-		vars["RBE_server_address"] = fmt.Sprintf("unix://%v", name)
+		vars["RBE_server_address"] = fmt.Sprintf("unix://%v/reproxy_%v.sock", absPath(ctx, config.TempDir()), rand.Intn(1000))
 	}
 	k, v := config.rbeAuth()
 	vars[k] = v
@@ -117,7 +92,7 @@ func stopRBE(ctx Context, config Config) {
 		ctx.Fatalf("rbe bootstrap with shutdown failed with: %v\n%s\n", err, output)
 	}
 
-	if !config.Environment().IsEnvTrue("ANDROID_QUIET_BUILD") && len(output) > 0 {
+	if len(output) > 0 {
 		fmt.Fprintln(ctx.Writer, "")
 		fmt.Fprintln(ctx.Writer, fmt.Sprintf("%s", output))
 	}
@@ -157,18 +132,5 @@ func DumpRBEMetrics(ctx Context, config Config, filename string) {
 	}
 	if _, err := copyFile(metricsFile, filename); err != nil {
 		ctx.Fatalf("failed to copy %q to %q: %v\n", metricsFile, filename, err)
-	}
-}
-
-// PrintOutDirWarning prints a warning to indicate to the user that
-// setting output directory to a path other than "out" in an RBE enabled
-// build can cause slow builds.
-func PrintOutDirWarning(ctx Context, config Config) {
-	if config.UseRBE() && config.OutDir() != defaultOutDir {
-		fmt.Fprintln(ctx.Writer, "")
-		fmt.Fprintln(ctx.Writer, "\033[33mWARNING:\033[0m")
-		fmt.Fprintln(ctx.Writer, fmt.Sprintf("Setting OUT_DIR to a path other than %v may result in slow RBE builds.", defaultOutDir))
-		fmt.Fprintln(ctx.Writer, "See http://go/android_rbe_out_dir for a workaround.")
-		fmt.Fprintln(ctx.Writer, "")
 	}
 }

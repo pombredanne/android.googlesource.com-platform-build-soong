@@ -128,10 +128,6 @@ var fixSteps = []FixStep{
 		Name: "removeSoongConfigBoolVariable",
 		Fix:  removeSoongConfigBoolVariable,
 	},
-	{
-		Name: "removePdkProperty",
-		Fix:  runPatchListMod(removePdkProperty),
-	},
 }
 
 func NewFixRequest() FixRequest {
@@ -412,8 +408,6 @@ func rewriteTestModuleTypes(f *Fixer) error {
 			switch mod.Type {
 			case "android_app":
 				mod.Type = "android_test"
-			case "android_app_import":
-				mod.Type = "android_test_import"
 			case "java_library", "java_library_installable":
 				mod.Type = "java_test"
 			case "java_library_host":
@@ -537,7 +531,7 @@ func (f etcPrebuiltModuleUpdate) update(m *parser.Module, path string) bool {
 		updated = true
 	} else if trimmedPath := strings.TrimPrefix(path, f.prefix+"/"); trimmedPath != path {
 		m.Properties = append(m.Properties, &parser.Property{
-			Name:  "relative_install_path",
+			Name:  "sub_dir",
 			Value: &parser.String{Value: trimmedPath},
 		})
 		updated = true
@@ -584,8 +578,6 @@ func rewriteAndroidmkPrebuiltEtc(f *Fixer) error {
 
 		// 'srcs' --> 'src' conversion
 		convertToSingleSource(mod, "src")
-
-		renameProperty(mod, "sub_dir", "relative_install_dir")
 
 		// The rewriter converts LOCAL_MODULE_PATH attribute into a struct attribute
 		// 'local_module_path'. Analyze its contents and create the correct sub_dir:,
@@ -665,26 +657,6 @@ func rewriteAndroidAppImport(f *Fixer) error {
 					mod.Properties = append(mod.Properties, prop)
 				}
 			}
-		}
-	}
-	return nil
-}
-
-func RewriteRuntimeResourceOverlay(f *Fixer) error {
-	for _, def := range f.tree.Defs {
-		mod, ok := def.(*parser.Module)
-		if !(ok && mod.Type == "runtime_resource_overlay") {
-			continue
-		}
-		// runtime_resource_overlays are always product specific in Make.
-		if _, ok := mod.GetProperty("product_specific"); !ok {
-			prop := &parser.Property{
-				Name: "product_specific",
-				Value: &parser.Bool{
-					Value: true,
-				},
-			}
-			mod.Properties = append(mod.Properties, prop)
 		}
 	}
 	return nil
@@ -804,9 +776,9 @@ func removeSoongConfigBoolVariable(f *Fixer) error {
 			return nil
 		}
 
-		boolVariables, ok := getLiteralListProperty(mod, "bool_variables")
+		bool_variables, ok := getLiteralListProperty(mod, "bool_variables")
 		if ok {
-			patchList.Add(boolVariables.RBracePos.Offset, boolVariables.RBracePos.Offset, ","+boolValues.String())
+			patchList.Add(bool_variables.RBracePos.Offset, bool_variables.RBracePos.Offset, ","+boolValues.String())
 		} else {
 			patchList.Add(variables.RBracePos.Offset+2, variables.RBracePos.Offset+2,
 				fmt.Sprintf(`bool_variables: [%s],`, boolValues.String()))
@@ -979,8 +951,7 @@ func removeTags(mod *parser.Module, buf []byte, patchlist *parser.PatchList) err
 			case strings.Contains(mod.Type, "cc_test"),
 				strings.Contains(mod.Type, "cc_library_static"),
 				strings.Contains(mod.Type, "java_test"),
-				mod.Type == "android_test",
-				mod.Type == "android_test_import":
+				mod.Type == "android_test":
 				continue
 			case strings.Contains(mod.Type, "cc_lib"):
 				replaceStr += `// WARNING: Module tags are not supported in Soong.
@@ -1015,25 +986,6 @@ func removeTags(mod *parser.Module, buf []byte, patchlist *parser.PatchList) err
 	}
 
 	return patchlist.Add(prop.Pos().Offset, prop.End().Offset+2, replaceStr)
-}
-
-func removePdkProperty(mod *parser.Module, buf []byte, patchlist *parser.PatchList) error {
-	prop, ok := mod.GetProperty("product_variables")
-	if !ok {
-		return nil
-	}
-	propMap, ok := prop.Value.(*parser.Map)
-	if !ok {
-		return nil
-	}
-	pdkProp, ok := propMap.GetProperty("pdk")
-	if !ok {
-		return nil
-	}
-	if len(propMap.Properties) > 1 {
-		return patchlist.Add(pdkProp.Pos().Offset, pdkProp.End().Offset+2, "")
-	}
-	return patchlist.Add(prop.Pos().Offset, prop.End().Offset+2, "")
 }
 
 func mergeMatchingModuleProperties(mod *parser.Module, buf []byte, patchlist *parser.PatchList) error {

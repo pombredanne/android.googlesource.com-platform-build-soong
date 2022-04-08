@@ -12,16 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
-}
-
 bootstrap_go_package {
     name: "soong-ui-terminal",
     pkgPath: "android/soong/ui/terminal",
     deps: ["soong-ui-status"],
     srcs: [
-        "simple_status.go",
+        "dumb_status.go",
         "format.go",
         "smart_status.go",
         "status.go",

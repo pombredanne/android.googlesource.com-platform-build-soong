@@ -18,21 +18,32 @@ import (
 	"testing"
 )
 
-func TestCSuiteConfig(t *testing.T) {
-	result := GroupFixturePreparers(
-		PrepareForTestWithArchMutator,
-		FixtureRegisterWithContext(registerCSuiteBuildComponents),
-		FixtureWithRootAndroidBp(`
-			csuite_config { name: "plain"}
-			csuite_config { name: "with_manifest", test_config: "manifest.xml" }
-		`),
-	).RunTest(t)
+func testCSuiteConfig(test *testing.T, bpFileContents string) *TestContext {
+	config := TestArchConfig(buildDir, nil, bpFileContents, nil)
 
-	variants := result.ModuleVariantsForTests("plain")
+	ctx := NewTestArchContext()
+	ctx.RegisterModuleType("csuite_config", CSuiteConfigFactory)
+	ctx.Register(config)
+	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
+	FailIfErrored(test, errs)
+	_, errs = ctx.PrepareBuildActions(config)
+	FailIfErrored(test, errs)
+	return ctx
+}
+
+func TestCSuiteConfig(t *testing.T) {
+	ctx := testCSuiteConfig(t, `
+csuite_config { name: "plain"}
+csuite_config { name: "with_manifest", test_config: "manifest.xml" }
+`)
+
+	variants := ctx.ModuleVariantsForTests("plain")
 	if len(variants) > 1 {
 		t.Errorf("expected 1, got %d", len(variants))
 	}
-	outputFilename := result.ModuleForTests(
+	expectedOutputFilename := ctx.ModuleForTests(
 		"plain", variants[0]).Module().(*CSuiteConfig).OutputFilePath.Base()
-	AssertStringEquals(t, "output file name", "plain", outputFilename)
+	if expectedOutputFilename != "plain" {
+		t.Errorf("expected plain, got %q", expectedOutputFilename)
+	}
 }

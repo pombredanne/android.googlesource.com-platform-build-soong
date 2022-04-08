@@ -50,11 +50,11 @@ func genProto(ctx android.ModuleContext, protoFile android.Path, flags builderFl
 	depFile := ccFile.ReplaceExtension(ctx, "d")
 	outputs := android.WritablePaths{ccFile, headerFile}
 
-	rule := android.NewRuleBuilder(pctx, ctx)
+	rule := android.NewRuleBuilder()
 
-	android.ProtoRule(rule, protoFile, flags.proto, protoDeps, outDir, depFile, outputs)
+	android.ProtoRule(ctx, rule, protoFile, flags.proto, protoDeps, outDir, depFile, outputs)
 
-	rule.Build("protoc_"+protoFile.Rel(), "protoc "+protoFile.Rel())
+	rule.Build(pctx, ctx, "protoc_"+protoFile.Rel(), "protoc "+protoFile.Rel())
 
 	return ccFile, headerFile
 }
@@ -130,8 +130,6 @@ func protoFlags(ctx ModuleContext, flags Flags, p *android.ProtoProperties) Flag
 			flags.protoC = true
 			flags.protoOptionsFile = true
 			flags.proto.OutTypeFlag = "--nanopb_out"
-			// Disable nanopb timestamps to support remote caching.
-			flags.proto.OutParams = append(flags.proto.OutParams, "-T")
 			plugin = "protoc-gen-nanopb"
 		case "full":
 			flags.proto.OutTypeFlag = "--cpp_out"

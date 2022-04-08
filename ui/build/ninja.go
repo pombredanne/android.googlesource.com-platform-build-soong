@@ -27,16 +27,10 @@ import (
 	"android/soong/ui/status"
 )
 
-// Constructs and runs the Ninja command line with a restricted set of
-// environment variables. It's important to restrict the environment Ninja runs
-// for hermeticity reasons, and to avoid spurious rebuilds.
-func runNinjaForBuild(ctx Context, config Config) {
+func runNinja(ctx Context, config Config) {
 	ctx.BeginTrace(metrics.PrimaryNinja, "ninja")
 	defer ctx.EndTrace()
 
-	// Sets up the FIFO status updater that reads the Ninja protobuf output, and
-	// translates it to the soong_ui status output, displaying real-time
-	// progress of the build.
 	fifo := filepath.Join(config.OutDir(), ".ninja_fifo")
 	nr := status.NewNinjaReader(ctx, ctx.Status.StartTool(), fifo)
 	defer nr.Close()
@@ -45,7 +39,6 @@ func runNinjaForBuild(ctx Context, config Config) {
 	args := []string{
 		"-d", "keepdepfile",
 		"-d", "keeprsp",
-		"-d", "stats",
 		"--frontend_file", fifo,
 	}
 
@@ -65,17 +58,12 @@ func runNinjaForBuild(ctx Context, config Config) {
 	args = append(args, "-f", config.CombinedNinjaFile())
 
 	args = append(args,
-		"-o", "usesphonyoutputs=yes",
 		"-w", "dupbuild=err",
 		"-w", "missingdepfile=err")
 
 	cmd := Command(ctx, config, "ninja", executable, args...)
-
-	// Set up the nsjail sandbox Ninja runs in.
 	cmd.Sandbox = ninjaSandbox
 	if config.HasKatiSuffix() {
-		// Reads and executes a shell script from Kati that sets/unsets the
-		// environment Ninja runs in.
 		cmd.Environment.AppendFromKati(config.KatiEnvFile())
 	}
 
@@ -88,8 +76,8 @@ func runNinjaForBuild(ctx Context, config Config) {
 		cmd.Args = append(cmd.Args, strings.Fields(extra)...)
 	}
 
+	logPath := filepath.Join(config.OutDir(), ".ninja_log")
 	ninjaHeartbeatDuration := time.Minute * 5
-	// Get the ninja heartbeat interval from the environment before it's filtered away later.
 	if overrideText, ok := cmd.Environment.Get("NINJA_HEARTBEAT_INTERVAL"); ok {
 		// For example, "1m"
 		overrideDuration, err := time.ParseDuration(overrideText)
@@ -98,22 +86,18 @@ func runNinjaForBuild(ctx Context, config Config) {
 		}
 	}
 
-	// Filter the environment, as ninja does not rebuild files when environment
-	// variables change.
+	// Filter the environment, as ninja does not rebuild files when environment variables change.
 	//
-	// Anything listed here must not change the output of rules/actions when the
-	// value changes, otherwise incremental builds may be unsafe. Vars
-	// explicitly set to stable values elsewhere in soong_ui are fine.
+	// Anything listed here must not change the output of rules/actions when the value changes,
+	// otherwise incremental builds may be unsafe. Vars explicitly set to stable values
+	// elsewhere in soong_ui are fine.
 	//
-	// For the majority of cases, either Soong or the makefiles should be
-	// replicating any necessary environment variables in the command line of
-	// each action that needs it.
+	// For the majority of cases, either Soong or the makefiles should be replicating any
+	// necessary environment variables in the command line of each action that needs it.
 	if cmd.Environment.IsEnvTrue("ALLOW_NINJA_ENV") {
 		ctx.Println("Allowing all environment variables during ninja; incremental builds may be unsafe.")
 	} else {
 		cmd.Environment.Allow(append([]string{
-			// Set the path to a symbolizer (e.g. llvm-symbolizer) so ASAN-based
-			// tools can symbolize crashes.
 			"ASAN_SYMBOLIZER_PATH",
 			"HOME",
 			"JAVA_HOME",
@@ -122,22 +106,26 @@ func runNinjaForBuild(ctx Context, config Config) {
 			"OUT_DIR",
 			"PATH",
 			"PWD",
-			// https://docs.python.org/3/using/cmdline.html#envvar-PYTHONDONTWRITEBYTECODE
 			"PYTHONDONTWRITEBYTECODE",
 			"TMPDIR",
 			"USER",
 
 			// TODO: remove these carefully
-			// Options for the address sanitizer.
 			"ASAN_OPTIONS",
-			// The list of Android app modules to be built in an unbundled manner.
 			"TARGET_BUILD_APPS",
-			// The variant of the product being built. e.g. eng, userdebug, debug.
 			"TARGET_BUILD_VARIANT",
-			// The product name of the product being built, e.g. aosp_arm, aosp_flame.
 			"TARGET_PRODUCT",
 			// b/147197813 - used by art-check-debug-apex-gen
 			"EMMA_INSTRUMENT_FRAMEWORK",
+
+			// Goma -- gomacc may not need all of these
+			"GOMA_DIR",
+			"GOMA_DISABLED",
+			"GOMA_FAIL_FAST",
+			"GOMA_FALLBACK",
+			"GOMA_GCE_SERVICE_ACCOUNT",
+			"GOMA_TMP_DIR",
+			"GOMA_USE_LOCAL",
 
 			// RBE client
 			"RBE_compare",
@@ -145,7 +133,6 @@ func runNinjaForBuild(ctx Context, config Config) {
 			"RBE_exec_strategy",
 			"RBE_invocation_id",
 			"RBE_log_dir",
-			"RBE_num_retries_if_mismatched",
 			"RBE_platform",
 			"RBE_remote_accept_cache",
 			"RBE_remote_update_cache",
@@ -173,7 +160,6 @@ func runNinjaForBuild(ctx Context, config Config) {
 	cmd.Environment.Set("DIST_DIR", config.DistDir())
 	cmd.Environment.Set("SHELL", "/bin/bash")
 
-	// Print the environment variables that Ninja is operating in.
 	ctx.Verboseln("Ninja environment: ")
 	envVars := cmd.Environment.Environ()
 	sort.Strings(envVars)
@@ -181,21 +167,17 @@ func runNinjaForBuild(ctx Context, config Config) {
 		ctx.Verbosef("  %s", envVar)
 	}
 
-	// Poll the Ninja log for updates regularly based on the heartbeat
-	// frequency. If it isn't updated enough, then we want to surface the
-	// possibility that Ninja is stuck, to the user.
+	// Poll the ninja log for updates; if it isn't updated enough, then we want to show some diagnostics
 	done := make(chan struct{})
 	defer close(done)
 	ticker := time.NewTicker(ninjaHeartbeatDuration)
 	defer ticker.Stop()
-	ninjaChecker := &ninjaStucknessChecker{
-		logPath: filepath.Join(config.OutDir(), ".ninja_log"),
-	}
+	checker := &statusChecker{}
 	go func() {
 		for {
 			select {
 			case <-ticker.C:
-				ninjaChecker.check(ctx, config)
+				checker.check(ctx, config, logPath)
 			case <-done:
 				return
 			}
@@ -206,36 +188,37 @@ func runNinjaForBuild(ctx Context, config Config) {
 	cmd.RunAndStreamOrFatal()
 }
 
-// A simple struct for checking if Ninja gets stuck, using timestamps.
-type ninjaStucknessChecker struct {
-	logPath     string
-	prevModTime time.Time
+type statusChecker struct {
+	prevTime time.Time
 }
 
-// Check that a file has been modified since the last time it was checked. If
-// the mod time hasn't changed, then assume that Ninja got stuck, and print
-// diagnostics for debugging.
-func (c *ninjaStucknessChecker) check(ctx Context, config Config) {
-	info, err := os.Stat(c.logPath)
-	var newModTime time.Time
+func (c *statusChecker) check(ctx Context, config Config, pathToCheck string) {
+	info, err := os.Stat(pathToCheck)
+	var newTime time.Time
 	if err == nil {
-		newModTime = info.ModTime()
+		newTime = info.ModTime()
 	}
-	if newModTime == c.prevModTime {
-		// The Ninja file hasn't been modified since the last time it was
-		// checked, so Ninja could be stuck. Output some diagnostics.
-		ctx.Verbosef("ninja may be stuck; last update to %v was %v. dumping process tree...", c.logPath, newModTime)
-
-		// The "pstree" command doesn't exist on Mac, but "pstree" on Linux
-		// gives more convenient output than "ps" So, we try pstree first, and
-		// ps second
-		commandText := fmt.Sprintf("pstree -pal %v || ps -ef", os.Getpid())
-
-		cmd := Command(ctx, config, "dump process tree", "bash", "-c", commandText)
-		output := cmd.CombinedOutputOrFatal()
-		ctx.Verbose(string(output))
-
-		ctx.Verbosef("done\n")
+	if newTime == c.prevTime {
+		// ninja may be stuck
+		dumpStucknessDiagnostics(ctx, config, pathToCheck, newTime)
 	}
-	c.prevModTime = newModTime
+	c.prevTime = newTime
+}
+
+// dumpStucknessDiagnostics gets called when it is suspected that Ninja is stuck and we want to output some diagnostics
+func dumpStucknessDiagnostics(ctx Context, config Config, statusPath string, lastUpdated time.Time) {
+
+	ctx.Verbosef("ninja may be stuck; last update to %v was %v. dumping process tree...", statusPath, lastUpdated)
+
+	// The "pstree" command doesn't exist on Mac, but "pstree" on Linux gives more convenient output than "ps"
+	// So, we try pstree first, and ps second
+	pstreeCommandText := fmt.Sprintf("pstree -pal %v", os.Getpid())
+	psCommandText := "ps -ef"
+	commandText := pstreeCommandText + " || " + psCommandText
+
+	cmd := Command(ctx, config, "dump process tree", "bash", "-c", commandText)
+	output := cmd.CombinedOutputOrFatal()
+	ctx.Verbose(string(output))
+
+	ctx.Verbosef("done\n")
 }

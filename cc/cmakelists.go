@@ -125,15 +125,15 @@ func generateCLionProject(compiledModule CompiledInterface, ctx android.Singleto
 	}
 
 	// Only write CMakeLists.txt for the first variant of each architecture of each module
-	clionprojectLocation := getCMakeListsForModule(ccModule, ctx)
-	if seenProjects[clionprojectLocation] {
+	clionproject_location := getCMakeListsForModule(ccModule, ctx)
+	if seenProjects[clionproject_location] {
 		return
 	}
 
-	seenProjects[clionprojectLocation] = true
+	seenProjects[clionproject_location] = true
 
 	// Ensure the directory hosting the cmakelists.txt exists
-	projectDir := path.Dir(clionprojectLocation)
+	projectDir := path.Dir(clionproject_location)
 	os.MkdirAll(projectDir, os.ModePerm)
 
 	// Create cmakelists.txt
@@ -317,9 +317,6 @@ func categorizeParameter(parameter string) parameterType {
 		return systemRoot
 	}
 	if strings.HasPrefix(parameter, "-fsanitize-blacklist") {
-		return relativeFilePathFlag
-	}
-	if strings.HasPrefix(parameter, "-fprofile-sample-use") {
 		return relativeFilePathFlag
 	}
 	return flag

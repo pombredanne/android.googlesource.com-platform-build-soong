@@ -18,6 +18,7 @@ import (
 	"android/soong/android"
 	"android/soong/cc/config"
 	"fmt"
+	"strconv"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
@@ -95,38 +96,34 @@ type BaseLinkerProperties struct {
 	Runtime_libs []string `android:"arch_variant"`
 
 	Target struct {
-		Vendor, Product struct {
-			// list of shared libs that only should be used to build vendor or
-			// product variant of the C/C++ module.
+		Vendor struct {
+			// list of shared libs that only should be used to build the vendor
+			// variant of the C/C++ module.
 			Shared_libs []string
 
-			// list of static libs that only should be used to build vendor or
-			// product variant of the C/C++ module.
+			// list of static libs that only should be used to build the vendor
+			// variant of the C/C++ module.
 			Static_libs []string
 
-			// list of ehader libs that only should be used to build vendor or product
-			// variant of the C/C++ module.
-			Header_libs []string
-
-			// list of shared libs that should not be used to build vendor or
-			// product variant of the C/C++ module.
+			// list of shared libs that should not be used to build the vendor variant
+			// of the C/C++ module.
 			Exclude_shared_libs []string
 
-			// list of static libs that should not be used to build vendor or
-			// product variant of the C/C++ module.
+			// list of static libs that should not be used to build the vendor variant
+			// of the C/C++ module.
 			Exclude_static_libs []string
 
-			// list of header libs that should not be used to build vendor or
-			// product variant of the C/C++ module.
+			// list of header libs that should not be used to build the vendor variant
+			// of the C/C++ module.
 			Exclude_header_libs []string
 
-			// list of runtime libs that should not be installed along with
-			// vendor or variant of the C/C++ module.
+			// list of runtime libs that should not be installed along with the vendor
+			// variant of the C/C++ module.
 			Exclude_runtime_libs []string
 
-			// version script for vendor or product variant
+			// version script for this vendor variant
 			Version_script *string `android:"arch_variant"`
-		} `android:"arch_variant"`
+		}
 		Recovery struct {
 			// list of shared libs that only should be used to build the recovery
 			// variant of the C/C++ module.
@@ -161,40 +158,14 @@ type BaseLinkerProperties struct {
 			// the ramdisk variant of the C/C++ module.
 			Exclude_static_libs []string
 		}
-		Vendor_ramdisk struct {
-			// list of shared libs that should not be used to build
-			// the recovery variant of the C/C++ module.
-			Exclude_shared_libs []string
-
-			// list of static libs that should not be used to build
-			// the vendor ramdisk variant of the C/C++ module.
-			Exclude_static_libs []string
-		}
 		Platform struct {
 			// list of shared libs that should be use to build the platform variant
 			// of a module that sets sdk_version.  This should rarely be necessary,
 			// in most cases the same libraries are available for the SDK and platform
 			// variants.
 			Shared_libs []string
-
-			// list of ehader libs that only should be used to build platform variant of
-			// the C/C++ module.
-			Header_libs []string
-
-			// list of shared libs that should not be used to build the platform variant
-			// of the C/C++ module.
-			Exclude_shared_libs []string
 		}
-		Apex struct {
-			// list of shared libs that should not be used to build the apex variant of
-			// the C/C++ module.
-			Exclude_shared_libs []string
-
-			// list of static libs that should not be used to build the apex ramdisk
-			// variant of the C/C++ module.
-			Exclude_static_libs []string
-		}
-	} `android:"arch_variant"`
+	}
 
 	// make android::build:GetBuildNumber() available containing the build ID.
 	Use_version_lib *bool `android:"arch_variant"`
@@ -231,7 +202,6 @@ func (linker *baseLinker) appendLdflags(flags []string) {
 	linker.Properties.Ldflags = append(linker.Properties.Ldflags, flags...)
 }
 
-// linkerInit initializes dynamic properties of the linker (such as runpath).
 func (linker *baseLinker) linkerInit(ctx BaseModuleContext) {
 	if ctx.toolchain().Is64Bit() {
 		linker.dynamicProperties.RunPaths = append(linker.dynamicProperties.RunPaths, "../lib64", "lib64")
@@ -260,43 +230,20 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	deps.StaticLibs = removeListFromList(deps.StaticLibs, linker.Properties.Exclude_static_libs)
 	deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, linker.Properties.Exclude_static_libs)
 
-	// Record the libraries that need to be excluded when building for APEX. Unlike other
-	// target.*.exclude_* properties, SharedLibs and StaticLibs are not modified here because
-	// this module hasn't yet passed the apexMutator. Therefore, we can't tell whether this is
-	// an apex variant of not. Record the exclude list in the deps struct for now. The info is
-	// used to mark the dependency tag when adding dependencies to the deps. Then inside
-	// GenerateAndroidBuildActions, the marked dependencies are ignored (i.e. not used) for APEX
-	// variants.
-	deps.ExcludeLibsForApex = append(deps.ExcludeLibsForApex, linker.Properties.Target.Apex.Exclude_shared_libs...)
-	deps.ExcludeLibsForApex = append(deps.ExcludeLibsForApex, linker.Properties.Target.Apex.Exclude_static_libs...)
-
 	if Bool(linker.Properties.Use_version_lib) {
 		deps.WholeStaticLibs = append(deps.WholeStaticLibs, "libbuildversion")
 	}
 
-	if ctx.inVendor() {
+	if ctx.useVndk() {
 		deps.SharedLibs = append(deps.SharedLibs, linker.Properties.Target.Vendor.Shared_libs...)
 		deps.SharedLibs = removeListFromList(deps.SharedLibs, linker.Properties.Target.Vendor.Exclude_shared_libs)
 		deps.ReexportSharedLibHeaders = removeListFromList(deps.ReexportSharedLibHeaders, linker.Properties.Target.Vendor.Exclude_shared_libs)
 		deps.StaticLibs = append(deps.StaticLibs, linker.Properties.Target.Vendor.Static_libs...)
 		deps.StaticLibs = removeListFromList(deps.StaticLibs, linker.Properties.Target.Vendor.Exclude_static_libs)
-		deps.HeaderLibs = append(deps.HeaderLibs, linker.Properties.Target.Vendor.Header_libs...)
 		deps.HeaderLibs = removeListFromList(deps.HeaderLibs, linker.Properties.Target.Vendor.Exclude_header_libs)
 		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, linker.Properties.Target.Vendor.Exclude_static_libs)
 		deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, linker.Properties.Target.Vendor.Exclude_static_libs)
 		deps.RuntimeLibs = removeListFromList(deps.RuntimeLibs, linker.Properties.Target.Vendor.Exclude_runtime_libs)
-	}
-
-	if ctx.inProduct() {
-		deps.SharedLibs = append(deps.SharedLibs, linker.Properties.Target.Product.Shared_libs...)
-		deps.SharedLibs = removeListFromList(deps.SharedLibs, linker.Properties.Target.Product.Exclude_shared_libs)
-		deps.ReexportSharedLibHeaders = removeListFromList(deps.ReexportSharedLibHeaders, linker.Properties.Target.Product.Exclude_shared_libs)
-		deps.StaticLibs = append(deps.StaticLibs, linker.Properties.Target.Product.Static_libs...)
-		deps.StaticLibs = removeListFromList(deps.StaticLibs, linker.Properties.Target.Product.Exclude_static_libs)
-		deps.HeaderLibs = removeListFromList(deps.HeaderLibs, linker.Properties.Target.Product.Exclude_header_libs)
-		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, linker.Properties.Target.Product.Exclude_static_libs)
-		deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, linker.Properties.Target.Product.Exclude_static_libs)
-		deps.RuntimeLibs = removeListFromList(deps.RuntimeLibs, linker.Properties.Target.Product.Exclude_runtime_libs)
 	}
 
 	if ctx.inRecovery() {
@@ -312,49 +259,38 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	}
 
 	if ctx.inRamdisk() {
-		deps.SharedLibs = removeListFromList(deps.SharedLibs, linker.Properties.Target.Ramdisk.Exclude_shared_libs)
-		deps.ReexportSharedLibHeaders = removeListFromList(deps.ReexportSharedLibHeaders, linker.Properties.Target.Ramdisk.Exclude_shared_libs)
-		deps.StaticLibs = append(deps.StaticLibs, linker.Properties.Target.Ramdisk.Static_libs...)
-		deps.StaticLibs = removeListFromList(deps.StaticLibs, linker.Properties.Target.Ramdisk.Exclude_static_libs)
-		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, linker.Properties.Target.Ramdisk.Exclude_static_libs)
-		deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, linker.Properties.Target.Ramdisk.Exclude_static_libs)
-	}
-
-	if ctx.inVendorRamdisk() {
-		deps.SharedLibs = removeListFromList(deps.SharedLibs, linker.Properties.Target.Vendor_ramdisk.Exclude_shared_libs)
-		deps.ReexportSharedLibHeaders = removeListFromList(deps.ReexportSharedLibHeaders, linker.Properties.Target.Vendor_ramdisk.Exclude_shared_libs)
-		deps.StaticLibs = removeListFromList(deps.StaticLibs, linker.Properties.Target.Vendor_ramdisk.Exclude_static_libs)
-		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, linker.Properties.Target.Vendor_ramdisk.Exclude_static_libs)
-		deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, linker.Properties.Target.Vendor_ramdisk.Exclude_static_libs)
+		deps.SharedLibs = removeListFromList(deps.SharedLibs, linker.Properties.Target.Recovery.Exclude_shared_libs)
+		deps.ReexportSharedLibHeaders = removeListFromList(deps.ReexportSharedLibHeaders, linker.Properties.Target.Recovery.Exclude_shared_libs)
+		deps.StaticLibs = append(deps.StaticLibs, linker.Properties.Target.Recovery.Static_libs...)
+		deps.StaticLibs = removeListFromList(deps.StaticLibs, linker.Properties.Target.Recovery.Exclude_static_libs)
+		deps.ReexportStaticLibHeaders = removeListFromList(deps.ReexportStaticLibHeaders, linker.Properties.Target.Recovery.Exclude_static_libs)
+		deps.WholeStaticLibs = removeListFromList(deps.WholeStaticLibs, linker.Properties.Target.Recovery.Exclude_static_libs)
 	}
 
 	if !ctx.useSdk() {
 		deps.SharedLibs = append(deps.SharedLibs, linker.Properties.Target.Platform.Shared_libs...)
-		deps.SharedLibs = removeListFromList(deps.SharedLibs, linker.Properties.Target.Platform.Exclude_shared_libs)
-		deps.HeaderLibs = append(deps.HeaderLibs, linker.Properties.Target.Platform.Header_libs...)
 	}
 
 	if ctx.toolchain().Bionic() {
-		// libclang_rt.builtins has to be last on the command line
-		if !Bool(linker.Properties.No_libcrt) && !ctx.header() {
+		// libclang_rt.builtins and libatomic have to be last on the command line
+		if !Bool(linker.Properties.No_libcrt) {
 			deps.LateStaticLibs = append(deps.LateStaticLibs, config.BuiltinsRuntimeLibrary(ctx.toolchain()))
+			deps.LateStaticLibs = append(deps.LateStaticLibs, "libatomic")
 		}
 
-		deps.SystemSharedLibs = linker.Properties.System_shared_libs
-		// In Bazel conversion mode, variations have not been specified, so SystemSharedLibs may
-		// inaccuarately appear unset, which can cause issues with circular dependencies.
-		if deps.SystemSharedLibs == nil && !ctx.BazelConversionMode() {
+		systemSharedLibs := linker.Properties.System_shared_libs
+		if systemSharedLibs == nil {
 			// Provide a default system_shared_libs if it is unspecified. Note: If an
 			// empty list [] is specified, it implies that the module declines the
 			// default system_shared_libs.
-			deps.SystemSharedLibs = []string{"libc", "libm", "libdl"}
+			systemSharedLibs = []string{"libc", "libm", "libdl"}
 		}
 
 		if inList("libdl", deps.SharedLibs) {
 			// If system_shared_libs has libc but not libdl, make sure shared_libs does not
 			// have libdl to avoid loading libdl before libc.
-			if inList("libc", deps.SystemSharedLibs) {
-				if !inList("libdl", deps.SystemSharedLibs) {
+			if inList("libc", systemSharedLibs) {
+				if !inList("libdl", systemSharedLibs) {
 					ctx.PropertyErrorf("shared_libs",
 						"libdl must be in system_shared_libs, not shared_libs")
 				}
@@ -362,14 +298,25 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 			}
 		}
 
+		if inList("libc_scudo", deps.SharedLibs) {
+			// libc_scudo is an alternate implementation of all
+			// allocation functions (malloc, free), that uses
+			// the scudo allocator instead of the default native
+			// allocator. If this library is in the list, make
+			// sure it's first so it properly overrides the
+			// allocation functions of all other shared libraries.
+			_, deps.SharedLibs = removeFromList("libc_scudo", deps.SharedLibs)
+			deps.SharedLibs = append([]string{"libc_scudo"}, deps.SharedLibs...)
+		}
+
 		// If libc and libdl are both in system_shared_libs make sure libdl comes after libc
 		// to avoid loading libdl before libc.
-		if inList("libdl", deps.SystemSharedLibs) && inList("libc", deps.SystemSharedLibs) &&
-			indexList("libdl", deps.SystemSharedLibs) < indexList("libc", deps.SystemSharedLibs) {
+		if inList("libdl", systemSharedLibs) && inList("libc", systemSharedLibs) &&
+			indexList("libdl", systemSharedLibs) < indexList("libc", systemSharedLibs) {
 			ctx.PropertyErrorf("system_shared_libs", "libdl must be after libc")
 		}
 
-		deps.LateSharedLibs = append(deps.LateSharedLibs, deps.SystemSharedLibs...)
+		deps.LateSharedLibs = append(deps.LateSharedLibs, systemSharedLibs...)
 	}
 
 	if ctx.Fuchsia() {
@@ -404,17 +351,17 @@ func (linker *baseLinker) useClangLld(ctx ModuleContext) bool {
 }
 
 // Check whether the SDK version is not older than the specific one
-func CheckSdkVersionAtLeast(ctx ModuleContext, SdkVersion android.ApiLevel) bool {
-	if ctx.minSdkVersion() == "current" {
+func CheckSdkVersionAtLeast(ctx ModuleContext, SdkVersion int) bool {
+	if ctx.sdkVersion() == "current" {
 		return true
 	}
-	parsedSdkVersion, err := nativeApiLevelFromUser(ctx, ctx.minSdkVersion())
+	parsedSdkVersion, err := strconv.Atoi(ctx.sdkVersion())
 	if err != nil {
-		ctx.PropertyErrorf("min_sdk_version",
-			"Invalid min_sdk_version value (must be int or current): %q",
-			ctx.minSdkVersion())
+		ctx.PropertyErrorf("sdk_version",
+			"Invalid sdk_version value (must be int or current): %q",
+			ctx.sdkVersion())
 	}
-	if parsedSdkVersion.LessThan(SdkVersion) {
+	if parsedSdkVersion < SdkVersion {
 		return false
 	}
 	return true
@@ -435,17 +382,13 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 		if !BoolDefault(linker.Properties.Pack_relocations, true) {
 			flags.Global.LdFlags = append(flags.Global.LdFlags, "-Wl,--pack-dyn-relocs=none")
 		} else if ctx.Device() {
-			// SHT_RELR relocations are only supported at API level >= 30.
-			// ANDROID_RELR relocations were supported at API level >= 28.
-			// Relocation packer was supported at API level >= 23.
-			// Do the best we can...
-			if (!ctx.useSdk() && ctx.minSdkVersion() == "") || CheckSdkVersionAtLeast(ctx, android.FirstShtRelrVersion) {
-				flags.Global.LdFlags = append(flags.Global.LdFlags, "-Wl,--pack-dyn-relocs=android+relr")
-			} else if CheckSdkVersionAtLeast(ctx, android.FirstAndroidRelrVersion) {
+			// The SHT_RELR relocations is only supported by API level >= 28.
+			// Do not turn this on if older version NDK is used.
+			if !ctx.useSdk() || CheckSdkVersionAtLeast(ctx, 28) {
 				flags.Global.LdFlags = append(flags.Global.LdFlags,
 					"-Wl,--pack-dyn-relocs=android+relr",
 					"-Wl,--use-android-relr-tags")
-			} else if CheckSdkVersionAtLeast(ctx, android.FirstPackedRelocationsVersion) {
+			} else if CheckSdkVersionAtLeast(ctx, 23) {
 				flags.Global.LdFlags = append(flags.Global.LdFlags, "-Wl,--pack-dyn-relocs=android")
 			}
 		}
@@ -499,22 +442,23 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 	flags.Local.LdFlags = append(flags.Local.LdFlags, proptools.NinjaAndShellEscapeList(linker.Properties.Ldflags)...)
 
 	if ctx.Host() && !ctx.Windows() {
-		rpathPrefix := `\$$ORIGIN/`
+		rpath_prefix := `\$$ORIGIN/`
 		if ctx.Darwin() {
-			rpathPrefix = "@loader_path/"
+			rpath_prefix = "@loader_path/"
 		}
 
 		if !ctx.static() {
 			for _, rpath := range linker.dynamicProperties.RunPaths {
-				flags.Global.LdFlags = append(flags.Global.LdFlags, "-Wl,-rpath,"+rpathPrefix+rpath)
+				flags.Global.LdFlags = append(flags.Global.LdFlags, "-Wl,-rpath,"+rpath_prefix+rpath)
 			}
 		}
 	}
 
-	if ctx.useSdk() {
+	if ctx.useSdk() && (ctx.Arch().ArchType != android.Mips && ctx.Arch().ArchType != android.Mips64) {
 		// The bionic linker now has support gnu style hashes (which are much faster!), but shipping
 		// to older devices requires the old style hash. Fortunately, we can build with both and
 		// it'll work anywhere.
+		// This is not currently supported on MIPS architectures.
 		flags.Global.LdFlags = append(flags.Global.LdFlags, "-Wl,--hash-style=both")
 	}
 
@@ -530,14 +474,10 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 		versionScript := ctx.ExpandOptionalSource(
 			linker.Properties.Version_script, "version_script")
 
-		if ctx.inVendor() && linker.Properties.Target.Vendor.Version_script != nil {
+		if ctx.useVndk() && linker.Properties.Target.Vendor.Version_script != nil {
 			versionScript = ctx.ExpandOptionalSource(
 				linker.Properties.Target.Vendor.Version_script,
 				"target.vendor.version_script")
-		} else if ctx.inProduct() && linker.Properties.Target.Product.Version_script != nil {
-			versionScript = ctx.ExpandOptionalSource(
-				linker.Properties.Target.Product.Version_script,
-				"target.product.version_script")
 		}
 
 		if versionScript.Valid() {
@@ -613,23 +553,24 @@ func (linker *baseLinker) injectVersionSymbol(ctx ModuleContext, in android.Path
 // Rule to generate .bss symbol ordering file.
 
 var (
-	_                   = pctx.SourcePathVariable("genSortedBssSymbolsPath", "build/soong/scripts/gen_sorted_bss_symbols.sh")
-	genSortedBssSymbols = pctx.AndroidStaticRule("gen_sorted_bss_symbols",
+	_                      = pctx.SourcePathVariable("genSortedBssSymbolsPath", "build/soong/scripts/gen_sorted_bss_symbols.sh")
+	gen_sorted_bss_symbols = pctx.AndroidStaticRule("gen_sorted_bss_symbols",
 		blueprint.RuleParams{
-			Command:     "CLANG_BIN=${clangBin} $genSortedBssSymbolsPath ${in} ${out}",
-			CommandDeps: []string{"$genSortedBssSymbolsPath", "${clangBin}/llvm-nm"},
+			Command:     "CROSS_COMPILE=$crossCompile $genSortedBssSymbolsPath ${in} ${out}",
+			CommandDeps: []string{"$genSortedBssSymbolsPath", "${crossCompile}nm"},
 		},
-		"clangBin")
+		"crossCompile")
 )
 
 func (linker *baseLinker) sortBssSymbolsBySize(ctx ModuleContext, in android.Path, symbolOrderingFile android.ModuleOutPath, flags builderFlags) string {
+	crossCompile := gccCmd(flags.toolchain, "")
 	ctx.Build(pctx, android.BuildParams{
-		Rule:        genSortedBssSymbols,
+		Rule:        gen_sorted_bss_symbols,
 		Description: "generate bss symbol order " + symbolOrderingFile.Base(),
 		Output:      symbolOrderingFile,
 		Input:       in,
 		Args: map[string]string{
-			"clangBin": "${config.ClangBin}",
+			"crossCompile": crossCompile,
 		},
 	})
 	return "-Wl,--symbol-ordering-file," + symbolOrderingFile.String()

@@ -21,7 +21,6 @@ import (
 	"github.com/google/blueprint"
 
 	"android/soong/android"
-	"android/soong/dexpreopt"
 )
 
 var manifestFixerRule = pctx.AndroidStaticRule("manifestFixer",
@@ -42,20 +41,29 @@ var manifestMergerRule = pctx.AndroidStaticRule("manifestMerger",
 	},
 	"args", "libs")
 
+// These two libs are added as optional dependencies (<uses-library> with
+// android:required set to false). This is because they haven't existed in pre-P
+// devices, but classes in them were in bootclasspath jars, etc. So making them
+// hard dependencies (android:required=true) would prevent apps from being
+// installed to such legacy devices.
+var optionalUsesLibs = []string{
+	"android.test.base",
+	"android.test.mock",
+}
+
 // Uses manifest_fixer.py to inject minSdkVersion, etc. into an AndroidManifest.xml
-func manifestFixer(ctx android.ModuleContext, manifest android.Path, sdkContext android.SdkContext,
-	classLoaderContexts dexpreopt.ClassLoaderContextMap, isLibrary, useEmbeddedNativeLibs, usesNonSdkApis,
-	useEmbeddedDex, hasNoCode bool, loggingParent string) android.Path {
+func manifestFixer(ctx android.ModuleContext, manifest android.Path, sdkContext sdkContext, sdkLibraries []string,
+	isLibrary, useEmbeddedNativeLibs, usesNonSdkApis, useEmbeddedDex, hasNoCode bool, loggingParent string) android.Path {
 
 	var args []string
 	if isLibrary {
 		args = append(args, "--library")
 	} else {
-		minSdkVersion, err := sdkContext.MinSdkVersion(ctx).EffectiveVersion(ctx)
+		minSdkVersion, err := sdkContext.minSdkVersion().effectiveVersion(ctx)
 		if err != nil {
 			ctx.ModuleErrorf("invalid minSdkVersion: %s", err)
 		}
-		if minSdkVersion.FinalOrFutureInt() >= 23 {
+		if minSdkVersion >= 23 {
 			args = append(args, fmt.Sprintf("--extract-native-libs=%v", !useEmbeddedNativeLibs))
 		} else if useEmbeddedNativeLibs {
 			ctx.ModuleErrorf("module attempted to store uncompressed native libraries, but minSdkVersion=%d doesn't support it",
@@ -71,8 +79,8 @@ func manifestFixer(ctx android.ModuleContext, manifest android.Path, sdkContext 
 		args = append(args, "--use-embedded-dex")
 	}
 
-	for _, usesLib := range classLoaderContexts.UsesLibs() {
-		if inList(usesLib, dexpreopt.OptionalCompatUsesLibs) {
+	for _, usesLib := range sdkLibraries {
+		if inList(usesLib, optionalUsesLibs) {
 			args = append(args, "--optional-uses-library", usesLib)
 		} else {
 			args = append(args, "--uses-library", usesLib)
@@ -87,20 +95,20 @@ func manifestFixer(ctx android.ModuleContext, manifest android.Path, sdkContext 
 		args = append(args, "--logging-parent", loggingParent)
 	}
 	var deps android.Paths
-	targetSdkVersion, err := sdkContext.TargetSdkVersion(ctx).EffectiveVersionString(ctx)
+	targetSdkVersion, err := sdkContext.targetSdkVersion().effectiveVersionString(ctx)
 	if err != nil {
 		ctx.ModuleErrorf("invalid targetSdkVersion: %s", err)
 	}
-	if UseApiFingerprint(ctx) && ctx.ModuleName() != "framework-res" {
+	if UseApiFingerprint(ctx) {
 		targetSdkVersion = ctx.Config().PlatformSdkCodename() + fmt.Sprintf(".$$(cat %s)", ApiFingerprintPath(ctx).String())
 		deps = append(deps, ApiFingerprintPath(ctx))
 	}
 
-	minSdkVersion, err := sdkContext.MinSdkVersion(ctx).EffectiveVersionString(ctx)
+	minSdkVersion, err := sdkContext.minSdkVersion().effectiveVersionString(ctx)
 	if err != nil {
 		ctx.ModuleErrorf("invalid minSdkVersion: %s", err)
 	}
-	if UseApiFingerprint(ctx) && ctx.ModuleName() != "framework-res" {
+	if UseApiFingerprint(ctx) {
 		minSdkVersion = ctx.Config().PlatformSdkCodename() + fmt.Sprintf(".$$(cat %s)", ApiFingerprintPath(ctx).String())
 		deps = append(deps, ApiFingerprintPath(ctx))
 	}
@@ -122,7 +130,7 @@ func manifestFixer(ctx android.ModuleContext, manifest android.Path, sdkContext 
 		},
 	})
 
-	return fixedManifest.WithoutRel()
+	return fixedManifest
 }
 
 func manifestMerger(ctx android.ModuleContext, manifest android.Path, staticLibManifests android.Paths,
@@ -147,5 +155,5 @@ func manifestMerger(ctx android.ModuleContext, manifest android.Path, staticLibM
 		},
 	})
 
-	return mergedManifest.WithoutRel()
+	return mergedManifest
 }

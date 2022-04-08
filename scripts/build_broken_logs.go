@@ -54,13 +54,11 @@ const (
 	DefaultDeprecated
 )
 
-type Setting struct {
+var buildBrokenSettings = []struct {
 	name     string
 	behavior BuildBrokenBehavior
 	warnings []string
-}
-
-var buildBrokenSettings = []Setting{
+}{
 	{
 		name:     "BUILD_BROKEN_DUP_RULES",
 		behavior: DefaultFalse,
@@ -70,19 +68,6 @@ var buildBrokenSettings = []Setting{
 		name:     "BUILD_BROKEN_USES_NETWORK",
 		behavior: DefaultDeprecated,
 	},
-	{
-		name:     "BUILD_BROKEN_USES_BUILD_COPY_HEADERS",
-		behavior: DefaultTrue,
-		warnings: []string{
-			"COPY_HEADERS has been deprecated",
-			"COPY_HEADERS is deprecated",
-		},
-	},
-}
-
-type Branch struct {
-	Settings []Setting
-	Logs     []ProductLog
 }
 
 type ProductBranch struct {
@@ -97,48 +82,35 @@ type ProductLog struct {
 }
 
 type Log struct {
-	WarningModuleTypes []string
-	ErrorModuleTypes   []string
-
-	BuildBroken map[string]*bool
-	HasBroken   map[string]int
+	BuildBroken []*bool
+	HasBroken   []bool
 }
 
 func Merge(l, l2 Log) Log {
-	if l.BuildBroken == nil {
-		l.BuildBroken = map[string]*bool{}
+	if len(l.BuildBroken) == 0 {
+		l.BuildBroken = make([]*bool, len(buildBrokenSettings))
 	}
-	if l.HasBroken == nil {
-		l.HasBroken = map[string]int{}
+	if len(l.HasBroken) == 0 {
+		l.HasBroken = make([]bool, len(buildBrokenSettings))
 	}
 
-	for n, v := range l.BuildBroken {
+	if len(l.BuildBroken) != len(l2.BuildBroken) || len(l.HasBroken) != len(l2.HasBroken) {
+		panic("mis-matched logs")
+	}
+
+	for i, v := range l.BuildBroken {
 		if v == nil {
-			l.BuildBroken[n] = l2.BuildBroken[n]
+			l.BuildBroken[i] = l2.BuildBroken[i]
 		}
 	}
-	for n, v := range l2.BuildBroken {
-		if _, ok := l.BuildBroken[n]; !ok {
-			l.BuildBroken[n] = v
-		}
-	}
-
-	for n := range l.HasBroken {
-		if l.HasBroken[n] < l2.HasBroken[n] {
-			l.HasBroken[n] = l2.HasBroken[n]
-		}
-	}
-	for n := range l2.HasBroken {
-		if _, ok := l.HasBroken[n]; !ok {
-			l.HasBroken[n] = l2.HasBroken[n]
-		}
+	for i := range l.HasBroken {
+		l.HasBroken[i] = l.HasBroken[i] || l2.HasBroken[i]
 	}
 
 	return l
 }
 
-func PrintResults(branch Branch) {
-	products := branch.Logs
+func PrintResults(products []ProductLog) {
 	devices := map[string]Log{}
 	deviceNames := []string{}
 
@@ -152,48 +124,39 @@ func PrintResults(branch Branch) {
 
 	sort.Strings(deviceNames)
 
-	for _, setting := range branch.Settings {
+	for i, setting := range buildBrokenSettings {
 		printed := false
-		n := setting.name
 
 		for _, device := range deviceNames {
 			log := devices[device]
 
 			if setting.behavior == DefaultTrue {
-				if log.BuildBroken[n] == nil || *log.BuildBroken[n] == false {
-					if log.HasBroken[n] > 0 {
+				if log.BuildBroken[i] == nil || *log.BuildBroken[i] == false {
+					if log.HasBroken[i] {
 						printed = true
-						plural := ""
-						if log.HasBroken[n] > 1 {
-							plural = "s"
-						}
-						fmt.Printf("  %s needs to set %s := true  (%d instance%s)\n", device, setting.name, log.HasBroken[n], plural)
+						fmt.Printf("  %s needs to set %s := true\n", device, setting.name)
 					}
-				} else if log.HasBroken[n] == 0 {
+				} else if !log.HasBroken[i] {
 					printed = true
 					fmt.Printf("  %s sets %s := true, but does not need it\n", device, setting.name)
 				}
 			} else if setting.behavior == DefaultFalse {
-				if log.BuildBroken[n] == nil {
+				if log.BuildBroken[i] == nil {
 					// Nothing to be done
-				} else if *log.BuildBroken[n] == false {
+				} else if *log.BuildBroken[i] == false {
 					printed = true
 					fmt.Printf("  %s sets %s := false, which is the default and can be removed\n", device, setting.name)
-				} else if log.HasBroken[n] == 0 {
+				} else if !log.HasBroken[i] {
 					printed = true
 					fmt.Printf("  %s sets %s := true, but does not need it\n", device, setting.name)
 				}
 			} else if setting.behavior == DefaultDeprecated {
-				if log.BuildBroken[n] != nil {
+				if log.BuildBroken[i] != nil {
 					printed = true
-					if log.HasBroken[n] > 0 {
-						plural := ""
-						if log.HasBroken[n] > 1 {
-							plural = "s"
-						}
-						fmt.Printf("  %s sets %s := %v, which is deprecated, but has %d failure%s\n", device, setting.name, *log.BuildBroken[n], log.HasBroken[n], plural)
+					if log.HasBroken[i] {
+						fmt.Printf("  %s sets %s := %v, which is deprecated, but has failures\n", device, setting.name, *log.BuildBroken[i])
 					} else {
-						fmt.Printf("  %s sets %s := %v, which is deprecated and can be removed\n", device, setting.name, *log.BuildBroken[n])
+						fmt.Printf("  %s sets %s := %v, which is deprecated and can be removed\n", device, setting.name, *log.BuildBroken[i])
 					}
 				}
 			}
@@ -205,45 +168,17 @@ func PrintResults(branch Branch) {
 	}
 }
 
-func ParseBranch(name string) Branch {
+func ParseBranch(name string) []ProductLog {
 	products, err := filepath.Glob(filepath.Join(name, "*"))
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	ret := Branch{Logs: []ProductLog{}}
+	ret := []ProductLog{}
 	for _, product := range products {
 		product = filepath.Base(product)
 
-		ret.Logs = append(ret.Logs, ParseProduct(ProductBranch{Branch: name, Name: product}))
-	}
-
-	ret.Settings = append(ret.Settings, buildBrokenSettings...)
-	if len(ret.Logs) > 0 {
-		for _, mtype := range ret.Logs[0].WarningModuleTypes {
-			if mtype == "BUILD_COPY_HEADERS" || mtype == "" {
-				continue
-			}
-			ret.Settings = append(ret.Settings, Setting{
-				name:     "BUILD_BROKEN_USES_" + mtype,
-				behavior: DefaultTrue,
-				warnings: []string{mtype + " has been deprecated"},
-			})
-		}
-		for _, mtype := range ret.Logs[0].ErrorModuleTypes {
-			if mtype == "BUILD_COPY_HEADERS" || mtype == "" {
-				continue
-			}
-			ret.Settings = append(ret.Settings, Setting{
-				name:     "BUILD_BROKEN_USES_" + mtype,
-				behavior: DefaultFalse,
-				warnings: []string{mtype + " has been deprecated"},
-			})
-		}
-	}
-
-	for _, productLog := range ret.Logs {
-		ScanProduct(ret.Settings, productLog)
+		ret = append(ret, ParseProduct(ProductBranch{Branch: name, Name: product}))
 	}
 	return ret
 }
@@ -257,15 +192,15 @@ func ParseProduct(p ProductBranch) ProductLog {
 	ret := ProductLog{
 		ProductBranch: p,
 		Log: Log{
-			BuildBroken: map[string]*bool{},
-			HasBroken:   map[string]int{},
+			BuildBroken: make([]*bool, len(buildBrokenSettings)),
+			HasBroken:   make([]bool, len(buildBrokenSettings)),
 		},
 	}
 
 	lines := strings.Split(string(soongLog), "\n")
 	for _, line := range lines {
 		fields := strings.Split(line, " ")
-		if len(fields) < 5 {
+		if len(fields) != 5 {
 			continue
 		}
 
@@ -273,35 +208,30 @@ func ParseProduct(p ProductBranch) ProductLog {
 			ret.Device = fields[4]
 		}
 
-		if fields[3] == "DEFAULT_WARNING_BUILD_MODULE_TYPES" {
-			ret.WarningModuleTypes = fields[4:]
-		}
-		if fields[3] == "DEFAULT_ERROR_BUILD_MODULE_TYPES" {
-			ret.ErrorModuleTypes = fields[4:]
-		}
-
 		if strings.HasPrefix(fields[3], "BUILD_BROKEN_") {
-			ret.BuildBroken[fields[3]] = ParseBoolPtr(fields[4])
+			for i, setting := range buildBrokenSettings {
+				if setting.name == fields[3] {
+					ret.BuildBroken[i] = ParseBoolPtr(fields[4])
+				}
+			}
 		}
 	}
 
-	return ret
-}
-
-func ScanProduct(settings []Setting, l ProductLog) {
-	stdLog, err := ioutil.ReadFile(filepath.Join(l.Branch, l.Name, "std_full.log"))
+	stdLog, err := ioutil.ReadFile(filepath.Join(p.Branch, p.Name, "std_full.log"))
 	if err != nil {
 		log.Fatal(err)
 	}
 	stdStr := string(stdLog)
 
-	for _, setting := range settings {
+	for i, setting := range buildBrokenSettings {
 		for _, warning := range setting.warnings {
 			if strings.Contains(stdStr, warning) {
-				l.HasBroken[setting.name] += strings.Count(stdStr, warning)
+				ret.HasBroken[i] = true
 			}
 		}
 	}
+
+	return ret
 }
 
 func ParseBoolPtr(str string) *bool {

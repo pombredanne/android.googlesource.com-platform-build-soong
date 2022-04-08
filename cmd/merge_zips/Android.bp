@@ -12,17 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package {
-    default_applicable_licenses: ["Android-Apache-2.0"],
-}
-
 blueprint_go_binary {
     name: "merge_zips",
     deps: [
-        "android-archive-zip",
-        "blueprint-pathtools",
-        "soong-jar",
-        "soong-response",
+      "android-archive-zip",
+      "blueprint-pathtools",
+      "soong-jar",
+      "soong-zip",
     ],
     srcs: [
         "merge_zips.go",
@@ -31,3 +27,4 @@ blueprint_go_binary {
         "merge_zips_test.go",
     ],
 }
+

@@ -26,7 +26,6 @@ func (stub *kernelHeadersDecorator) link(ctx ModuleContext, flags Flags, deps Pa
 	if ctx.Device() {
 		f := &stub.libraryDecorator.flagExporter
 		f.reexportSystemDirs(android.PathsForSource(ctx, ctx.DeviceConfig().DeviceKernelHeaderDirs())...)
-		f.setProvider(ctx)
 	}
 	return stub.libraryDecorator.linkStatic(ctx, flags, deps, objs)
 }

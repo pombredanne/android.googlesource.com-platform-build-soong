@@ -16,10 +16,12 @@ package android
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/google/blueprint"
+	"github.com/google/blueprint/proptools"
 )
 
 type mutatorTestModule struct {
@@ -65,70 +67,83 @@ func TestMutatorAddMissingDependencies(t *testing.T) {
 		}
 	`
 
-	result := GroupFixturePreparers(
-		PrepareForTestWithAllowMissingDependencies,
-		FixtureRegisterWithContext(func(ctx RegistrationContext) {
-			ctx.RegisterModuleType("test", mutatorTestModuleFactory)
-			ctx.PreDepsMutators(func(ctx RegisterMutatorsContext) {
-				ctx.TopDown("add_missing_dependencies", addMissingDependenciesMutator)
-			})
-		}),
-		FixtureWithRootAndroidBp(bp),
-	).RunTest(t)
+	config := TestConfig(buildDir, nil, bp, nil)
+	config.TestProductVariables.Allow_missing_dependencies = proptools.BoolPtr(true)
 
-	foo := result.ModuleForTests("foo", "").Module().(*mutatorTestModule)
+	ctx := NewTestContext()
+	ctx.SetAllowMissingDependencies(true)
 
-	AssertDeepEquals(t, "foo missing deps", []string{"added_missing_dep", "regular_missing_dep"}, foo.missingDeps)
+	ctx.RegisterModuleType("test", mutatorTestModuleFactory)
+	ctx.PreDepsMutators(func(ctx RegisterMutatorsContext) {
+		ctx.TopDown("add_missing_dependencies", addMissingDependenciesMutator)
+	})
+
+	ctx.Register(config)
+	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
+	FailIfErrored(t, errs)
+	_, errs = ctx.PrepareBuildActions(config)
+	FailIfErrored(t, errs)
+
+	foo := ctx.ModuleForTests("foo", "").Module().(*mutatorTestModule)
+
+	if g, w := foo.missingDeps, []string{"added_missing_dep", "regular_missing_dep"}; !reflect.DeepEqual(g, w) {
+		t.Errorf("want foo missing deps %q, got %q", w, g)
+	}
 }
 
 func TestModuleString(t *testing.T) {
+	ctx := NewTestContext()
+
+	var moduleStrings []string
+
+	ctx.PreArchMutators(func(ctx RegisterMutatorsContext) {
+		ctx.BottomUp("pre_arch", func(ctx BottomUpMutatorContext) {
+			moduleStrings = append(moduleStrings, ctx.Module().String())
+			ctx.CreateVariations("a", "b")
+		})
+		ctx.TopDown("rename_top_down", func(ctx TopDownMutatorContext) {
+			moduleStrings = append(moduleStrings, ctx.Module().String())
+			ctx.Rename(ctx.Module().base().Name() + "_renamed1")
+		})
+	})
+
+	ctx.PreDepsMutators(func(ctx RegisterMutatorsContext) {
+		ctx.BottomUp("pre_deps", func(ctx BottomUpMutatorContext) {
+			moduleStrings = append(moduleStrings, ctx.Module().String())
+			ctx.CreateVariations("c", "d")
+		})
+	})
+
+	ctx.PostDepsMutators(func(ctx RegisterMutatorsContext) {
+		ctx.BottomUp("post_deps", func(ctx BottomUpMutatorContext) {
+			moduleStrings = append(moduleStrings, ctx.Module().String())
+			ctx.CreateLocalVariations("e", "f")
+		})
+		ctx.BottomUp("rename_bottom_up", func(ctx BottomUpMutatorContext) {
+			moduleStrings = append(moduleStrings, ctx.Module().String())
+			ctx.Rename(ctx.Module().base().Name() + "_renamed2")
+		})
+		ctx.BottomUp("final", func(ctx BottomUpMutatorContext) {
+			moduleStrings = append(moduleStrings, ctx.Module().String())
+		})
+	})
+
+	ctx.RegisterModuleType("test", mutatorTestModuleFactory)
+
 	bp := `
 		test {
 			name: "foo",
 		}
 	`
 
-	var moduleStrings []string
+	config := TestConfig(buildDir, nil, bp, nil)
 
-	GroupFixturePreparers(
-		FixtureRegisterWithContext(func(ctx RegistrationContext) {
+	ctx.Register(config)
 
-			ctx.PreArchMutators(func(ctx RegisterMutatorsContext) {
-				ctx.BottomUp("pre_arch", func(ctx BottomUpMutatorContext) {
-					moduleStrings = append(moduleStrings, ctx.Module().String())
-					ctx.CreateVariations("a", "b")
-				})
-				ctx.TopDown("rename_top_down", func(ctx TopDownMutatorContext) {
-					moduleStrings = append(moduleStrings, ctx.Module().String())
-					ctx.Rename(ctx.Module().base().Name() + "_renamed1")
-				})
-			})
-
-			ctx.PreDepsMutators(func(ctx RegisterMutatorsContext) {
-				ctx.BottomUp("pre_deps", func(ctx BottomUpMutatorContext) {
-					moduleStrings = append(moduleStrings, ctx.Module().String())
-					ctx.CreateVariations("c", "d")
-				})
-			})
-
-			ctx.PostDepsMutators(func(ctx RegisterMutatorsContext) {
-				ctx.BottomUp("post_deps", func(ctx BottomUpMutatorContext) {
-					moduleStrings = append(moduleStrings, ctx.Module().String())
-					ctx.CreateLocalVariations("e", "f")
-				})
-				ctx.BottomUp("rename_bottom_up", func(ctx BottomUpMutatorContext) {
-					moduleStrings = append(moduleStrings, ctx.Module().String())
-					ctx.Rename(ctx.Module().base().Name() + "_renamed2")
-				})
-				ctx.BottomUp("final", func(ctx BottomUpMutatorContext) {
-					moduleStrings = append(moduleStrings, ctx.Module().String())
-				})
-			})
-
-			ctx.RegisterModuleType("test", mutatorTestModuleFactory)
-		}),
-		FixtureWithRootAndroidBp(bp),
-	).RunTest(t)
+	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
+	FailIfErrored(t, errs)
+	_, errs = ctx.PrepareBuildActions(config)
+	FailIfErrored(t, errs)
 
 	want := []string{
 		// Initial name.
@@ -169,10 +184,50 @@ func TestModuleString(t *testing.T) {
 		"foo_renamed2{pre_arch:b,pre_deps:d,post_deps:f}",
 	}
 
-	AssertDeepEquals(t, "module String() values", want, moduleStrings)
+	if !reflect.DeepEqual(moduleStrings, want) {
+		t.Errorf("want module String() values:\n%q\ngot:\n%q", want, moduleStrings)
+	}
 }
 
 func TestFinalDepsPhase(t *testing.T) {
+	ctx := NewTestContext()
+
+	finalGot := map[string]int{}
+
+	dep1Tag := struct {
+		blueprint.BaseDependencyTag
+	}{}
+	dep2Tag := struct {
+		blueprint.BaseDependencyTag
+	}{}
+
+	ctx.PostDepsMutators(func(ctx RegisterMutatorsContext) {
+		ctx.BottomUp("far_deps_1", func(ctx BottomUpMutatorContext) {
+			if !strings.HasPrefix(ctx.ModuleName(), "common_dep") {
+				ctx.AddFarVariationDependencies([]blueprint.Variation{}, dep1Tag, "common_dep_1")
+			}
+		})
+		ctx.BottomUp("variant", func(ctx BottomUpMutatorContext) {
+			ctx.CreateLocalVariations("a", "b")
+		})
+	})
+
+	ctx.FinalDepsMutators(func(ctx RegisterMutatorsContext) {
+		ctx.BottomUp("far_deps_2", func(ctx BottomUpMutatorContext) {
+			if !strings.HasPrefix(ctx.ModuleName(), "common_dep") {
+				ctx.AddFarVariationDependencies([]blueprint.Variation{}, dep2Tag, "common_dep_2")
+			}
+		})
+		ctx.BottomUp("final", func(ctx BottomUpMutatorContext) {
+			finalGot[ctx.Module().String()] += 1
+			ctx.VisitDirectDeps(func(mod Module) {
+				finalGot[fmt.Sprintf("%s -> %s", ctx.Module().String(), mod)] += 1
+			})
+		})
+	})
+
+	ctx.RegisterModuleType("test", mutatorTestModuleFactory)
+
 	bp := `
 		test {
 			name: "common_dep_1",
@@ -185,46 +240,13 @@ func TestFinalDepsPhase(t *testing.T) {
 		}
 	`
 
-	finalGot := map[string]int{}
+	config := TestConfig(buildDir, nil, bp, nil)
+	ctx.Register(config)
 
-	GroupFixturePreparers(
-		FixtureRegisterWithContext(func(ctx RegistrationContext) {
-			dep1Tag := struct {
-				blueprint.BaseDependencyTag
-			}{}
-			dep2Tag := struct {
-				blueprint.BaseDependencyTag
-			}{}
-
-			ctx.PostDepsMutators(func(ctx RegisterMutatorsContext) {
-				ctx.BottomUp("far_deps_1", func(ctx BottomUpMutatorContext) {
-					if !strings.HasPrefix(ctx.ModuleName(), "common_dep") {
-						ctx.AddFarVariationDependencies([]blueprint.Variation{}, dep1Tag, "common_dep_1")
-					}
-				})
-				ctx.BottomUp("variant", func(ctx BottomUpMutatorContext) {
-					ctx.CreateLocalVariations("a", "b")
-				})
-			})
-
-			ctx.FinalDepsMutators(func(ctx RegisterMutatorsContext) {
-				ctx.BottomUp("far_deps_2", func(ctx BottomUpMutatorContext) {
-					if !strings.HasPrefix(ctx.ModuleName(), "common_dep") {
-						ctx.AddFarVariationDependencies([]blueprint.Variation{}, dep2Tag, "common_dep_2")
-					}
-				})
-				ctx.BottomUp("final", func(ctx BottomUpMutatorContext) {
-					finalGot[ctx.Module().String()] += 1
-					ctx.VisitDirectDeps(func(mod Module) {
-						finalGot[fmt.Sprintf("%s -> %s", ctx.Module().String(), mod)] += 1
-					})
-				})
-			})
-
-			ctx.RegisterModuleType("test", mutatorTestModuleFactory)
-		}),
-		FixtureWithRootAndroidBp(bp),
-	).RunTest(t)
+	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
+	FailIfErrored(t, errs)
+	_, errs = ctx.PrepareBuildActions(config)
+	FailIfErrored(t, errs)
 
 	finalWant := map[string]int{
 		"common_dep_1{variant:a}":                   1,
@@ -239,31 +261,37 @@ func TestFinalDepsPhase(t *testing.T) {
 		"foo{variant:b} -> common_dep_2{variant:a}": 1,
 	}
 
-	AssertDeepEquals(t, "final", finalWant, finalGot)
+	if !reflect.DeepEqual(finalWant, finalGot) {
+		t.Errorf("want:\n%q\ngot:\n%q", finalWant, finalGot)
+	}
 }
 
 func TestNoCreateVariationsInFinalDeps(t *testing.T) {
+	ctx := NewTestContext()
+
 	checkErr := func() {
 		if err := recover(); err == nil || !strings.Contains(fmt.Sprintf("%s", err), "not allowed in FinalDepsMutators") {
 			panic("Expected FinalDepsMutators consistency check to fail")
 		}
 	}
 
-	GroupFixturePreparers(
-		FixtureRegisterWithContext(func(ctx RegistrationContext) {
-			ctx.FinalDepsMutators(func(ctx RegisterMutatorsContext) {
-				ctx.BottomUp("vars", func(ctx BottomUpMutatorContext) {
-					defer checkErr()
-					ctx.CreateVariations("a", "b")
-				})
-				ctx.BottomUp("local_vars", func(ctx BottomUpMutatorContext) {
-					defer checkErr()
-					ctx.CreateLocalVariations("a", "b")
-				})
-			})
+	ctx.FinalDepsMutators(func(ctx RegisterMutatorsContext) {
+		ctx.BottomUp("vars", func(ctx BottomUpMutatorContext) {
+			defer checkErr()
+			ctx.CreateVariations("a", "b")
+		})
+		ctx.BottomUp("local_vars", func(ctx BottomUpMutatorContext) {
+			defer checkErr()
+			ctx.CreateLocalVariations("a", "b")
+		})
+	})
 
-			ctx.RegisterModuleType("test", mutatorTestModuleFactory)
-		}),
-		FixtureWithRootAndroidBp(`test {name: "foo"}`),
-	).RunTest(t)
+	ctx.RegisterModuleType("test", mutatorTestModuleFactory)
+	config := TestConfig(buildDir, nil, `test {name: "foo"}`, nil)
+	ctx.Register(config)
+
+	_, errs := ctx.ParseFileList(".", []string{"Android.bp"})
+	FailIfErrored(t, errs)
+	_, errs = ctx.PrepareBuildActions(config)
+	FailIfErrored(t, errs)
 }

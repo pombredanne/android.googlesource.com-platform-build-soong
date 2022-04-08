@@ -17,7 +17,7 @@ package android
 import (
 	"bytes"
 	"fmt"
-	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/google/blueprint"
@@ -30,19 +30,46 @@ func init() {
 }
 
 func androidMakeVarsProvider(ctx MakeVarsContext) {
-	ctx.Strict("MIN_SUPPORTED_SDK_VERSION", ctx.Config().MinSupportedSdkVersion().String())
+	ctx.Strict("MIN_SUPPORTED_SDK_VERSION", strconv.Itoa(ctx.Config().MinSupportedSdkVersion()))
 }
 
 ///////////////////////////////////////////////////////////////////////////////
-
-// BaseMakeVarsContext contains the common functions for other packages to use
-// to declare make variables
-type BaseMakeVarsContext interface {
+// Interface for other packages to use to declare make variables
+type MakeVarsContext interface {
 	Config() Config
 	DeviceConfig() DeviceConfig
 	AddNinjaFileDeps(deps ...string)
 
+	ModuleName(module blueprint.Module) string
+	ModuleDir(module blueprint.Module) string
+	ModuleSubDir(module blueprint.Module) string
+	ModuleType(module blueprint.Module) string
+	BlueprintFile(module blueprint.Module) string
+
+	ModuleErrorf(module blueprint.Module, format string, args ...interface{})
+	Errorf(format string, args ...interface{})
 	Failed() bool
+
+	VisitAllModules(visit func(Module))
+	VisitAllModulesIf(pred func(Module) bool, visit func(Module))
+
+	// Verify the make variable matches the Soong version, fail the build
+	// if it does not. If the make variable is empty, just set it.
+	Strict(name, ninjaStr string)
+	// Check to see if the make variable matches the Soong version, warn if
+	// it does not. If the make variable is empty, just set it.
+	Check(name, ninjaStr string)
+
+	// These are equivalent to the above, but sort the make and soong
+	// variables before comparing them. They also show the unique entries
+	// in each list when displaying the difference, instead of the entire
+	// string.
+	StrictSorted(name, ninjaStr string)
+	CheckSorted(name, ninjaStr string)
+
+	// Evaluates a ninja string and returns the result. Used if more
+	// complicated modification needs to happen before giving it to Make.
+	Eval(ninjaStr string) (string, error)
 
 	// These are equivalent to Strict and Check, but do not attempt to
 	// evaluate the values before writing them to the Makefile. They can
@@ -81,90 +108,31 @@ type BaseMakeVarsContext interface {
 	DistForGoalsWithFilename(goals []string, path Path, filename string)
 }
 
-// MakeVarsContext contains the set of functions available for MakeVarsProvider
-// and SingletonMakeVarsProvider implementations.
-type MakeVarsContext interface {
-	BaseMakeVarsContext
-
-	ModuleName(module blueprint.Module) string
-	ModuleDir(module blueprint.Module) string
-	ModuleSubDir(module blueprint.Module) string
-	ModuleType(module blueprint.Module) string
-	ModuleProvider(module blueprint.Module, key blueprint.ProviderKey) interface{}
-	BlueprintFile(module blueprint.Module) string
-
-	ModuleErrorf(module blueprint.Module, format string, args ...interface{})
-	Errorf(format string, args ...interface{})
-
-	VisitAllModules(visit func(Module))
-	VisitAllModulesIf(pred func(Module) bool, visit func(Module))
-
-	// Verify the make variable matches the Soong version, fail the build
-	// if it does not. If the make variable is empty, just set it.
-	Strict(name, ninjaStr string)
-	// Check to see if the make variable matches the Soong version, warn if
-	// it does not. If the make variable is empty, just set it.
-	Check(name, ninjaStr string)
-
-	// These are equivalent to the above, but sort the make and soong
-	// variables before comparing them. They also show the unique entries
-	// in each list when displaying the difference, instead of the entire
-	// string.
-	StrictSorted(name, ninjaStr string)
-	CheckSorted(name, ninjaStr string)
-
-	// Evaluates a ninja string and returns the result. Used if more
-	// complicated modification needs to happen before giving it to Make.
-	Eval(ninjaStr string) (string, error)
-}
-
-// MakeVarsModuleContext contains the set of functions available for modules
-// implementing the ModuleMakeVarsProvider interface.
-type MakeVarsModuleContext interface {
-	BaseMakeVarsContext
-}
-
 var _ PathContext = MakeVarsContext(nil)
 
 type MakeVarsProvider func(ctx MakeVarsContext)
 
 func RegisterMakeVarsProvider(pctx PackageContext, provider MakeVarsProvider) {
-	makeVarsInitProviders = append(makeVarsInitProviders, makeVarsProvider{pctx, provider})
+	makeVarsProviders = append(makeVarsProviders, makeVarsProvider{pctx, provider})
 }
 
 // SingletonMakeVarsProvider is a Singleton with an extra method to provide extra values to be exported to Make.
 type SingletonMakeVarsProvider interface {
+	Singleton
+
 	// MakeVars uses a MakeVarsContext to provide extra values to be exported to Make.
 	MakeVars(ctx MakeVarsContext)
 }
 
-var singletonMakeVarsProvidersKey = NewOnceKey("singletonMakeVarsProvidersKey")
-
-// registerSingletonMakeVarsProvider adds a singleton that implements SingletonMakeVarsProvider to
-// the list of MakeVarsProviders to run.
-func registerSingletonMakeVarsProvider(config Config, singleton SingletonMakeVarsProvider) {
-	// Singletons are registered on the Context and may be different between different Contexts,
-	// for example when running multiple tests.  Store the SingletonMakeVarsProviders in the
-	// Config so they are attached to the Context.
-	singletonMakeVarsProviders := config.Once(singletonMakeVarsProvidersKey, func() interface{} {
-		return &[]makeVarsProvider{}
-	}).(*[]makeVarsProvider)
-
-	*singletonMakeVarsProviders = append(*singletonMakeVarsProviders,
-		makeVarsProvider{pctx, singletonMakeVarsProviderAdapter(singleton)})
+// registerSingletonMakeVarsProvider adds a singleton that implements SingletonMakeVarsProvider to the list of
+// MakeVarsProviders to run.
+func registerSingletonMakeVarsProvider(singleton SingletonMakeVarsProvider) {
+	makeVarsProviders = append(makeVarsProviders, makeVarsProvider{pctx, SingletonmakeVarsProviderAdapter(singleton)})
 }
 
-// singletonMakeVarsProviderAdapter converts a SingletonMakeVarsProvider to a MakeVarsProvider.
-func singletonMakeVarsProviderAdapter(singleton SingletonMakeVarsProvider) MakeVarsProvider {
+// SingletonmakeVarsProviderAdapter converts a SingletonMakeVarsProvider to a MakeVarsProvider.
+func SingletonmakeVarsProviderAdapter(singleton SingletonMakeVarsProvider) MakeVarsProvider {
 	return func(ctx MakeVarsContext) { singleton.MakeVars(ctx) }
-}
-
-// ModuleMakeVarsProvider is a Module with an extra method to provide extra values to be exported to Make.
-type ModuleMakeVarsProvider interface {
-	Module
-
-	// MakeVars uses a MakeVarsModuleContext to provide extra values to be exported to Make.
-	MakeVars(ctx MakeVarsModuleContext)
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -180,8 +148,7 @@ type makeVarsProvider struct {
 	call MakeVarsProvider
 }
 
-// Collection of makevars providers that are registered in init() methods.
-var makeVarsInitProviders []makeVarsProvider
+var makeVarsProviders []makeVarsProvider
 
 type makeVarsContext struct {
 	SingletonContext
@@ -212,7 +179,7 @@ type dist struct {
 }
 
 func (s *makeVarsSingleton) GenerateBuildActions(ctx SingletonContext) {
-	if !ctx.Config().KatiEnabled() {
+	if !ctx.Config().EmbeddedInMake() {
 		return
 	}
 
@@ -229,11 +196,7 @@ func (s *makeVarsSingleton) GenerateBuildActions(ctx SingletonContext) {
 	var vars []makeVarsVariable
 	var dists []dist
 	var phonies []phony
-
-	providers := append([]makeVarsProvider(nil), makeVarsInitProviders...)
-	providers = append(providers, *ctx.Config().Get(singletonMakeVarsProvidersKey).(*[]makeVarsProvider)...)
-
-	for _, provider := range providers {
+	for _, provider := range makeVarsProviders {
 		mctx := &makeVarsContext{
 			SingletonContext: ctx,
 			pctx:             provider.pctx,
@@ -246,44 +209,9 @@ func (s *makeVarsSingleton) GenerateBuildActions(ctx SingletonContext) {
 		dists = append(dists, mctx.dists...)
 	}
 
-	ctx.VisitAllModules(func(m Module) {
-		if provider, ok := m.(ModuleMakeVarsProvider); ok && m.Enabled() {
-			mctx := &makeVarsContext{
-				SingletonContext: ctx,
-			}
-
-			provider.MakeVars(mctx)
-
-			vars = append(vars, mctx.vars...)
-			phonies = append(phonies, mctx.phonies...)
-			dists = append(dists, mctx.dists...)
-		}
-	})
-
 	if ctx.Failed() {
 		return
 	}
-
-	sort.Slice(vars, func(i, j int) bool {
-		return vars[i].name < vars[j].name
-	})
-	sort.Slice(phonies, func(i, j int) bool {
-		return phonies[i].name < phonies[j].name
-	})
-	lessArr := func(a, b []string) bool {
-		if len(a) == len(b) {
-			for i := range a {
-				if a[i] < b[i] {
-					return true
-				}
-			}
-			return false
-		}
-		return len(a) < len(b)
-	}
-	sort.Slice(dists, func(i, j int) bool {
-		return lessArr(dists[i].goals, dists[j].goals) || lessArr(dists[i].paths, dists[j].paths)
-	})
 
 	outBytes := s.writeVars(vars)
 

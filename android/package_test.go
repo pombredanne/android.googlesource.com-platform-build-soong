@@ -6,7 +6,7 @@ import (
 
 var packageTests = []struct {
 	name           string
-	fs             MockFS
+	fs             map[string][]byte
 	expectedErrors []string
 }{
 	// Package default_visibility handling is tested in visibility_test.go
@@ -61,13 +61,43 @@ var packageTests = []struct {
 func TestPackage(t *testing.T) {
 	for _, test := range packageTests {
 		t.Run(test.name, func(t *testing.T) {
-			GroupFixturePreparers(
-				PrepareForTestWithArchMutator,
-				PrepareForTestWithPackageModule,
-				test.fs.AddToFixture(),
-			).
-				ExtendWithErrorHandler(FixtureExpectsAllErrorsToMatchAPattern(test.expectedErrors)).
-				RunTest(t)
+			_, errs := testPackage(test.fs)
+
+			expectedErrors := test.expectedErrors
+			if expectedErrors == nil {
+				FailIfErrored(t, errs)
+			} else {
+				for _, expectedError := range expectedErrors {
+					FailIfNoMatchingErrors(t, expectedError, errs)
+				}
+				if len(errs) > len(expectedErrors) {
+					t.Errorf("additional errors found, expected %d, found %d", len(expectedErrors), len(errs))
+					for i, expectedError := range expectedErrors {
+						t.Errorf("expectedErrors[%d] = %s", i, expectedError)
+					}
+					for i, err := range errs {
+						t.Errorf("errs[%d] = %s", i, err)
+					}
+				}
+			}
 		})
 	}
+}
+
+func testPackage(fs map[string][]byte) (*TestContext, []error) {
+
+	// Create a new config per test as visibility information is stored in the config.
+	config := TestArchConfig(buildDir, nil, "", fs)
+
+	ctx := NewTestArchContext()
+	RegisterPackageBuildComponents(ctx)
+	ctx.Register(config)
+
+	_, errs := ctx.ParseBlueprintsFiles(".")
+	if len(errs) > 0 {
+		return ctx, errs
+	}
+
+	_, errs = ctx.PrepareBuildActions(config)
+	return ctx, errs
 }

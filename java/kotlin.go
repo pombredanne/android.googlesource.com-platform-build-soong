@@ -31,12 +31,9 @@ var kotlinc = pctx.AndroidRemoteStaticRule("kotlinc", android.RemoteRuleSupports
 		Command: `rm -rf "$classesDir" "$srcJarDir" "$kotlinBuildFile" "$emptyDir" && ` +
 			`mkdir -p "$classesDir" "$srcJarDir" "$emptyDir" && ` +
 			`${config.ZipSyncCmd} -d $srcJarDir -l $srcJarDir/list -f "*.java" $srcJars && ` +
-			`${config.GenKotlinBuildFileCmd} --classpath "$classpath" --name "$name"` +
-			` --out_dir "$classesDir" --srcs "$out.rsp" --srcs "$srcJarDir/list"` +
-			` $commonSrcFilesArg --out "$kotlinBuildFile" && ` +
-			`${config.KotlincCmd} ${config.KotlincSuppressJDK9Warnings} ${config.JavacHeapFlags} ` +
-			`$kotlincFlags -jvm-target $kotlinJvmTarget -Xbuild-file=$kotlinBuildFile ` +
-			`-kotlin-home $emptyDir && ` +
+			`${config.GenKotlinBuildFileCmd} $classpath "$name" $classesDir $out.rsp $srcJarDir/list > $kotlinBuildFile &&` +
+			`${config.KotlincCmd} ${config.JavacHeapFlags} $kotlincFlags ` +
+			`-jvm-target $kotlinJvmTarget -Xbuild-file=$kotlinBuildFile -kotlin-home $emptyDir && ` +
 			`${config.SoongZipCmd} -jar -o $out -C $classesDir -D $classesDir && ` +
 			`rm -rf "$srcJarDir"`,
 		CommandDeps: []string{
@@ -55,44 +52,20 @@ var kotlinc = pctx.AndroidRemoteStaticRule("kotlinc", android.RemoteRuleSupports
 		Rspfile:        "$out.rsp",
 		RspfileContent: `$in`,
 	},
-	"kotlincFlags", "classpath", "srcJars", "commonSrcFilesArg", "srcJarDir", "classesDir",
-	"kotlinJvmTarget", "kotlinBuildFile", "emptyDir", "name")
-
-func kotlinCommonSrcsList(ctx android.ModuleContext, commonSrcFiles android.Paths) android.OptionalPath {
-	if len(commonSrcFiles) > 0 {
-		// The list of common_srcs may be too long to put on the command line, but
-		// we can't use the rsp file because it is already being used for srcs.
-		// Insert a second rule to write out the list of resources to a file.
-		commonSrcsList := android.PathForModuleOut(ctx, "kotlinc_common_srcs.list")
-		rule := android.NewRuleBuilder(pctx, ctx)
-		rule.Command().Text("cp").
-			FlagWithRspFileInputList("", commonSrcsList.ReplaceExtension(ctx, "rsp"), commonSrcFiles).
-			Output(commonSrcsList)
-		rule.Build("kotlin_common_srcs_list", "kotlin common_srcs list")
-		return android.OptionalPathForPath(commonSrcsList)
-	}
-	return android.OptionalPath{}
-}
+	"kotlincFlags", "classpath", "srcJars", "srcJarDir", "classesDir", "kotlinJvmTarget", "kotlinBuildFile",
+	"emptyDir", "name")
 
 // kotlinCompile takes .java and .kt sources and srcJars, and compiles the .kt sources into a classes jar in outputFile.
 func kotlinCompile(ctx android.ModuleContext, outputFile android.WritablePath,
-	srcFiles, commonSrcFiles, srcJars android.Paths,
+	srcFiles, srcJars android.Paths,
 	flags javaBuilderFlags) {
 
 	var deps android.Paths
 	deps = append(deps, flags.kotlincClasspath...)
 	deps = append(deps, srcJars...)
-	deps = append(deps, commonSrcFiles...)
 
 	kotlinName := filepath.Join(ctx.ModuleDir(), ctx.ModuleSubDir(), ctx.ModuleName())
 	kotlinName = strings.ReplaceAll(kotlinName, "/", "__")
-
-	commonSrcsList := kotlinCommonSrcsList(ctx, commonSrcFiles)
-	commonSrcFilesArg := ""
-	if commonSrcsList.Valid() {
-		deps = append(deps, commonSrcsList.Path())
-		commonSrcFilesArg = "--common_srcs " + commonSrcsList.String()
-	}
 
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        kotlinc,
@@ -101,14 +74,13 @@ func kotlinCompile(ctx android.ModuleContext, outputFile android.WritablePath,
 		Inputs:      srcFiles,
 		Implicits:   deps,
 		Args: map[string]string{
-			"classpath":         flags.kotlincClasspath.FormJavaClassPath(""),
-			"kotlincFlags":      flags.kotlincFlags,
-			"commonSrcFilesArg": commonSrcFilesArg,
-			"srcJars":           strings.Join(srcJars.Strings(), " "),
-			"classesDir":        android.PathForModuleOut(ctx, "kotlinc", "classes").String(),
-			"srcJarDir":         android.PathForModuleOut(ctx, "kotlinc", "srcJars").String(),
-			"kotlinBuildFile":   android.PathForModuleOut(ctx, "kotlinc-build.xml").String(),
-			"emptyDir":          android.PathForModuleOut(ctx, "kotlinc", "empty").String(),
+			"classpath":       flags.kotlincClasspath.FormJavaClassPath("-classpath"),
+			"kotlincFlags":    flags.kotlincFlags,
+			"srcJars":         strings.Join(srcJars.Strings(), " "),
+			"classesDir":      android.PathForModuleOut(ctx, "kotlinc", "classes").String(),
+			"srcJarDir":       android.PathForModuleOut(ctx, "kotlinc", "srcJars").String(),
+			"kotlinBuildFile": android.PathForModuleOut(ctx, "kotlinc-build.xml").String(),
+			"emptyDir":        android.PathForModuleOut(ctx, "kotlinc", "empty").String(),
 			// http://b/69160377 kotlinc only supports -jvm-target 1.6 and 1.8
 			"kotlinJvmTarget": "1.8",
 			"name":            kotlinName,
@@ -121,11 +93,9 @@ var kapt = pctx.AndroidRemoteStaticRule("kapt", android.RemoteRuleSupports{Goma:
 		Command: `rm -rf "$srcJarDir" "$kotlinBuildFile" "$kaptDir" && ` +
 			`mkdir -p "$srcJarDir" "$kaptDir/sources" "$kaptDir/classes" && ` +
 			`${config.ZipSyncCmd} -d $srcJarDir -l $srcJarDir/list -f "*.java" $srcJars && ` +
-			`${config.GenKotlinBuildFileCmd} --classpath "$classpath" --name "$name"` +
-			` --srcs "$out.rsp" --srcs "$srcJarDir/list"` +
-			` $commonSrcFilesArg --out "$kotlinBuildFile" && ` +
-			`${config.KotlincCmd} ${config.KaptSuppressJDK9Warnings} ${config.KotlincSuppressJDK9Warnings} ` +
-			`${config.JavacHeapFlags} $kotlincFlags -Xplugin=${config.KotlinKaptJar} ` +
+			`${config.GenKotlinBuildFileCmd} $classpath "$name" "" $out.rsp $srcJarDir/list > $kotlinBuildFile &&` +
+			`${config.KotlincCmd} ${config.KotlincSuppressJDK9Warnings} ${config.JavacHeapFlags} $kotlincFlags ` +
+			`-Xplugin=${config.KotlinKaptJar} ` +
 			`-P plugin:org.jetbrains.kotlin.kapt3:sources=$kaptDir/sources ` +
 			`-P plugin:org.jetbrains.kotlin.kapt3:classes=$kaptDir/classes ` +
 			`-P plugin:org.jetbrains.kotlin.kapt3:stubs=$kaptDir/stubs ` +
@@ -150,31 +120,21 @@ var kapt = pctx.AndroidRemoteStaticRule("kapt", android.RemoteRuleSupports{Goma:
 		RspfileContent: `$in`,
 	},
 	"kotlincFlags", "encodedJavacFlags", "kaptProcessorPath", "kaptProcessor",
-	"classpath", "srcJars", "commonSrcFilesArg", "srcJarDir", "kaptDir", "kotlinJvmTarget",
-	"kotlinBuildFile", "name", "classesJarOut")
+	"classpath", "srcJars", "srcJarDir", "kaptDir", "kotlinJvmTarget", "kotlinBuildFile", "name",
+	"classesJarOut")
 
 // kotlinKapt performs Kotlin-compatible annotation processing.  It takes .kt and .java sources and srcjars, and runs
 // annotation processors over all of them, producing a srcjar of generated code in outputFile.  The srcjar should be
 // added as an additional input to kotlinc and javac rules, and the javac rule should have annotation processing
 // disabled.
 func kotlinKapt(ctx android.ModuleContext, srcJarOutputFile, resJarOutputFile android.WritablePath,
-	srcFiles, commonSrcFiles, srcJars android.Paths,
+	srcFiles, srcJars android.Paths,
 	flags javaBuilderFlags) {
-
-	srcFiles = append(android.Paths(nil), srcFiles...)
 
 	var deps android.Paths
 	deps = append(deps, flags.kotlincClasspath...)
 	deps = append(deps, srcJars...)
 	deps = append(deps, flags.processorPath...)
-	deps = append(deps, commonSrcFiles...)
-
-	commonSrcsList := kotlinCommonSrcsList(ctx, commonSrcFiles)
-	commonSrcFilesArg := ""
-	if commonSrcsList.Valid() {
-		deps = append(deps, commonSrcsList.Path())
-		commonSrcFilesArg = "--common_srcs " + commonSrcsList.String()
-	}
 
 	kaptProcessorPath := flags.processorPath.FormRepeatedClassPath("-P plugin:org.jetbrains.kotlin.kapt3:apclasspath=")
 
@@ -202,9 +162,8 @@ func kotlinKapt(ctx android.ModuleContext, srcJarOutputFile, resJarOutputFile an
 		Inputs:         srcFiles,
 		Implicits:      deps,
 		Args: map[string]string{
-			"classpath":         flags.kotlincClasspath.FormJavaClassPath(""),
+			"classpath":         flags.kotlincClasspath.FormJavaClassPath("-classpath"),
 			"kotlincFlags":      flags.kotlincFlags,
-			"commonSrcFilesArg": commonSrcFilesArg,
 			"srcJars":           strings.Join(srcJars.Strings(), " "),
 			"srcJarDir":         android.PathForModuleOut(ctx, "kapt", "srcJars").String(),
 			"kotlinBuildFile":   android.PathForModuleOut(ctx, "kapt", "build.xml").String(),

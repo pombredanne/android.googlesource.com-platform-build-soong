@@ -70,6 +70,7 @@ func (*ndkPrebuiltObjectLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 // ./prebuilts/ndk/current/platforms/android-<sdk_version>/arch-$(HOST_ARCH)/usr/lib/<NAME>.o.
 func NdkPrebuiltObjectFactory() android.Module {
 	module := newBaseModule(android.DeviceSupported, android.MultilibBoth)
+	module.ModuleBase.EnableNativeBridgeSupportByDefault()
 	module.linker = &ndkPrebuiltObjectLinker{
 		objectLinker: objectLinker{
 			baseLinker: NewBaseLinker(nil),
@@ -144,11 +145,11 @@ func NdkPrebuiltStaticStlFactory() android.Module {
 		libraryDecorator: library,
 	}
 	module.installer = nil
-	module.Properties.Sdk_version = StringPtr("minimum")
 	module.Properties.HideFromMake = true
 	module.Properties.AlwaysSdk = true
 	module.Properties.Sdk_version = StringPtr("current")
 	module.stl.Properties.Stl = StringPtr("none")
+	module.ModuleBase.EnableNativeBridgeSupportByDefault()
 	return module.Init()
 }
 
@@ -164,7 +165,7 @@ func (ndk *ndkPrebuiltStlLinker) link(ctx ModuleContext, flags Flags,
 		ctx.ModuleErrorf("NDK prebuilt libraries must have an ndk_lib prefixed name")
 	}
 
-	ndk.libraryDecorator.flagExporter.exportIncludesAsSystem(ctx)
+	ndk.exportIncludesAsSystem(ctx)
 
 	libName := strings.TrimPrefix(ctx.ModuleName(), "ndk_")
 	libExt := flags.Toolchain.ShlibSuffix()
@@ -173,24 +174,5 @@ func (ndk *ndkPrebuiltStlLinker) link(ctx ModuleContext, flags Flags,
 	}
 
 	libDir := getNdkStlLibDir(ctx)
-	lib := libDir.Join(ctx, libName+libExt)
-
-	ndk.libraryDecorator.flagExporter.setProvider(ctx)
-
-	if ndk.static() {
-		depSet := android.NewDepSetBuilder(android.TOPOLOGICAL).Direct(lib).Build()
-		ctx.SetProvider(StaticLibraryInfoProvider, StaticLibraryInfo{
-			StaticLibrary: lib,
-
-			TransitiveStaticLibrariesForOrdering: depSet,
-		})
-	} else {
-		ctx.SetProvider(SharedLibraryInfoProvider, SharedLibraryInfo{
-			SharedLibrary:           lib,
-			UnstrippedSharedLibrary: lib,
-			Target:                  ctx.Target(),
-		})
-	}
-
-	return lib
+	return libDir.Join(ctx, libName+libExt)
 }

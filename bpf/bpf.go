@@ -26,7 +26,7 @@ import (
 )
 
 func init() {
-	registerBpfBuildComponents(android.InitRegistrationContext)
+	android.RegisterModuleType("bpf", BpfFactory)
 	pctx.Import("android/soong/cc/config")
 }
 
@@ -42,12 +42,6 @@ var (
 		},
 		"ccCmd", "cFlags")
 )
-
-func registerBpfBuildComponents(ctx android.RegistrationContext) {
-	ctx.RegisterModuleType("bpf", BpfFactory)
-}
-
-var PrepareForTestWithBpf = android.FixtureRegisterWithContext(registerBpfBuildComponents)
 
 // BpfModule interface is used by the apex package to gather information from a bpf module.
 type BpfModule interface {
@@ -73,10 +67,6 @@ type bpf struct {
 func (bpf *bpf) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	cflags := []string{
 		"-nostdlibinc",
-
-		// Make paths in deps files relative
-		"-no-canonical-prefixes",
-
 		"-O2",
 		"-isystem bionic/libc/include",
 		"-isystem bionic/libc/kernel/uapi",
@@ -126,7 +116,6 @@ func (bpf *bpf) AndroidMk() android.AndroidMkData {
 				names = append(names, objName)
 				fmt.Fprintln(w, "include $(CLEAR_VARS)")
 				fmt.Fprintln(w, "LOCAL_MODULE := ", objName)
-				data.Entries.WriteLicenseVariables(w)
 				fmt.Fprintln(w, "LOCAL_PREBUILT_MODULE_FILE :=", obj.String())
 				fmt.Fprintln(w, "LOCAL_MODULE_STEM :=", obj.Base())
 				fmt.Fprintln(w, "LOCAL_MODULE_CLASS := ETC")
@@ -136,7 +125,6 @@ func (bpf *bpf) AndroidMk() android.AndroidMkData {
 			}
 			fmt.Fprintln(w, "include $(CLEAR_VARS)")
 			fmt.Fprintln(w, "LOCAL_MODULE := ", name)
-			data.Entries.WriteLicenseVariables(w)
 			fmt.Fprintln(w, "LOCAL_REQUIRED_MODULES :=", strings.Join(names, " "))
 			fmt.Fprintln(w, "include $(BUILD_PHONY_PACKAGE)")
 		},

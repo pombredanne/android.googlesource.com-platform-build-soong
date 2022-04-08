@@ -15,6 +15,7 @@
 package android
 
 import (
+	"reflect"
 	"testing"
 )
 
@@ -59,20 +60,15 @@ func TestSoongConfigModule(t *testing.T) {
 			name: "acme_test",
 			module_type: "test",
 			config_namespace: "acme",
-			variables: ["board", "feature1", "FEATURE3", "unused_string_var"],
-			bool_variables: ["feature2", "unused_feature"],
-			value_variables: ["size", "unused_size"],
+			variables: ["board", "feature1", "FEATURE3"],
+			bool_variables: ["feature2"],
+			value_variables: ["size"],
 			properties: ["cflags", "srcs", "defaults"],
 		}
 
 		soong_config_string_variable {
 			name: "board",
-			values: ["soc_a", "soc_b", "soc_c", "soc_d"],
-		}
-
-		soong_config_string_variable {
-			name: "unused_string_var",
-			values: ["a", "b"],
+			values: ["soc_a", "soc_b"],
 		}
 
 		soong_config_bool_variable {
@@ -109,28 +105,15 @@ func TestSoongConfigModule(t *testing.T) {
 					soc_b: {
 						cflags: ["-DSOC_B"],
 					},
-					soc_c: {},
-					conditions_default: {
-						cflags: ["-DSOC_CONDITIONS_DEFAULT"],
-					},
 				},
 				size: {
 					cflags: ["-DSIZE=%s"],
-					conditions_default: {
-						cflags: ["-DSIZE=CONDITIONS_DEFAULT"],
-					},
 				},
 				feature1: {
-					  conditions_default: {
-						  cflags: ["-DF1_CONDITIONS_DEFAULT"],
-					  },
 					cflags: ["-DFEATURE1"],
 				},
 				feature2: {
 					cflags: ["-DFEATURE2"],
-					 conditions_default: {
-						 cflags: ["-DF2_CONDITIONS_DEFAULT"],
-					 },
 				},
 				FEATURE3: {
 					cflags: ["-DFEATURE3"],
@@ -162,7 +145,6 @@ func TestSoongConfigModule(t *testing.T) {
 						cflags: ["-DSOC_B"],
 						defaults: ["foo_defaults_b"],
 					},
-					soc_c: {},
 				},
 				size: {
 					cflags: ["-DSIZE=%s"],
@@ -180,126 +162,46 @@ func TestSoongConfigModule(t *testing.T) {
 		}
     `
 
-	fixtureForVendorVars := func(vars map[string]map[string]string) FixturePreparer {
-		return FixtureModifyProductVariables(func(variables FixtureProductVariables) {
-			variables.VendorVars = vars
-		})
-	}
+	run := func(t *testing.T, bp string, fs map[string][]byte) {
+		config := TestConfig(buildDir, nil, bp, fs)
 
-	run := func(t *testing.T, bp string, fs MockFS) {
-		testCases := []struct {
-			name                     string
-			preparer                 FixturePreparer
-			fooExpectedFlags         []string
-			fooDefaultsExpectedFlags []string
-		}{
-			{
-				name: "withValues",
-				preparer: fixtureForVendorVars(map[string]map[string]string{
-					"acme": {
-						"board":    "soc_a",
-						"size":     "42",
-						"feature1": "true",
-						"feature2": "false",
-						// FEATURE3 unset
-						"unused_feature":    "true", // unused
-						"unused_size":       "1",    // unused
-						"unused_string_var": "a",    // unused
-					},
-				}),
-				fooExpectedFlags: []string{
-					"DEFAULT",
-					"-DGENERIC",
-					"-DF2_CONDITIONS_DEFAULT",
-					"-DSIZE=42",
-					"-DSOC_A",
-					"-DFEATURE1",
-				},
-				fooDefaultsExpectedFlags: []string{
-					"DEFAULT_A",
-					"DEFAULT",
-					"-DGENERIC",
-					"-DSIZE=42",
-					"-DSOC_A",
-					"-DFEATURE1",
-				},
-			},
-			{
-				name: "empty_prop_for_string_var",
-				preparer: fixtureForVendorVars(map[string]map[string]string{
-					"acme": {"board": "soc_c"}}),
-				fooExpectedFlags: []string{
-					"DEFAULT",
-					"-DGENERIC",
-					"-DF2_CONDITIONS_DEFAULT",
-					"-DSIZE=CONDITIONS_DEFAULT",
-					"-DF1_CONDITIONS_DEFAULT",
-				},
-				fooDefaultsExpectedFlags: []string{
-					"DEFAULT",
-					"-DGENERIC",
-				},
-			},
-			{
-				name: "unused_string_var",
-				preparer: fixtureForVendorVars(map[string]map[string]string{
-					"acme": {"board": "soc_d"}}),
-				fooExpectedFlags: []string{
-					"DEFAULT",
-					"-DGENERIC",
-					"-DF2_CONDITIONS_DEFAULT",
-					"-DSIZE=CONDITIONS_DEFAULT",
-					"-DSOC_CONDITIONS_DEFAULT", // foo does not contain a prop "soc_d", so we use the default
-					"-DF1_CONDITIONS_DEFAULT",
-				},
-				fooDefaultsExpectedFlags: []string{
-					"DEFAULT",
-					"-DGENERIC",
-				},
-			},
-
-			{
-				name:     "conditions_default",
-				preparer: fixtureForVendorVars(map[string]map[string]string{}),
-				fooExpectedFlags: []string{
-					"DEFAULT",
-					"-DGENERIC",
-					"-DF2_CONDITIONS_DEFAULT",
-					"-DSIZE=CONDITIONS_DEFAULT",
-					"-DSOC_CONDITIONS_DEFAULT",
-					"-DF1_CONDITIONS_DEFAULT",
-				},
-				fooDefaultsExpectedFlags: []string{
-					"DEFAULT",
-					"-DGENERIC",
-				},
+		config.TestProductVariables.VendorVars = map[string]map[string]string{
+			"acme": map[string]string{
+				"board":    "soc_a",
+				"size":     "42",
+				"feature1": "true",
+				"feature2": "false",
+				// FEATURE3 unset
 			},
 		}
 
-		for _, tc := range testCases {
-			t.Run(tc.name, func(t *testing.T) {
-				result := GroupFixturePreparers(
-					tc.preparer,
-					PrepareForTestWithDefaults,
-					FixtureRegisterWithContext(func(ctx RegistrationContext) {
-						ctx.RegisterModuleType("soong_config_module_type_import", soongConfigModuleTypeImportFactory)
-						ctx.RegisterModuleType("soong_config_module_type", soongConfigModuleTypeFactory)
-						ctx.RegisterModuleType("soong_config_string_variable", soongConfigStringVariableDummyFactory)
-						ctx.RegisterModuleType("soong_config_bool_variable", soongConfigBoolVariableDummyFactory)
-						ctx.RegisterModuleType("test_defaults", soongConfigTestDefaultsModuleFactory)
-						ctx.RegisterModuleType("test", soongConfigTestModuleFactory)
-					}),
-					fs.AddToFixture(),
-					FixtureWithRootAndroidBp(bp),
-				).RunTest(t)
+		ctx := NewTestContext()
+		ctx.RegisterModuleType("soong_config_module_type_import", soongConfigModuleTypeImportFactory)
+		ctx.RegisterModuleType("soong_config_module_type", soongConfigModuleTypeFactory)
+		ctx.RegisterModuleType("soong_config_string_variable", soongConfigStringVariableDummyFactory)
+		ctx.RegisterModuleType("soong_config_bool_variable", soongConfigBoolVariableDummyFactory)
+		ctx.RegisterModuleType("test_defaults", soongConfigTestDefaultsModuleFactory)
+		ctx.RegisterModuleType("test", soongConfigTestModuleFactory)
+		ctx.PreArchMutators(RegisterDefaultsPreArchMutators)
+		ctx.Register(config)
 
-				foo := result.ModuleForTests("foo", "").Module().(*soongConfigTestModule)
-				AssertDeepEquals(t, "foo cflags", tc.fooExpectedFlags, foo.props.Cflags)
+		_, errs := ctx.ParseBlueprintsFiles("Android.bp")
+		FailIfErrored(t, errs)
+		_, errs = ctx.PrepareBuildActions(config)
+		FailIfErrored(t, errs)
 
-				fooDefaults := result.ModuleForTests("foo_with_defaults", "").Module().(*soongConfigTestModule)
-				AssertDeepEquals(t, "foo_with_defaults cflags", tc.fooDefaultsExpectedFlags, fooDefaults.props.Cflags)
-			})
+		basicCFlags := []string{"DEFAULT", "-DGENERIC", "-DSIZE=42", "-DSOC_A", "-DFEATURE1"}
+
+		foo := ctx.ModuleForTests("foo", "").Module().(*soongConfigTestModule)
+		if g, w := foo.props.Cflags, basicCFlags; !reflect.DeepEqual(g, w) {
+			t.Errorf("wanted foo cflags %q, got %q", w, g)
 		}
+
+		fooDefaults := ctx.ModuleForTests("foo_with_defaults", "").Module().(*soongConfigTestModule)
+		if g, w := fooDefaults.props.Cflags, append([]string{"DEFAULT_A"}, basicCFlags...); !reflect.DeepEqual(g, w) {
+			t.Errorf("wanted foo_with_defaults cflags %q, got %q", w, g)
+		}
+
 	}
 
 	t.Run("single file", func(t *testing.T) {
@@ -311,12 +213,4 @@ func TestSoongConfigModule(t *testing.T) {
 			"SoongConfig.bp": []byte(configBp),
 		})
 	})
-}
-
-func testConfigWithVendorVars(buildDir, bp string, fs map[string][]byte, vendorVars map[string]map[string]string) Config {
-	config := TestConfig(buildDir, nil, bp, fs)
-
-	config.TestProductVariables.VendorVars = vendorVars
-
-	return config
 }
