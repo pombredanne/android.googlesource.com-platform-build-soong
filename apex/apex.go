@@ -76,6 +76,8 @@ func RegisterPostDepsMutators(ctx android.RegisterMutatorsContext) {
 	ctx.BottomUp("apex", apexMutator).Parallel()
 	ctx.BottomUp("apex_directly_in_any", apexDirectlyInAnyMutator).Parallel()
 	ctx.BottomUp("apex_flattened", apexFlattenedMutator).Parallel()
+	// Register after apex_info mutator so that it can use ApexVariationName
+	ctx.TopDown("apex_strict_updatability_lint", apexStrictUpdatibilityLintMutator).Parallel()
 }
 
 type apexBundleProperties struct {
@@ -412,8 +414,8 @@ type apexBundle struct {
 	// Processed file_contexts files
 	fileContexts android.WritablePath
 
-	// Struct holding the merged notice file paths in different formats
-	mergedNotices android.NoticeOutputs
+	// Path to notice file in html.gz format.
+	htmlGzNotice android.WritablePath
 
 	// The built APEX file. This is the main product.
 	// Could be .apex or .capex
@@ -485,11 +487,10 @@ const (
 // for each of the files in case when the APEX is flattened.
 type apexFile struct {
 	// buildFile is put in the installDir inside the APEX.
-	builtFile   android.Path
-	noticeFiles android.Paths
-	installDir  string
-	customStem  string
-	symlinks    []string // additional symlinks
+	builtFile  android.Path
+	installDir string
+	customStem string
+	symlinks   []string // additional symlinks
 
 	// Info for Android.mk Module name of `module` in AndroidMk. Note the generated AndroidMk
 	// module for apexFile is named something like <AndroidMk module name>.<apex name>[<apex
@@ -526,7 +527,6 @@ func newApexFile(ctx android.BaseModuleContext, builtFile android.Path, androidM
 		module:              module,
 	}
 	if module != nil {
-		ret.noticeFiles = module.NoticeFiles()
 		ret.moduleDir = ctx.OtherModuleDir(module)
 		ret.requiredModuleNames = module.RequiredModuleNames()
 		ret.targetRequiredModuleNames = module.TargetRequiredModuleNames()
@@ -1003,6 +1003,66 @@ func apexInfoMutator(mctx android.TopDownMutatorContext) {
 		a.ApexInfoMutator(mctx)
 		return
 	}
+}
+
+// apexStrictUpdatibilityLintMutator propagates strict_updatability_linting to transitive deps of a mainline module
+// This check is enforced for updatable modules
+func apexStrictUpdatibilityLintMutator(mctx android.TopDownMutatorContext) {
+	if !mctx.Module().Enabled() {
+		return
+	}
+	if apex, ok := mctx.Module().(*apexBundle); ok && apex.checkStrictUpdatabilityLinting() {
+		mctx.WalkDeps(func(child, parent android.Module) bool {
+			// b/208656169 Do not propagate strict updatability linting to libcore/
+			// These libs are available on the classpath during compilation
+			// These libs are transitive deps of the sdk. See java/sdk.go:decodeSdkDep
+			// Only skip libraries defined in libcore root, not subdirectories
+			if mctx.OtherModuleDir(child) == "libcore" {
+				// Do not traverse transitive deps of libcore/ libs
+				return false
+			}
+			if android.InList(child.Name(), skipLintJavalibAllowlist) {
+				return false
+			}
+			if lintable, ok := child.(java.LintDepSetsIntf); ok {
+				lintable.SetStrictUpdatabilityLinting(true)
+			}
+			// visit transitive deps
+			return true
+		})
+	}
+}
+
+// TODO: b/215736885 Whittle the denylist
+// Transitive deps of certain mainline modules baseline NewApi errors
+// Skip these mainline modules for now
+var (
+	skipStrictUpdatabilityLintAllowlist = []string{
+		"com.android.art",
+		"com.android.art.debug",
+		"com.android.conscrypt",
+		"com.android.media",
+		// test apexes
+		"test_com.android.art",
+		"test_com.android.conscrypt",
+		"test_com.android.media",
+		"test_jitzygote_com.android.art",
+	}
+
+	// TODO: b/215736885 Remove this list
+	skipLintJavalibAllowlist = []string{
+		"conscrypt.module.platform.api.stubs",
+		"conscrypt.module.public.api.stubs",
+		"conscrypt.module.public.api.stubs.system",
+		"conscrypt.module.public.api.stubs.module_lib",
+		"framework-media.stubs",
+		"framework-media.stubs.system",
+		"framework-media.stubs.module_lib",
+	}
+)
+
+func (a *apexBundle) checkStrictUpdatabilityLinting() bool {
+	return a.Updatable() && !android.InList(a.ApexVariationName(), skipStrictUpdatabilityLintAllowlist)
 }
 
 // apexUniqueVariationsMutator checks if any dependencies use unique apex variations. If so, use
@@ -3218,21 +3278,19 @@ func makeApexAvailableBaseline() map[string][]string {
 }
 
 func init() {
-	android.AddNeverAllowRules(createApexPermittedPackagesRules(qModulesPackages())...)
-	android.AddNeverAllowRules(createApexPermittedPackagesRules(rModulesPackages())...)
+	android.AddNeverAllowRules(createBcpPermittedPackagesRules(qBcpPackages())...)
+	android.AddNeverAllowRules(createBcpPermittedPackagesRules(rBcpPackages())...)
 }
 
-func createApexPermittedPackagesRules(modules_packages map[string][]string) []android.Rule {
-	rules := make([]android.Rule, 0, len(modules_packages))
-	for module_name, module_packages := range modules_packages {
+func createBcpPermittedPackagesRules(bcpPermittedPackages map[string][]string) []android.Rule {
+	rules := make([]android.Rule, 0, len(bcpPermittedPackages))
+	for jar, permittedPackages := range bcpPermittedPackages {
 		permittedPackagesRule := android.NeverAllow().
-			BootclasspathJar().
-			With("apex_available", module_name).
-			WithMatcher("permitted_packages", android.NotInList(module_packages)).
-			WithMatcher("min_sdk_version", android.LessThanSdkVersion("Tiramisu")).
-			Because("jars that are part of the " + module_name +
-				" module may only use these package prefixes: " + strings.Join(module_packages, ",") +
-				" with min_sdk < T. Please consider the following alternatives:\n" +
+			With("name", jar).
+			WithMatcher("permitted_packages", android.NotInList(permittedPackages)).
+			Because(jar +
+				" bootjar may only use these package prefixes: " + strings.Join(permittedPackages, ",") +
+				". Please consider the following alternatives:\n" +
 				"    1. If the offending code is from a statically linked library, consider " +
 				"removing that dependency and using an alternative already in the " +
 				"bootclasspath, or perhaps a shared library." +
@@ -3240,55 +3298,56 @@ func createApexPermittedPackagesRules(modules_packages map[string][]string) []an
 				"    3. Jarjar the offending code. Please be mindful of the potential system " +
 				"health implications of bundling that code, particularly if the offending jar " +
 				"is part of the bootclasspath.")
+
 		rules = append(rules, permittedPackagesRule)
 	}
 	return rules
 }
 
-// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART on Q/R/S.
+// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART.
 // Adding code to the bootclasspath in new packages will cause issues on module update.
-func qModulesPackages() map[string][]string {
+func qBcpPackages() map[string][]string {
 	return map[string][]string{
-		"com.android.conscrypt": []string{
+		"conscrypt": []string{
 			"android.net.ssl",
 			"com.android.org.conscrypt",
 		},
-		"com.android.media": []string{
+		"updatable-media": []string{
 			"android.media",
 		},
 	}
 }
 
-// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART on R/S.
+// DO NOT EDIT! These are the package prefixes that are exempted from being AOT'ed by ART.
 // Adding code to the bootclasspath in new packages will cause issues on module update.
-func rModulesPackages() map[string][]string {
+func rBcpPackages() map[string][]string {
 	return map[string][]string{
-		"com.android.mediaprovider": []string{
+		"framework-mediaprovider": []string{
 			"android.provider",
 		},
-		"com.android.permission": []string{
+		"framework-permission": []string{
 			"android.permission",
 			"android.app.role",
 			"com.android.permission",
 			"com.android.role",
 		},
-		"com.android.sdkext": []string{
+		"framework-sdkextensions": []string{
 			"android.os.ext",
 		},
-		"com.android.os.statsd": []string{
+		"framework-statsd": []string{
 			"android.app",
 			"android.os",
 			"android.util",
 			"com.android.internal.statsd",
 			"com.android.server.stats",
 		},
-		"com.android.wifi": []string{
+		"framework-wifi": []string{
 			"com.android.server.wifi",
 			"com.android.wifi.x",
 			"android.hardware.wifi",
 			"android.net.wifi",
 		},
-		"com.android.tethering": []string{
+		"framework-tethering": []string{
 			"android.net",
 		},
 	}
