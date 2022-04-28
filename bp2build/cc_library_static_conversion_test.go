@@ -166,6 +166,8 @@ cc_library_static {
         "header_lib_1",
         "header_lib_2"
     ],
+    sdk_version: "current",
+    min_sdk_version: "29",
 
     // TODO: Also support export_header_lib_headers
 }`,
@@ -202,6 +204,8 @@ cc_library_static {
         ":whole_static_lib_1",
         ":whole_static_lib_2",
     ]`,
+        "sdk_version": `"current"`,
+        "min_sdk_version": `"29"`,
 			}),
 		},
 	})
@@ -1436,7 +1440,6 @@ func TestCcLibraryStaticProto(t *testing.T) {
 	name: "foo",
 	srcs: ["foo.proto"],
 	proto: {
-		canonical_path_from_root: false,
 		export_proto_headers: true,
 	},
 	include_build_directory: false,

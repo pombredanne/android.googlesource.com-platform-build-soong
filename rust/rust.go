@@ -27,6 +27,7 @@ import (
 	cc_config "android/soong/cc/config"
 	"android/soong/fuzz"
 	"android/soong/rust/config"
+	"android/soong/snapshot"
 )
 
 var pctx = android.NewPackageContext("android/soong/rust")
@@ -328,6 +329,20 @@ func (mod *Module) IsVndkExt() bool {
 }
 
 func (mod *Module) IsVndkSp() bool {
+	return false
+}
+
+func (mod *Module) IsVndkPrebuiltLibrary() bool {
+	// Rust modules do not provide VNDK prebuilts
+	return false
+}
+
+func (mod *Module) IsVendorPublicLibrary() bool {
+	return mod.VendorProperties.IsVendorPublicLibrary
+}
+
+func (mod *Module) SdkAndPlatformVariantVisibleToMake() bool {
+	// Rust modules to not provide Sdk variants
 	return false
 }
 
@@ -806,6 +821,13 @@ func (mod *Module) Installable() *bool {
 	return mod.Properties.Installable
 }
 
+func (mod *Module) ProcMacro() bool {
+	if pm, ok := mod.compiler.(procMacroInterface); ok {
+		return pm.ProcMacro()
+	}
+	return false
+}
+
 func (mod *Module) toolchain(ctx android.BaseModuleContext) config.Toolchain {
 	if mod.cachedToolchain == nil {
 		mod.cachedToolchain = config.FindToolchain(ctx.Os(), ctx.Arch())
@@ -833,24 +855,7 @@ func (mod *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 	toolchain := mod.toolchain(ctx)
 	mod.makeLinkType = cc.GetMakeLinkType(actx, mod)
 
-	// Differentiate static libraries that are vendor available
-	if mod.UseVndk() {
-		if mod.InProduct() && !mod.OnlyInProduct() {
-			mod.Properties.SubName += cc.ProductSuffix
-		} else {
-			mod.Properties.SubName += cc.VendorSuffix
-		}
-	} else if mod.InRamdisk() && !mod.OnlyInRamdisk() {
-		mod.Properties.SubName += cc.RamdiskSuffix
-	} else if mod.InVendorRamdisk() && !mod.OnlyInVendorRamdisk() {
-		mod.Properties.SubName += cc.VendorRamdiskSuffix
-	} else if mod.InRecovery() && !mod.OnlyInRecovery() {
-		mod.Properties.SubName += cc.RecoverySuffix
-	}
-
-	if mod.Target().NativeBridge == android.NativeBridgeEnabled {
-		mod.Properties.SubName += cc.NativeBridgeSuffix
-	}
+	mod.Properties.SubName = cc.GetSubnameProperty(actx, mod)
 
 	if !toolchain.Supported() {
 		// This toolchain's unsupported, there's nothing to do for this mod.
@@ -920,12 +925,13 @@ func (mod *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 		}
 
 		apexInfo := actx.Provider(android.ApexInfoProvider).(android.ApexInfo)
-		if !proptools.BoolDefault(mod.Installable(), mod.EverInstallable()) {
+		if !proptools.BoolDefault(mod.Installable(), mod.EverInstallable()) && !mod.ProcMacro() {
 			// If the module has been specifically configure to not be installed then
 			// hide from make as otherwise it will break when running inside make as the
 			// output path to install will not be specified. Not all uninstallable
 			// modules can be hidden from make as some are needed for resolving make
-			// side dependencies.
+			// side dependencies. In particular, proc-macros need to be captured in the
+			// host snapshot.
 			mod.HideFromMake()
 		} else if !mod.installable(apexInfo) {
 			mod.SkipInstall()
@@ -968,6 +974,7 @@ func (mod *Module) deps(ctx DepsContext) Deps {
 	deps.ProcMacros = android.LastUniqueStrings(deps.ProcMacros)
 	deps.SharedLibs = android.LastUniqueStrings(deps.SharedLibs)
 	deps.StaticLibs = android.LastUniqueStrings(deps.StaticLibs)
+	deps.Stdlibs = android.LastUniqueStrings(deps.Stdlibs)
 	deps.WholeStaticLibs = android.LastUniqueStrings(deps.WholeStaticLibs)
 	return deps
 
@@ -1045,7 +1052,7 @@ func (mod *Module) begin(ctx BaseModuleContext) {
 }
 
 func (mod *Module) Prebuilt() *android.Prebuilt {
-	if p, ok := mod.compiler.(*prebuiltLibraryDecorator); ok {
+	if p, ok := mod.compiler.(rustPrebuilt); ok {
 		return p.prebuilt()
 	}
 	return nil
@@ -1192,6 +1199,10 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 				depPaths.depClangFlags = append(depPaths.depClangFlags, exportedInfo.Flags...)
 				depPaths.depGeneratedHeaders = append(depPaths.depGeneratedHeaders, exportedInfo.GeneratedHeaders...)
 				directStaticLibDeps = append(directStaticLibDeps, ccDep)
+
+				// Record baseLibName for snapshots.
+				mod.Properties.SnapshotStaticLibs = append(mod.Properties.SnapshotStaticLibs, cc.BaseLibName(depName))
+
 				mod.Properties.AndroidMkStaticLibs = append(mod.Properties.AndroidMkStaticLibs, makeLibName)
 			case cc.IsSharedDepTag(depTag):
 				// For the shared lib dependencies, we may link to the stub variant
@@ -1214,7 +1225,6 @@ func (mod *Module) depsToPaths(ctx android.ModuleContext) PathDeps {
 
 				// Record baseLibName for snapshots.
 				mod.Properties.SnapshotSharedLibs = append(mod.Properties.SnapshotSharedLibs, cc.BaseLibName(depName))
-				mod.Properties.SnapshotStaticLibs = append(mod.Properties.SnapshotStaticLibs, cc.BaseLibName(depName))
 
 				mod.Properties.AndroidMkSharedLibs = append(mod.Properties.AndroidMkSharedLibs, makeLibName)
 				exportDep = true
@@ -1358,13 +1368,12 @@ func (mod *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 	}
 
 	// rlibs
+	rlibDepVariations = append(rlibDepVariations, blueprint.Variation{Mutator: "rust_libraries", Variation: rlibVariation})
 	for _, lib := range deps.Rlibs {
 		depTag := rlibDepTag
 		lib = cc.RewriteSnapshotLib(lib, cc.GetSnapshot(mod, &snapshotInfo, actx).Rlibs)
 
-		actx.AddVariationDependencies(append(rlibDepVariations, []blueprint.Variation{
-			{Mutator: "rust_libraries", Variation: rlibVariation},
-		}...), depTag, lib)
+		actx.AddVariationDependencies(rlibDepVariations, depTag, lib)
 	}
 
 	// dylibs
@@ -1376,21 +1385,25 @@ func (mod *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 	// rustlibs
 	if deps.Rustlibs != nil && !mod.compiler.Disabled() {
 		autoDep := mod.compiler.(autoDeppable).autoDep(ctx)
-		if autoDep.depTag == rlibDepTag {
-			for _, lib := range deps.Rustlibs {
-				depTag := autoDep.depTag
-				lib = cc.RewriteSnapshotLib(lib, cc.GetSnapshot(mod, &snapshotInfo, actx).Rlibs)
-				actx.AddVariationDependencies(append(rlibDepVariations, []blueprint.Variation{
-					{Mutator: "rust_libraries", Variation: autoDep.variation},
-				}...), depTag, lib)
+		for _, lib := range deps.Rustlibs {
+			if autoDep.depTag == rlibDepTag {
+				// Handle the rlib deptag case
+				addRlibDependency(actx, lib, mod, snapshotInfo, rlibDepVariations)
+			} else {
+				// autoDep.depTag is a dylib depTag. Not all rustlibs may be available as a dylib however.
+				// Check for the existence of the dylib deptag variant. Select it if available,
+				// otherwise select the rlib variant.
+				autoDepVariations := append(commonDepVariations,
+					blueprint.Variation{Mutator: "rust_libraries", Variation: autoDep.variation})
+				if actx.OtherModuleDependencyVariantExists(autoDepVariations, lib) {
+					actx.AddVariationDependencies(autoDepVariations, autoDep.depTag, lib)
+				} else {
+					// If there's no dylib dependency available, try to add the rlib dependency instead.
+					addRlibDependency(actx, lib, mod, snapshotInfo, rlibDepVariations)
+				}
 			}
-		} else {
-			actx.AddVariationDependencies(
-				append(commonDepVariations, blueprint.Variation{Mutator: "rust_libraries", Variation: autoDep.variation}),
-				autoDep.depTag, deps.Rustlibs...)
 		}
 	}
-
 	// stdlibs
 	if deps.Stdlibs != nil {
 		if mod.compiler.stdLinkage(ctx) == RlibLinkage {
@@ -1466,6 +1479,12 @@ func (mod *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 	actx.AddFarVariationDependencies(ctx.Config().BuildOSTarget.Variations(), procMacroDepTag, deps.ProcMacros...)
 }
 
+// addRlibDependency will add an rlib dependency, rewriting to the snapshot library if available.
+func addRlibDependency(actx android.BottomUpMutatorContext, lib string, mod *Module, snapshotInfo *cc.SnapshotInfo, variations []blueprint.Variation) {
+	lib = cc.RewriteSnapshotLib(lib, cc.GetSnapshot(mod, &snapshotInfo, actx).Rlibs)
+	actx.AddVariationDependencies(variations, rlibDepTag, lib)
+}
+
 func BeginMutator(ctx android.BottomUpMutatorContext) {
 	if mod, ok := ctx.Module().(*Module); ok && mod.Enabled() {
 		mod.beginMutator(ctx)
@@ -1497,6 +1516,7 @@ func (mod *Module) disableClippy() {
 }
 
 var _ android.HostToolProvider = (*Module)(nil)
+var _ snapshot.RelativeInstallPath = (*Module)(nil)
 
 func (mod *Module) HostToolPath() android.OptionalPath {
 	if !mod.Host() {
@@ -1504,6 +1524,10 @@ func (mod *Module) HostToolPath() android.OptionalPath {
 	}
 	if binary, ok := mod.compiler.(*binaryDecorator); ok {
 		return android.OptionalPathForPath(binary.baseCompiler.path)
+	} else if pm, ok := mod.compiler.(*procMacroDecorator); ok {
+		// Even though proc-macros aren't strictly "tools", since they target the compiler
+		// and act as compiler plugins, we treat them similarly.
+		return android.OptionalPathForPath(pm.baseCompiler.path)
 	}
 	return android.OptionalPath{}
 }
