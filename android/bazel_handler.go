@@ -50,8 +50,8 @@ type cqueryRequest interface {
 
 // Portion of cquery map key to describe target configuration.
 type configKey struct {
-	archType ArchType
-	osType   OsType
+	arch   string
+	osType OsType
 }
 
 // Map key to describe bazel cquery requests.
@@ -73,7 +73,7 @@ type BazelHandler interface {
 }
 
 type BazelContext interface {
-	// The below methods involve queuing cquery requests to be later invoked
+	// The methods below involve queuing cquery requests to be later invoked
 	// by bazel. If any of these methods return (_, false), then the request
 	// has been queued to be run later.
 
@@ -561,7 +561,7 @@ def %s(target):
     return id_string + ">>" + %s(target)
 `
 
-	for requestType, _ := range requestTypeToCqueryIdEntries {
+	for requestType := range requestTypeToCqueryIdEntries {
 		labelMapName := requestType.Name() + "_Labels"
 		functionName := requestType.Name() + "_Fn"
 		labelRegistrationMapSection += fmt.Sprintf(mapDeclarationFormatString,
@@ -664,7 +664,12 @@ func (context *bazelContext) InvokeBazel() error {
 	if err != nil {
 		return err
 	}
-
+	if metricsDir := context.paths.BazelMetricsDir(); metricsDir != "" {
+		err = os.MkdirAll(metricsDir, 0777)
+		if err != nil {
+			return err
+		}
+	}
 	err = ioutil.WriteFile(filepath.Join(soongInjectionPath, "WORKSPACE.bazel"), []byte{}, 0666)
 	if err != nil {
 		return err
@@ -716,9 +721,9 @@ func (context *bazelContext) InvokeBazel() error {
 		}
 	}
 
-	for val, _ := range context.requests {
+	for val := range context.requests {
 		if cqueryResult, ok := cqueryResults[getCqueryId(val)]; ok {
-			context.results[val] = string(cqueryResult)
+			context.results[val] = cqueryResult
 		} else {
 			return fmt.Errorf("missing result for bazel target %s. query output: [%s], cquery err: [%s]",
 				getCqueryId(val), cqueryOutput, cqueryErr)
@@ -857,7 +862,7 @@ func getCqueryId(key cqueryKey) string {
 }
 
 func getConfigString(key cqueryKey) string {
-	arch := key.configKey.archType.Name
+	arch := key.configKey.arch
 	if len(arch) == 0 || arch == "common" {
 		// Use host platform, which is currently hardcoded to be x86_64.
 		arch = "x86_64"
@@ -871,5 +876,9 @@ func getConfigString(key cqueryKey) string {
 }
 
 func GetConfigKey(ctx ModuleContext) configKey {
-	return configKey{archType: ctx.Arch().ArchType, osType: ctx.Os()}
+	return configKey{
+		// use string because Arch is not a valid key in go
+		arch:   ctx.Arch().String(),
+		osType: ctx.Os(),
+	}
 }

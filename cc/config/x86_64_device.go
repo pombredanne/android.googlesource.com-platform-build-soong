@@ -37,10 +37,10 @@ var (
 		"": []string{
 			"-march=x86-64",
 		},
+
 		"broadwell": []string{
 			"-march=broadwell",
 		},
-
 		"haswell": []string{
 			"-march=core-avx2",
 		},
@@ -78,14 +78,6 @@ var (
 		"popcnt": []string{"-mpopcnt"},
 		"aes_ni": []string{"-maes"},
 	}
-
-	x86_64DefaultArchVariantFeatures = []string{
-		"ssse3",
-		"sse4",
-		"sse4_1",
-		"sse4_2",
-		"popcnt",
-	}
 )
 
 const (
@@ -93,34 +85,32 @@ const (
 )
 
 func init() {
-	android.RegisterDefaultArchVariantFeatures(android.Android, android.X86_64, x86_64DefaultArchVariantFeatures...)
-	exportedStringListVars.Set("X86_64DefaultArchVariantFeatures", x86_64DefaultArchVariantFeatures)
 
 	pctx.StaticVariable("x86_64GccVersion", x86_64GccVersion)
 
 	pctx.SourcePathVariable("X86_64GccRoot",
 		"prebuilts/gcc/${HostPrebuiltTag}/x86/x86_64-linux-android-${x86_64GccVersion}")
 
-	exportStringListStaticVariable("X86_64ToolchainCflags", []string{"-m64"})
-	exportStringListStaticVariable("X86_64ToolchainLdflags", []string{"-m64"})
+	exportedVars.ExportStringListStaticVariable("X86_64ToolchainCflags", []string{"-m64"})
+	exportedVars.ExportStringListStaticVariable("X86_64ToolchainLdflags", []string{"-m64"})
 
-	exportStringListStaticVariable("X86_64Ldflags", x86_64Ldflags)
-	exportStringListStaticVariable("X86_64Lldflags", x86_64Ldflags)
+	exportedVars.ExportStringListStaticVariable("X86_64Ldflags", x86_64Ldflags)
+	exportedVars.ExportStringListStaticVariable("X86_64Lldflags", x86_64Ldflags)
 
 	// Clang cflags
-	exportStringListStaticVariable("X86_64Cflags", x86_64Cflags)
-	exportStringListStaticVariable("X86_64Cppflags", x86_64Cppflags)
+	exportedVars.ExportStringListStaticVariable("X86_64Cflags", x86_64Cflags)
+	exportedVars.ExportStringListStaticVariable("X86_64Cppflags", x86_64Cppflags)
 
 	// Yasm flags
-	exportStringListStaticVariable("X86_64YasmFlags", []string{
+	exportedVars.ExportStringListStaticVariable("X86_64YasmFlags", []string{
 		"-f elf64",
 		"-m amd64",
 	})
 
 	// Extended cflags
 
-	exportedStringListDictVars.Set("X86_64ArchVariantCflags", x86_64ArchVariantCflags)
-	exportedStringListDictVars.Set("X86_64ArchFeatureCflags", x86_64ArchFeatureCflags)
+	exportedVars.ExportStringListDict("X86_64ArchVariantCflags", x86_64ArchVariantCflags)
+	exportedVars.ExportStringListDict("X86_64ArchFeatureCflags", x86_64ArchFeatureCflags)
 
 	// Architecture variant cflags
 	for variant, cflags := range x86_64ArchVariantCflags {

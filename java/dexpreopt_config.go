@@ -59,21 +59,23 @@ func genBootImageConfigRaw(ctx android.PathContext) map[string]*bootImageConfig 
 			name:                     artBootImageName,
 			stem:                     "boot",
 			installDirOnHost:         "apex/art_boot_images/javalib",
-			installDirOnDevice:       "apex/com.android.art/javalib",
+			installDirOnDevice:       "system/framework",
 			profileInstallPathInApex: "etc/boot-image.prof",
 			modules:                  artModules,
+			preloadedClassesFile:     "art/build/boot/preloaded-classes",
 		}
 
 		// Framework config for the boot image extension.
 		// It includes framework libraries and depends on the ART config.
 		frameworkSubdir := "system/framework"
 		frameworkCfg := bootImageConfig{
-			extends:            &artCfg,
-			name:               frameworkBootImageName,
-			stem:               "boot",
-			installDirOnHost:   frameworkSubdir,
-			installDirOnDevice: frameworkSubdir,
-			modules:            frameworkModules,
+			extends:              &artCfg,
+			name:                 frameworkBootImageName,
+			stem:                 "boot",
+			installDirOnHost:     frameworkSubdir,
+			installDirOnDevice:   frameworkSubdir,
+			modules:              frameworkModules,
+			preloadedClassesFile: "frameworks/base/config/preloaded-classes",
 		}
 
 		return map[string]*bootImageConfig{
