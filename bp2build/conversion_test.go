@@ -95,6 +95,14 @@ func TestCreateBazelFiles_Bp2Build_CreatesDefaultFiles(t *testing.T) {
 			basename: "constants.bzl",
 		},
 		{
+			dir:      "java_toolchain",
+			basename: GeneratedBuildFileName,
+		},
+		{
+			dir:      "java_toolchain",
+			basename: "constants.bzl",
+		},
+		{
 			dir:      "metrics",
 			basename: "converted_modules.txt",
 		},
@@ -103,12 +111,20 @@ func TestCreateBazelFiles_Bp2Build_CreatesDefaultFiles(t *testing.T) {
 			basename: "soong_config_variables.bzl",
 		},
 		{
+			dir:      "product_config",
+			basename: "arch_configuration.bzl",
+		},
+		{
 			dir:      "api_levels",
 			basename: GeneratedBuildFileName,
 		},
 		{
 			dir:      "api_levels",
 			basename: "api_levels.json",
+		},
+		{
+			dir:      "api_levels",
+			basename: "api_levels.bzl",
 		},
 	}
 
