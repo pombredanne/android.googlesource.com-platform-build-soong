@@ -15,12 +15,9 @@
 package android
 
 import (
-	"bytes"
 	"path/filepath"
 	"runtime"
 	"testing"
-
-	mkparser "android/soong/androidmk/parser"
 )
 
 func TestSrcIsModule(t *testing.T) {
@@ -475,21 +472,10 @@ func TestInstallKatiEnabled(t *testing.T) {
 		prepareForModuleTests,
 		PrepareForTestWithArchMutator,
 		FixtureModifyConfig(SetKatiEnabledForTests),
-		FixtureRegisterWithContext(func(ctx RegistrationContext) {
-			ctx.RegisterSingletonType("makevars", makeVarsSingletonFunc)
-		}),
+		PrepareForTestWithMakevars,
 	).RunTestWithBp(t, bp)
 
-	installs := result.SingletonForTests("makevars").Singleton().(*makeVarsSingleton).installsForTesting
-	buf := bytes.NewBuffer(append([]byte(nil), installs...))
-	parser := mkparser.NewParser("makevars", buf)
-
-	nodes, errs := parser.Parse()
-	if len(errs) > 0 {
-		t.Fatalf("error parsing install rules: %s", errs[0])
-	}
-
-	rules := parseMkRules(t, result.Config, nodes)
+	rules := result.InstallMakeRulesForTesting(t)
 
 	module := func(name string, host bool) TestingModule {
 		variant := "android_common"
@@ -501,123 +487,86 @@ func TestInstallKatiEnabled(t *testing.T) {
 
 	outputRule := func(name string) TestingBuildParams { return module(name, false).Output(name) }
 
-	ruleForOutput := func(output string) installMakeRule {
+	ruleForOutput := func(output string) InstallMakeRule {
 		for _, rule := range rules {
-			if rule.target == output {
+			if rule.Target == output {
 				return rule
 			}
 		}
 		t.Fatalf("no make install rule for %s", output)
-		return installMakeRule{}
+		return InstallMakeRule{}
 	}
 
-	installRule := func(name string) installMakeRule {
+	installRule := func(name string) InstallMakeRule {
 		return ruleForOutput(filepath.Join("out/target/product/test_device/system", name))
 	}
 
-	symlinkRule := func(name string) installMakeRule {
+	symlinkRule := func(name string) InstallMakeRule {
 		return ruleForOutput(filepath.Join("out/target/product/test_device/system/symlinks", name))
 	}
 
 	hostOutputRule := func(name string) TestingBuildParams { return module(name, true).Output(name) }
 
-	hostInstallRule := func(name string) installMakeRule {
+	hostInstallRule := func(name string) InstallMakeRule {
 		return ruleForOutput(filepath.Join("out/host/linux-x86", name))
 	}
 
-	hostSymlinkRule := func(name string) installMakeRule {
+	hostSymlinkRule := func(name string) InstallMakeRule {
 		return ruleForOutput(filepath.Join("out/host/linux-x86/symlinks", name))
 	}
 
-	assertDeps := func(rule installMakeRule, deps ...string) {
+	assertDeps := func(rule InstallMakeRule, deps ...string) {
 		t.Helper()
-		AssertArrayString(t, "expected inputs", deps, rule.deps)
+		AssertArrayString(t, "expected inputs", deps, rule.Deps)
 	}
 
-	assertOrderOnlys := func(rule installMakeRule, orderonlys ...string) {
+	assertOrderOnlys := func(rule InstallMakeRule, orderonlys ...string) {
 		t.Helper()
-		AssertArrayString(t, "expected orderonly dependencies", orderonlys, rule.orderOnlyDeps)
+		AssertArrayString(t, "expected orderonly dependencies", orderonlys, rule.OrderOnlyDeps)
 	}
 
 	// Check host install rule dependencies
 	assertDeps(hostInstallRule("foo"),
 		hostOutputRule("foo").Output.String(),
-		hostInstallRule("bar").target,
-		hostSymlinkRule("bar").target,
-		hostInstallRule("baz").target,
-		hostSymlinkRule("baz").target,
-		hostInstallRule("qux").target,
-		hostSymlinkRule("qux").target,
+		hostInstallRule("bar").Target,
+		hostSymlinkRule("bar").Target,
+		hostInstallRule("baz").Target,
+		hostSymlinkRule("baz").Target,
+		hostInstallRule("qux").Target,
+		hostSymlinkRule("qux").Target,
 	)
 	assertOrderOnlys(hostInstallRule("foo"))
 
 	// Check host symlink rule dependencies.  Host symlinks must use a normal dependency, not an
 	// order-only dependency, so that the tool gets updated when the symlink is depended on.
-	assertDeps(hostSymlinkRule("foo"), hostInstallRule("foo").target)
+	assertDeps(hostSymlinkRule("foo"), hostInstallRule("foo").Target)
 	assertOrderOnlys(hostSymlinkRule("foo"))
 
 	// Check device install rule dependencies
 	assertDeps(installRule("foo"), outputRule("foo").Output.String())
 	assertOrderOnlys(installRule("foo"),
-		installRule("bar").target,
-		symlinkRule("bar").target,
-		installRule("baz").target,
-		symlinkRule("baz").target,
-		installRule("qux").target,
-		symlinkRule("qux").target,
+		installRule("bar").Target,
+		symlinkRule("bar").Target,
+		installRule("baz").Target,
+		symlinkRule("baz").Target,
+		installRule("qux").Target,
+		symlinkRule("qux").Target,
 	)
 
 	// Check device symlink rule dependencies.  Device symlinks could use an order-only dependency,
 	// but the current implementation uses a normal dependency.
-	assertDeps(symlinkRule("foo"), installRule("foo").target)
+	assertDeps(symlinkRule("foo"), installRule("foo").Target)
 	assertOrderOnlys(symlinkRule("foo"))
-}
-
-type installMakeRule struct {
-	target        string
-	deps          []string
-	orderOnlyDeps []string
-}
-
-func parseMkRules(t *testing.T, config Config, nodes []mkparser.Node) []installMakeRule {
-	var rules []installMakeRule
-	for _, node := range nodes {
-		if mkParserRule, ok := node.(*mkparser.Rule); ok {
-			var rule installMakeRule
-
-			if targets := mkParserRule.Target.Words(); len(targets) == 0 {
-				t.Fatalf("no targets for rule %s", mkParserRule.Dump())
-			} else if len(targets) > 1 {
-				t.Fatalf("unsupported multiple targets for rule %s", mkParserRule.Dump())
-			} else if !targets[0].Const() {
-				t.Fatalf("unsupported non-const target for rule %s", mkParserRule.Dump())
-			} else {
-				rule.target = normalizeStringRelativeToTop(config, targets[0].Value(nil))
-			}
-
-			prereqList := &rule.deps
-			for _, prereq := range mkParserRule.Prerequisites.Words() {
-				if !prereq.Const() {
-					t.Fatalf("unsupported non-const prerequisite for rule %s", mkParserRule.Dump())
-				}
-
-				if prereq.Value(nil) == "|" {
-					prereqList = &rule.orderOnlyDeps
-					continue
-				}
-
-				*prereqList = append(*prereqList, normalizeStringRelativeToTop(config, prereq.Value(nil)))
-			}
-
-			rules = append(rules, rule)
-		}
-	}
-
-	return rules
 }
 
 type PropsTestModuleEmbedded struct {
 	Embedded_prop *string
+}
+
+type StructInSlice struct {
+	G string
+	H bool
+	I []string
 }
 
 type propsTestModule struct {
@@ -636,6 +585,8 @@ type propsTestModule struct {
 			E *string
 		}
 		F *string `blueprint:"mutated"`
+
+		Slice_of_struct []StructInSlice
 	}
 }
 
@@ -678,7 +629,7 @@ func TestUsedProperties(t *testing.T) {
 		}
 	`,
 			expectedProps: []propInfo{
-				propInfo{"Name", "string"},
+				propInfo{Name: "Name", Type: "string", Value: "foo"},
 			},
 		},
 		{
@@ -691,10 +642,10 @@ func TestUsedProperties(t *testing.T) {
 		}
 	`,
 			expectedProps: []propInfo{
-				propInfo{"A", "string"},
-				propInfo{"B", "bool"},
-				propInfo{"D", "int64"},
-				propInfo{"Name", "string"},
+				propInfo{Name: "A", Type: "string", Value: "abc"},
+				propInfo{Name: "B", Type: "bool", Value: "true"},
+				propInfo{Name: "D", Type: "int64", Value: "123"},
+				propInfo{Name: "Name", Type: "string", Value: "foo"},
 			},
 		},
 		{
@@ -707,10 +658,10 @@ func TestUsedProperties(t *testing.T) {
 	`,
 			expectedProps: []propInfo{
 				// for non-pointer cannot distinguish between unused and intentionally set to empty
-				propInfo{"A", "string"},
-				propInfo{"B", "bool"},
-				propInfo{"D", "int64"},
-				propInfo{"Name", "string"},
+				propInfo{Name: "A", Type: "string", Value: ""},
+				propInfo{Name: "B", Type: "bool", Value: "true"},
+				propInfo{Name: "D", Type: "int64", Value: "123"},
+				propInfo{Name: "Name", Type: "string", Value: "foo"},
 			},
 		},
 		{
@@ -723,8 +674,8 @@ func TestUsedProperties(t *testing.T) {
 		}
 	`,
 			expectedProps: []propInfo{
-				propInfo{"Nested.E", "string"},
-				propInfo{"Name", "string"},
+				propInfo{Name: "Name", Type: "string", Value: "foo"},
+				propInfo{Name: "Nested.E", Type: "string", Value: "abc"},
 			},
 		},
 		{
@@ -739,8 +690,8 @@ func TestUsedProperties(t *testing.T) {
 		}
 	`,
 			expectedProps: []propInfo{
-				propInfo{"Name", "string"},
-				propInfo{"Arch.X86_64.A", "string"},
+				propInfo{Name: "Arch.X86_64.A", Type: "string", Value: "abc"},
+				propInfo{Name: "Name", Type: "string", Value: "foo"},
 			},
 		},
 		{
@@ -751,8 +702,34 @@ func TestUsedProperties(t *testing.T) {
 		}
 	`,
 			expectedProps: []propInfo{
-				propInfo{"Embedded_prop", "string"},
-				propInfo{"Name", "string"},
+				propInfo{Name: "Embedded_prop", Type: "string", Value: "a"},
+				propInfo{Name: "Name", Type: "string", Value: "foo"},
+			},
+		},
+		{
+			desc: "struct slice",
+			bp: `test {
+			name: "foo",
+			slice_of_struct: [
+				{
+					g: "abc",
+					h: false,
+					i: ["baz"],
+				},
+				{
+					g: "def",
+					h: true,
+					i: [],
+				},
+			]
+		}
+	`,
+			expectedProps: []propInfo{
+				propInfo{Name: "Name", Type: "string", Value: "foo"},
+				propInfo{Name: "Slice_of_struct", Type: "struct slice", Values: []string{
+					`android.StructInSlice{G: abc, H: false, I: [baz]}`,
+					`android.StructInSlice{G: def, H: true, I: []}`,
+				}},
 			},
 		},
 		{
@@ -762,19 +739,20 @@ test_defaults {
 	name: "foo_defaults",
 	a: "a",
 	b: true,
+	c: ["default_c"],
 	embedded_prop:"a",
 	arch: {
 		x86_64: {
-			a: "a",
+			a: "x86_64 a",
 		},
 	},
 }
 test {
 	name: "foo",
 	defaults: ["foo_defaults"],
-	c: ["a"],
+	c: ["c"],
 	nested: {
-		e: "d",
+		e: "nested e",
 	},
 	target: {
 		linux: {
@@ -784,15 +762,15 @@ test {
 }
 	`,
 			expectedProps: []propInfo{
-				propInfo{"A", "string"},
-				propInfo{"B", "bool"},
-				propInfo{"C", "string slice"},
-				propInfo{"Embedded_prop", "string"},
-				propInfo{"Nested.E", "string"},
-				propInfo{"Name", "string"},
-				propInfo{"Arch.X86_64.A", "string"},
-				propInfo{"Target.Linux.A", "string"},
-				propInfo{"Defaults", "string slice"},
+				propInfo{Name: "A", Type: "string", Value: "a"},
+				propInfo{Name: "Arch.X86_64.A", Type: "string", Value: "x86_64 a"},
+				propInfo{Name: "B", Type: "bool", Value: "true"},
+				propInfo{Name: "C", Type: "string slice", Values: []string{"default_c", "c"}},
+				propInfo{Name: "Defaults", Type: "string slice", Values: []string{"foo_defaults"}},
+				propInfo{Name: "Embedded_prop", Type: "string", Value: "a"},
+				propInfo{Name: "Name", Type: "string", Value: "foo"},
+				propInfo{Name: "Nested.E", Type: "string", Value: "nested e"},
+				propInfo{Name: "Target.Linux.A", Type: "string", Value: "a"},
 			},
 		},
 	}
