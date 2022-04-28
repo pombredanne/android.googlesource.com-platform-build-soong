@@ -39,6 +39,10 @@ var (
 
 	armLldflags = armLdflags
 
+	armFixCortexA8LdFlags = []string{"-Wl,--fix-cortex-a8"}
+
+	armNoFixCortexA8LdFlags = []string{"-Wl,--no-fix-cortex-a8"}
+
 	armArmCflags = []string{
 		"-fstrict-aliasing",
 	}
@@ -174,38 +178,41 @@ func init() {
 	pctx.SourcePathVariable("ArmGccRoot", "prebuilts/gcc/${HostPrebuiltTag}/arm/arm-linux-androideabi-${armGccVersion}")
 
 	// Just exported. Not created as a Ninja static variable.
-	exportedStringVars.Set("ArmClangTriple", clangTriple)
+	exportedVars.ExportString("ArmClangTriple", clangTriple)
 
-	exportStringListStaticVariable("ArmLdflags", armLdflags)
-	exportStringListStaticVariable("ArmLldflags", armLldflags)
+	exportedVars.ExportStringListStaticVariable("ArmLdflags", armLdflags)
+	exportedVars.ExportStringListStaticVariable("ArmLldflags", armLldflags)
+
+	exportedVars.ExportStringListStaticVariable("ArmFixCortexA8LdFlags", armFixCortexA8LdFlags)
+	exportedVars.ExportStringListStaticVariable("ArmNoFixCortexA8LdFlags", armNoFixCortexA8LdFlags)
 
 	// Clang cflags
-	exportStringListStaticVariable("ArmToolchainCflags", armToolchainCflags)
-	exportStringListStaticVariable("ArmCflags", armCflags)
-	exportStringListStaticVariable("ArmCppflags", armCppflags)
+	exportedVars.ExportStringListStaticVariable("ArmToolchainCflags", armToolchainCflags)
+	exportedVars.ExportStringListStaticVariable("ArmCflags", armCflags)
+	exportedVars.ExportStringListStaticVariable("ArmCppflags", armCppflags)
 
 	// Clang ARM vs. Thumb instruction set cflags
-	exportStringListStaticVariable("ArmArmCflags", armArmCflags)
-	exportStringListStaticVariable("ArmThumbCflags", armThumbCflags)
+	exportedVars.ExportStringListStaticVariable("ArmArmCflags", armArmCflags)
+	exportedVars.ExportStringListStaticVariable("ArmThumbCflags", armThumbCflags)
 
-	exportedStringListDictVars.Set("ArmArchVariantCflags", armArchVariantCflags)
-	exportedStringListDictVars.Set("ArmCpuVariantCflags", armCpuVariantCflags)
+	exportedVars.ExportVariableReferenceDict("ArmArchVariantCflags", armArchVariantCflagsVar)
+	exportedVars.ExportVariableReferenceDict("ArmCpuVariantCflags", armCpuVariantCflagsVar)
 
 	// Clang arch variant cflags
-	exportStringListStaticVariable("ArmArmv7ACflags", armArchVariantCflags["armv7-a"])
-	exportStringListStaticVariable("ArmArmv7ANeonCflags", armArchVariantCflags["armv7-a-neon"])
-	exportStringListStaticVariable("ArmArmv8ACflags", armArchVariantCflags["armv8-a"])
-	exportStringListStaticVariable("ArmArmv82ACflags", armArchVariantCflags["armv8-2a"])
+	exportedVars.ExportStringListStaticVariable("ArmArmv7ACflags", armArchVariantCflags["armv7-a"])
+	exportedVars.ExportStringListStaticVariable("ArmArmv7ANeonCflags", armArchVariantCflags["armv7-a-neon"])
+	exportedVars.ExportStringListStaticVariable("ArmArmv8ACflags", armArchVariantCflags["armv8-a"])
+	exportedVars.ExportStringListStaticVariable("ArmArmv82ACflags", armArchVariantCflags["armv8-2a"])
 
 	// Clang cpu variant cflags
-	exportStringListStaticVariable("ArmGenericCflags", armCpuVariantCflags[""])
-	exportStringListStaticVariable("ArmCortexA7Cflags", armCpuVariantCflags["cortex-a7"])
-	exportStringListStaticVariable("ArmCortexA8Cflags", armCpuVariantCflags["cortex-a8"])
-	exportStringListStaticVariable("ArmCortexA15Cflags", armCpuVariantCflags["cortex-a15"])
-	exportStringListStaticVariable("ArmCortexA53Cflags", armCpuVariantCflags["cortex-a53"])
-	exportStringListStaticVariable("ArmCortexA55Cflags", armCpuVariantCflags["cortex-a55"])
-	exportStringListStaticVariable("ArmKraitCflags", armCpuVariantCflags["krait"])
-	exportStringListStaticVariable("ArmKryoCflags", armCpuVariantCflags["kryo"])
+	exportedVars.ExportStringListStaticVariable("ArmGenericCflags", armCpuVariantCflags[""])
+	exportedVars.ExportStringListStaticVariable("ArmCortexA7Cflags", armCpuVariantCflags["cortex-a7"])
+	exportedVars.ExportStringListStaticVariable("ArmCortexA8Cflags", armCpuVariantCflags["cortex-a8"])
+	exportedVars.ExportStringListStaticVariable("ArmCortexA15Cflags", armCpuVariantCflags["cortex-a15"])
+	exportedVars.ExportStringListStaticVariable("ArmCortexA53Cflags", armCpuVariantCflags["cortex-a53"])
+	exportedVars.ExportStringListStaticVariable("ArmCortexA55Cflags", armCpuVariantCflags["cortex-a55"])
+	exportedVars.ExportStringListStaticVariable("ArmKraitCflags", armCpuVariantCflags["krait"])
+	exportedVars.ExportStringListStaticVariable("ArmKryoCflags", armCpuVariantCflags["kryo"])
 }
 
 var (
@@ -324,12 +331,12 @@ func armToolchainFactory(arch android.Arch) Toolchain {
 		switch arch.CpuVariant {
 		case "cortex-a8", "":
 			// Generic ARM might be a Cortex A8 -- better safe than sorry
-			fixCortexA8 = "-Wl,--fix-cortex-a8"
+			fixCortexA8 = "${config.ArmFixCortexA8LdFlags}"
 		default:
-			fixCortexA8 = "-Wl,--no-fix-cortex-a8"
+			fixCortexA8 = "${config.ArmNoFixCortexA8LdFlags}"
 		}
 	case "armv7-a":
-		fixCortexA8 = "-Wl,--fix-cortex-a8"
+		fixCortexA8 = "${config.ArmFixCortexA8LdFlags}"
 	case "armv8-a", "armv8-2a":
 		// Nothing extra for armv8-a/armv8-2a
 	default:

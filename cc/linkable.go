@@ -176,10 +176,14 @@ type LinkableInterface interface {
 	IsVndk() bool
 	IsVndkExt() bool
 	IsVndkPrivate() bool
+	IsVendorPublicLibrary() bool
+	IsVndkPrebuiltLibrary() bool
 	HasVendorVariant() bool
 	HasProductVariant() bool
 	HasNonSystemVariants() bool
+	ProductSpecific() bool
 	InProduct() bool
+	SdkAndPlatformVariantVisibleToMake() bool
 
 	// SubName returns the modules SubName, used for image and NDK/SDK variations.
 	SubName() string
@@ -351,6 +355,11 @@ type StaticLibraryInfo struct {
 	StaticLibrary android.Path
 	Objects       Objects
 	ReuseObjects  Objects
+
+	// A static library may contain prebuilt static libraries included with whole_static_libs
+	// that won't appear in Objects.  They are transitively available in
+	// WholeStaticLibsFromPrebuilts.
+	WholeStaticLibsFromPrebuilts android.Paths
 
 	// This isn't the actual transitive DepSet, shared library dependencies have been
 	// converted into static library analogues.  It is only used to order the static
