@@ -8,6 +8,7 @@ bootstrap_go_package {
     deps: [
         "blueprint",
         "blueprint-bootstrap",
+        "blueprint-metrics",
         "sbox_proto",
         "soong",
         "soong-android-soongconfig",
@@ -18,6 +19,7 @@ bootstrap_go_package {
         "soong-shared",
         "soong-starlark-format",
         "soong-ui-metrics_proto",
+        "soong-android-allowlists",
 
         "golang-protobuf-proto",
         "golang-protobuf-encoding-prototext",
@@ -35,6 +37,7 @@ bootstrap_go_package {
         "bazel_handler.go",
         "bazel_paths.go",
         "config.go",
+        "config_bp2build.go",
         "csuite_config.go",
         "deapexer.go",
         "defaults.go",
@@ -95,6 +98,7 @@ bootstrap_go_package {
         "bazel_handler_test.go",
         "bazel_test.go",
         "config_test.go",
+        "config_bp2build_test.go",
         "csuite_config_test.go",
         "defaults_test.go",
         "depset_test.go",
