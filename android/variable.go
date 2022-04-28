@@ -191,6 +191,7 @@ type productVariables struct {
 	Platform_sdk_version_or_codename          *string  `json:",omitempty"`
 	Platform_sdk_final                        *bool    `json:",omitempty"`
 	Platform_sdk_extension_version            *int     `json:",omitempty"`
+	Platform_base_sdk_extension_version       *int     `json:",omitempty"`
 	Platform_version_active_codenames         []string `json:",omitempty"`
 	Platform_vndk_version                     *string  `json:",omitempty"`
 	Platform_systemsdk_versions               []string `json:",omitempty"`
@@ -200,6 +201,7 @@ type productVariables struct {
 	Platform_base_os                          *string  `json:",omitempty"`
 
 	DeviceName                            *string  `json:",omitempty"`
+	DeviceProduct                         *string  `json:",omitempty"`
 	DeviceArch                            *string  `json:",omitempty"`
 	DeviceArchVariant                     *string  `json:",omitempty"`
 	DeviceCpuVariant                      *string  `json:",omitempty"`
@@ -305,10 +307,11 @@ type productVariables struct {
 	JavaCoveragePaths        []string `json:",omitempty"`
 	JavaCoverageExcludePaths []string `json:",omitempty"`
 
-	GcovCoverage               *bool    `json:",omitempty"`
-	ClangCoverage              *bool    `json:",omitempty"`
-	NativeCoveragePaths        []string `json:",omitempty"`
-	NativeCoverageExcludePaths []string `json:",omitempty"`
+	GcovCoverage                *bool    `json:",omitempty"`
+	ClangCoverage               *bool    `json:",omitempty"`
+	NativeCoveragePaths         []string `json:",omitempty"`
+	NativeCoverageExcludePaths  []string `json:",omitempty"`
+	ClangCoverageContinuousMode *bool    `json:",omitempty"`
 
 	// Set by NewConfig
 	Native_coverage *bool `json:",omitempty"`
@@ -386,6 +389,8 @@ type productVariables struct {
 	CertificateOverrides         []string `json:",omitempty"`
 	PackageNameOverrides         []string `json:",omitempty"`
 
+	ApexGlobalMinSdkVersionOverride *string `json:",omitempty"`
+
 	EnforceSystemCertificate          *bool    `json:",omitempty"`
 	EnforceSystemCertificateAllowList []string `json:",omitempty"`
 
@@ -420,9 +425,10 @@ type productVariables struct {
 
 	ShippingApiLevel *string `json:",omitempty"`
 
-	BuildBrokenEnforceSyspropOwner     bool `json:",omitempty"`
-	BuildBrokenTrebleSyspropNeverallow bool `json:",omitempty"`
-	BuildBrokenVendorPropertyNamespace bool `json:",omitempty"`
+	BuildBrokenEnforceSyspropOwner     bool     `json:",omitempty"`
+	BuildBrokenTrebleSyspropNeverallow bool     `json:",omitempty"`
+	BuildBrokenVendorPropertyNamespace bool     `json:",omitempty"`
+	BuildBrokenInputDirModules         []string `json:",omitempty"`
 
 	BuildDebugfsRestrictionsEnabled bool `json:",omitempty"`
 
@@ -464,6 +470,7 @@ func (v *productVariables) SetDefaultConfig() {
 		HostArch:                   stringPtr("x86_64"),
 		HostSecondaryArch:          stringPtr("x86"),
 		DeviceName:                 stringPtr("generic_arm64"),
+		DeviceProduct:              stringPtr("aosp_arm-eng"),
 		DeviceArch:                 stringPtr("arm64"),
 		DeviceArchVariant:          stringPtr("armv8-a"),
 		DeviceCpuVariant:           stringPtr("generic"),

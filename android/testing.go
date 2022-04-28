@@ -15,6 +15,7 @@
 package android
 
 import (
+	"bytes"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -22,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	mkparser "android/soong/androidmk/parser"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
@@ -115,6 +118,10 @@ var PrepareForTestWithNamespace = FixtureRegisterWithContext(func(ctx Registrati
 	ctx.PreArchMutators(RegisterNamespaceMutator)
 })
 
+var PrepareForTestWithMakevars = FixtureRegisterWithContext(func(ctx RegistrationContext) {
+	ctx.RegisterSingletonType("makevars", makeVarsSingletonFunc)
+})
+
 // Test fixture preparer that will register most java build components.
 //
 // Singletons and mutators should only be added here if they are needed for a majority of java
@@ -204,7 +211,7 @@ func (ctx *TestContext) FinalDepsMutators(f RegisterMutatorFunc) {
 	ctx.finalDeps = append(ctx.finalDeps, f)
 }
 
-func (ctx *TestContext) RegisterBp2BuildConfig(config Bp2BuildConfig) {
+func (ctx *TestContext) RegisterBp2BuildConfig(config bp2BuildConversionAllowlist) {
 	ctx.config.bp2buildPackageConfig = config
 }
 
@@ -600,6 +607,62 @@ func (ctx *TestContext) SingletonForTests(name string) TestingSingleton {
 
 	panic(fmt.Errorf("failed to find singleton %q."+
 		"\nall singletons: %v", name, allSingletonNames))
+}
+
+type InstallMakeRule struct {
+	Target        string
+	Deps          []string
+	OrderOnlyDeps []string
+}
+
+func parseMkRules(t *testing.T, config Config, nodes []mkparser.Node) []InstallMakeRule {
+	var rules []InstallMakeRule
+	for _, node := range nodes {
+		if mkParserRule, ok := node.(*mkparser.Rule); ok {
+			var rule InstallMakeRule
+
+			if targets := mkParserRule.Target.Words(); len(targets) == 0 {
+				t.Fatalf("no targets for rule %s", mkParserRule.Dump())
+			} else if len(targets) > 1 {
+				t.Fatalf("unsupported multiple targets for rule %s", mkParserRule.Dump())
+			} else if !targets[0].Const() {
+				t.Fatalf("unsupported non-const target for rule %s", mkParserRule.Dump())
+			} else {
+				rule.Target = normalizeStringRelativeToTop(config, targets[0].Value(nil))
+			}
+
+			prereqList := &rule.Deps
+			for _, prereq := range mkParserRule.Prerequisites.Words() {
+				if !prereq.Const() {
+					t.Fatalf("unsupported non-const prerequisite for rule %s", mkParserRule.Dump())
+				}
+
+				if prereq.Value(nil) == "|" {
+					prereqList = &rule.OrderOnlyDeps
+					continue
+				}
+
+				*prereqList = append(*prereqList, normalizeStringRelativeToTop(config, prereq.Value(nil)))
+			}
+
+			rules = append(rules, rule)
+		}
+	}
+
+	return rules
+}
+
+func (ctx *TestContext) InstallMakeRulesForTesting(t *testing.T) []InstallMakeRule {
+	installs := ctx.SingletonForTests("makevars").Singleton().(*makeVarsSingleton).installsForTesting
+	buf := bytes.NewBuffer(append([]byte(nil), installs...))
+	parser := mkparser.NewParser("makevars", buf)
+
+	nodes, errs := parser.Parse()
+	if len(errs) > 0 {
+		t.Fatalf("error parsing install rules: %s", errs[0])
+	}
+
+	return parseMkRules(t, ctx.config, nodes)
 }
 
 func (ctx *TestContext) Config() Config {
