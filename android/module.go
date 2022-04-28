@@ -16,11 +16,13 @@ package android
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"text/scanner"
 
@@ -454,6 +456,10 @@ type ModuleContext interface {
 	// GetMissingDependencies returns the list of dependencies that were passed to AddDependencies or related methods,
 	// but do not exist.
 	GetMissingDependencies() []string
+
+	// LicenseMetadataFile returns the path where the license metadata for this module will be
+	// generated.
+	LicenseMetadataFile() Path
 }
 
 type Module interface {
@@ -607,6 +613,12 @@ type Dist struct {
 	// A suffix to add to the artifact file name (before any extension).
 	Suffix *string `android:"arch_variant"`
 
+	// If true, then the artifact file will be appended with _<product name>. For
+	// example, if the product is coral and the module is an android_app module
+	// of name foo, then the artifact would be foo_coral.apk. If false, there is
+	// no change to the artifact file name.
+	Append_artifact_with_product *bool `android:"arch_variant"`
+
 	// A string tag to select the OutputFiles associated with the tag.
 	//
 	// If no tag is specified then it will select the default dist paths provided
@@ -614,6 +626,53 @@ type Dist struct {
 	// default output files provided by the modules, i.e. the result of calling
 	// OutputFiles("").
 	Tag *string `android:"arch_variant"`
+}
+
+// NamedPath associates a path with a name. e.g. a license text path with a package name
+type NamedPath struct {
+	Path Path
+	Name string
+}
+
+// String returns an escaped string representing the `NamedPath`.
+func (p NamedPath) String() string {
+	if len(p.Name) > 0 {
+		return p.Path.String() + ":" + url.QueryEscape(p.Name)
+	}
+	return p.Path.String()
+}
+
+// NamedPaths describes a list of paths each associated with a name.
+type NamedPaths []NamedPath
+
+// Strings returns a list of escaped strings representing each `NamedPath` in the list.
+func (l NamedPaths) Strings() []string {
+	result := make([]string, 0, len(l))
+	for _, p := range l {
+		result = append(result, p.String())
+	}
+	return result
+}
+
+// SortedUniqueNamedPaths modifies `l` in place to return the sorted unique subset.
+func SortedUniqueNamedPaths(l NamedPaths) NamedPaths {
+	if len(l) == 0 {
+		return l
+	}
+	sort.Slice(l, func(i, j int) bool {
+		return l[i].String() < l[j].String()
+	})
+	k := 0
+	for i := 1; i < len(l); i++ {
+		if l[i].String() == l[k].String() {
+			continue
+		}
+		k++
+		if k < i {
+			l[k] = l[i]
+		}
+	}
+	return l[:k+1]
 }
 
 type nameProperties struct {
@@ -684,7 +743,7 @@ type commonProperties struct {
 	// Override of module name when reporting licenses
 	Effective_package_name *string `blueprint:"mutated"`
 	// Notice files
-	Effective_license_text Paths `blueprint:"mutated"`
+	Effective_license_text NamedPaths `blueprint:"mutated"`
 	// License names
 	Effective_license_kinds []string `blueprint:"mutated"`
 	// License conditions
@@ -1411,8 +1470,10 @@ func (m *ModuleBase) AddJSONData(d *map[string]interface{}) {
 }
 
 type propInfo struct {
-	Name string
-	Type string
+	Name   string
+	Type   string
+	Value  string
+	Values []string
 }
 
 func (m *ModuleBase) propertiesWithValues() []propInfo {
@@ -1452,16 +1513,58 @@ func (m *ModuleBase) propertiesWithValues() []propInfo {
 				return
 			}
 			elKind := v.Type().Elem().Kind()
-			info = append(info, propInfo{name, elKind.String() + " " + kind.String()})
+			info = append(info, propInfo{Name: name, Type: elKind.String() + " " + kind.String(), Values: sliceReflectionValue(v)})
 		default:
-			info = append(info, propInfo{name, kind.String()})
+			info = append(info, propInfo{Name: name, Type: kind.String(), Value: reflectionValue(v)})
 		}
 	}
 
 	for _, p := range props {
 		propsWithValues("", reflect.ValueOf(p).Elem())
 	}
+	sort.Slice(info, func(i, j int) bool {
+		return info[i].Name < info[j].Name
+	})
 	return info
+}
+
+func reflectionValue(value reflect.Value) string {
+	switch value.Kind() {
+	case reflect.Bool:
+		return fmt.Sprintf("%t", value.Bool())
+	case reflect.Int64:
+		return fmt.Sprintf("%d", value.Int())
+	case reflect.String:
+		return fmt.Sprintf("%s", value.String())
+	case reflect.Struct:
+		if value.IsZero() {
+			return "{}"
+		}
+		length := value.NumField()
+		vals := make([]string, length, length)
+		for i := 0; i < length; i++ {
+			sTyp := value.Type().Field(i)
+			if proptools.ShouldSkipProperty(sTyp) {
+				continue
+			}
+			name := sTyp.Name
+			vals[i] = fmt.Sprintf("%s: %s", name, reflectionValue(value.Field(i)))
+		}
+		return fmt.Sprintf("%s{%s}", value.Type(), strings.Join(vals, ", "))
+	case reflect.Array, reflect.Slice:
+		vals := sliceReflectionValue(value)
+		return fmt.Sprintf("[%s]", strings.Join(vals, ", "))
+	}
+	return ""
+}
+
+func sliceReflectionValue(value reflect.Value) []string {
+	length := value.Len()
+	vals := make([]string, length, length)
+	for i := 0; i < length; i++ {
+		vals[i] = reflectionValue(value.Index(i))
+	}
+	return vals
 }
 
 func (m *ModuleBase) ComponentDepsMutator(BottomUpMutatorContext) {}
@@ -1801,7 +1904,11 @@ func (m *ModuleBase) ExportedToMake() bool {
 }
 
 func (m *ModuleBase) EffectiveLicenseFiles() Paths {
-	return m.commonProperties.Effective_license_text
+	result := make(Paths, 0, len(m.commonProperties.Effective_license_text))
+	for _, p := range m.commonProperties.Effective_license_text {
+		result = append(result, p.Path)
+	}
+	return result
 }
 
 // computeInstallDeps finds the installed paths of all dependencies that have a dependency
@@ -3056,6 +3163,7 @@ func (m *moduleContext) packageFile(fullInstallPath InstallPath, srcPath Path, e
 		symlinkTarget:         "",
 		executable:            executable,
 		effectiveLicenseFiles: &licenseFiles,
+		partition:             fullInstallPath.partition,
 	}
 	m.packagingSpecs = append(m.packagingSpecs, spec)
 	return spec
@@ -3173,6 +3281,7 @@ func (m *moduleContext) InstallSymlink(installPath InstallPath, name string, src
 		srcPath:          nil,
 		symlinkTarget:    relPath,
 		executable:       false,
+		partition:        fullInstallPath.partition,
 	})
 
 	return fullInstallPath
@@ -3213,6 +3322,7 @@ func (m *moduleContext) InstallAbsoluteSymlink(installPath InstallPath, name str
 		srcPath:          nil,
 		symlinkTarget:    absPath,
 		executable:       false,
+		partition:        fullInstallPath.partition,
 	})
 
 	return fullInstallPath
@@ -3224,6 +3334,10 @@ func (m *moduleContext) CheckbuildFile(srcPath Path) {
 
 func (m *moduleContext) blueprintModuleContext() blueprint.ModuleContext {
 	return m.bp
+}
+
+func (m *moduleContext) LicenseMetadataFile() Path {
+	return m.module.base().licenseMetadataFile
 }
 
 // SrcIsModule decodes module references in the format ":unqualified-name" or "//namespace:name"
@@ -3620,6 +3734,8 @@ type IdeInfo struct {
 	Installed_paths   []string `json:"installed,omitempty"`
 	SrcJars           []string `json:"srcjars,omitempty"`
 	Paths             []string `json:"path,omitempty"`
+	Static_libs       []string `json:"static_libs,omitempty"`
+	Libs              []string `json:"libs,omitempty"`
 }
 
 func CheckBlueprintSyntax(ctx BaseModuleContext, filename string, contents string) []error {

@@ -107,14 +107,16 @@ var (
 			`--canned_fs_config ${canned_fs_config} ` +
 			`--include_build_info ` +
 			`--payload_type image ` +
-			`--key ${key} ${opt_flags} ${image_dir} ${out} `,
+			`--key ${key} ` +
+			`--apex_version_placeholder ${apex_version_placeholder} ` +
+			`${opt_flags} ${image_dir} ${out} `,
 		CommandDeps: []string{"${apexer}", "${avbtool}", "${e2fsdroid}", "${merge_zips}",
 			"${mke2fs}", "${resize2fs}", "${sefcontext_compile}", "${make_f2fs}", "${sload_f2fs}", "${make_erofs}",
 			"${soong_zip}", "${zipalign}", "${aapt2}", "prebuilts/sdk/current/public/android.jar"},
 		Rspfile:        "${out}.copy_commands",
 		RspfileContent: "${copy_commands}",
 		Description:    "APEX ${image_dir} => ${out}",
-	}, "tool_path", "image_dir", "copy_commands", "file_contexts", "canned_fs_config", "key", "opt_flags", "manifest", "payload_fs_type")
+	}, "tool_path", "image_dir", "copy_commands", "file_contexts", "canned_fs_config", "key", "opt_flags", "manifest", "payload_fs_type", "apex_version_placeholder")
 
 	zipApexRule = pctx.StaticRule("zipApexRule", blueprint.RuleParams{
 		Command: `rm -rf ${image_dir} && mkdir -p ${image_dir} && ` +
@@ -122,12 +124,13 @@ var (
 			`APEXER_TOOL_PATH=${tool_path} ` +
 			`${apexer} --force --manifest ${manifest} ` +
 			`--payload_type zip ` +
+			`--apex_version_placeholder ${apex_version_placeholder} ` +
 			`${image_dir} ${out} `,
 		CommandDeps:    []string{"${apexer}", "${merge_zips}", "${soong_zip}", "${zipalign}", "${aapt2}"},
 		Rspfile:        "${out}.copy_commands",
 		RspfileContent: "${copy_commands}",
 		Description:    "ZipAPEX ${image_dir} => ${out}",
-	}, "tool_path", "image_dir", "copy_commands", "manifest")
+	}, "tool_path", "image_dir", "copy_commands", "manifest", "apex_version_placeholder")
 
 	apexProtoConvertRule = pctx.AndroidStaticRule("apexProtoConvertRule",
 		blueprint.RuleParams{
@@ -305,32 +308,6 @@ func (a *apexBundle) buildFileContexts(ctx android.ModuleContext) android.Output
 	return output.OutputPath
 }
 
-// buildNoticeFiles creates a buile rule for aggregating notice files from the modules that
-// contributes to this APEX. The notice files are merged into a big notice file.
-func (a *apexBundle) buildNoticeFiles(ctx android.ModuleContext, apexFileName string) android.NoticeOutputs {
-	var noticeFiles android.Paths
-
-	a.WalkPayloadDeps(ctx, func(ctx android.ModuleContext, from blueprint.Module, to android.ApexModule, externalDep bool) bool {
-		if externalDep {
-			// As soon as the dependency graph crosses the APEX boundary, don't go further.
-			return false
-		}
-		noticeFiles = append(noticeFiles, to.NoticeFiles()...)
-		return true
-	})
-
-	// TODO(jiyong): why do we need this? WalkPayloadDeps should have already covered this.
-	for _, fi := range a.filesInfo {
-		noticeFiles = append(noticeFiles, fi.noticeFiles...)
-	}
-
-	if len(noticeFiles) == 0 {
-		return android.NoticeOutputs{}
-	}
-
-	return android.BuildNoticeOutput(ctx, a.installDir, apexFileName, android.SortedUniquePaths(noticeFiles))
-}
-
 // buildInstalledFilesFile creates a build rule for the installed-files.txt file where the list of
 // files included in this APEX is shown. The text file is dist'ed so that people can see what's
 // included in the APEX without actually downloading and extracting it.
@@ -398,18 +375,8 @@ func (a *apexBundle) buildBundleConfig(ctx android.ModuleContext) android.Output
 }
 
 func markManifestTestOnly(ctx android.ModuleContext, androidManifestFile android.Path) android.Path {
-	return java.ManifestFixer(java.ManifestFixerParams{
-		Ctx:                   ctx,
-		Manifest:              androidManifestFile,
-		SdkContext:            nil,
-		ClassLoaderContexts:   nil,
-		IsLibrary:             false,
-		UseEmbeddedNativeLibs: false,
-		UsesNonSdkApis:        false,
-		UseEmbeddedDex:        false,
-		HasNoCode:             false,
-		TestOnly:              true,
-		LoggingParent:         "",
+	return java.ManifestFixer(ctx, androidManifestFile, java.ManifestFixerParams{
+		TestOnly: true,
 	})
 }
 
@@ -424,7 +391,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 
 	imageDir := android.PathForModuleOut(ctx, "image"+suffix)
 
-	installSymbolFiles := !ctx.Config().KatiEnabled() || a.ExportedToMake()
+	installSymbolFiles := (!ctx.Config().KatiEnabled() || a.ExportedToMake()) && a.installable()
 
 	// b/140136207. When there are overriding APEXes for a VNDK APEX, the symbols file for the overridden
 	// APEX and the overriding APEX will have the same installation paths at /apex/com.android.vndk.v<ver>
@@ -618,6 +585,8 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 
 			implicitInputs = append(implicitInputs, androidManifestFile)
 			optFlags = append(optFlags, "--android_manifest "+androidManifestFile.String())
+		} else if a.testApex {
+			optFlags = append(optFlags, "--test_only")
 		}
 
 		// Determine target/min sdk version from the context
@@ -650,12 +619,17 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			optFlags = append(optFlags, "--logging_parent ", a.overridableProperties.Logging_parent)
 		}
 
-		a.mergedNotices = a.buildNoticeFiles(ctx, a.Name()+suffix)
-		if a.mergedNotices.HtmlGzOutput.Valid() {
-			// If there's a NOTICE file, embed it as an asset file in the APEX.
-			implicitInputs = append(implicitInputs, a.mergedNotices.HtmlGzOutput.Path())
-			optFlags = append(optFlags, "--assets_dir "+filepath.Dir(a.mergedNotices.HtmlGzOutput.String()))
-		}
+		// Create a NOTICE file, and embed it as an asset file in the APEX.
+		a.htmlGzNotice = android.PathForModuleOut(ctx, "NOTICE.html.gz")
+		android.BuildNoticeHtmlOutputFromLicenseMetadata(ctx, a.htmlGzNotice)
+		noticeAssetPath := android.PathForModuleOut(ctx, "NOTICE", "NOTICE.html.gz")
+		builder := android.NewRuleBuilder(pctx, ctx)
+		builder.Command().Text("cp").
+			Input(a.htmlGzNotice).
+			Output(noticeAssetPath)
+		builder.Build("notice_dir", "Building notice dir")
+		implicitInputs = append(implicitInputs, noticeAssetPath)
+		optFlags = append(optFlags, "--assets_dir "+filepath.Dir(noticeAssetPath.String()))
 
 		if (moduleMinSdkVersion.GreaterThan(android.SdkVersion_Android10) && !a.shouldGenerateHashtree()) && !compressionEnabled {
 			// Apexes which are supposed to be installed in builtin dirs(/system, etc)
@@ -687,14 +661,15 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			Output:      unsignedOutputFile,
 			Description: "apex (" + apexType.name() + ")",
 			Args: map[string]string{
-				"tool_path":        outHostBinDir + ":" + prebuiltSdkToolsBinDir,
-				"image_dir":        imageDir.String(),
-				"copy_commands":    strings.Join(copyCommands, " && "),
-				"manifest":         a.manifestPbOut.String(),
-				"file_contexts":    fileContexts.String(),
-				"canned_fs_config": cannedFsConfig.String(),
-				"key":              a.privateKeyFile.String(),
-				"opt_flags":        strings.Join(optFlags, " "),
+				"tool_path":                outHostBinDir + ":" + prebuiltSdkToolsBinDir,
+				"image_dir":                imageDir.String(),
+				"copy_commands":            strings.Join(copyCommands, " && "),
+				"manifest":                 a.manifestPbOut.String(),
+				"file_contexts":            fileContexts.String(),
+				"canned_fs_config":         cannedFsConfig.String(),
+				"key":                      a.privateKeyFile.String(),
+				"opt_flags":                strings.Join(optFlags, " "),
+				"apex_version_placeholder": APEX_VERSION_PLACEHOLDER,
 			},
 		})
 
@@ -786,10 +761,11 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			Output:      unsignedOutputFile,
 			Description: "apex (" + apexType.name() + ")",
 			Args: map[string]string{
-				"tool_path":     outHostBinDir + ":" + prebuiltSdkToolsBinDir,
-				"image_dir":     imageDir.String(),
-				"copy_commands": strings.Join(copyCommands, " && "),
-				"manifest":      a.manifestPbOut.String(),
+				"tool_path":                outHostBinDir + ":" + prebuiltSdkToolsBinDir,
+				"image_dir":                imageDir.String(),
+				"copy_commands":            strings.Join(copyCommands, " && "),
+				"manifest":                 a.manifestPbOut.String(),
+				"apex_version_placeholder": APEX_VERSION_PLACEHOLDER,
 			},
 		})
 	}
@@ -818,6 +794,9 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		Implicits:   implicits,
 		Args:        args,
 	})
+	if suffix == imageApexSuffix {
+		a.outputApexFile = signedOutputFile
+	}
 	a.outputFile = signedOutputFile
 
 	if ctx.ModuleDir() != "system/apex/apexd/apexd_testdata" && a.testOnlyShouldForceCompression() {
@@ -859,6 +838,10 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 	installSuffix := suffix
 	if a.isCompressed {
 		installSuffix = imageCapexSuffix
+	}
+
+	if !a.installable() {
+		a.SkipInstall()
 	}
 
 	// Install to $OUT/soong/{target,host}/.../apex.
@@ -1016,7 +999,7 @@ func (a *apexBundle) buildApexDependencyInfo(ctx android.ModuleContext) {
 		return !externalDep
 	})
 
-	a.ApexBundleDepsInfo.BuildDepsInfoLists(ctx, proptools.String(a.properties.Min_sdk_version), depInfos)
+	a.ApexBundleDepsInfo.BuildDepsInfoLists(ctx, a.MinSdkVersion(ctx).Raw, depInfos)
 
 	ctx.Build(pctx, android.BuildParams{
 		Rule:   android.Phony,

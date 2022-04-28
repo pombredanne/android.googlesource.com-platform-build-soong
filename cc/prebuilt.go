@@ -16,6 +16,7 @@ package cc
 
 import (
 	"path/filepath"
+	"strings"
 
 	"android/soong/android"
 	"android/soong/bazel"
@@ -188,6 +189,16 @@ func (p *prebuiltLibraryLinker) link(ctx ModuleContext,
 				TableOfContents: p.tocFile,
 			})
 
+			// TODO(b/220898484): Mainline module sdk prebuilts of stub libraries use a stub
+			// library as their source and must not be installed, but libclang_rt.* libraries
+			// have stubs because they are LLNDK libraries, but use an implementation library
+			// as their source and need to be installed.  This discrepancy should be resolved
+			// without the prefix hack below.
+			if p.hasStubsVariants() && !p.buildStubs() && !ctx.Host() &&
+				!strings.HasPrefix(ctx.baseModuleName(), "libclang_rt.") {
+				ctx.Module().MakeUninstallable()
+			}
+
 			return outputFile
 		}
 	}
@@ -242,6 +253,7 @@ func (p *prebuiltLibraryLinker) implementationModuleName(name string) string {
 func NewPrebuiltLibrary(hod android.HostOrDeviceSupported, srcsProperty string) (*Module, *libraryDecorator) {
 	module, library := NewLibrary(hod)
 	module.compiler = nil
+	module.bazelable = true
 
 	prebuilt := &prebuiltLibraryLinker{
 		libraryDecorator: library,
@@ -327,8 +339,21 @@ type bazelPrebuiltLibraryStaticAttributes struct {
 	Export_system_includes bazel.StringListAttribute
 }
 
-func prebuiltLibraryStaticBp2Build(ctx android.TopDownMutatorContext, module *Module) {
-	prebuiltAttrs := Bp2BuildParsePrebuiltLibraryProps(ctx, module)
+// TODO(b/228623543): The below is not entirely true until the bug is fixed. For now, both targets are always generated
+// Implements bp2build for cc_prebuilt_library modules. This will generate:
+// * Only a prebuilt_library_static if the shared.enabled property is set to false across all variants.
+// * Only a prebuilt_library_shared if the static.enabled property is set to false across all variants
+// * Both a prebuilt_library_static and prebuilt_library_shared if the aforementioned properties are not false across
+//   all variants
+//
+// In all cases, prebuilt_library_static target names will be appended with "_bp2build_cc_library_static".
+func prebuiltLibraryBp2Build(ctx android.TopDownMutatorContext, module *Module) {
+	prebuiltLibraryStaticBp2Build(ctx, module, true)
+	prebuiltLibrarySharedBp2Build(ctx, module)
+}
+
+func prebuiltLibraryStaticBp2Build(ctx android.TopDownMutatorContext, module *Module, fullBuild bool) {
+	prebuiltAttrs := Bp2BuildParsePrebuiltLibraryProps(ctx, module, true)
 	exportedIncludes := Bp2BuildParseExportedIncludesForPrebuiltLibrary(ctx, module)
 
 	attrs := &bazelPrebuiltLibraryStaticAttributes{
@@ -339,11 +364,14 @@ func prebuiltLibraryStaticBp2Build(ctx android.TopDownMutatorContext, module *Mo
 
 	props := bazel.BazelTargetModuleProperties{
 		Rule_class:        "prebuilt_library_static",
-		Bzl_load_location: "//build/bazel/rules:prebuilt_library_static.bzl",
+		Bzl_load_location: "//build/bazel/rules/cc:prebuilt_library_static.bzl",
 	}
 
 	name := android.RemoveOptionalPrebuiltPrefix(module.Name())
-	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: name}, attrs)
+	if fullBuild {
+		name += "_bp2build_cc_library_static"
+	}
+	ctx.CreateBazelTargetModuleWithRestrictions(props, android.CommonAttributes{Name: name}, attrs, prebuiltAttrs.Enabled)
 }
 
 type bazelPrebuiltLibrarySharedAttributes struct {
@@ -351,7 +379,7 @@ type bazelPrebuiltLibrarySharedAttributes struct {
 }
 
 func prebuiltLibrarySharedBp2Build(ctx android.TopDownMutatorContext, module *Module) {
-	prebuiltAttrs := Bp2BuildParsePrebuiltLibraryProps(ctx, module)
+	prebuiltAttrs := Bp2BuildParsePrebuiltLibraryProps(ctx, module, false)
 
 	attrs := &bazelPrebuiltLibrarySharedAttributes{
 		Shared_library: prebuiltAttrs.Src,
@@ -359,11 +387,11 @@ func prebuiltLibrarySharedBp2Build(ctx android.TopDownMutatorContext, module *Mo
 
 	props := bazel.BazelTargetModuleProperties{
 		Rule_class:        "prebuilt_library_shared",
-		Bzl_load_location: "//build/bazel/rules:prebuilt_library_shared.bzl",
+		Bzl_load_location: "//build/bazel/rules/cc:prebuilt_library_shared.bzl",
 	}
 
 	name := android.RemoveOptionalPrebuiltPrefix(module.Name())
-	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: name}, attrs)
+	ctx.CreateBazelTargetModuleWithRestrictions(props, android.CommonAttributes{Name: name}, attrs, prebuiltAttrs.Enabled)
 }
 
 type prebuiltObjectProperties struct {
@@ -499,7 +527,16 @@ var _ prebuiltLinkerInterface = (*prebuiltObjectLinker)(nil)
 func (p *prebuiltObjectLinker) link(ctx ModuleContext,
 	flags Flags, deps PathDeps, objs Objects) android.Path {
 	if len(p.properties.Srcs) > 0 {
-		return p.Prebuilt.SingleSourcePath(ctx)
+		// Copy objects to a name matching the final installed name
+		in := p.Prebuilt.SingleSourcePath(ctx)
+		outputFile := android.PathForModuleOut(ctx, ctx.ModuleName()+".o")
+		ctx.Build(pctx, android.BuildParams{
+			Rule:        android.CpExecutable,
+			Description: "prebuilt",
+			Output:      outputFile,
+			Input:       in,
+		})
+		return outputFile
 	}
 	return nil
 }

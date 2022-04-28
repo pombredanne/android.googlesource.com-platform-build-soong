@@ -21,7 +21,6 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -1512,15 +1511,15 @@ func (module *SdkLibrary) createStubsSourcesAndApi(mctx android.DefaultableHookC
 	}
 	droidstubsArgs = append(droidstubsArgs, module.sdkLibraryProperties.Droiddoc_options...)
 	disabledWarnings := []string{
-		"MissingPermission",
 		"BroadcastBehavior",
-		"HiddenSuperclass",
 		"DeprecationMismatch",
-		"UnavailableSymbol",
-		"SdkConstant",
+		"HiddenSuperclass",
 		"HiddenTypeParameter",
+		"MissingPermission",
+		"SdkConstant",
 		"Todo",
 		"Typo",
+		"UnavailableSymbol",
 	}
 	droidstubsArgs = append(droidstubsArgs, android.JoinWithPrefix(disabledWarnings, "--hide "))
 
@@ -2363,17 +2362,17 @@ func (module *SdkLibraryImport) LintDepSets() LintDepSets {
 	}
 }
 
-func (module *SdkLibraryImport) getStrictUpdatabilityLinting() bool {
+func (module *SdkLibraryImport) GetStrictUpdatabilityLinting() bool {
 	if module.implLibraryModule == nil {
 		return false
 	} else {
-		return module.implLibraryModule.getStrictUpdatabilityLinting()
+		return module.implLibraryModule.GetStrictUpdatabilityLinting()
 	}
 }
 
-func (module *SdkLibraryImport) setStrictUpdatabilityLinting(strictLinting bool) {
+func (module *SdkLibraryImport) SetStrictUpdatabilityLinting(strictLinting bool) {
 	if module.implLibraryModule != nil {
-		module.implLibraryModule.setStrictUpdatabilityLinting(strictLinting)
+		module.implLibraryModule.SetStrictUpdatabilityLinting(strictLinting)
 	}
 }
 
@@ -2551,8 +2550,14 @@ func formattedOptionalSdkLevelAttribute(ctx android.ModuleContext, attrName stri
 		ctx.PropertyErrorf(strings.ReplaceAll(attrName, "-", "_"), err.Error())
 		return ""
 	}
-	intStr := strconv.Itoa(apiLevel.FinalOrPreviewInt())
-	return formattedOptionalAttribute(attrName, &intStr)
+	if apiLevel.IsCurrent() {
+		// passing "current" would always mean a future release, never the current (or the current in
+		// progress) which means some conditions would never be triggered.
+		ctx.PropertyErrorf(strings.ReplaceAll(attrName, "-", "_"),
+			`"current" is not an allowed value for this attribute`)
+		return ""
+	}
+	return formattedOptionalAttribute(attrName, value)
 }
 
 // formats an attribute for the xml permissions file if the value is not null
@@ -2808,7 +2813,7 @@ type scopeProperties struct {
 	StubsSrcJar    android.Path
 	CurrentApiFile android.Path
 	RemovedApiFile android.Path
-	AnnotationsZip android.Path `supported_build_releases:"T+"`
+	AnnotationsZip android.Path `supported_build_releases:"Tiramisu+"`
 	SdkVersion     string
 }
 

@@ -38,6 +38,7 @@ import (
 	"android/soong/android/soongconfig"
 	"android/soong/bazel"
 	"android/soong/remoteexec"
+	"android/soong/starlark_fmt"
 )
 
 // Bool re-exports proptools.Bool for the android package.
@@ -157,7 +158,7 @@ type config struct {
 	mockBpList string
 
 	runningAsBp2Build              bool
-	bp2buildPackageConfig          Bp2BuildConfig
+	bp2buildPackageConfig          bp2BuildConversionAllowlist
 	Bp2buildSoongConfigDefinitions soongconfig.Bp2BuildSoongConfigDefinitions
 
 	// If testAllowNonExistentPaths is true then PathForSource and PathForModuleSrc won't error
@@ -286,14 +287,12 @@ func saveToBazelConfigFile(config *productVariables, outDir string) error {
 		}
 	}
 
-	//TODO(b/216168792) should use common function to print Starlark code
-	nonArchVariantProductVariablesJson, err := json.MarshalIndent(&nonArchVariantProductVariables, "", "    ")
+	nonArchVariantProductVariablesJson := starlark_fmt.PrintStringList(nonArchVariantProductVariables, 0)
 	if err != nil {
 		return fmt.Errorf("cannot marshal product variable data: %s", err.Error())
 	}
 
-	//TODO(b/216168792) should use common function to print Starlark code
-	archVariantProductVariablesJson, err := json.MarshalIndent(&archVariantProductVariables, "", "    ")
+	archVariantProductVariablesJson := starlark_fmt.PrintStringList(archVariantProductVariables, 0)
 	if err != nil {
 		return fmt.Errorf("cannot marshal arch variant product variable data: %s", err.Error())
 	}
@@ -351,18 +350,20 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 
 	config := &config{
 		productVariables: productVariables{
-			DeviceName:                        stringPtr("test_device"),
-			Platform_sdk_version:              intPtr(30),
-			Platform_sdk_codename:             stringPtr("S"),
-			Platform_version_active_codenames: []string{"S", "Tiramisu"},
-			DeviceSystemSdkVersions:           []string{"14", "15"},
-			Platform_systemsdk_versions:       []string{"29", "30"},
-			AAPTConfig:                        []string{"normal", "large", "xlarge", "hdpi", "xhdpi", "xxhdpi"},
-			AAPTPreferredConfig:               stringPtr("xhdpi"),
-			AAPTCharacteristics:               stringPtr("nosdcard"),
-			AAPTPrebuiltDPI:                   []string{"xhdpi", "xxhdpi"},
-			UncompressPrivAppDex:              boolPtr(true),
-			ShippingApiLevel:                  stringPtr("30"),
+			DeviceName:                          stringPtr("test_device"),
+			DeviceProduct:                       stringPtr("test_product"),
+			Platform_sdk_version:                intPtr(30),
+			Platform_sdk_codename:               stringPtr("S"),
+			Platform_base_sdk_extension_version: intPtr(1),
+			Platform_version_active_codenames:   []string{"S", "Tiramisu"},
+			DeviceSystemSdkVersions:             []string{"14", "15"},
+			Platform_systemsdk_versions:         []string{"29", "30"},
+			AAPTConfig:                          []string{"normal", "large", "xlarge", "hdpi", "xhdpi", "xxhdpi"},
+			AAPTPreferredConfig:                 stringPtr("xhdpi"),
+			AAPTCharacteristics:                 stringPtr("nosdcard"),
+			AAPTPrebuiltDPI:                     []string{"xhdpi", "xxhdpi"},
+			UncompressPrivAppDex:                boolPtr(true),
+			ShippingApiLevel:                    stringPtr("30"),
 		},
 
 		outDir:       buildDir,
@@ -520,7 +521,7 @@ func NewConfig(moduleListFile string, runGoTests bool, outDir, soongOutDir strin
 	}
 
 	if archConfig != nil {
-		androidTargets, err := decodeArchSettings(Android, archConfig)
+		androidTargets, err := decodeAndroidArchSettings(archConfig)
 		if err != nil {
 			return Config{}, err
 		}
@@ -549,7 +550,7 @@ func NewConfig(moduleListFile string, runGoTests bool, outDir, soongOutDir strin
 	}
 
 	config.BazelContext, err = NewBazelContext(config)
-	config.bp2buildPackageConfig = bp2buildDefaultConfig
+	config.bp2buildPackageConfig = bp2buildAllowlist
 
 	return Config{config}, err
 }
@@ -723,6 +724,15 @@ func (c *config) DeviceName() string {
 	return *c.productVariables.DeviceName
 }
 
+// DeviceProduct returns the current product target. There could be multiple of
+// these per device type.
+//
+// NOTE: Do not base conditional logic on this value. It may break product
+//       inheritance.
+func (c *config) DeviceProduct() string {
+	return *c.productVariables.DeviceProduct
+}
+
 func (c *config) DeviceResourceOverlays() []string {
 	return c.productVariables.DeviceResourceOverlays
 }
@@ -743,6 +753,14 @@ func (c *config) PlatformSdkCodename() string {
 	return String(c.productVariables.Platform_sdk_codename)
 }
 
+func (c *config) PlatformSdkExtensionVersion() int {
+	return *c.productVariables.Platform_sdk_extension_version
+}
+
+func (c *config) PlatformBaseSdkExtensionVersion() int {
+	return *c.productVariables.Platform_base_sdk_extension_version
+}
+
 func (c *config) PlatformSecurityPatch() string {
 	return String(c.productVariables.Platform_security_patch)
 }
@@ -760,7 +778,7 @@ func (c *config) PlatformBaseOS() string {
 }
 
 func (c *config) MinSupportedSdkVersion() ApiLevel {
-	return uncheckedFinalApiLevel(16)
+	return uncheckedFinalApiLevel(19)
 }
 
 func (c *config) FinalApiLevels() []ApiLevel {
@@ -1248,6 +1266,10 @@ func (c *deviceConfig) ClangCoverageEnabled() bool {
 	return Bool(c.config.productVariables.ClangCoverage)
 }
 
+func (c *deviceConfig) ClangCoverageContinuousMode() bool {
+	return Bool(c.config.productVariables.ClangCoverageContinuousMode)
+}
+
 func (c *deviceConfig) GcovCoverageEnabled() bool {
 	return Bool(c.config.productVariables.GcovCoverage)
 }
@@ -1336,6 +1358,10 @@ func findOverrideValue(overrides []string, name string, errorMsg string) (newVal
 		}
 	}
 	return "", false
+}
+
+func (c *deviceConfig) ApexGlobalMinSdkVersionOverride() string {
+	return String(c.config.productVariables.ApexGlobalMinSdkVersionOverride)
 }
 
 func (c *config) IntegerOverflowDisabledForPath(path string) bool {
@@ -1531,6 +1557,18 @@ func (c *deviceConfig) BoardProductPrivatePrebuiltDirs() []string {
 	return c.config.productVariables.BoardProductPrivatePrebuiltDirs
 }
 
+func (c *deviceConfig) SystemExtSepolicyPrebuiltApiDir() string {
+	return String(c.config.productVariables.SystemExtSepolicyPrebuiltApiDir)
+}
+
+func (c *deviceConfig) ProductSepolicyPrebuiltApiDir() string {
+	return String(c.config.productVariables.ProductSepolicyPrebuiltApiDir)
+}
+
+func (c *deviceConfig) IsPartnerTrebleSepolicyTestEnabled() bool {
+	return c.SystemExtSepolicyPrebuiltApiDir() != "" || c.ProductSepolicyPrebuiltApiDir() != ""
+}
+
 func (c *deviceConfig) DirectedVendorSnapshot() bool {
 	return c.config.productVariables.DirectedVendorSnapshot
 }
@@ -1629,6 +1667,10 @@ func (c *deviceConfig) BuildDebugfsRestrictionsEnabled() bool {
 
 func (c *deviceConfig) BuildBrokenVendorPropertyNamespace() bool {
 	return c.config.productVariables.BuildBrokenVendorPropertyNamespace
+}
+
+func (c *deviceConfig) BuildBrokenInputDir(name string) bool {
+	return InList(name, c.config.productVariables.BuildBrokenInputDirModules)
 }
 
 func (c *deviceConfig) RequiresInsecureExecmemForSwiftshader() bool {
@@ -1982,4 +2024,9 @@ func (c *config) ApexBootJars() ConfiguredJarList {
 
 func (c *config) RBEWrapper() string {
 	return c.GetenvWithDefault("RBE_WRAPPER", remoteexec.DefaultWrapperPath)
+}
+
+// UseHostMusl returns true if the host target has been configured to build against musl libc.
+func (c *config) UseHostMusl() bool {
+	return Bool(c.productVariables.HostMusl)
 }

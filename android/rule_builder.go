@@ -101,12 +101,7 @@ func (r *RuleBuilder) MissingDeps(missingDeps []string) {
 }
 
 // Restat marks the rule as a restat rule, which will be passed to ModuleContext.Rule in BuildParams.Restat.
-//
-// Restat is not compatible with Sbox()
 func (r *RuleBuilder) Restat() *RuleBuilder {
-	if r.sbox {
-		panic("Restat() is not compatible with Sbox()")
-	}
 	r.restat = true
 	return r
 }
@@ -141,17 +136,12 @@ func (r *RuleBuilder) Rewrapper(params *remoteexec.REParams) *RuleBuilder {
 // point to a location where sbox's manifest will be written and must be outside outputDir. sbox
 // will ensure that all outputs have been written, and will discard any output files that were not
 // specified.
-//
-// Sbox is not compatible with Restat()
 func (r *RuleBuilder) Sbox(outputDir WritablePath, manifestPath WritablePath) *RuleBuilder {
 	if r.sbox {
 		panic("Sbox() may not be called more than once")
 	}
 	if len(r.commands) > 0 {
 		panic("Sbox() may not be called after Command()")
-	}
-	if r.restat {
-		panic("Sbox() is not compatible with Restat()")
 	}
 	r.sbox = true
 	r.outDir = outputDir
@@ -470,7 +460,7 @@ var _ BuilderContext = SingletonContext(nil)
 
 func (r *RuleBuilder) depFileMergerCmd(depFiles WritablePaths) *RuleBuilderCommand {
 	return r.Command().
-		BuiltTool("dep_fixer").
+		builtToolWithoutDeps("dep_fixer").
 		Inputs(depFiles.Paths())
 }
 
@@ -636,11 +626,14 @@ func (r *RuleBuilder) Build(name string, desc string) {
 				ctx: r.ctx,
 			},
 		}
-		sboxCmd.Text("rm -rf").Output(r.outDir)
-		sboxCmd.Text("&&")
-		sboxCmd.BuiltTool("sbox").
-			Flag("--sandbox-path").Text(shared.TempDirForOutDir(PathForOutput(r.ctx).String())).
-			Flag("--manifest").Input(r.sboxManifestPath)
+		sboxCmd.builtToolWithoutDeps("sbox").
+			FlagWithArg("--sandbox-path ", shared.TempDirForOutDir(PathForOutput(r.ctx).String())).
+			FlagWithArg("--output-dir ", r.outDir.String()).
+			FlagWithInput("--manifest ", r.sboxManifestPath)
+
+		if r.restat {
+			sboxCmd.Flag("--write-if-changed")
+		}
 
 		// Replace the command string, and add the sbox tool and manifest textproto to the
 		// dependencies of the final sbox rule.
@@ -1040,6 +1033,19 @@ func (c *RuleBuilderCommand) ImplicitTools(paths Paths) *RuleBuilderCommand {
 // It is equivalent to:
 //  cmd.Tool(ctx.Config().HostToolPath(ctx, tool))
 func (c *RuleBuilderCommand) BuiltTool(tool string) *RuleBuilderCommand {
+	if c.rule.ctx.Config().UseHostMusl() {
+		// If the host is using musl, assume that the tool was built against musl libc and include
+		// libc_musl.so in the sandbox.
+		// TODO(ccross): if we supported adding new dependencies during GenerateAndroidBuildActions
+		// this could be a dependency + TransitivePackagingSpecs.
+		c.ImplicitTool(c.rule.ctx.Config().HostJNIToolPath(c.rule.ctx, "libc_musl"))
+	}
+	return c.builtToolWithoutDeps(tool)
+}
+
+// builtToolWithoutDeps is similar to BuiltTool, but doesn't add any dependencies.  It is used
+// internally by RuleBuilder for helper tools that are known to be compiled statically.
+func (c *RuleBuilderCommand) builtToolWithoutDeps(tool string) *RuleBuilderCommand {
 	return c.Tool(c.rule.ctx.Config().HostToolPath(c.rule.ctx, tool))
 }
 

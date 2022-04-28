@@ -15,12 +15,13 @@
 package bp2build
 
 import (
-	"android/soong/android"
-	"android/soong/cc"
-	"android/soong/genrule"
 	"fmt"
 	"strings"
 	"testing"
+
+	"android/soong/android"
+	"android/soong/cc"
+	"android/soong/genrule"
 )
 
 const (
@@ -127,6 +128,9 @@ func TestBasicCcBinary(t *testing.T) {
         keep_symbols_list: ["symbol"],
         none: true,
     },
+    sdk_version: "current",
+    min_sdk_version: "29",
+    use_version_lib: true,
 }
 `,
 		targets: []testBazelTarget{
@@ -150,6 +154,9 @@ func TestBasicCcBinary(t *testing.T) {
         "keep_symbols_list": ["symbol"],
         "none": True,
     }`,
+				"sdk_version":     `"current"`,
+				"min_sdk_version": `"29"`,
+				"use_version_lib": `True`,
 			},
 			},
 		},
@@ -459,7 +466,6 @@ func TestCcBinarySharedProto(t *testing.T) {
 	name: "foo",
 	srcs: ["foo.proto"],
 	proto: {
-		canonical_path_from_root: false,
 	},
 	include_build_directory: false,
 }`,
@@ -483,7 +489,6 @@ func TestCcBinaryStaticProto(t *testing.T) {
 	srcs: ["foo.proto"],
 	static_executable: true,
 	proto: {
-		canonical_path_from_root: false,
 	},
 	include_build_directory: false,
 }`,
