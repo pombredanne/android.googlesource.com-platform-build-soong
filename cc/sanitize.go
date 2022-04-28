@@ -42,6 +42,7 @@ var (
 		"-fno-omit-frame-pointer",
 		"-Wno-frame-larger-than=",
 		"-fsanitize-hwaddress-abi=platform",
+		"-mllvm", "-hwasan-use-after-scope=1",
 	}
 
 	// ThinLTO performs codegen during link time, thus these flags need to
@@ -75,7 +76,7 @@ var (
 	minimalRuntimeFlags = []string{"-fsanitize-minimal-runtime", "-fno-sanitize-trap=integer,undefined",
 		"-fno-sanitize-recover=integer,undefined"}
 	hwasanGlobalOptions = []string{"heap_history_size=1023", "stack_history_size=512",
-		"export_memory_stats=0", "max_malloc_fill_size=0"}
+		"export_memory_stats=0", "max_malloc_fill_size=4096", "malloc_fill_byte=0"}
 )
 
 type SanitizerType int
@@ -479,14 +480,20 @@ func (sanitize *sanitize) begin(ctx BaseModuleContext) {
 		s.Diag.Cfi = nil
 	}
 
-	// Disable sanitizers that depend on the UBSan runtime for windows/darwin/musl builds.
-	if !ctx.Os().Linux() || ctx.Os() == android.LinuxMusl {
+	// Disable sanitizers that depend on the UBSan runtime for windows/darwin builds.
+	if !ctx.Os().Linux() {
 		s.Cfi = nil
 		s.Diag.Cfi = nil
 		s.Misc_undefined = nil
 		s.Undefined = nil
 		s.All_undefined = nil
 		s.Integer_overflow = nil
+	}
+
+	// Disable CFI for musl
+	if ctx.toolchain().Musl() {
+		s.Cfi = nil
+		s.Diag.Cfi = nil
 	}
 
 	// Also disable CFI for VNDK variants of components
@@ -582,18 +589,10 @@ func toDisableUnsignedShiftBaseChange(flags []string) bool {
 
 func (sanitize *sanitize) flags(ctx ModuleContext, flags Flags) Flags {
 	minimalRuntimeLib := config.UndefinedBehaviorSanitizerMinimalRuntimeLibrary(ctx.toolchain()) + ".a"
-	minimalRuntimePath := "${config.ClangAsanLibDir}/" + minimalRuntimeLib
-	builtinsRuntimeLib := config.BuiltinsRuntimeLibrary(ctx.toolchain()) + ".a"
-	builtinsRuntimePath := "${config.ClangAsanLibDir}/" + builtinsRuntimeLib
 
 	if sanitize.Properties.MinimalRuntimeDep {
 		flags.Local.LdFlags = append(flags.Local.LdFlags,
-			minimalRuntimePath,
 			"-Wl,--exclude-libs,"+minimalRuntimeLib)
-	}
-
-	if sanitize.Properties.BuiltinsDep {
-		flags.libFlags = append([]string{builtinsRuntimePath}, flags.libFlags...)
 	}
 
 	if !sanitize.Properties.SanitizerEnabled && !sanitize.Properties.UbsanRuntimeDep {
@@ -709,10 +708,10 @@ func (sanitize *sanitize) flags(ctx ModuleContext, flags Flags) Flags {
 		flags.Local.AsFlags = append(flags.Local.AsFlags, sanitizeArg)
 		flags.Local.LdFlags = append(flags.Local.LdFlags, sanitizeArg)
 
-		if ctx.toolchain().Bionic() {
-			// Bionic sanitizer runtimes have already been added as dependencies so that
-			// the right variant of the runtime will be used (with the "-android"
-			// suffix), so don't let clang the runtime library.
+		if ctx.toolchain().Bionic() || ctx.toolchain().Musl() {
+			// Bionic and musl sanitizer runtimes have already been added as dependencies so that
+			// the right variant of the runtime will be used (with the "-android" or "-musl"
+			// suffixes), so don't let clang the runtime library.
 			flags.Local.LdFlags = append(flags.Local.LdFlags, "-fno-sanitize-link-runtime")
 		} else {
 			// Host sanitizers only link symbols in the final executable, so
@@ -725,11 +724,7 @@ func (sanitize *sanitize) flags(ctx ModuleContext, flags Flags) Flags {
 
 		if enableMinimalRuntime(sanitize) {
 			flags.Local.CFlags = append(flags.Local.CFlags, strings.Join(minimalRuntimeFlags, " "))
-			flags.libFlags = append([]string{minimalRuntimePath}, flags.libFlags...)
 			flags.Local.LdFlags = append(flags.Local.LdFlags, "-Wl,--exclude-libs,"+minimalRuntimeLib)
-			if !ctx.toolchain().Bionic() {
-				flags.libFlags = append([]string{builtinsRuntimePath}, flags.libFlags...)
-			}
 		}
 
 		if Bool(sanitize.Properties.Sanitize.Fuzzer) {
@@ -1198,7 +1193,37 @@ func sanitizerRuntimeMutator(mctx android.BottomUpMutatorContext) {
 			}
 		}
 
-		if runtimeLibrary != "" && (toolchain.Bionic() || c.sanitize.Properties.UbsanRuntimeDep) {
+		addStaticDeps := func(deps ...string) {
+			// If we're using snapshots, redirect to snapshot whenever possible
+			snapshot := mctx.Provider(SnapshotInfoProvider).(SnapshotInfo)
+			for idx, dep := range deps {
+				if lib, ok := snapshot.StaticLibs[dep]; ok {
+					deps[idx] = lib
+				}
+			}
+
+			// static executable gets static runtime libs
+			depTag := libraryDependencyTag{Kind: staticLibraryDependency}
+			variations := append(mctx.Target().Variations(),
+				blueprint.Variation{Mutator: "link", Variation: "static"})
+			if c.Device() {
+				variations = append(variations, c.ImageVariation())
+			}
+			if c.UseSdk() {
+				variations = append(variations,
+					blueprint.Variation{Mutator: "sdk", Variation: "sdk"})
+			}
+			mctx.AddFarVariationDependencies(variations, depTag, deps...)
+
+		}
+		if enableMinimalRuntime(c.sanitize) || c.sanitize.Properties.MinimalRuntimeDep {
+			addStaticDeps(config.UndefinedBehaviorSanitizerMinimalRuntimeLibrary(toolchain))
+		}
+		if c.sanitize.Properties.BuiltinsDep {
+			addStaticDeps(config.BuiltinsRuntimeLibrary(toolchain))
+		}
+
+		if runtimeLibrary != "" && (toolchain.Bionic() || toolchain.Musl() || c.sanitize.Properties.UbsanRuntimeDep) {
 			// UBSan is supported on non-bionic linux host builds as well
 
 			// Adding dependency to the runtime library. We are using *FarVariation*
@@ -1209,23 +1234,8 @@ func sanitizerRuntimeMutator(mctx android.BottomUpMutatorContext) {
 			// Note that by adding dependency with {static|shared}DepTag, the lib is
 			// added to libFlags and LOCAL_SHARED_LIBRARIES by cc.Module
 			if c.staticBinary() {
-				deps := append(extraStaticDeps, runtimeLibrary)
-				// If we're using snapshots, redirect to snapshot whenever possible
-				snapshot := mctx.Provider(SnapshotInfoProvider).(SnapshotInfo)
-				for idx, dep := range deps {
-					if lib, ok := snapshot.StaticLibs[dep]; ok {
-						deps[idx] = lib
-					}
-				}
-
-				// static executable gets static runtime libs
-				depTag := libraryDependencyTag{Kind: staticLibraryDependency}
-				variations := append(mctx.Target().Variations(),
-					blueprint.Variation{Mutator: "link", Variation: "static"})
-				if c.Device() {
-					variations = append(variations, c.ImageVariation())
-				}
-				mctx.AddFarVariationDependencies(variations, depTag, deps...)
+				addStaticDeps(runtimeLibrary)
+				addStaticDeps(extraStaticDeps...)
 			} else if !c.static() && !c.Header() {
 				// If we're using snapshots, redirect to snapshot whenever possible
 				snapshot := mctx.Provider(SnapshotInfoProvider).(SnapshotInfo)
@@ -1249,6 +1259,10 @@ func sanitizerRuntimeMutator(mctx android.BottomUpMutatorContext) {
 					blueprint.Variation{Mutator: "link", Variation: "shared"})
 				if c.Device() {
 					variations = append(variations, c.ImageVariation())
+				}
+				if c.UseSdk() {
+					variations = append(variations,
+						blueprint.Variation{Mutator: "sdk", Variation: "sdk"})
 				}
 				AddSharedLibDependenciesWithVersions(mctx, c, variations, depTag, runtimeLibrary, "", true)
 			}
