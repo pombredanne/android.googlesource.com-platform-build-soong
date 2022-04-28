@@ -1242,13 +1242,15 @@ def init(g, handle):
 		desc:   "Ignore make rules",
 		mkname: "product.mk",
 		in: `
+foo: PRIVATE_VARIABLE = some_tool $< $@
 foo: foo.c
 	gcc -o $@ $*`,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
-  rblf.mk2rbc_error("product.mk:2", "unsupported line rule:       foo: foo.c\n#gcc -o $@ $*")
+  rblf.mk2rbc_error("product.mk:2", "Only simple variables are handled")
+  rblf.mk2rbc_error("product.mk:3", "unsupported line rule:       foo: foo.c\n#gcc -o $@ $*")
 `,
 	},
 	{
@@ -1527,6 +1529,20 @@ def init(g, handle):
     cfg["PRODUCT_COPY_FILES"] += ("foo/bar/%s:%s/etc/%s" % (x, g.get("TARGET_COPY_OUT_VENDOR", ""), x)).split()
     if g.get("MY_OTHER_VAR", ""):
       cfg["PRODUCT_COPY_FILES"] += ("%s:foo/bar/%s" % (g.get("MY_OTHER_VAR", ""), x)).split()
+`,
+	},
+	{
+		desc:   ".KATI_READONLY",
+		mkname: "product.mk",
+		in: `
+MY_VAR := foo
+.KATI_READONLY := MY_VAR
+`,
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  g["MY_VAR"] = "foo"
 `,
 	},
 }

@@ -531,7 +531,7 @@ func (ctx *parseContext) backNode() {
 
 func (ctx *parseContext) handleAssignment(a *mkparser.Assignment) []starlarkNode {
 	// Handle only simple variables
-	if !a.Name.Const() {
+	if !a.Name.Const() || a.Target != nil {
 		return []starlarkNode{ctx.newBadNode(a, "Only simple variables are handled")}
 	}
 	name := a.Name.Strings[0]
@@ -541,6 +541,12 @@ func (ctx *parseContext) handleAssignment(a *mkparser.Assignment) []starlarkNode
 	// There are very few places where `override` is used, just flag it.
 	if strings.HasPrefix(name, "override ") {
 		return []starlarkNode{ctx.newBadNode(a, "cannot handle override directive")}
+	}
+	if name == ".KATI_READONLY" {
+		// Skip assignments to .KATI_READONLY. If it was in the output file, it
+		// would be an error because it would be sorted before the definition of
+		// the variable it's trying to make readonly.
+		return []starlarkNode{}
 	}
 
 	// Soong configuration

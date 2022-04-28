@@ -17,6 +17,7 @@ package java
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/google/blueprint/proptools"
@@ -75,9 +76,9 @@ type linter struct {
 	extraLintCheckJars      android.Paths
 	test                    bool
 	library                 bool
-	minSdkVersion           string
-	targetSdkVersion        string
-	compileSdkVersion       string
+	minSdkVersion           int
+	targetSdkVersion        int
+	compileSdkVersion       int
 	compileSdkKind          android.SdkKind
 	javaLanguageLevel       string
 	kotlinLanguageLevel     string
@@ -299,7 +300,7 @@ func (l *linter) generateManifest(ctx android.ModuleContext, rule *android.RuleB
 		Text(`echo "<?xml version='1.0' encoding='utf-8'?>" &&`).
 		Text(`echo "<manifest xmlns:android='http://schemas.android.com/apk/res/android'" &&`).
 		Text(`echo "    android:versionCode='1' android:versionName='1' >" &&`).
-		Textf(`echo "  <uses-sdk android:minSdkVersion='%s' android:targetSdkVersion='%s'/>" &&`,
+		Textf(`echo "  <uses-sdk android:minSdkVersion='%d' android:targetSdkVersion='%d'/>" &&`,
 			l.minSdkVersion, l.targetSdkVersion).
 		Text(`echo "</manifest>"`).
 		Text(") >").Output(manifestPath)
@@ -427,7 +428,7 @@ func (l *linter) lint(ctx android.ModuleContext) {
 		FlagWithOutput("--html ", html).
 		FlagWithOutput("--text ", text).
 		FlagWithOutput("--xml ", xml).
-		FlagWithArg("--compile-sdk-version ", l.compileSdkVersion).
+		FlagWithArg("--compile-sdk-version ", strconv.Itoa(l.compileSdkVersion)).
 		FlagWithArg("--java-language-level ", l.javaLanguageLevel).
 		FlagWithArg("--kotlin-language-level ", l.kotlinLanguageLevel).
 		FlagWithArg("--url ", fmt.Sprintf(".=.,%s=out", android.PathForOutput(ctx).String())).
