@@ -18,6 +18,8 @@ import (
 	"strings"
 
 	"android/soong/bazel"
+
+	"github.com/google/blueprint"
 )
 
 func init() {
@@ -27,6 +29,11 @@ func init() {
 var PrepareForTestWithFilegroup = FixtureRegisterWithContext(func(ctx RegistrationContext) {
 	ctx.RegisterModuleType("filegroup", FileGroupFactory)
 })
+
+// IsFilegroup checks that a module is a filegroup type
+func IsFilegroup(ctx bazel.OtherModuleContext, m blueprint.Module) bool {
+	return ctx.OtherModuleType(m) == "filegroup"
+}
 
 // https://docs.bazel.build/versions/master/be/general.html#filegroup
 type bazelFilegroupAttributes struct {
@@ -112,12 +119,12 @@ func (fg *fileGroup) maybeGenerateBazelBuildActions(ctx ModuleContext) {
 		return
 	}
 
-	archVariant := ctx.Arch().ArchType
+	archVariant := ctx.Arch().String()
 	osVariant := ctx.Os()
 	if len(fg.Srcs()) == 1 && fg.Srcs()[0].Base() == fg.Name() {
 		// This will be a regular file target, not filegroup, in Bazel.
 		// See FilegroupBp2Build for more information.
-		archVariant = Common
+		archVariant = Common.String()
 		osVariant = CommonOS
 	}
 
