@@ -117,6 +117,7 @@ cc_library {
     include_build_directory: false,
     sdk_version: "current",
     min_sdk_version: "29",
+    use_version_lib: true,
 }
 `,
 		expectedBazelTargets: makeCcLibraryTargets("foo-lib", attrNameToString{
@@ -142,8 +143,9 @@ cc_library {
         "//build/bazel/platforms/os:linux_bionic": ["bionic.cpp"],
         "//conditions:default": [],
     })`,
-      "sdk_version": `"current"`,
-      "min_sdk_version": `"29"`,
+			"sdk_version":     `"current"`,
+			"min_sdk_version": `"29"`,
+			"use_version_lib": `True`,
 		}),
 	})
 }
@@ -283,8 +285,8 @@ cc_library {
     srcs: ["both.cpp"],
     cflags: ["bothflag"],
     shared_libs: ["shared_dep_for_both"],
-    static_libs: ["static_dep_for_both"],
-    whole_static_libs: ["whole_static_lib_for_both"],
+    static_libs: ["static_dep_for_both", "whole_and_static_lib_for_both"],
+    whole_static_libs: ["whole_static_lib_for_both", "whole_and_static_lib_for_both"],
     static: {
         srcs: ["staticonly.cpp"],
         cflags: ["staticflag"],
@@ -332,6 +334,11 @@ cc_library_static {
     bazel_module: { bp2build_available: false },
 }
 
+cc_library_static {
+    name: "whole_and_static_lib_for_both",
+    bazel_module: { bp2build_available: false },
+}
+
 cc_library {
     name: "shared_dep_for_shared",
     bazel_module: { bp2build_available: false },
@@ -367,6 +374,7 @@ cc_library {
     ]`,
 				"whole_archive_deps": `[
         ":whole_static_lib_for_both",
+        ":whole_and_static_lib_for_both",
         ":whole_static_lib_for_static",
     ]`}),
 			makeBazelTarget("cc_library_shared", "a", attrNameToString{
@@ -388,6 +396,7 @@ cc_library {
     ]`,
 				"whole_archive_deps": `[
         ":whole_static_lib_for_both",
+        ":whole_and_static_lib_for_both",
         ":whole_static_lib_for_shared",
     ]`,
 			}),
