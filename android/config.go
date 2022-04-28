@@ -158,7 +158,7 @@ type config struct {
 	mockBpList string
 
 	runningAsBp2Build              bool
-	bp2buildPackageConfig          Bp2BuildConfig
+	bp2buildPackageConfig          bp2BuildConversionAllowlist
 	Bp2buildSoongConfigDefinitions soongconfig.Bp2BuildSoongConfigDefinitions
 
 	// If testAllowNonExistentPaths is true then PathForSource and PathForModuleSrc won't error
@@ -351,6 +351,7 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 	config := &config{
 		productVariables: productVariables{
 			DeviceName:                          stringPtr("test_device"),
+			DeviceProduct:                       stringPtr("test_product"),
 			Platform_sdk_version:                intPtr(30),
 			Platform_sdk_codename:               stringPtr("S"),
 			Platform_base_sdk_extension_version: intPtr(1),
@@ -549,7 +550,7 @@ func NewConfig(moduleListFile string, runGoTests bool, outDir, soongOutDir strin
 	}
 
 	config.BazelContext, err = NewBazelContext(config)
-	config.bp2buildPackageConfig = bp2buildDefaultConfig
+	config.bp2buildPackageConfig = bp2buildAllowlist
 
 	return Config{config}, err
 }
@@ -721,6 +722,15 @@ func (c *config) BuildNumberFile(ctx PathContext) Path {
 // TODO: take an AndroidModuleContext to select the device name for multi-device builds
 func (c *config) DeviceName() string {
 	return *c.productVariables.DeviceName
+}
+
+// DeviceProduct returns the current product target. There could be multiple of
+// these per device type.
+//
+// NOTE: Do not base conditional logic on this value. It may break product
+//       inheritance.
+func (c *config) DeviceProduct() string {
+	return *c.productVariables.DeviceProduct
 }
 
 func (c *config) DeviceResourceOverlays() []string {
@@ -1348,6 +1358,10 @@ func findOverrideValue(overrides []string, name string, errorMsg string) (newVal
 		}
 	}
 	return "", false
+}
+
+func (c *deviceConfig) ApexGlobalMinSdkVersionOverride() string {
+	return String(c.config.productVariables.ApexGlobalMinSdkVersionOverride)
 }
 
 func (c *config) IntegerOverflowDisabledForPath(path string) bool {

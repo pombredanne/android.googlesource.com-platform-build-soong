@@ -196,7 +196,6 @@ type assignmentNode struct {
 	flavor   assignmentFlavor
 	location ErrorLocation
 	isTraced bool
-	previous *assignmentNode
 }
 
 func (asgn *assignmentNode) emit(gctx *generationContext) {
@@ -209,7 +208,7 @@ func (asgn *assignmentNode) emit(gctx *generationContext) {
 		gctx.newLine()
 		gctx.tracedCount++
 		gctx.writef(`print("%s.%d: %s := ", `, gctx.starScript.mkFile, gctx.tracedCount, asgn.lhs.name())
-		asgn.lhs.emitGet(gctx, true)
+		asgn.lhs.emitGet(gctx)
 		gctx.writef(")")
 	}
 }
@@ -271,6 +270,7 @@ type switchCase struct {
 func (cb *switchCase) emit(gctx *generationContext) {
 	cb.gate.emit(gctx)
 	gctx.indentLevel++
+	gctx.pushVariableAssignments()
 	hasStatements := false
 	for _, node := range cb.nodes {
 		if _, ok := node.(*commentNode); !ok {
@@ -282,6 +282,7 @@ func (cb *switchCase) emit(gctx *generationContext) {
 		gctx.emitPass()
 	}
 	gctx.indentLevel--
+	gctx.popVariableAssignments()
 }
 
 // A single complete if ... elseif ... else ... endif sequences
@@ -293,4 +294,31 @@ func (ssw *switchNode) emit(gctx *generationContext) {
 	for _, ssCase := range ssw.ssCases {
 		ssCase.emit(gctx)
 	}
+}
+
+type foreachNode struct {
+	varName string
+	list    starlarkExpr
+	actions []starlarkNode
+}
+
+func (f *foreachNode) emit(gctx *generationContext) {
+	gctx.pushVariableAssignments()
+	gctx.newLine()
+	gctx.writef("for %s in ", f.varName)
+	f.list.emit(gctx)
+	gctx.write(":")
+	gctx.indentLevel++
+	hasStatements := false
+	for _, a := range f.actions {
+		if _, ok := a.(*commentNode); !ok {
+			hasStatements = true
+		}
+		a.emit(gctx)
+	}
+	if !hasStatements {
+		gctx.emitPass()
+	}
+	gctx.indentLevel--
+	gctx.popVariableAssignments()
 }
