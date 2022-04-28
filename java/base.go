@@ -185,12 +185,12 @@ type CommonProperties struct {
 // constructing a new module.
 type DeviceProperties struct {
 	// If not blank, set to the version of the sdk to compile against.
-	// Defaults to compiling against the current platform.
+	// Defaults to private.
 	// Values are of one of the following forms:
-	// 1) numerical API level or "current"
-	// 2) An SDK kind with an API level: "<sdk kind>_<API level>". See
-	// build/soong/android/sdk_version.go for the complete and up to date list of
-	// SDK kinds. If the SDK kind value is empty, it will be set to public.
+	// 1) numerical API level, "current", "none", or "core_platform"
+	// 2) An SDK kind with an API level: "<sdk kind>_<API level>"
+	// See build/soong/android/sdk_version.go for the complete and up to date list of SDK kinds.
+	// If the SDK kind is empty, it will be set to public.
 	Sdk_version *string
 
 	// if not blank, set the minimum version of the sdk that the compiled artifacts will run against.
@@ -207,7 +207,7 @@ type DeviceProperties struct {
 
 	// Whether to compile against the platform APIs instead of an SDK.
 	// If true, then sdk_version must be empty. The value of this field
-	// is ignored when module's type isn't android_app.
+	// is ignored when module's type isn't android_app, android_test, or android_test_helper_app.
 	Platform_apis *bool
 
 	Aidl struct {
@@ -1048,12 +1048,24 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		}
 	}
 
+	// We don't currently run annotation processors in turbine, which means we can't use turbine
+	// generated header jars when an annotation processor that generates API is enabled.  One
+	// exception (handled further below) is when kotlin sources are enabled, in which case turbine
+	//  is used to run all of the annotation processors.
+	disableTurbine := deps.disableTurbine
+
 	// Collect .java files for AIDEGen
 	j.expandIDEInfoCompiledSrcs = append(j.expandIDEInfoCompiledSrcs, uniqueSrcFiles.Strings()...)
 
 	var kotlinJars android.Paths
+	var kotlinHeaderJars android.Paths
 
 	if srcFiles.HasExt(".kt") {
+		// When using kotlin sources turbine is used to generate annotation processor sources,
+		// including for annotation processors that generate API, so we can use turbine for
+		// java sources too.
+		disableTurbine = false
+
 		// user defined kotlin flags.
 		kotlincFlags := j.properties.Kotlincflags
 		CheckKotlincFlags(ctx, kotlincFlags)
@@ -1109,18 +1121,22 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		}
 
 		kotlinJar := android.PathForModuleOut(ctx, "kotlin", jarName)
-		kotlinCompile(ctx, kotlinJar, kotlinSrcFiles, kotlinCommonSrcFiles, srcJars, flags)
+		kotlinHeaderJar := android.PathForModuleOut(ctx, "kotlin_headers", jarName)
+		kotlinCompile(ctx, kotlinJar, kotlinHeaderJar, kotlinSrcFiles, kotlinCommonSrcFiles, srcJars, flags)
 		if ctx.Failed() {
 			return
 		}
 
 		// Make javac rule depend on the kotlinc rule
-		flags.classpath = append(flags.classpath, kotlinJar)
+		flags.classpath = append(classpath{kotlinHeaderJar}, flags.classpath...)
 
 		kotlinJars = append(kotlinJars, kotlinJar)
+		kotlinHeaderJars = append(kotlinHeaderJars, kotlinHeaderJar)
+
 		// Jar kotlin classes into the final jar after javac
 		if BoolDefault(j.properties.Static_kotlin_stdlib, true) {
 			kotlinJars = append(kotlinJars, deps.kotlinStdlib...)
+			kotlinHeaderJars = append(kotlinHeaderJars, deps.kotlinStdlib...)
 		} else {
 			flags.dexClasspath = append(flags.dexClasspath, deps.kotlinStdlib...)
 		}
@@ -1134,7 +1150,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 
 	enableSharding := false
 	var headerJarFileWithoutDepsOrJarjar android.Path
-	if ctx.Device() && !ctx.Config().IsEnvFalse("TURBINE_ENABLED") && !deps.disableTurbine {
+	if ctx.Device() && !ctx.Config().IsEnvFalse("TURBINE_ENABLED") && !disableTurbine {
 		if j.properties.Javac_shard_size != nil && *(j.properties.Javac_shard_size) > 0 {
 			enableSharding = true
 			// Formerly, there was a check here that prevented annotation processors
@@ -1144,7 +1160,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 			// with sharding enabled. See: b/77284273.
 		}
 		headerJarFileWithoutDepsOrJarjar, j.headerJarFile =
-			j.compileJavaHeader(ctx, uniqueSrcFiles, srcJars, deps, flags, jarName, kotlinJars)
+			j.compileJavaHeader(ctx, uniqueSrcFiles, srcJars, deps, flags, jarName, kotlinHeaderJars)
 		if ctx.Failed() {
 			return
 		}
@@ -1678,6 +1694,8 @@ func (j *Module) IDEInfo(dpInfo *android.IdeInfo) {
 		dpInfo.Jarjar_rules = append(dpInfo.Jarjar_rules, j.expandJarjarRules.String())
 	}
 	dpInfo.Paths = append(dpInfo.Paths, j.modulePaths...)
+	dpInfo.Static_libs = append(dpInfo.Static_libs, j.properties.Static_libs...)
+	dpInfo.Libs = append(dpInfo.Libs, j.properties.Libs...)
 }
 
 func (j *Module) CompilerDeps() []string {
