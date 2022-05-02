@@ -34,7 +34,7 @@ var (
 )
 
 func init() {
-	registerToolchainFactory(android.Android, android.Arm64, Arm64ToolchainFactory)
+	registerToolchainFactory(android.Android, android.Arm64, arm64DeviceToolchainFactory)
 
 	pctx.StaticVariable("Arm64ToolchainRustFlags", strings.Join(Arm64RustFlags, " "))
 	pctx.StaticVariable("Arm64ToolchainLinkFlags", strings.Join(Arm64LinkFlags, " "))
@@ -48,7 +48,7 @@ func init() {
 
 type toolchainArm64 struct {
 	toolchain64Bit
-	toolchainRustFlags string
+	toolchainLinkFlags, toolchainRustFlags string
 }
 
 func (t *toolchainArm64) RustTriple() string {
@@ -57,7 +57,7 @@ func (t *toolchainArm64) RustTriple() string {
 
 func (t *toolchainArm64) ToolchainLinkFlags() string {
 	// Prepend the lld flags from cc_config so we stay in sync with cc
-	return "${config.DeviceGlobalLinkFlags} ${cc_config.Arm64Lldflags} ${config.Arm64ToolchainLinkFlags}"
+	return "${config.DeviceGlobalLinkFlags} " + t.toolchainLinkFlags + " ${config.Arm64ToolchainLinkFlags}"
 }
 
 func (t *toolchainArm64) ToolchainRustFlags() string {
@@ -76,7 +76,11 @@ func (toolchainArm64) LibclangRuntimeLibraryArch() string {
 	return "aarch64"
 }
 
-func Arm64ToolchainFactory(arch android.Arch) Toolchain {
+func arm64DeviceToolchainFactory(arch android.Arch) Toolchain {
+	return arm64ToolchainFactory(arch, "${cc_config.Arm64Lldflags}")
+}
+
+func arm64ToolchainFactory(arch android.Arch, toolchainLinkFlags string) Toolchain {
 	archVariant := arch.ArchVariant
 	if archVariant == "" {
 		// arch variants defaults to armv8-a. This is mostly for
@@ -96,6 +100,7 @@ func Arm64ToolchainFactory(arch android.Arch) Toolchain {
 	}
 
 	return &toolchainArm64{
+		toolchainLinkFlags: toolchainLinkFlags,
 		toolchainRustFlags: strings.Join(toolchainRustFlags, " "),
 	}
 }

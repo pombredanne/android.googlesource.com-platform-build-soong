@@ -48,7 +48,7 @@ var (
 		"-Wl,-z,separate-code",
 	}
 
-	arm64Lldflags = append(arm64Ldflags,
+	arm64DeviceLldflags = append(arm64Ldflags,
 		"-Wl,-z,max-page-size=4096")
 
 	arm64Cppflags = []string{}
@@ -88,7 +88,7 @@ var (
 
 func init() {
 	exportedVars.ExportStringListStaticVariable("Arm64Ldflags", arm64Ldflags)
-	exportedVars.ExportStringListStaticVariable("Arm64Lldflags", arm64Lldflags)
+	exportedVars.ExportStringListStaticVariable("Arm64Lldflags", arm64DeviceLldflags)
 
 	exportedVars.ExportStringListStaticVariable("Arm64Cflags", arm64Cflags)
 	exportedVars.ExportStringListStaticVariable("Arm64Cppflags", arm64Cppflags)
