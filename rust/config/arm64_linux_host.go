@@ -19,6 +19,10 @@ import (
 )
 
 func init() {
-	// Linux_cross-arm64 uses the same rust toolchain as the Android-arm64
-	registerToolchainFactory(android.LinuxBionic, android.Arm64, Arm64ToolchainFactory)
+	// Linux_cross-arm64 uses mostly the same rust toolchain as the Android-arm64 but with different link flags
+	registerToolchainFactory(android.LinuxBionic, android.Arm64, arm64LinuxBionicToolchainFactory)
+}
+
+func arm64LinuxBionicToolchainFactory(arch android.Arch) Toolchain {
+	return arm64ToolchainFactory(arch, "${cc_config.Arm64LinuxBionicLldflags}")
 }
