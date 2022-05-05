@@ -158,7 +158,7 @@ type config struct {
 	mockBpList string
 
 	runningAsBp2Build              bool
-	bp2buildPackageConfig          Bp2BuildConfig
+	bp2buildPackageConfig          bp2BuildConversionAllowlist
 	Bp2buildSoongConfigDefinitions soongconfig.Bp2BuildSoongConfigDefinitions
 
 	// If testAllowNonExistentPaths is true then PathForSource and PathForModuleSrc won't error
@@ -550,7 +550,7 @@ func NewConfig(moduleListFile string, runGoTests bool, outDir, soongOutDir strin
 	}
 
 	config.BazelContext, err = NewBazelContext(config)
-	config.bp2buildPackageConfig = bp2buildDefaultConfig
+	config.bp2buildPackageConfig = bp2buildAllowlist
 
 	return Config{config}, err
 }
@@ -777,8 +777,12 @@ func (c *config) PlatformBaseOS() string {
 	return String(c.productVariables.Platform_base_os)
 }
 
+func (c *config) PlatformVersionLastStable() string {
+	return String(c.productVariables.Platform_version_last_stable)
+}
+
 func (c *config) MinSupportedSdkVersion() ApiLevel {
-	return uncheckedFinalApiLevel(16)
+	return uncheckedFinalApiLevel(19)
 }
 
 func (c *config) FinalApiLevels() []ApiLevel {
@@ -1358,6 +1362,10 @@ func findOverrideValue(overrides []string, name string, errorMsg string) (newVal
 		}
 	}
 	return "", false
+}
+
+func (c *deviceConfig) ApexGlobalMinSdkVersionOverride() string {
+	return String(c.config.productVariables.ApexGlobalMinSdkVersionOverride)
 }
 
 func (c *config) IntegerOverflowDisabledForPath(path string) bool {

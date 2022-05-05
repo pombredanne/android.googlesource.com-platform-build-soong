@@ -644,7 +644,21 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 
 	certificates := processMainCert(a.ModuleBase, a.getCertString(ctx), certificateDeps, ctx)
-	a.certificate = certificates[0]
+
+	// This can be reached with an empty certificate list if AllowMissingDependencies is set
+	// and the certificate property for this module is a module reference to a missing module.
+	if len(certificates) > 0 {
+		a.certificate = certificates[0]
+	} else {
+		if !ctx.Config().AllowMissingDependencies() && len(ctx.GetMissingDependencies()) > 0 {
+			panic("Should only get here if AllowMissingDependencies set and there are missing dependencies")
+		}
+		// Set a certificate to avoid panics later when accessing it.
+		a.certificate = Certificate{
+			Key: android.PathForModuleOut(ctx, "missing.pk8"),
+			Pem: android.PathForModuleOut(ctx, "missing.pem"),
+		}
+	}
 
 	// Build a final signed app package.
 	packageFile := android.PathForModuleOut(ctx, a.installApkName+".apk")
@@ -895,6 +909,7 @@ func AndroidAppFactory() android.Module {
 	module.Module.dexProperties.Optimize.Shrink = proptools.BoolPtr(true)
 
 	module.Module.properties.Instrument = true
+	module.Module.properties.Supports_static_instrumentation = true
 	module.Module.properties.Installable = proptools.BoolPtr(true)
 
 	module.addHostAndDeviceProperties()
@@ -1014,6 +1029,7 @@ func AndroidTestFactory() android.Module {
 	module.Module.dexProperties.Optimize.EnabledByDefault = true
 
 	module.Module.properties.Instrument = true
+	module.Module.properties.Supports_static_instrumentation = true
 	module.Module.properties.Installable = proptools.BoolPtr(true)
 	module.appProperties.Use_embedded_native_libs = proptools.BoolPtr(true)
 	module.appProperties.AlwaysPackageNativeLibs = true

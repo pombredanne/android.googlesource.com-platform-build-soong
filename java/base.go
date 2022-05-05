@@ -170,6 +170,9 @@ type CommonProperties struct {
 	}
 
 	Instrument bool `blueprint:"mutated"`
+	// If true, then the module supports statically including the jacocoagent
+	// into the library.
+	Supports_static_instrumentation bool `blueprint:"mutated"`
 
 	// List of files to include in the META-INF/services folder of the resulting jar.
 	Services []string `android:"path,arch_variant"`
@@ -185,12 +188,12 @@ type CommonProperties struct {
 // constructing a new module.
 type DeviceProperties struct {
 	// If not blank, set to the version of the sdk to compile against.
-	// Defaults to compiling against the current platform.
+	// Defaults to private.
 	// Values are of one of the following forms:
-	// 1) numerical API level or "current"
-	// 2) An SDK kind with an API level: "<sdk kind>_<API level>". See
-	// build/soong/android/sdk_version.go for the complete and up to date list of
-	// SDK kinds. If the SDK kind value is empty, it will be set to public.
+	// 1) numerical API level, "current", "none", or "core_platform"
+	// 2) An SDK kind with an API level: "<sdk kind>_<API level>"
+	// See build/soong/android/sdk_version.go for the complete and up to date list of SDK kinds.
+	// If the SDK kind is empty, it will be set to public.
 	Sdk_version *string
 
 	// if not blank, set the minimum version of the sdk that the compiled artifacts will run against.
@@ -207,7 +210,7 @@ type DeviceProperties struct {
 
 	// Whether to compile against the platform APIs instead of an SDK.
 	// If true, then sdk_version must be empty. The value of this field
-	// is ignored when module's type isn't android_app.
+	// is ignored when module's type isn't android_app, android_test, or android_test_helper_app.
 	Platform_apis *bool
 
 	Aidl struct {
@@ -605,7 +608,8 @@ func (j *Module) shouldInstrument(ctx android.BaseModuleContext) bool {
 }
 
 func (j *Module) shouldInstrumentStatic(ctx android.BaseModuleContext) bool {
-	return j.shouldInstrument(ctx) &&
+	return j.properties.Supports_static_instrumentation &&
+		j.shouldInstrument(ctx) &&
 		(ctx.Config().IsEnvTrue("EMMA_INSTRUMENT_STATIC") ||
 			ctx.Config().UnbundledBuild())
 }
@@ -1481,11 +1485,11 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	}
 
 	if ctx.Device() {
-		lintSDKVersionString := func(sdkSpec android.SdkSpec) string {
+		lintSDKVersion := func(sdkSpec android.SdkSpec) android.ApiLevel {
 			if v := sdkSpec.ApiLevel; !v.IsPreview() {
-				return v.String()
+				return v
 			} else {
-				return ctx.Config().DefaultAppTargetSdk(ctx).String()
+				return ctx.Config().DefaultAppTargetSdk(ctx)
 			}
 		}
 
@@ -1494,9 +1498,9 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		j.linter.srcJars = srcJars
 		j.linter.classpath = append(append(android.Paths(nil), flags.bootClasspath...), flags.classpath...)
 		j.linter.classes = j.implementationJarFile
-		j.linter.minSdkVersion = lintSDKVersionString(j.MinSdkVersion(ctx))
-		j.linter.targetSdkVersion = lintSDKVersionString(j.TargetSdkVersion(ctx))
-		j.linter.compileSdkVersion = lintSDKVersionString(j.SdkVersion(ctx))
+		j.linter.minSdkVersion = lintSDKVersion(j.MinSdkVersion(ctx))
+		j.linter.targetSdkVersion = lintSDKVersion(j.TargetSdkVersion(ctx))
+		j.linter.compileSdkVersion = lintSDKVersion(j.SdkVersion(ctx))
 		j.linter.compileSdkKind = j.SdkVersion(ctx).Kind
 		j.linter.javaLanguageLevel = flags.javaVersion.String()
 		j.linter.kotlinLanguageLevel = "1.3"
@@ -1694,6 +1698,8 @@ func (j *Module) IDEInfo(dpInfo *android.IdeInfo) {
 		dpInfo.Jarjar_rules = append(dpInfo.Jarjar_rules, j.expandJarjarRules.String())
 	}
 	dpInfo.Paths = append(dpInfo.Paths, j.modulePaths...)
+	dpInfo.Static_libs = append(dpInfo.Static_libs, j.properties.Static_libs...)
+	dpInfo.Libs = append(dpInfo.Libs, j.properties.Libs...)
 }
 
 func (j *Module) CompilerDeps() []string {

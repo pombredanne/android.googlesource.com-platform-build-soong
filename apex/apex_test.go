@@ -113,6 +113,12 @@ func withManifestPackageNameOverrides(specs []string) android.FixturePreparer {
 	})
 }
 
+func withApexGlobalMinSdkVersionOverride(minSdkOverride *string) android.FixturePreparer {
+	return android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+		variables.ApexGlobalMinSdkVersionOverride = minSdkOverride
+	})
+}
+
 var withBinder32bit = android.FixtureModifyProductVariables(
 	func(variables android.FixtureProductVariables) {
 		variables.Binder32bit = proptools.BoolPtr(true)
@@ -168,44 +174,42 @@ var prepareForApexTest = android.GroupFixturePreparers(
 		"system/sepolicy/apex/otherapex-file_contexts":                nil,
 		"system/sepolicy/apex/com.android.vndk-file_contexts":         nil,
 		"system/sepolicy/apex/com.android.vndk.current-file_contexts": nil,
-		"mylib.cpp":                                  nil,
-		"mytest.cpp":                                 nil,
-		"mytest1.cpp":                                nil,
-		"mytest2.cpp":                                nil,
-		"mytest3.cpp":                                nil,
-		"myprebuilt":                                 nil,
-		"my_include":                                 nil,
-		"foo/bar/MyClass.java":                       nil,
-		"prebuilt.jar":                               nil,
-		"prebuilt.so":                                nil,
-		"vendor/foo/devkeys/test.x509.pem":           nil,
-		"vendor/foo/devkeys/test.pk8":                nil,
-		"testkey.x509.pem":                           nil,
-		"testkey.pk8":                                nil,
-		"testkey.override.x509.pem":                  nil,
-		"testkey.override.pk8":                       nil,
-		"vendor/foo/devkeys/testkey.avbpubkey":       nil,
-		"vendor/foo/devkeys/testkey.pem":             nil,
-		"NOTICE":                                     nil,
-		"custom_notice":                              nil,
-		"custom_notice_for_static_lib":               nil,
-		"testkey2.avbpubkey":                         nil,
-		"testkey2.pem":                               nil,
-		"myapex-arm64.apex":                          nil,
-		"myapex-arm.apex":                            nil,
-		"myapex.apks":                                nil,
-		"frameworks/base/api/current.txt":            nil,
-		"framework/aidl/a.aidl":                      nil,
-		"build/make/core/proguard.flags":             nil,
-		"build/make/core/proguard_basic_keeps.flags": nil,
-		"dummy.txt":                                  nil,
-		"baz":                                        nil,
-		"bar/baz":                                    nil,
-		"testdata/baz":                               nil,
-		"AppSet.apks":                                nil,
-		"foo.rs":                                     nil,
-		"libfoo.jar":                                 nil,
-		"libbar.jar":                                 nil,
+		"mylib.cpp":                            nil,
+		"mytest.cpp":                           nil,
+		"mytest1.cpp":                          nil,
+		"mytest2.cpp":                          nil,
+		"mytest3.cpp":                          nil,
+		"myprebuilt":                           nil,
+		"my_include":                           nil,
+		"foo/bar/MyClass.java":                 nil,
+		"prebuilt.jar":                         nil,
+		"prebuilt.so":                          nil,
+		"vendor/foo/devkeys/test.x509.pem":     nil,
+		"vendor/foo/devkeys/test.pk8":          nil,
+		"testkey.x509.pem":                     nil,
+		"testkey.pk8":                          nil,
+		"testkey.override.x509.pem":            nil,
+		"testkey.override.pk8":                 nil,
+		"vendor/foo/devkeys/testkey.avbpubkey": nil,
+		"vendor/foo/devkeys/testkey.pem":       nil,
+		"NOTICE":                               nil,
+		"custom_notice":                        nil,
+		"custom_notice_for_static_lib":         nil,
+		"testkey2.avbpubkey":                   nil,
+		"testkey2.pem":                         nil,
+		"myapex-arm64.apex":                    nil,
+		"myapex-arm.apex":                      nil,
+		"myapex.apks":                          nil,
+		"frameworks/base/api/current.txt":      nil,
+		"framework/aidl/a.aidl":                nil,
+		"dummy.txt":                            nil,
+		"baz":                                  nil,
+		"bar/baz":                              nil,
+		"testdata/baz":                         nil,
+		"AppSet.apks":                          nil,
+		"foo.rs":                               nil,
+		"libfoo.jar":                           nil,
+		"libbar.jar":                           nil,
 	},
 	),
 
@@ -219,7 +223,6 @@ var prepareForApexTest = android.GroupFixturePreparers(
 		// not because of these tests specifically (it's not used by the tests)
 		variables.Platform_version_active_codenames = []string{"Q", "Tiramisu"}
 		variables.Platform_vndk_version = proptools.StringPtr("29")
-		variables.BuildId = proptools.StringPtr("TEST.BUILD_ID")
 	}),
 )
 
@@ -679,7 +682,7 @@ func TestDefaults(t *testing.T) {
 		"etc/myetc",
 		"javalib/myjar.jar",
 		"lib64/mylib.so",
-		"app/AppFoo@TEST.BUILD_ID/AppFoo.apk",
+		"app/AppFoo@__APEX_VERSION_PLACEHOLDER__/AppFoo.apk",
 		"overlay/blue/rro.apk",
 		"etc/bpf/bpf.o",
 		"etc/bpf/bpf2.o",
@@ -1033,10 +1036,10 @@ func TestApexCanUsePrivateApis(t *testing.T) {
 
 	// Ensure that we are using non-stub variants of mylib2 and libfoo.shared_from_rust (because
 	// of the platform_apis: true)
-	mylibLdFlags := ctx.ModuleForTests("mylib", "android_arm64_armv8-a_shared_apex10000_private").Rule("ld").Args["libFlags"]
+	mylibLdFlags := ctx.ModuleForTests("mylib", "android_arm64_armv8-a_shared_apex10000").Rule("ld").Args["libFlags"]
 	ensureNotContains(t, mylibLdFlags, "mylib2/android_arm64_armv8-a_shared_current/mylib2.so")
 	ensureContains(t, mylibLdFlags, "mylib2/android_arm64_armv8-a_shared/mylib2.so")
-	rustDeps := ctx.ModuleForTests("foo.rust", "android_arm64_armv8-a_apex10000_private").Rule("rustc").Args["linkFlags"]
+	rustDeps := ctx.ModuleForTests("foo.rust", "android_arm64_armv8-a_apex10000").Rule("rustc").Args["linkFlags"]
 	ensureNotContains(t, rustDeps, "libfoo.shared_from_rust/android_arm64_armv8-a_shared_current/libfoo.shared_from_rust.so")
 	ensureContains(t, rustDeps, "libfoo.shared_from_rust/android_arm64_armv8-a_shared/libfoo.shared_from_rust.so")
 }
@@ -5679,8 +5682,8 @@ func TestApexWithApps(t *testing.T) {
 	apexRule := module.Rule("apexRule")
 	copyCmds := apexRule.Args["copy_commands"]
 
-	ensureContains(t, copyCmds, "image.apex/app/AppFoo@TEST.BUILD_ID/AppFoo.apk")
-	ensureContains(t, copyCmds, "image.apex/priv-app/AppFooPriv@TEST.BUILD_ID/AppFooPriv.apk")
+	ensureContains(t, copyCmds, "image.apex/app/AppFoo@__APEX_VERSION_PLACEHOLDER__/AppFoo.apk")
+	ensureContains(t, copyCmds, "image.apex/priv-app/AppFooPriv@__APEX_VERSION_PLACEHOLDER__/AppFooPriv.apk")
 
 	appZipRule := ctx.ModuleForTests("AppFoo", "android_common_apex10000").Description("zip jni libs")
 	// JNI libraries are uncompressed
@@ -5694,36 +5697,6 @@ func TestApexWithApps(t *testing.T) {
 		ensureListContains(t, appZipRule.Implicits.Strings(), jniOutput.String())
 		// ... and not directly inside the APEX
 		ensureNotContains(t, copyCmds, "image.apex/lib64/"+jni+".so")
-	}
-}
-
-func TestApexWithAppImportBuildId(t *testing.T) {
-	invalidBuildIds := []string{"../", "a b", "a/b", "a/b/../c", "/a"}
-	for _, id := range invalidBuildIds {
-		message := fmt.Sprintf("Unable to use build id %s as filename suffix", id)
-		fixture := android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
-			variables.BuildId = proptools.StringPtr(id)
-		})
-		testApexError(t, message, `apex {
-			name: "myapex",
-			key: "myapex.key",
-			apps: ["AppFooPrebuilt"],
-			updatable: false,
-		}
-
-		apex_key {
-			name: "myapex.key",
-			public_key: "testkey.avbpubkey",
-			private_key: "testkey.pem",
-		}
-
-		android_app_import {
-			name: "AppFooPrebuilt",
-			apk: "PrebuiltAppFoo.apk",
-			presigned: true,
-			apex_available: ["myapex"],
-		}
-	`, fixture)
 	}
 }
 
@@ -5772,8 +5745,8 @@ func TestApexWithAppImports(t *testing.T) {
 	apexRule := module.Rule("apexRule")
 	copyCmds := apexRule.Args["copy_commands"]
 
-	ensureContains(t, copyCmds, "image.apex/app/AppFooPrebuilt@TEST.BUILD_ID/AppFooPrebuilt.apk")
-	ensureContains(t, copyCmds, "image.apex/priv-app/AppFooPrivPrebuilt@TEST.BUILD_ID/AwesomePrebuiltAppFooPriv.apk")
+	ensureContains(t, copyCmds, "image.apex/app/AppFooPrebuilt@__APEX_VERSION_PLACEHOLDER__/AppFooPrebuilt.apk")
+	ensureContains(t, copyCmds, "image.apex/priv-app/AppFooPrivPrebuilt@__APEX_VERSION_PLACEHOLDER__/AwesomePrebuiltAppFooPriv.apk")
 }
 
 func TestApexWithAppImportsPrefer(t *testing.T) {
@@ -5814,7 +5787,7 @@ func TestApexWithAppImportsPrefer(t *testing.T) {
 	}))
 
 	ensureExactContents(t, ctx, "myapex", "android_common_myapex_image", []string{
-		"app/AppFoo@TEST.BUILD_ID/AppFooPrebuilt.apk",
+		"app/AppFoo@__APEX_VERSION_PLACEHOLDER__/AppFooPrebuilt.apk",
 	})
 }
 
@@ -5847,7 +5820,7 @@ func TestApexWithTestHelperApp(t *testing.T) {
 	apexRule := module.Rule("apexRule")
 	copyCmds := apexRule.Args["copy_commands"]
 
-	ensureContains(t, copyCmds, "image.apex/app/TesterHelpAppFoo@TEST.BUILD_ID/TesterHelpAppFoo.apk")
+	ensureContains(t, copyCmds, "image.apex/app/TesterHelpAppFoo@__APEX_VERSION_PLACEHOLDER__/TesterHelpAppFoo.apk")
 }
 
 func TestApexPropertiesShouldBeDefaultable(t *testing.T) {
@@ -6290,8 +6263,8 @@ func TestOverrideApex(t *testing.T) {
 	apexRule := module.Rule("apexRule")
 	copyCmds := apexRule.Args["copy_commands"]
 
-	ensureNotContains(t, copyCmds, "image.apex/app/app@TEST.BUILD_ID/app.apk")
-	ensureContains(t, copyCmds, "image.apex/app/override_app@TEST.BUILD_ID/override_app.apk")
+	ensureNotContains(t, copyCmds, "image.apex/app/app@__APEX_VERSION_PLACEHOLDER__/app.apk")
+	ensureContains(t, copyCmds, "image.apex/app/override_app@__APEX_VERSION_PLACEHOLDER__/override_app.apk")
 
 	ensureNotContains(t, copyCmds, "image.apex/etc/bpf/bpf.o")
 	ensureContains(t, copyCmds, "image.apex/etc/bpf/override_bpf.o")
@@ -6343,6 +6316,124 @@ func TestOverrideApex(t *testing.T) {
 	ensureNotContains(t, androidMk, "LOCAL_MODULE := override_systemserverlib.myapex")
 	ensureNotContains(t, androidMk, "LOCAL_MODULE := override_java_library.pb.myapex")
 	ensureNotContains(t, androidMk, "LOCAL_MODULE_STEM := myapex.apex")
+}
+
+func TestMinSdkVersionOverride(t *testing.T) {
+	// Override from 29 to 31
+	minSdkOverride31 := "31"
+	ctx := testApex(t, `
+			apex {
+					name: "myapex",
+					key: "myapex.key",
+					native_shared_libs: ["mylib"],
+					updatable: true,
+					min_sdk_version: "29"
+			}
+
+			override_apex {
+					name: "override_myapex",
+					base: "myapex",
+					logging_parent: "com.foo.bar",
+					package_name: "test.overridden.package"
+			}
+
+			apex_key {
+					name: "myapex.key",
+					public_key: "testkey.avbpubkey",
+					private_key: "testkey.pem",
+			}
+
+			cc_library {
+					name: "mylib",
+					srcs: ["mylib.cpp"],
+					runtime_libs: ["libbar"],
+					system_shared_libs: [],
+					stl: "none",
+					apex_available: [ "myapex" ],
+					min_sdk_version: "apex_inherit"
+			}
+
+			cc_library {
+					name: "libbar",
+					srcs: ["mylib.cpp"],
+					system_shared_libs: [],
+					stl: "none",
+					apex_available: [ "myapex" ],
+					min_sdk_version: "apex_inherit"
+			}
+
+	`, withApexGlobalMinSdkVersionOverride(&minSdkOverride31))
+
+	apexRule := ctx.ModuleForTests("myapex", "android_common_myapex_image").Rule("apexRule")
+	copyCmds := apexRule.Args["copy_commands"]
+
+	// Ensure that direct non-stubs dep is always included
+	ensureContains(t, copyCmds, "image.apex/lib64/mylib.so")
+
+	// Ensure that runtime_libs dep in included
+	ensureContains(t, copyCmds, "image.apex/lib64/libbar.so")
+
+	// Ensure libraries target overridden min_sdk_version value
+	ensureListContains(t, ctx.ModuleVariantsForTests("libbar"), "android_arm64_armv8-a_shared_apex31")
+}
+
+func TestMinSdkVersionOverrideToLowerVersionNoOp(t *testing.T) {
+	// Attempt to override from 31 to 29, should be a NOOP
+	minSdkOverride29 := "29"
+	ctx := testApex(t, `
+			apex {
+					name: "myapex",
+					key: "myapex.key",
+					native_shared_libs: ["mylib"],
+					updatable: true,
+					min_sdk_version: "31"
+			}
+
+			override_apex {
+					name: "override_myapex",
+					base: "myapex",
+					logging_parent: "com.foo.bar",
+					package_name: "test.overridden.package"
+			}
+
+			apex_key {
+					name: "myapex.key",
+					public_key: "testkey.avbpubkey",
+					private_key: "testkey.pem",
+			}
+
+			cc_library {
+					name: "mylib",
+					srcs: ["mylib.cpp"],
+					runtime_libs: ["libbar"],
+					system_shared_libs: [],
+					stl: "none",
+					apex_available: [ "myapex" ],
+					min_sdk_version: "apex_inherit"
+			}
+
+			cc_library {
+					name: "libbar",
+					srcs: ["mylib.cpp"],
+					system_shared_libs: [],
+					stl: "none",
+					apex_available: [ "myapex" ],
+					min_sdk_version: "apex_inherit"
+			}
+
+	`, withApexGlobalMinSdkVersionOverride(&minSdkOverride29))
+
+	apexRule := ctx.ModuleForTests("myapex", "android_common_myapex_image").Rule("apexRule")
+	copyCmds := apexRule.Args["copy_commands"]
+
+	// Ensure that direct non-stubs dep is always included
+	ensureContains(t, copyCmds, "image.apex/lib64/mylib.so")
+
+	// Ensure that runtime_libs dep in included
+	ensureContains(t, copyCmds, "image.apex/lib64/libbar.so")
+
+	// Ensure libraries target the original min_sdk_version value rather than the overridden
+	ensureListContains(t, ctx.ModuleVariantsForTests("libbar"), "android_arm64_armv8-a_shared_apex31")
 }
 
 func TestLegacyAndroid10Support(t *testing.T) {
@@ -7077,7 +7168,7 @@ func TestAppBundle(t *testing.T) {
 	content := bundleConfigRule.Args["content"]
 
 	ensureContains(t, content, `"compression":{"uncompressed_glob":["apex_payload.img","apex_manifest.*"]}`)
-	ensureContains(t, content, `"apex_config":{"apex_embedded_apk_config":[{"package_name":"com.android.foo","path":"app/AppFoo@TEST.BUILD_ID/AppFoo.apk"}]}`)
+	ensureContains(t, content, `"apex_config":{"apex_embedded_apk_config":[{"package_name":"com.android.foo","path":"app/AppFoo@__APEX_VERSION_PLACEHOLDER__/AppFoo.apk"}]}`)
 }
 
 func TestAppSetBundle(t *testing.T) {
@@ -7108,9 +7199,9 @@ func TestAppSetBundle(t *testing.T) {
 	if len(copyCmds) != 3 {
 		t.Fatalf("Expected 3 commands, got %d in:\n%s", len(copyCmds), s)
 	}
-	ensureMatches(t, copyCmds[0], "^rm -rf .*/app/AppSet@TEST.BUILD_ID$")
-	ensureMatches(t, copyCmds[1], "^mkdir -p .*/app/AppSet@TEST.BUILD_ID$")
-	ensureMatches(t, copyCmds[2], "^unzip .*-d .*/app/AppSet@TEST.BUILD_ID .*/AppSet.zip$")
+	ensureMatches(t, copyCmds[0], "^rm -rf .*/app/AppSet@__APEX_VERSION_PLACEHOLDER__$")
+	ensureMatches(t, copyCmds[1], "^mkdir -p .*/app/AppSet@__APEX_VERSION_PLACEHOLDER__$")
+	ensureMatches(t, copyCmds[2], "^unzip .*-d .*/app/AppSet@__APEX_VERSION_PLACEHOLDER__ .*/AppSet.zip$")
 }
 
 func TestAppSetBundlePrebuilt(t *testing.T) {
