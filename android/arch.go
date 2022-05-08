@@ -909,6 +909,7 @@ func createArchPropTypeDesc(props reflect.Type) []archPropTypeDesc {
 			"Glibc",
 			"Musl",
 			"Linux",
+			"Host_linux",
 			"Not_windows",
 			"Arm_on_x86",
 			"Arm_on_x86_64",
@@ -926,6 +927,12 @@ func createArchPropTypeDesc(props reflect.Type) []archPropTypeDesc {
 				// "musl_<arch>" property structs.
 				if os.Linux() {
 					target := "Linux_" + archType.Name
+					if !InList(target, targets) {
+						targets = append(targets, target)
+					}
+				}
+				if os.Linux() && os.Class == Host {
+					target := "Host_linux_" + archType.Name
 					if !InList(target, targets) {
 						targets = append(targets, target)
 					}
@@ -1162,6 +1169,14 @@ func (m *ModuleBase) setOSProperties(ctx BottomUpMutatorContext) {
 				}
 			}
 
+			if os.Linux() && os.Class == Host {
+				field := "Host_linux"
+				prefix := "target.host_linux"
+				if linuxProperties, ok := getChildPropertyStruct(ctx, targetProp, field, prefix); ok {
+					mergePropertyStruct(ctx, genProps, linuxProperties)
+				}
+			}
+
 			if os.Bionic() {
 				field := "Bionic"
 				prefix := "target.bionic"
@@ -1181,14 +1196,6 @@ func (m *ModuleBase) setOSProperties(ctx BottomUpMutatorContext) {
 			if os == LinuxMusl {
 				field := "Musl"
 				prefix := "target.musl"
-				if bionicProperties, ok := getChildPropertyStruct(ctx, targetProp, field, prefix); ok {
-					mergePropertyStruct(ctx, genProps, bionicProperties)
-				}
-
-				// Special case:  to ease the transition from glibc to musl, apply linux_glibc
-				// properties (which has historically mean host linux) to musl variants.
-				field = "Linux_glibc"
-				prefix = "target.linux_glibc"
 				if bionicProperties, ok := getChildPropertyStruct(ctx, targetProp, field, prefix); ok {
 					mergePropertyStruct(ctx, genProps, bionicProperties)
 				}
@@ -1408,14 +1415,6 @@ func getArchProperties(ctx BaseMutatorContext, archProperties interface{}, arch 
 		if os == LinuxMusl {
 			field := "Musl_" + archType.Name
 			userFriendlyField := "target.musl_" + "_" + archType.Name
-			if osArchProperties, ok := getChildPropertyStruct(ctx, targetProp, field, userFriendlyField); ok {
-				result = append(result, osArchProperties)
-			}
-
-			// Special case:  to ease the transition from glibc to musl, apply linux_glibc
-			// properties (which has historically mean host linux) to musl variants.
-			field = "Linux_glibc_" + archType.Name
-			userFriendlyField = "target.linux_glibc_" + archType.Name
 			if osArchProperties, ok := getChildPropertyStruct(ctx, targetProp, field, userFriendlyField); ok {
 				result = append(result, osArchProperties)
 			}
@@ -2127,6 +2126,7 @@ func (m *ModuleBase) GetArchVariantProperties(ctx ArchVariantContext, propertySe
 	linuxStructs := getTargetStructs(ctx, archProperties, "Linux")
 	bionicStructs := getTargetStructs(ctx, archProperties, "Bionic")
 	hostStructs := getTargetStructs(ctx, archProperties, "Host")
+	hostLinuxStructs := getTargetStructs(ctx, archProperties, "Host_linux")
 	hostNotWindowsStructs := getTargetStructs(ctx, archProperties, "Not_windows")
 
 	// For android, linux, ...
@@ -2146,6 +2146,9 @@ func (m *ModuleBase) GetArchVariantProperties(ctx ArchVariantContext, propertySe
 		}
 		if os.Bionic() {
 			osStructs = append(osStructs, bionicStructs...)
+		}
+		if os.Linux() && os.Class == Host {
+			osStructs = append(osStructs, hostLinuxStructs...)
 		}
 
 		if os == LinuxMusl {
@@ -2176,6 +2179,16 @@ func (m *ModuleBase) GetArchVariantProperties(ctx ArchVariantContext, propertySe
 			}
 			if os.Bionic() {
 				targetField := "Bionic_" + arch.Name
+				targetStructs := getTargetStructs(ctx, archProperties, targetField)
+				osArchStructs = append(osArchStructs, targetStructs...)
+			}
+			if os == LinuxMusl {
+				targetField := "Musl_" + arch.Name
+				targetStructs := getTargetStructs(ctx, archProperties, targetField)
+				osArchStructs = append(osArchStructs, targetStructs...)
+			}
+			if os == Linux {
+				targetField := "Glibc_" + arch.Name
 				targetStructs := getTargetStructs(ctx, archProperties, targetField)
 				osArchStructs = append(osArchStructs, targetStructs...)
 			}

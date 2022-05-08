@@ -199,8 +199,10 @@ type productVariables struct {
 	Platform_preview_sdk_version              *string  `json:",omitempty"`
 	Platform_min_supported_target_sdk_version *string  `json:",omitempty"`
 	Platform_base_os                          *string  `json:",omitempty"`
+	Platform_version_last_stable              *string  `json:",omitempty"`
 
 	DeviceName                            *string  `json:",omitempty"`
+	DeviceProduct                         *string  `json:",omitempty"`
 	DeviceArch                            *string  `json:",omitempty"`
 	DeviceArchVariant                     *string  `json:",omitempty"`
 	DeviceCpuVariant                      *string  `json:",omitempty"`
@@ -306,10 +308,11 @@ type productVariables struct {
 	JavaCoveragePaths        []string `json:",omitempty"`
 	JavaCoverageExcludePaths []string `json:",omitempty"`
 
-	GcovCoverage               *bool    `json:",omitempty"`
-	ClangCoverage              *bool    `json:",omitempty"`
-	NativeCoveragePaths        []string `json:",omitempty"`
-	NativeCoverageExcludePaths []string `json:",omitempty"`
+	GcovCoverage                *bool    `json:",omitempty"`
+	ClangCoverage               *bool    `json:",omitempty"`
+	NativeCoveragePaths         []string `json:",omitempty"`
+	NativeCoverageExcludePaths  []string `json:",omitempty"`
+	ClangCoverageContinuousMode *bool    `json:",omitempty"`
 
 	// Set by NewConfig
 	Native_coverage *bool `json:",omitempty"`
@@ -349,6 +352,8 @@ type productVariables struct {
 	RecoverySnapshotDirsIncluded []string `json:",omitempty"`
 	HostFakeSnapshotEnabled      bool     `json:",omitempty"`
 
+	MultitreeUpdateMeta bool `json:",omitempty"`
+
 	BoardVendorSepolicyDirs           []string `json:",omitempty"`
 	BoardOdmSepolicyDirs              []string `json:",omitempty"`
 	BoardReqdMaskPolicy               []string `json:",omitempty"`
@@ -386,6 +391,8 @@ type productVariables struct {
 	ManifestPackageNameOverrides []string `json:",omitempty"`
 	CertificateOverrides         []string `json:",omitempty"`
 	PackageNameOverrides         []string `json:",omitempty"`
+
+	ApexGlobalMinSdkVersionOverride *string `json:",omitempty"`
 
 	EnforceSystemCertificate          *bool    `json:",omitempty"`
 	EnforceSystemCertificateAllowList []string `json:",omitempty"`
@@ -456,16 +463,18 @@ func (v *productVariables) SetDefaultConfig() {
 	*v = productVariables{
 		BuildNumberFile: stringPtr("build_number.txt"),
 
-		Platform_version_name:             stringPtr("S"),
-		Platform_sdk_version:              intPtr(30),
-		Platform_sdk_codename:             stringPtr("S"),
-		Platform_sdk_final:                boolPtr(false),
-		Platform_version_active_codenames: []string{"S"},
-		Platform_vndk_version:             stringPtr("S"),
+		Platform_version_name:               stringPtr("S"),
+		Platform_base_sdk_extension_version: intPtr(30),
+		Platform_sdk_version:                intPtr(30),
+		Platform_sdk_codename:               stringPtr("S"),
+		Platform_sdk_final:                  boolPtr(false),
+		Platform_version_active_codenames:   []string{"S"},
+		Platform_vndk_version:               stringPtr("S"),
 
 		HostArch:                   stringPtr("x86_64"),
 		HostSecondaryArch:          stringPtr("x86"),
 		DeviceName:                 stringPtr("generic_arm64"),
+		DeviceProduct:              stringPtr("aosp_arm-eng"),
 		DeviceArch:                 stringPtr("arm64"),
 		DeviceArchVariant:          stringPtr("armv8-a"),
 		DeviceCpuVariant:           stringPtr("generic"),

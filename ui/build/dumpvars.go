@@ -205,6 +205,9 @@ func runMakeProductConfig(ctx Context, config Config) {
 		"CCACHE_SLOPPINESS",
 		"CCACHE_BASEDIR",
 		"CCACHE_CPP2",
+
+		// LLVM compiler wrapper options
+		"TOOLCHAIN_RUSAGE_OUTPUT",
 	}
 
 	allVars := append(append([]string{
@@ -261,12 +264,6 @@ func runMakeProductConfig(ctx Context, config Config) {
 		"BUILD_BROKEN_USES_BUILD_STATIC_JAVA_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_STATIC_LIBRARY",
 	}, exportEnvVars...), BannerVars...)
-
-	// We need Roboleaf converter and runner in the mixed mode
-	runMicrofactory(ctx, config, "mk2rbc", "android/soong/mk2rbc/cmd",
-		map[string]string{"android/soong": "build/soong"})
-	runMicrofactory(ctx, config, "rbcrun", "rbcrun/cmd",
-		map[string]string{"go.starlark.net": "external/starlark-go", "rbcrun": "build/make/tools/rbcrun"})
 
 	makeVars, err := dumpMakeVars(ctx, config, config.Arguments(), allVars, true, "")
 	if err != nil {

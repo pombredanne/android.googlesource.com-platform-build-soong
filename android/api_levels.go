@@ -18,6 +18,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+
+	"android/soong/bazel"
+	"android/soong/starlark_fmt"
 )
 
 func init() {
@@ -321,6 +324,7 @@ func getFinalCodenamesMap(config Config) map[string]int {
 			"Q":     29,
 			"R":     30,
 			"S":     31,
+			"S-V2":  32,
 		}
 
 		// TODO: Differentiate "current" and "future".
@@ -364,6 +368,7 @@ func GetApiLevelsMap(config Config) map[string]int {
 			"Q":     29,
 			"R":     30,
 			"S":     31,
+			"S-V2":  32,
 		}
 		for i, codename := range config.PlatformVersionActiveCodenames() {
 			apiLevelsMap[codename] = previewAPILevelBase + i
@@ -377,4 +382,22 @@ func (a *apiLevelsSingleton) GenerateBuildActions(ctx SingletonContext) {
 	apiLevelsMap := GetApiLevelsMap(ctx.Config())
 	apiLevelsJson := GetApiLevelsJson(ctx)
 	createApiLevelsJson(ctx, apiLevelsJson, apiLevelsMap)
+}
+
+func printApiLevelsStarlarkDict(config Config) string {
+	apiLevelsMap := GetApiLevelsMap(config)
+	valDict := make(map[string]string, len(apiLevelsMap))
+	for k, v := range apiLevelsMap {
+		valDict[k] = strconv.Itoa(v)
+	}
+	return starlark_fmt.PrintDict(valDict, 0)
+}
+
+func StarlarkApiLevelConfigs(config Config) string {
+	return fmt.Sprintf(bazel.GeneratedBazelFileWarning+`
+_api_levels = %s
+
+api_levels = _api_levels
+`, printApiLevelsStarlarkDict(config),
+	)
 }

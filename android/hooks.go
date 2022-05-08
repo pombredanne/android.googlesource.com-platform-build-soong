@@ -15,7 +15,10 @@
 package android
 
 import (
+	"fmt"
+	"path"
 	"reflect"
+	"runtime"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
@@ -86,12 +89,33 @@ func (l *loadHookContext) PrependProperties(props ...interface{}) {
 	l.appendPrependHelper(props, proptools.PrependMatchingProperties)
 }
 
-func (l *loadHookContext) CreateModule(factory ModuleFactory, props ...interface{}) Module {
-	inherited := []interface{}{&l.Module().base().commonProperties}
-	module := l.bp.CreateModule(ModuleFactoryAdaptor(factory), append(inherited, props...)...).(Module)
+func (l *loadHookContext) createModule(factory blueprint.ModuleFactory, name string, props ...interface{}) blueprint.Module {
+	return l.bp.CreateModule(factory, name, props...)
+}
 
-	if l.Module().base().variableProperties != nil && module.base().variableProperties != nil {
-		src := l.Module().base().variableProperties
+type createModuleContext interface {
+	Module() Module
+	createModule(blueprint.ModuleFactory, string, ...interface{}) blueprint.Module
+}
+
+func createModule(ctx createModuleContext, factory ModuleFactory, ext string, props ...interface{}) Module {
+	inherited := []interface{}{&ctx.Module().base().commonProperties}
+
+	var typeName string
+	if typeNameLookup, ok := ModuleTypeByFactory()[reflect.ValueOf(factory)]; ok {
+		typeName = typeNameLookup
+	} else {
+		factoryPtr := reflect.ValueOf(factory).Pointer()
+		factoryFunc := runtime.FuncForPC(factoryPtr)
+		filePath, _ := factoryFunc.FileLine(factoryPtr)
+		typeName = fmt.Sprintf("%s_%s", path.Base(filePath), factoryFunc.Name())
+	}
+	typeName = typeName + "_" + ext
+
+	module := ctx.createModule(ModuleFactoryAdaptor(factory), typeName, append(inherited, props...)...).(Module)
+
+	if ctx.Module().base().variableProperties != nil && module.base().variableProperties != nil {
+		src := ctx.Module().base().variableProperties
 		dst := []interface{}{
 			module.base().variableProperties,
 			// Put an empty copy of the src properties into dst so that properties in src that are not in dst
@@ -105,6 +129,10 @@ func (l *loadHookContext) CreateModule(factory ModuleFactory, props ...interface
 	}
 
 	return module
+}
+
+func (l *loadHookContext) CreateModule(factory ModuleFactory, props ...interface{}) Module {
+	return createModule(l, factory, "_loadHookModule", props...)
 }
 
 func (l *loadHookContext) registerScopedModuleType(name string, factory blueprint.ModuleFactory) {

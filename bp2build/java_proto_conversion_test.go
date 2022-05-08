@@ -71,8 +71,7 @@ func TestJavaProto(t *testing.T) {
 }`
 
 	protoLibrary := makeBazelTarget("proto_library", "java-protos_proto", attrNameToString{
-		"srcs":                `["a.proto"]`,
-		"strip_import_prefix": `""`,
+		"srcs": `["a.proto"]`,
 	})
 
 	for _, tc := range testCases {
@@ -90,7 +89,7 @@ func TestJavaProto(t *testing.T) {
 						"deps": `[":java-protos_proto"]`,
 					}),
 				makeBazelTarget("java_library", "java-protos", attrNameToString{
-					"deps": fmt.Sprintf(`[":%s"]`, javaLibraryName),
+					"exports": fmt.Sprintf(`[":%s"]`, javaLibraryName),
 				}),
 			},
 		})
@@ -99,16 +98,16 @@ func TestJavaProto(t *testing.T) {
 
 func TestJavaProtoDefault(t *testing.T) {
 	runJavaProtoTestCase(t, bp2buildTestCase{
-		description: "java_proto",
+		description: "java_library proto default",
 		blueprint: `java_library_static {
     name: "java-protos",
     srcs: ["a.proto"],
+    java_version: "7",
 }
 `,
 		expectedBazelTargets: []string{
 			makeBazelTarget("proto_library", "java-protos_proto", attrNameToString{
-				"srcs":                `["a.proto"]`,
-				"strip_import_prefix": `""`,
+				"srcs": `["a.proto"]`,
 			}),
 			makeBazelTarget(
 				"java_lite_proto_library",
@@ -117,7 +116,8 @@ func TestJavaProtoDefault(t *testing.T) {
 					"deps": `[":java-protos_proto"]`,
 				}),
 			makeBazelTarget("java_library", "java-protos", attrNameToString{
-				"deps": `[":java-protos_java_proto_lite"]`,
+				"exports":   `[":java-protos_java_proto_lite"]`,
+				"javacopts": `["-source 1.7 -target 1.7"]`,
 			}),
 		},
 	})

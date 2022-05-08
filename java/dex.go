@@ -95,7 +95,7 @@ var d8, d8RE = pctx.MultiCommandRemoteStaticRules("d8",
 		Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
 			`mkdir -p $$(dirname $tmpJar) && ` +
 			`${config.Zip2ZipCmd} -i $in -o $tmpJar -x '**/*.dex' && ` +
-			`$d8Template${config.D8Cmd} ${config.DexFlags} --output $outDir $d8Flags $tmpJar && ` +
+			`$d8Template${config.D8Cmd} ${config.D8Flags} --output $outDir $d8Flags $tmpJar && ` +
 			`$zipTemplate${config.SoongZipCmd} $zipFlags -o $outDir/classes.dex.jar -C $outDir -f "$outDir/classes*.dex" && ` +
 			`${config.MergeZipsCmd} -D -stripFile "**/*.class" $mergeZipsFlags $out $outDir/classes.dex.jar $in`,
 		CommandDeps: []string{
@@ -128,16 +128,19 @@ var r8, r8RE = pctx.MultiCommandRemoteStaticRules("r8",
 			`mkdir -p $$(dirname ${outUsage}) && ` +
 			`mkdir -p $$(dirname $tmpJar) && ` +
 			`${config.Zip2ZipCmd} -i $in -o $tmpJar -x '**/*.dex' && ` +
-			`$r8Template${config.R8Cmd} ${config.DexFlags} -injars $tmpJar --output $outDir ` +
+			`$r8Template${config.R8Cmd} ${config.R8Flags} -injars $tmpJar --output $outDir ` +
 			`--no-data-resources ` +
 			`-printmapping ${outDict} ` +
 			`-printusage ${outUsage} ` +
+			`--deps-file ${out}.d ` +
 			`$r8Flags && ` +
 			`touch "${outDict}" "${outUsage}" && ` +
 			`${config.SoongZipCmd} -o ${outUsageZip} -C ${outUsageDir} -f ${outUsage} && ` +
 			`rm -rf ${outUsageDir} && ` +
 			`$zipTemplate${config.SoongZipCmd} $zipFlags -o $outDir/classes.dex.jar -C $outDir -f "$outDir/classes*.dex" && ` +
 			`${config.MergeZipsCmd} -D -stripFile "**/*.class" $mergeZipsFlags $out $outDir/classes.dex.jar $in`,
+		Depfile: "${out}.d",
+		Deps:    blueprint.DepsGCC,
 		CommandDeps: []string{
 			"${config.R8Cmd}",
 			"${config.Zip2ZipCmd}",
@@ -205,10 +208,10 @@ func (d *dexer) dexCommonFlags(ctx android.ModuleContext,
 
 func d8Flags(flags javaBuilderFlags) (d8Flags []string, d8Deps android.Paths) {
 	d8Flags = append(d8Flags, flags.bootClasspath.FormRepeatedClassPath("--lib ")...)
-	d8Flags = append(d8Flags, flags.classpath.FormRepeatedClassPath("--lib ")...)
+	d8Flags = append(d8Flags, flags.dexClasspath.FormRepeatedClassPath("--lib ")...)
 
 	d8Deps = append(d8Deps, flags.bootClasspath...)
-	d8Deps = append(d8Deps, flags.classpath...)
+	d8Deps = append(d8Deps, flags.dexClasspath...)
 
 	return d8Flags, d8Deps
 }
@@ -231,11 +234,11 @@ func (d *dexer) r8Flags(ctx android.ModuleContext, flags javaBuilderFlags) (r8Fl
 
 	r8Flags = append(r8Flags, proguardRaiseDeps.FormJavaClassPath("-libraryjars"))
 	r8Flags = append(r8Flags, flags.bootClasspath.FormJavaClassPath("-libraryjars"))
-	r8Flags = append(r8Flags, flags.classpath.FormJavaClassPath("-libraryjars"))
+	r8Flags = append(r8Flags, flags.dexClasspath.FormJavaClassPath("-libraryjars"))
 
 	r8Deps = append(r8Deps, proguardRaiseDeps...)
 	r8Deps = append(r8Deps, flags.bootClasspath...)
-	r8Deps = append(r8Deps, flags.classpath...)
+	r8Deps = append(r8Deps, flags.dexClasspath...)
 
 	flagFiles := android.Paths{
 		android.PathForSource(ctx, "build/make/core/proguard.flags"),

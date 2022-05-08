@@ -115,16 +115,16 @@ func FileGroupFactory() Module {
 }
 
 func (fg *fileGroup) maybeGenerateBazelBuildActions(ctx ModuleContext) {
-	if !fg.MixedBuildsEnabled(ctx) {
+	if !MixedBuildsEnabled(ctx) {
 		return
 	}
 
-	archVariant := ctx.Arch().ArchType
+	archVariant := ctx.Arch().String()
 	osVariant := ctx.Os()
 	if len(fg.Srcs()) == 1 && fg.Srcs()[0].Base() == fg.Name() {
 		// This will be a regular file target, not filegroup, in Bazel.
 		// See FilegroupBp2Build for more information.
-		archVariant = Common
+		archVariant = Common.String()
 		osVariant = CommonOS
 	}
 

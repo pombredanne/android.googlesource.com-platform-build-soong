@@ -74,7 +74,8 @@ android_app {
         package_name: "com.google",
         resource_dirs: ["resa", "resb"],
         manifest: "manifest/AndroidManifest.xml",
-        static_libs: ["static_lib_dep"]
+        static_libs: ["static_lib_dep"],
+        java_version: "7",
 }
 `,
 		expectedBazelTargets: []string{
@@ -87,6 +88,45 @@ android_app {
     ]`,
 				"custom_package": `"com.google"`,
 				"deps":           `[":static_lib_dep"]`,
+				"javacopts":      `["-source 1.7 -target 1.7"]`,
+			}),
+		}})
+}
+
+func TestAndroidAppArchVariantSrcs(t *testing.T) {
+	runAndroidAppTestCase(t, bp2buildTestCase{
+		description:                "Android app - arch variant srcs",
+		moduleTypeUnderTest:        "android_app",
+		moduleTypeUnderTestFactory: java.AndroidAppFactory,
+		filesystem: map[string]string{
+			"arm.java":            "",
+			"x86.java":            "",
+			"res/res.png":         "",
+			"AndroidManifest.xml": "",
+		},
+		blueprint: `
+android_app {
+        name: "TestApp",
+        sdk_version: "current",
+        arch: {
+			arm: {
+				srcs: ["arm.java"],
+			},
+			x86: {
+				srcs: ["x86.java"],
+			}
+		}
+}
+`,
+		expectedBazelTargets: []string{
+			makeBazelTarget("android_binary", "TestApp", attrNameToString{
+				"srcs": `select({
+        "//build/bazel/platforms/arch:arm": ["arm.java"],
+        "//build/bazel/platforms/arch:x86": ["x86.java"],
+        "//conditions:default": [],
+    })`,
+				"manifest":       `"AndroidManifest.xml"`,
+				"resource_files": `["res/res.png"]`,
 			}),
 		}})
 }

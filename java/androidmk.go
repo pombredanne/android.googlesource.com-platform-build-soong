@@ -132,6 +132,16 @@ func (library *Library) AndroidMkEntries() []android.AndroidMkEntries {
 	return entriesList
 }
 
+func (j *JavaFuzzLibrary) AndroidMkEntries() []android.AndroidMkEntries {
+	entriesList := j.Library.AndroidMkEntries()
+	entries := &entriesList[0]
+	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
+		entries.AddStrings("LOCAL_COMPATIBILITY_SUITE", "null-suite")
+		androidMkWriteTestData(j.jniFilePaths, entries)
+	})
+	return entriesList
+}
+
 // Called for modules that are a component of a test suite.
 func testSuiteComponent(entries *android.AndroidMkEntries, test_suites []string, perTestcaseDirectory bool) {
 	entries.SetString("LOCAL_MODULE_TAGS", "tests")
@@ -407,22 +417,6 @@ func (app *AndroidApp) AndroidMkEntries() []android.AndroidMkEntries {
 				}
 
 				entries.SetOptionalPaths("LOCAL_SOONG_LINT_REPORTS", app.linter.reports)
-			},
-		},
-		ExtraFooters: []android.AndroidMkExtraFootersFunc{
-			func(w io.Writer, name, prefix, moduleDir string) {
-				if app.noticeOutputs.Merged.Valid() {
-					fmt.Fprintf(w, "$(call dist-for-goals,%s,%s:%s)\n",
-						app.installApkName, app.noticeOutputs.Merged.String(), app.installApkName+"_NOTICE")
-				}
-				if app.noticeOutputs.TxtOutput.Valid() {
-					fmt.Fprintf(w, "$(call dist-for-goals,%s,%s:%s)\n",
-						app.installApkName, app.noticeOutputs.TxtOutput.String(), app.installApkName+"_NOTICE.txt")
-				}
-				if app.noticeOutputs.HtmlOutput.Valid() {
-					fmt.Fprintf(w, "$(call dist-for-goals,%s,%s:%s)\n",
-						app.installApkName, app.noticeOutputs.HtmlOutput.String(), app.installApkName+"_NOTICE.html")
-				}
 			},
 		},
 	}}

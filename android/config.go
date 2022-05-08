@@ -158,7 +158,7 @@ type config struct {
 	mockBpList string
 
 	runningAsBp2Build              bool
-	bp2buildPackageConfig          Bp2BuildConfig
+	bp2buildPackageConfig          bp2BuildConversionAllowlist
 	Bp2buildSoongConfigDefinitions soongconfig.Bp2BuildSoongConfigDefinitions
 
 	// If testAllowNonExistentPaths is true then PathForSource and PathForModuleSrc won't error
@@ -170,6 +170,10 @@ type config struct {
 	ninjaFileDepsSet sync.Map
 
 	OncePer
+
+	mixedBuildsLock           sync.Mutex
+	mixedBuildEnabledModules  map[string]struct{}
+	mixedBuildDisabledModules map[string]struct{}
 }
 
 type deviceConfig struct {
@@ -351,6 +355,7 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 	config := &config{
 		productVariables: productVariables{
 			DeviceName:                          stringPtr("test_device"),
+			DeviceProduct:                       stringPtr("test_product"),
 			Platform_sdk_version:                intPtr(30),
 			Platform_sdk_codename:               stringPtr("S"),
 			Platform_base_sdk_extension_version: intPtr(1),
@@ -374,7 +379,9 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 		// passed to PathForSource or PathForModuleSrc.
 		TestAllowNonExistentPaths: true,
 
-		BazelContext: noopBazelContext{},
+		BazelContext:              noopBazelContext{},
+		mixedBuildDisabledModules: make(map[string]struct{}),
+		mixedBuildEnabledModules:  make(map[string]struct{}),
 	}
 	config.deviceConfig = &deviceConfig{
 		config: config,
@@ -465,8 +472,10 @@ func NewConfig(moduleListFile string, runGoTests bool, outDir, soongOutDir strin
 		runGoTests:        runGoTests,
 		multilibConflicts: make(map[ArchType]bool),
 
-		moduleListFile: moduleListFile,
-		fs:             pathtools.NewOsFs(absSrcDir),
+		moduleListFile:            moduleListFile,
+		fs:                        pathtools.NewOsFs(absSrcDir),
+		mixedBuildDisabledModules: make(map[string]struct{}),
+		mixedBuildEnabledModules:  make(map[string]struct{}),
 	}
 
 	config.deviceConfig = &deviceConfig{
@@ -549,7 +558,7 @@ func NewConfig(moduleListFile string, runGoTests bool, outDir, soongOutDir strin
 	}
 
 	config.BazelContext, err = NewBazelContext(config)
-	config.bp2buildPackageConfig = bp2buildDefaultConfig
+	config.bp2buildPackageConfig = bp2buildAllowlist
 
 	return Config{config}, err
 }
@@ -723,6 +732,15 @@ func (c *config) DeviceName() string {
 	return *c.productVariables.DeviceName
 }
 
+// DeviceProduct returns the current product target. There could be multiple of
+// these per device type.
+//
+// NOTE: Do not base conditional logic on this value. It may break product
+//       inheritance.
+func (c *config) DeviceProduct() string {
+	return *c.productVariables.DeviceProduct
+}
+
 func (c *config) DeviceResourceOverlays() []string {
 	return c.productVariables.DeviceResourceOverlays
 }
@@ -767,8 +785,12 @@ func (c *config) PlatformBaseOS() string {
 	return String(c.productVariables.Platform_base_os)
 }
 
+func (c *config) PlatformVersionLastStable() string {
+	return String(c.productVariables.Platform_version_last_stable)
+}
+
 func (c *config) MinSupportedSdkVersion() ApiLevel {
-	return uncheckedFinalApiLevel(16)
+	return uncheckedFinalApiLevel(19)
 }
 
 func (c *config) FinalApiLevels() []ApiLevel {
@@ -1256,6 +1278,10 @@ func (c *deviceConfig) ClangCoverageEnabled() bool {
 	return Bool(c.config.productVariables.ClangCoverage)
 }
 
+func (c *deviceConfig) ClangCoverageContinuousMode() bool {
+	return Bool(c.config.productVariables.ClangCoverageContinuousMode)
+}
+
 func (c *deviceConfig) GcovCoverageEnabled() bool {
 	return Bool(c.config.productVariables.GcovCoverage)
 }
@@ -1344,6 +1370,10 @@ func findOverrideValue(overrides []string, name string, errorMsg string) (newVal
 		}
 	}
 	return "", false
+}
+
+func (c *deviceConfig) ApexGlobalMinSdkVersionOverride() string {
+	return String(c.config.productVariables.ApexGlobalMinSdkVersionOverride)
 }
 
 func (c *config) IntegerOverflowDisabledForPath(path string) bool {
@@ -1462,6 +1492,10 @@ func (c *config) ProductPrivateSepolicyDirs() []string {
 
 func (c *config) MissingUsesLibraries() []string {
 	return c.productVariables.MissingUsesLibraries
+}
+
+func (c *config) TargetMultitreeUpdateMeta() bool {
+	return c.productVariables.MultitreeUpdateMeta
 }
 
 func (c *deviceConfig) DeviceArch() string {
@@ -2011,4 +2045,15 @@ func (c *config) RBEWrapper() string {
 // UseHostMusl returns true if the host target has been configured to build against musl libc.
 func (c *config) UseHostMusl() bool {
 	return Bool(c.productVariables.HostMusl)
+}
+
+func (c *config) LogMixedBuild(ctx ModuleContext, useBazel bool) {
+	moduleName := ctx.Module().Name()
+	c.mixedBuildsLock.Lock()
+	defer c.mixedBuildsLock.Unlock()
+	if useBazel {
+		c.mixedBuildEnabledModules[moduleName] = struct{}{}
+	} else {
+		c.mixedBuildDisabledModules[moduleName] = struct{}{}
+	}
 }

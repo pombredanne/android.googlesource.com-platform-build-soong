@@ -19,7 +19,6 @@ package java
 
 import (
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/google/blueprint"
@@ -163,8 +162,6 @@ type AndroidApp struct {
 	onDeviceDir string
 
 	additionalAaptFlags []string
-
-	noticeOutputs android.NoticeOutputs
 
 	overriddenManifestPackageName string
 
@@ -523,53 +520,6 @@ func (a *AndroidApp) JNISymbolsInstalls(installPath string) android.RuleBuilderI
 	return jniSymbols
 }
 
-func (a *AndroidApp) noticeBuildActions(ctx android.ModuleContext) {
-	// Collect NOTICE files from all dependencies.
-	seenModules := make(map[android.Module]bool)
-	noticePathSet := make(map[android.Path]bool)
-
-	ctx.WalkDeps(func(child android.Module, parent android.Module) bool {
-		// Have we already seen this?
-		if _, ok := seenModules[child]; ok {
-			return false
-		}
-		seenModules[child] = true
-
-		// Skip host modules.
-		if child.Target().Os.Class == android.Host {
-			return false
-		}
-
-		paths := child.(android.Module).NoticeFiles()
-		if len(paths) > 0 {
-			for _, path := range paths {
-				noticePathSet[path] = true
-			}
-		}
-		return true
-	})
-
-	// If the app has one, add it too.
-	if len(a.NoticeFiles()) > 0 {
-		for _, path := range a.NoticeFiles() {
-			noticePathSet[path] = true
-		}
-	}
-
-	if len(noticePathSet) == 0 {
-		return
-	}
-	var noticePaths []android.Path
-	for path := range noticePathSet {
-		noticePaths = append(noticePaths, path)
-	}
-	sort.Slice(noticePaths, func(i, j int) bool {
-		return noticePaths[i].String() < noticePaths[j].String()
-	})
-
-	a.noticeOutputs = android.BuildNoticeOutput(ctx, a.installDir, a.installApkName+".apk", noticePaths)
-}
-
 // Reads and prepends a main cert from the default cert dir if it hasn't been set already, i.e. it
 // isn't a cert module reference. Also checks and enforces system cert restriction if applicable.
 func processMainCert(m android.ModuleBase, certPropValue string, certificates []Certificate, ctx android.ModuleContext) []Certificate {
@@ -636,9 +586,16 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 	a.onDeviceDir = android.InstallPathToOnDevicePath(ctx, a.installDir)
 
-	a.noticeBuildActions(ctx)
 	if Bool(a.appProperties.Embed_notices) || ctx.Config().IsEnvTrue("ALWAYS_EMBED_NOTICES") {
-		a.aapt.noticeFile = a.noticeOutputs.HtmlGzOutput
+		noticeFile := android.PathForModuleOut(ctx, "NOTICE.html.gz")
+		android.BuildNoticeHtmlOutputFromLicenseMetadata(ctx, noticeFile)
+		noticeAssetPath := android.PathForModuleOut(ctx, "NOTICE", "NOTICE.html.gz")
+		builder := android.NewRuleBuilder(pctx, ctx)
+		builder.Command().Text("cp").
+			Input(noticeFile).
+			Output(noticeAssetPath)
+		builder.Build("notice_dir", "Building notice dir")
+		a.aapt.noticeFile = android.OptionalPathForPath(noticeAssetPath)
 	}
 
 	a.classLoaderContexts = a.usesLibrary.classLoaderContextForUsesLibDeps(ctx)
@@ -681,7 +638,21 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 
 	certificates := processMainCert(a.ModuleBase, a.getCertString(ctx), certificateDeps, ctx)
-	a.certificate = certificates[0]
+
+	// This can be reached with an empty certificate list if AllowMissingDependencies is set
+	// and the certificate property for this module is a module reference to a missing module.
+	if len(certificates) > 0 {
+		a.certificate = certificates[0]
+	} else {
+		if !ctx.Config().AllowMissingDependencies() && len(ctx.GetMissingDependencies()) > 0 {
+			panic("Should only get here if AllowMissingDependencies set and there are missing dependencies")
+		}
+		// Set a certificate to avoid panics later when accessing it.
+		a.certificate = Certificate{
+			Key: android.PathForModuleOut(ctx, "missing.pk8"),
+			Pem: android.PathForModuleOut(ctx, "missing.pem"),
+		}
+	}
 
 	// Build a final signed app package.
 	packageFile := android.PathForModuleOut(ctx, a.installApkName+".apk")
@@ -929,6 +900,7 @@ func AndroidAppFactory() android.Module {
 	module.Module.dexProperties.Optimize.Shrink = proptools.BoolPtr(true)
 
 	module.Module.properties.Instrument = true
+	module.Module.properties.Supports_static_instrumentation = true
 	module.Module.properties.Installable = proptools.BoolPtr(true)
 
 	module.addHostAndDeviceProperties()
@@ -1048,6 +1020,7 @@ func AndroidTestFactory() android.Module {
 	module.Module.dexProperties.Optimize.EnabledByDefault = true
 
 	module.Module.properties.Instrument = true
+	module.Module.properties.Supports_static_instrumentation = true
 	module.Module.properties.Installable = proptools.BoolPtr(true)
 	module.appProperties.Use_embedded_native_libs = proptools.BoolPtr(true)
 	module.appProperties.AlwaysPackageNativeLibs = true
@@ -1254,28 +1227,17 @@ func (u *usesLibrary) addLib(lib string, optional bool) {
 
 func (u *usesLibrary) deps(ctx android.BottomUpMutatorContext, hasFrameworkLibs bool) {
 	if !ctx.Config().UnbundledBuild() || ctx.Config().UnbundledBuildImage() {
-		reqTag := makeUsesLibraryDependencyTag(dexpreopt.AnySdkVersion, false, false)
-		ctx.AddVariationDependencies(nil, reqTag, u.usesLibraryProperties.Uses_libs...)
-
-		optTag := makeUsesLibraryDependencyTag(dexpreopt.AnySdkVersion, true, false)
-		ctx.AddVariationDependencies(nil, optTag, u.presentOptionalUsesLibs(ctx)...)
-
+		ctx.AddVariationDependencies(nil, usesLibReqTag, u.usesLibraryProperties.Uses_libs...)
+		ctx.AddVariationDependencies(nil, usesLibOptTag, u.presentOptionalUsesLibs(ctx)...)
 		// Only add these extra dependencies if the module depends on framework libs. This avoids
 		// creating a cyclic dependency:
 		//     e.g. framework-res -> org.apache.http.legacy -> ... -> framework-res.
 		if hasFrameworkLibs {
-			// Add implicit <uses-library> dependencies on compatibility libraries. Some of them are
-			// optional, and some required --- this depends on the most common usage of the library
-			// and may be wrong for some apps (they need explicit `uses_libs`/`optional_uses_libs`).
-
-			compat28OptTag := makeUsesLibraryDependencyTag(28, true, true)
-			ctx.AddVariationDependencies(nil, compat28OptTag, dexpreopt.OptionalCompatUsesLibs28...)
-
-			compat29ReqTag := makeUsesLibraryDependencyTag(29, false, true)
-			ctx.AddVariationDependencies(nil, compat29ReqTag, dexpreopt.CompatUsesLibs29...)
-
-			compat30OptTag := makeUsesLibraryDependencyTag(30, true, true)
-			ctx.AddVariationDependencies(nil, compat30OptTag, dexpreopt.OptionalCompatUsesLibs30...)
+			// Dexpreopt needs paths to the dex jars of these libraries in order to construct
+			// class loader context for dex2oat. Add them as a dependency with a special tag.
+			ctx.AddVariationDependencies(nil, usesLibCompat29ReqTag, dexpreopt.CompatUsesLibs29...)
+			ctx.AddVariationDependencies(nil, usesLibCompat28OptTag, dexpreopt.OptionalCompatUsesLibs28...)
+			ctx.AddVariationDependencies(nil, usesLibCompat30OptTag, dexpreopt.OptionalCompatUsesLibs30...)
 		}
 	}
 }
@@ -1334,7 +1296,7 @@ func (u *usesLibrary) classLoaderContextForUsesLibDeps(ctx android.ModuleContext
 				replaceInList(u.usesLibraryProperties.Uses_libs, dep, libName)
 				replaceInList(u.usesLibraryProperties.Optional_uses_libs, dep, libName)
 			}
-			clcMap.AddContext(ctx, tag.sdkVersion, libName, tag.optional, tag.implicit,
+			clcMap.AddContext(ctx, tag.sdkVersion, libName, tag.optional,
 				lib.DexJarBuildPath().PathOrNil(), lib.DexJarInstallPath(),
 				lib.ClassLoaderContexts())
 		} else if ctx.Config().AllowMissingDependencies() {
@@ -1443,22 +1405,34 @@ func androidAppCertificateBp2Build(ctx android.TopDownMutatorContext, module *An
 
 	props := bazel.BazelTargetModuleProperties{
 		Rule_class:        "android_app_certificate",
-		Bzl_load_location: "//build/bazel/rules:android_app_certificate.bzl",
+		Bzl_load_location: "//build/bazel/rules/android:android_app_certificate.bzl",
 	}
 
 	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: module.Name()}, attrs)
 }
 
 type bazelAndroidAppAttributes struct {
-	*javaLibraryAttributes
-	Manifest       bazel.Label
-	Custom_package *string
-	Resource_files bazel.LabelListAttribute
+	*javaCommonAttributes
+	Deps             bazel.LabelListAttribute
+	Manifest         bazel.Label
+	Custom_package   *string
+	Resource_files   bazel.LabelListAttribute
+	Certificate      *bazel.Label
+	Certificate_name *string
 }
 
 // ConvertWithBp2build is used to convert android_app to Bazel.
 func (a *AndroidApp) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
-	libAttrs := a.convertLibraryAttrsBp2Build(ctx)
+	commonAttrs, depLabels := a.convertLibraryAttrsBp2Build(ctx)
+
+	deps := depLabels.Deps
+	if !commonAttrs.Srcs.IsEmpty() {
+		deps.Append(depLabels.StaticDeps) // we should only append these if there are sources to use them
+	} else if !deps.IsEmpty() || !depLabels.StaticDeps.IsEmpty() {
+		ctx.ModuleErrorf("android_app has dynamic or static dependencies but no sources." +
+			" Bazel does not allow direct dependencies without sources nor exported" +
+			" dependencies on android_binary rule.")
+	}
 
 	manifest := proptools.StringDefault(a.aaptProperties.Manifest, "AndroidManifest.xml")
 
@@ -1470,15 +1444,31 @@ func (a *AndroidApp) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 		resourceFiles.Includes = append(resourceFiles.Includes, files...)
 	}
 
+	var certificate *bazel.Label
+	certificateNamePtr := a.overridableAppProperties.Certificate
+	certificateName := proptools.StringDefault(certificateNamePtr, "")
+	certModule := android.SrcIsModule(certificateName)
+	if certModule != "" {
+		c := android.BazelLabelForModuleDepSingle(ctx, certificateName)
+		certificate = &c
+		certificateNamePtr = nil
+	}
+
 	attrs := &bazelAndroidAppAttributes{
-		libAttrs,
+		commonAttrs,
+		deps,
 		android.BazelLabelForModuleSrcSingle(ctx, manifest),
 		// TODO(b/209576404): handle package name override by product variable PRODUCT_MANIFEST_PACKAGE_NAME_OVERRIDES
 		a.overridableAppProperties.Package_name,
 		bazel.MakeLabelListAttribute(resourceFiles),
+		certificate,
+		certificateNamePtr,
 	}
-	props := bazel.BazelTargetModuleProperties{Rule_class: "android_binary",
-		Bzl_load_location: "@rules_android//rules:rules.bzl"}
+
+	props := bazel.BazelTargetModuleProperties{
+		Rule_class:        "android_binary",
+		Bzl_load_location: "//build/bazel/rules/android:android_binary.bzl",
+	}
 
 	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: a.Name()}, attrs)
 

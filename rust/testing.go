@@ -88,13 +88,13 @@ func GatherRequiredDepsForTest() string {
 			export_include_dirs: ["libprotobuf-cpp-full-includes"],
 		}
 		cc_library {
-			name: "libclang_rt.asan-aarch64-android",
+			name: "libclang_rt.asan",
 			no_libcrt: true,
 			nocrt: true,
 			system_shared_libs: [],
 		}
 		cc_library {
-			name: "libclang_rt.hwasan_static-aarch64-android",
+			name: "libclang_rt.hwasan_static",
 			no_libcrt: true,
 			nocrt: true,
 			system_shared_libs: [],
@@ -194,6 +194,7 @@ func registerRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
 		ctx.BottomUp("rust_begin", BeginMutator).Parallel()
 	})
 	ctx.RegisterSingletonType("rust_project_generator", rustProjectGeneratorSingleton)
+	ctx.RegisterSingletonType("kythe_rust_extract", kytheExtractRustFactory)
 	ctx.PostDepsMutators(func(ctx android.RegisterMutatorsContext) {
 		ctx.BottomUp("rust_sanitizers", rustSanitizerRuntimeMutator).Parallel()
 	})

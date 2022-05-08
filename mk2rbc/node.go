@@ -83,7 +83,7 @@ func (im inheritedStaticModule) needsLoadCheck() bool {
 }
 
 type inheritedDynamicModule struct {
-	path             interpolateExpr
+	path             starlarkExpr
 	candidateModules []*moduleInfo
 	loadAlways       bool
 	location         ErrorLocation
@@ -120,7 +120,7 @@ func (i inheritedDynamicModule) emitSelect(gctx *generationContext) {
 }
 
 func (i inheritedDynamicModule) pathExpr() starlarkExpr {
-	return &i.path
+	return i.path
 }
 
 func (i inheritedDynamicModule) needsLoadCheck() bool {
@@ -184,10 +184,9 @@ type assignmentFlavor int
 
 const (
 	// Assignment flavors
-	asgnSet         assignmentFlavor = iota // := or =
-	asgnMaybeSet    assignmentFlavor = iota // ?= and variable may be unset
-	asgnAppend      assignmentFlavor = iota // += and variable has been set before
-	asgnMaybeAppend assignmentFlavor = iota // += and variable may be unset
+	asgnSet      assignmentFlavor = iota // := or =
+	asgnMaybeSet assignmentFlavor = iota // ?=
+	asgnAppend   assignmentFlavor = iota // +=
 )
 
 type assignmentNode struct {
@@ -197,7 +196,6 @@ type assignmentNode struct {
 	flavor   assignmentFlavor
 	location ErrorLocation
 	isTraced bool
-	previous *assignmentNode
 }
 
 func (asgn *assignmentNode) emit(gctx *generationContext) {
@@ -210,9 +208,23 @@ func (asgn *assignmentNode) emit(gctx *generationContext) {
 		gctx.newLine()
 		gctx.tracedCount++
 		gctx.writef(`print("%s.%d: %s := ", `, gctx.starScript.mkFile, gctx.tracedCount, asgn.lhs.name())
-		asgn.lhs.emitGet(gctx, true)
+		asgn.lhs.emitGet(gctx)
 		gctx.writef(")")
 	}
+}
+
+func (asgn *assignmentNode) isSelfReferential() bool {
+	if asgn.flavor == asgnAppend {
+		return true
+	}
+	isSelfReferential := false
+	asgn.value.transform(func(expr starlarkExpr) starlarkExpr {
+		if ref, ok := expr.(*variableRefExpr); ok && ref.ref.name() == asgn.lhs.name() {
+			isSelfReferential = true
+		}
+		return nil
+	})
+	return isSelfReferential
 }
 
 type exprNode struct {
@@ -258,6 +270,7 @@ type switchCase struct {
 func (cb *switchCase) emit(gctx *generationContext) {
 	cb.gate.emit(gctx)
 	gctx.indentLevel++
+	gctx.pushVariableAssignments()
 	hasStatements := false
 	for _, node := range cb.nodes {
 		if _, ok := node.(*commentNode); !ok {
@@ -269,6 +282,7 @@ func (cb *switchCase) emit(gctx *generationContext) {
 		gctx.emitPass()
 	}
 	gctx.indentLevel--
+	gctx.popVariableAssignments()
 }
 
 // A single complete if ... elseif ... else ... endif sequences
@@ -280,4 +294,31 @@ func (ssw *switchNode) emit(gctx *generationContext) {
 	for _, ssCase := range ssw.ssCases {
 		ssCase.emit(gctx)
 	}
+}
+
+type foreachNode struct {
+	varName string
+	list    starlarkExpr
+	actions []starlarkNode
+}
+
+func (f *foreachNode) emit(gctx *generationContext) {
+	gctx.pushVariableAssignments()
+	gctx.newLine()
+	gctx.writef("for %s in ", f.varName)
+	f.list.emit(gctx)
+	gctx.write(":")
+	gctx.indentLevel++
+	hasStatements := false
+	for _, a := range f.actions {
+		if _, ok := a.(*commentNode); !ok {
+			hasStatements = true
+		}
+		a.emit(gctx)
+	}
+	if !hasStatements {
+		gctx.emitPass()
+	}
+	gctx.indentLevel--
+	gctx.popVariableAssignments()
 }

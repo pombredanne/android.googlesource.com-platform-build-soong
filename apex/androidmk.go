@@ -373,8 +373,10 @@ func (a *apexBundle) androidMkForType() android.AndroidMkData {
 				}
 				fmt.Fprintln(w, "LOCAL_MODULE_STEM :=", name+stemSuffix)
 				fmt.Fprintln(w, "LOCAL_UNINSTALLABLE_MODULE :=", !a.installable())
-				fmt.Fprintln(w, "LOCAL_SOONG_INSTALLED_MODULE :=", a.installedFile.String())
-				fmt.Fprintln(w, "LOCAL_SOONG_INSTALL_PAIRS :=", a.outputFile.String()+":"+a.installedFile.String())
+				if a.installable() {
+					fmt.Fprintln(w, "LOCAL_SOONG_INSTALLED_MODULE :=", a.installedFile.String())
+					fmt.Fprintln(w, "LOCAL_SOONG_INSTALL_PAIRS :=", a.outputFile.String()+":"+a.installedFile.String())
+				}
 
 				// Because apex writes .mk with Custom(), we need to write manually some common properties
 				// which are available via data.Entries
@@ -393,10 +395,6 @@ func (a *apexBundle) androidMkForType() android.AndroidMkData {
 					fmt.Fprintln(w, "LOCAL_OVERRIDES_MODULES :=", strings.Join(a.overridableProperties.Overrides, " "))
 				}
 				a.writeRequiredModules(w, moduleNames)
-
-				if a.mergedNotices.Merged.Valid() {
-					fmt.Fprintln(w, "LOCAL_NOTICE_FILE :=", a.mergedNotices.Merged.Path().String())
-				}
 
 				fmt.Fprintln(w, "include $(BUILD_PREBUILT)")
 

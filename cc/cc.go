@@ -48,7 +48,6 @@ func RegisterCCBuildComponents(ctx android.RegistrationContext) {
 		ctx.BottomUp("vndk", VndkMutator).Parallel()
 		ctx.BottomUp("link", LinkageMutator).Parallel()
 		ctx.BottomUp("test_per_src", TestPerSrcMutator).Parallel()
-		ctx.BottomUp("version_selector", versionSelectorMutator).Parallel()
 		ctx.BottomUp("version", versionMutator).Parallel()
 		ctx.BottomUp("begin", BeginMutator).Parallel()
 		ctx.BottomUp("sysprop_cc", SyspropMutator).Parallel()
@@ -746,6 +745,7 @@ var (
 	runtimeDepTag         = installDependencyTag{name: "runtime lib"}
 	testPerSrcDepTag      = dependencyTag{name: "test_per_src"}
 	stubImplDepTag        = dependencyTag{name: "stub_impl"}
+	JniFuzzLibTag         = dependencyTag{name: "jni_fuzz_lib_tag"}
 )
 
 func IsSharedDepTag(depTag blueprint.DependencyTag) bool {
@@ -1218,6 +1218,17 @@ func (c *Module) IsVendorPublicLibrary() bool {
 	return c.VendorProperties.IsVendorPublicLibrary
 }
 
+func (c *Module) IsVndkPrebuiltLibrary() bool {
+	if _, ok := c.linker.(*vndkPrebuiltLibraryDecorator); ok {
+		return true
+	}
+	return false
+}
+
+func (c *Module) SdkAndPlatformVariantVisibleToMake() bool {
+	return c.Properties.SdkAndPlatformVariantVisibleToMake
+}
+
 func (c *Module) HasLlndkStubs() bool {
 	lib := moduleLibraryInterface(c)
 	return lib != nil && lib.hasLLNDKStubs()
@@ -1383,7 +1394,7 @@ func isBionic(name string) bool {
 }
 
 func InstallToBootstrap(name string, config android.Config) bool {
-	if name == "libclang_rt.hwasan-aarch64-android" {
+	if name == "libclang_rt.hwasan" {
 		return true
 	}
 	return isBionic(name)
@@ -1699,7 +1710,7 @@ func (c *Module) DataPaths() []android.DataPath {
 	return nil
 }
 
-func (c *Module) getNameSuffixWithVndkVersion(ctx android.ModuleContext) string {
+func getNameSuffixWithVndkVersion(ctx android.ModuleContext, c LinkableInterface) string {
 	// Returns the name suffix for product and vendor variants. If the VNDK version is not
 	// "current", it will append the VNDK version to the name suffix.
 	var vndkVersion string
@@ -1719,19 +1730,19 @@ func (c *Module) getNameSuffixWithVndkVersion(ctx android.ModuleContext) string 
 	if vndkVersion == "current" {
 		vndkVersion = ctx.DeviceConfig().PlatformVndkVersion()
 	}
-	if c.Properties.VndkVersion != vndkVersion && c.Properties.VndkVersion != "" {
+	if c.VndkVersion() != vndkVersion && c.VndkVersion() != "" {
 		// add version suffix only if the module is using different vndk version than the
 		// version in product or vendor partition.
-		nameSuffix += "." + c.Properties.VndkVersion
+		nameSuffix += "." + c.VndkVersion()
 	}
 	return nameSuffix
 }
 
-func (c *Module) setSubnameProperty(actx android.ModuleContext) {
-	c.Properties.SubName = ""
+func GetSubnameProperty(actx android.ModuleContext, c LinkableInterface) string {
+	var subName = ""
 
 	if c.Target().NativeBridge == android.NativeBridgeEnabled {
-		c.Properties.SubName += NativeBridgeSuffix
+		subName += NativeBridgeSuffix
 	}
 
 	llndk := c.IsLlndk()
@@ -1739,25 +1750,27 @@ func (c *Module) setSubnameProperty(actx android.ModuleContext) {
 		// .vendor.{version} suffix is added for vendor variant or .product.{version} suffix is
 		// added for product variant only when we have vendor and product variants with core
 		// variant. The suffix is not added for vendor-only or product-only module.
-		c.Properties.SubName += c.getNameSuffixWithVndkVersion(actx)
+		subName += getNameSuffixWithVndkVersion(actx, c)
 	} else if c.IsVendorPublicLibrary() {
-		c.Properties.SubName += vendorPublicLibrarySuffix
-	} else if _, ok := c.linker.(*vndkPrebuiltLibraryDecorator); ok {
+		subName += vendorPublicLibrarySuffix
+	} else if c.IsVndkPrebuiltLibrary() {
 		// .vendor suffix is added for backward compatibility with VNDK snapshot whose names with
 		// such suffixes are already hard-coded in prebuilts/vndk/.../Android.bp.
-		c.Properties.SubName += VendorSuffix
+		subName += VendorSuffix
 	} else if c.InRamdisk() && !c.OnlyInRamdisk() {
-		c.Properties.SubName += RamdiskSuffix
+		subName += RamdiskSuffix
 	} else if c.InVendorRamdisk() && !c.OnlyInVendorRamdisk() {
-		c.Properties.SubName += VendorRamdiskSuffix
+		subName += VendorRamdiskSuffix
 	} else if c.InRecovery() && !c.OnlyInRecovery() {
-		c.Properties.SubName += RecoverySuffix
-	} else if c.IsSdkVariant() && (c.Properties.SdkAndPlatformVariantVisibleToMake || c.SplitPerApiLevel()) {
-		c.Properties.SubName += sdkSuffix
+		subName += RecoverySuffix
+	} else if c.IsSdkVariant() && (c.SdkAndPlatformVariantVisibleToMake() || c.SplitPerApiLevel()) {
+		subName += sdkSuffix
 		if c.SplitPerApiLevel() {
-			c.Properties.SubName += "." + c.SdkVersion()
+			subName += "." + c.SdkVersion()
 		}
 	}
+
+	return subName
 }
 
 // Returns true if Bazel was successfully used for the analysis of this module.
@@ -1775,7 +1788,7 @@ func (c *Module) maybeGenerateBazelActions(actx android.ModuleContext) bool {
 	bazelActionsUsed := false
 	// Mixed builds mode is disabled for modules outside of device OS.
 	// TODO(b/200841190): Support non-device OS in mixed builds.
-	if c.MixedBuildsEnabled(actx) && c.bazelHandler != nil {
+	if android.MixedBuildsEnabled(actx) && c.bazelHandler != nil {
 		bazelActionsUsed = c.bazelHandler.GenerateBazelBuildActions(actx, bazelModuleLabel)
 	}
 	return bazelActionsUsed
@@ -1795,7 +1808,7 @@ func (c *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 		return
 	}
 
-	c.setSubnameProperty(actx)
+	c.Properties.SubName = GetSubnameProperty(actx, c)
 	apexInfo := actx.Provider(android.ApexInfoProvider).(android.ApexInfo)
 	if !apexInfo.IsForPlatform() {
 		c.hideApexVariantFromMake = true
@@ -2103,7 +2116,7 @@ func AddSharedLibDependenciesWithVersions(ctx android.BottomUpMutatorContext, mo
 
 	variations = append([]blueprint.Variation(nil), variations...)
 
-	if version != "" && CanBeOrLinkAgainstVersionVariants(mod) {
+	if version != "" && canBeOrLinkAgainstVersionVariants(mod) {
 		// Version is explicitly specified. i.e. libFoo#30
 		variations = append(variations, blueprint.Variation{Mutator: "version", Variation: version})
 		if tag, ok := depTag.(libraryDependencyTag); ok {
@@ -3543,13 +3556,14 @@ func (c *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 	case fullLibrary:
 		if !prebuilt {
 			libraryBp2Build(ctx, c)
+		} else {
+			prebuiltLibraryBp2Build(ctx, c)
 		}
 	case headerLibrary:
 		libraryHeadersBp2Build(ctx, c)
 	case staticLibrary:
-
 		if prebuilt {
-			prebuiltLibraryStaticBp2Build(ctx, c)
+			prebuiltLibraryStaticBp2Build(ctx, c, false)
 		} else {
 			sharedOrStaticLibraryBp2Build(ctx, c, true)
 		}
@@ -3595,7 +3609,8 @@ func DefaultsFactory(props ...interface{}) android.Module {
 		&SharedProperties{},
 		&FlagExporterProperties{},
 		&BinaryLinkerProperties{},
-		&TestProperties{},
+		&TestLinkerProperties{},
+		&TestInstallerProperties{},
 		&TestBinaryProperties{},
 		&BenchmarkProperties{},
 		&fuzz.FuzzProperties{},

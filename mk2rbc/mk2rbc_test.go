@@ -65,6 +65,10 @@ def init(g, handle):
 PRODUCT_NAME := Pixel 3
 PRODUCT_MODEL :=
 local_var = foo
+local-var-with-dashes := bar
+$(warning local-var-with-dashes: $(local-var-with-dashes))
+GLOBAL-VAR-WITH-DASHES := baz
+$(warning GLOBAL-VAR-WITH-DASHES: $(GLOBAL-VAR-WITH-DASHES))
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
@@ -73,6 +77,10 @@ def init(g, handle):
   cfg["PRODUCT_NAME"] = "Pixel 3"
   cfg["PRODUCT_MODEL"] = ""
   _local_var = "foo"
+  _local_var_with_dashes = "bar"
+  rblf.mkwarning("pixel3.mk", "local-var-with-dashes: %s" % _local_var_with_dashes)
+  g["GLOBAL-VAR-WITH-DASHES"] = "baz"
+  rblf.mkwarning("pixel3.mk", "GLOBAL-VAR-WITH-DASHES: %s" % g["GLOBAL-VAR-WITH-DASHES"])
 `,
 	},
 	{
@@ -109,8 +117,8 @@ PRODUCT_NAME := $(call foo0)
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
-  rblf.mk2rbc_error("product.mk:2", "cannot handle invoking foo1")
-  rblf.mk2rbc_error("product.mk:3", "cannot handle invoking foo0")
+  cfg["PRODUCT_NAME"] = rblf.mk2rbc_error("product.mk:2", "cannot handle invoking foo1")
+  cfg["PRODUCT_NAME"] = rblf.mk2rbc_error("product.mk:3", "cannot handle invoking foo0")
 `,
 	},
 	{
@@ -189,15 +197,31 @@ def init(g, handle):
 		mkname: "path/product.mk",
 		in: `
 $(call inherit-product, */font.mk)
+$(call inherit-product, $(sort $(wildcard */font.mk)))
+$(call inherit-product, $(wildcard */font.mk))
+
+include */font.mk
+include $(sort $(wildcard */font.mk))
+include $(wildcard */font.mk)
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
-load("//foo:font.star", _font_init = "init")
-load("//bar:font.star", _font1_init = "init")
+load("//bar:font.star", _font_init = "init")
+load("//foo:font.star", _font1_init = "init")
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
-  rblf.inherit(handle, "foo/font", _font_init)
-  rblf.inherit(handle, "bar/font", _font1_init)
+  rblf.inherit(handle, "bar/font", _font_init)
+  rblf.inherit(handle, "foo/font", _font1_init)
+  rblf.inherit(handle, "bar/font", _font_init)
+  rblf.inherit(handle, "foo/font", _font1_init)
+  rblf.inherit(handle, "bar/font", _font_init)
+  rblf.inherit(handle, "foo/font", _font1_init)
+  _font_init(g, handle)
+  _font1_init(g, handle)
+  _font_init(g, handle)
+  _font1_init(g, handle)
+  _font_init(g, handle)
+  _font1_init(g, handle)
 `,
 	},
 	{
@@ -246,6 +270,8 @@ def init(g, handle):
 		in: `
 $(warning this is the warning)
 $(warning)
+$(warning # this warning starts with a pound)
+$(warning this warning has a # in the middle)
 $(info this is the info)
 $(error this is the error)
 PRODUCT_NAME:=$(shell echo *)
@@ -256,6 +282,8 @@ def init(g, handle):
   cfg = rblf.cfg(handle)
   rblf.mkwarning("product.mk", "this is the warning")
   rblf.mkwarning("product.mk", "")
+  rblf.mkwarning("product.mk", "# this warning starts with a pound")
+  rblf.mkwarning("product.mk", "this warning has a # in the middle")
   rblf.mkinfo("product.mk", "this is the info")
   rblf.mkerror("product.mk", "this is the error")
   cfg["PRODUCT_NAME"] = rblf.shell("echo *")
@@ -540,14 +568,18 @@ ifeq (,$(wildcard foo.mk))
 endif
 ifneq (,$(wildcard foo*.mk))
 endif
+ifeq (foo1.mk foo2.mk barxyz.mk,$(wildcard foo*.mk bar*.mk))
+endif
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
-  if not rblf.file_exists("foo.mk"):
+  if not rblf.expand_wildcard("foo.mk"):
     pass
-  if rblf.file_wildcard_exists("foo*.mk"):
+  if rblf.expand_wildcard("foo*.mk"):
+    pass
+  if rblf.expand_wildcard("foo*.mk bar*.mk") == ["foo1.mk", "foo2.mk", "barxyz.mk"]:␤
     pass
 `,
 	},
@@ -614,7 +646,7 @@ def init(g, handle):
     pass
   elif not rblf.board_platform_is(g, "copper"):
     pass
-  elif g.get("TARGET_BOARD_PLATFORM", "") not in g["QCOM_BOARD_PLATFORMS"]:
+  elif g.get("TARGET_BOARD_PLATFORM", "") not in g.get("QCOM_BOARD_PLATFORMS", ""):
     pass
   elif g["TARGET_PRODUCT"] in g.get("PLATFORM_LIST", []):
     pass
@@ -637,7 +669,7 @@ def init(g, handle):
     pass
   elif not rblf.board_platform_is(g, "copper"):
     pass
-  elif g.get("TARGET_BOARD_PLATFORM", "") in g["QCOM_BOARD_PLATFORMS"]:
+  elif g.get("TARGET_BOARD_PLATFORM", "") in g.get("QCOM_BOARD_PLATFORMS", ""):
     pass
 `,
 	},
@@ -745,10 +777,10 @@ $(call add-product-dex-preopt-module-config,MyModule,disable)
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
-  rblf.enforce_product_packages_exist("")
-  rblf.enforce_product_packages_exist("foo")
-  rblf.require_artifacts_in_path("foo", "bar")
-  rblf.require_artifacts_in_path_relaxed("foo", "bar")
+  rblf.enforce_product_packages_exist(handle, "")
+  rblf.enforce_product_packages_exist(handle, "foo")
+  rblf.require_artifacts_in_path(handle, "foo", "bar")
+  rblf.require_artifacts_in_path_relaxed(handle, "foo", "bar")
   rblf.mkdist_for_goals(g, "goal", "from:to")
   rblf.add_product_dex_preopt_module_config(handle, "MyModule", "disable")
 `,
@@ -780,8 +812,12 @@ def init(g, handle):
 PRODUCT_COPY_FILES := $(addprefix pfx-,a b c)
 PRODUCT_COPY_FILES := $(addsuffix .sff, a b c)
 PRODUCT_NAME := $(word 1, $(subst ., ,$(TARGET_BOARD_PLATFORM)))
+ifeq (1,$(words $(SOME_UNKNOWN_VARIABLE)))
+endif
+ifeq ($(words $(SOME_OTHER_VARIABLE)),$(SOME_INT_VARIABLE))
+endif
 $(info $(patsubst %.pub,$(PRODUCT_NAME)%,$(PRODUCT_ADB_KEYS)))
-$(info $(dir foo/bar))
+$(info $$(dir foo/bar): $(dir foo/bar))
 $(info $(firstword $(PRODUCT_COPY_FILES)))
 $(info $(lastword $(PRODUCT_COPY_FILES)))
 $(info $(dir $(lastword $(MAKEFILE_LIST))))
@@ -802,14 +838,18 @@ def init(g, handle):
   cfg = rblf.cfg(handle)
   cfg["PRODUCT_COPY_FILES"] = rblf.addprefix("pfx-", "a b c")
   cfg["PRODUCT_COPY_FILES"] = rblf.addsuffix(".sff", "a b c")
-  cfg["PRODUCT_NAME"] = ((g.get("TARGET_BOARD_PLATFORM", "")).replace(".", " ")).split()[0]
+  cfg["PRODUCT_NAME"] = rblf.words((g.get("TARGET_BOARD_PLATFORM", "")).replace(".", " "))[0]
+  if len(rblf.words(g.get("SOME_UNKNOWN_VARIABLE", ""))) == 1:
+    pass
+  if ("%d" % (len(rblf.words(g.get("SOME_OTHER_VARIABLE", ""))))) == g.get("SOME_INT_VARIABLE", ""):
+    pass
   rblf.mkinfo("product.mk", rblf.mkpatsubst("%.pub", "%s%%" % cfg["PRODUCT_NAME"], g.get("PRODUCT_ADB_KEYS", "")))
-  rblf.mkinfo("product.mk", rblf.dir("foo/bar"))
-  rblf.mkinfo("product.mk", cfg["PRODUCT_COPY_FILES"][0])
-  rblf.mkinfo("product.mk", cfg["PRODUCT_COPY_FILES"][-1])
-  rblf.mkinfo("product.mk", rblf.dir("product.mk"))
-  rblf.mkinfo("product.mk", rblf.dir(cfg["PRODUCT_COPY_FILES"][-1]))
-  rblf.mkinfo("product.mk", rblf.dir((_foobar).split()[-1]))
+  rblf.mkinfo("product.mk", "$(dir foo/bar): %s" % rblf.dir("foo/bar"))
+  rblf.mkinfo("product.mk", rblf.first_word(cfg["PRODUCT_COPY_FILES"]))
+  rblf.mkinfo("product.mk", rblf.last_word(cfg["PRODUCT_COPY_FILES"]))
+  rblf.mkinfo("product.mk", rblf.dir(rblf.last_word("product.mk")))
+  rblf.mkinfo("product.mk", rblf.dir(rblf.last_word(cfg["PRODUCT_COPY_FILES"])))
+  rblf.mkinfo("product.mk", rblf.dir(rblf.last_word(_foobar)))
   rblf.mkinfo("product.mk", rblf.abspath("foo/bar"))
   rblf.mkinfo("product.mk", rblf.notdir("foo/bar"))
   rblf.soong_config_namespace(g, "snsconfig")
@@ -893,6 +933,43 @@ def init(g, handle):
 `,
 	},
 	{
+		desc:   "assigment setdefaults",
+		mkname: "product.mk",
+		in: `
+# All of these should have a setdefault because they're self-referential and not defined before
+PRODUCT_LIST1 = a $(PRODUCT_LIST1)
+PRODUCT_LIST2 ?= a $(PRODUCT_LIST2)
+PRODUCT_LIST3 += a
+
+# Now doing them again should not have a setdefault because they've already been set
+PRODUCT_LIST1 = a $(PRODUCT_LIST1)
+PRODUCT_LIST2 ?= a $(PRODUCT_LIST2)
+PRODUCT_LIST3 += a
+`,
+		expected: `# All of these should have a setdefault because they're self-referential and not defined before
+load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  rblf.setdefault(handle, "PRODUCT_LIST1")
+  cfg["PRODUCT_LIST1"] = (["a"] +
+      cfg.get("PRODUCT_LIST1", []))
+  if cfg.get("PRODUCT_LIST2") == None:
+    rblf.setdefault(handle, "PRODUCT_LIST2")
+    cfg["PRODUCT_LIST2"] = (["a"] +
+        cfg.get("PRODUCT_LIST2", []))
+  rblf.setdefault(handle, "PRODUCT_LIST3")
+  cfg["PRODUCT_LIST3"] += ["a"]
+  # Now doing them again should not have a setdefault because they've already been set
+  cfg["PRODUCT_LIST1"] = (["a"] +
+      cfg["PRODUCT_LIST1"])
+  if cfg.get("PRODUCT_LIST2") == None:
+    cfg["PRODUCT_LIST2"] = (["a"] +
+        cfg["PRODUCT_LIST2"])
+  cfg["PRODUCT_LIST3"] += ["a"]
+`,
+	},
+	{
 		desc:   "soong namespace assignments",
 		mkname: "product.mk",
 		in: `
@@ -910,7 +987,7 @@ def init(g, handle):
   rblf.soong_config_namespace(g, "cvd")
   rblf.soong_config_set(g, "cvd", "launch_configs", "cvd_config_auto.json")
   rblf.soong_config_append(g, "cvd", "grub_config", "grub.cfg")
-  rblf.mk2rbc_error("product.mk:7", "SOONG_CONFIG_ variables cannot be referenced, use soong_config_get instead: SOONG_CONFIG_cvd_grub_config")
+  _x = rblf.mk2rbc_error("product.mk:7", "SOONG_CONFIG_ variables cannot be referenced, use soong_config_get instead: SOONG_CONFIG_cvd_grub_config")
 `,
 	}, {
 		desc:   "soong namespace accesses",
@@ -973,19 +1050,22 @@ def init(g, handle):
 `,
 	},
 	{
-		desc:   "strip function",
+		desc:   "strip/sort functions",
 		mkname: "product.mk",
 		in: `
 ifeq ($(filter hwaddress,$(PRODUCT_PACKAGES)),)
    PRODUCT_PACKAGES := $(strip $(PRODUCT_PACKAGES) hwaddress)
 endif
+MY_VAR := $(sort b a c)
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
   if "hwaddress" not in cfg.get("PRODUCT_PACKAGES", []):
+    rblf.setdefault(handle, "PRODUCT_PACKAGES")
     cfg["PRODUCT_PACKAGES"] = (rblf.mkstrip("%s hwaddress" % " ".join(cfg.get("PRODUCT_PACKAGES", [])))).split()
+  g["MY_VAR"] = rblf.mksort("b a c")
 `,
 	},
 	{
@@ -1074,6 +1154,11 @@ def init(g, handle):
 MY_PATH:=foo
 #RBC# include_top vendor/foo1
 $(call inherit-product,$(MY_PATH)/cfg.mk)
+#RBC# include_top vendor/foo1
+$(call inherit-product,$(MY_OTHER_PATH))
+#RBC# include_top vendor/foo1
+$(foreach f,$(MY_MAKEFILES), \
+	$(call inherit-product,$(f)))
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 load("//vendor/foo1:cfg.star|init", _cfg_init = "init")
@@ -1088,6 +1173,21 @@ def init(g, handle):
   if not _varmod_init:
     rblf.mkerror("product.mk", "Cannot find %s" % ("%s/cfg.mk" % g["MY_PATH"]))
   rblf.inherit(handle, _varmod, _varmod_init)
+  _entry = {
+    "vendor/foo1/cfg.mk": ("vendor/foo1/cfg", _cfg_init),
+  }.get(g.get("MY_OTHER_PATH", ""))
+  (_varmod, _varmod_init) = _entry if _entry else (None, None)
+  if not _varmod_init:
+    rblf.mkerror("product.mk", "Cannot find %s" % (g.get("MY_OTHER_PATH", "")))
+  rblf.inherit(handle, _varmod, _varmod_init)
+  for f in rblf.words(g.get("MY_MAKEFILES", "")):
+    _entry = {
+      "vendor/foo1/cfg.mk": ("vendor/foo1/cfg", _cfg_init),
+    }.get(f)
+    (_varmod, _varmod_init) = _entry if _entry else (None, None)
+    if not _varmod_init:
+      rblf.mkerror("product.mk", "Cannot find %s" % (f))
+    rblf.inherit(handle, _varmod, _varmod_init)
 `,
 	},
 	{
@@ -1174,13 +1274,15 @@ def init(g, handle):
 		desc:   "Ignore make rules",
 		mkname: "product.mk",
 		in: `
+foo: PRIVATE_VARIABLE = some_tool $< $@
 foo: foo.c
 	gcc -o $@ $*`,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
 def init(g, handle):
   cfg = rblf.cfg(handle)
-  rblf.mk2rbc_error("product.mk:2", "unsupported line rule:       foo: foo.c\n#gcc -o $@ $*")
+  rblf.mk2rbc_error("product.mk:2", "Only simple variables are handled")
+  rblf.mk2rbc_error("product.mk:3", "unsupported line rule:       foo: foo.c\n#gcc -o $@ $*")
 `,
 	},
 	{
@@ -1201,6 +1303,7 @@ def init(g, handle):
 		in: `
 ifeq (,$(call foobar))
 endif
+my_sources := $(local-generated-sources-dir)
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
@@ -1208,6 +1311,7 @@ def init(g, handle):
   cfg = rblf.cfg(handle)
   if rblf.mk2rbc_error("build/product.mk:2", "cannot handle invoking foobar"):
     pass
+  _my_sources = rblf.mk2rbc_error("build/product.mk:4", "local-generated-sources-dir is not supported")
 `,
 	},
 	{
@@ -1219,7 +1323,7 @@ TEST_VAR_LIST := foo
 TEST_VAR_LIST += bar
 TEST_VAR_2 := $(if $(TEST_VAR),bar)
 TEST_VAR_3 := $(if $(TEST_VAR),bar,baz)
-TEST_VAR_3 := $(if $(TEST_VAR),$(TEST_VAR_LIST))
+TEST_VAR_4 := $(if $(TEST_VAR),$(TEST_VAR_LIST))
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
@@ -1230,7 +1334,7 @@ def init(g, handle):
   g["TEST_VAR_LIST"] += ["bar"]
   g["TEST_VAR_2"] = ("bar" if g["TEST_VAR"] else "")
   g["TEST_VAR_3"] = ("bar" if g["TEST_VAR"] else "baz")
-  g["TEST_VAR_3"] = (g["TEST_VAR_LIST"] if g["TEST_VAR"] else [])
+  g["TEST_VAR_4"] = (g["TEST_VAR_LIST"] if g["TEST_VAR"] else [])
 `,
 	},
 	{
@@ -1263,6 +1367,11 @@ BOOT_KERNEL_MODULES_FILTER_2 := $(foreach m,$(BOOT_KERNEL_MODULES_LIST),%/$(m))
 FOREACH_WITH_IF := $(foreach module,\
   $(BOOT_KERNEL_MODULES_LIST),\
   $(if $(filter $(module),foo.ko),,$(error module "$(module)" has an error!)))
+
+# Same as above, but not assigning it to a variable allows it to be converted to statements
+$(foreach module,\
+  $(BOOT_KERNEL_MODULES_LIST),\
+  $(if $(filter $(module),foo.ko),,$(error module "$(module)" has an error!)))
 `,
 		expected: `load("//build/make/core:product_config.rbc", "rblf")
 
@@ -1274,6 +1383,10 @@ def init(g, handle):
   g["BOOT_KERNEL_MODULES_LIST"] += ["bar.ko"]
   g["BOOT_KERNEL_MODULES_FILTER_2"] = ["%%/%s" % m for m in g["BOOT_KERNEL_MODULES_LIST"]]
   g["FOREACH_WITH_IF"] = [("" if rblf.filter(module, "foo.ko") else rblf.mkerror("product.mk", "module \"%s\" has an error!" % module)) for module in g["BOOT_KERNEL_MODULES_LIST"]]
+  # Same as above, but not assigning it to a variable allows it to be converted to statements
+  for module in g["BOOT_KERNEL_MODULES_LIST"]:
+    if not rblf.filter(module, "foo.ko"):
+      rblf.mkerror("product.mk", "module \"%s\" has an error!" % module)
 `,
 	},
 	{
@@ -1358,6 +1471,128 @@ def init(g, handle):
     pass
   if int("100%s" % g.get("MY_VAR", "")) >= 10:
     pass
+`,
+	},
+	{
+		desc:   "Type hints",
+		mkname: "product.mk",
+		in: `
+# Test type hints
+#RBC# type_hint list MY_VAR MY_VAR_2
+# Unsupported type
+#RBC# type_hint bool MY_VAR_3
+# Invalid syntax
+#RBC# type_hint list
+# Duplicated variable
+#RBC# type_hint list MY_VAR_2
+#RBC# type_hint list my-local-var-with-dashes
+#RBC# type_hint string MY_STRING_VAR
+
+MY_VAR := foo
+MY_VAR_UNHINTED := foo
+
+# Vars set after other statements still get the hint
+MY_VAR_2 := foo
+
+# You can't specify a type hint after the first statement
+#RBC# type_hint list MY_VAR_4
+MY_VAR_4 := foo
+
+my-local-var-with-dashes := foo
+
+MY_STRING_VAR := $(wildcard foo/bar.mk)
+`,
+		expected: `# Test type hints
+# Unsupported type
+load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  rblf.mk2rbc_error("product.mk:5", "Invalid type_hint annotation. Only list/string types are accepted, found bool")
+  # Invalid syntax
+  rblf.mk2rbc_error("product.mk:7", "Invalid type_hint annotation: list. Must be a variable type followed by a list of variables of that type")
+  # Duplicated variable
+  rblf.mk2rbc_error("product.mk:9", "Duplicate type hint for variable MY_VAR_2")
+  g["MY_VAR"] = ["foo"]
+  g["MY_VAR_UNHINTED"] = "foo"
+  # Vars set after other statements still get the hint
+  g["MY_VAR_2"] = ["foo"]
+  # You can't specify a type hint after the first statement
+  rblf.mk2rbc_error("product.mk:20", "type_hint annotations must come before the first Makefile statement")
+  g["MY_VAR_4"] = "foo"
+  _my_local_var_with_dashes = ["foo"]
+  g["MY_STRING_VAR"] = " ".join(rblf.expand_wildcard("foo/bar.mk"))
+`,
+	},
+	{
+		desc:   "Set LOCAL_PATH to my-dir",
+		mkname: "product.mk",
+		in: `
+LOCAL_PATH := $(call my-dir)
+`,
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  
+`,
+	},
+	{
+		desc:   "Evals",
+		mkname: "product.mk",
+		in: `
+$(eval)
+$(eval MY_VAR := foo)
+$(eval # This is a test of eval functions)
+$(eval $(TOO_COMPLICATED) := bar)
+$(eval include foo/font.mk)
+$(eval $(call inherit-product,vendor/foo1/cfg.mk))
+
+$(foreach x,$(MY_LIST_VAR), \
+  $(eval PRODUCT_COPY_FILES += foo/bar/$(x):$(TARGET_COPY_OUT_VENDOR)/etc/$(x)) \
+  $(if $(MY_OTHER_VAR),$(eval PRODUCT_COPY_FILES += $(MY_OTHER_VAR):foo/bar/$(x))))
+
+$(foreach x,$(MY_LIST_VAR), \
+  $(eval include foo/$(x).mk))
+`,
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
+load("//foo:font.star", _font_init = "init")
+load("//vendor/foo1:cfg.star", _cfg_init = "init")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  g["MY_VAR"] = "foo"
+  # This is a test of eval functions
+  rblf.mk2rbc_error("product.mk:5", "Eval expression too complex; only assignments, comments, includes, and inherit-products are supported")
+  _font_init(g, handle)
+  rblf.inherit(handle, "vendor/foo1/cfg", _cfg_init)
+  for x in rblf.words(g.get("MY_LIST_VAR", "")):
+    rblf.setdefault(handle, "PRODUCT_COPY_FILES")
+    cfg["PRODUCT_COPY_FILES"] += ("foo/bar/%s:%s/etc/%s" % (x, g.get("TARGET_COPY_OUT_VENDOR", ""), x)).split()
+    if g.get("MY_OTHER_VAR", ""):
+      cfg["PRODUCT_COPY_FILES"] += ("%s:foo/bar/%s" % (g.get("MY_OTHER_VAR", ""), x)).split()
+  for x in rblf.words(g.get("MY_LIST_VAR", "")):
+    _entry = {
+      "foo/font.mk": ("foo/font", _font_init),
+    }.get("foo/%s.mk" % _x)
+    (_varmod, _varmod_init) = _entry if _entry else (None, None)
+    if not _varmod_init:
+      rblf.mkerror("product.mk", "Cannot find %s" % ("foo/%s.mk" % _x))
+    _varmod_init(g, handle)
+`,
+	},
+	{
+		desc:   ".KATI_READONLY",
+		mkname: "product.mk",
+		in: `
+MY_VAR := foo
+.KATI_READONLY := MY_VAR
+`,
+		expected: `load("//build/make/core:product_config.rbc", "rblf")
+
+def init(g, handle):
+  cfg = rblf.cfg(handle)
+  g["MY_VAR"] = "foo"
 `,
 	},
 }

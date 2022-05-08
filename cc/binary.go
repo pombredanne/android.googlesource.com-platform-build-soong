@@ -220,17 +220,17 @@ func newBinary(hod android.HostOrDeviceSupported, bazelable bool) (*Module, *bin
 func (binary *binaryDecorator) linkerInit(ctx BaseModuleContext) {
 	binary.baseLinker.linkerInit(ctx)
 
-	if !ctx.toolchain().Bionic() && !ctx.toolchain().Musl() {
-		if ctx.Os() == android.Linux {
-			// Unless explicitly specified otherwise, host static binaries are built with -static
-			// if HostStaticBinaries is true for the product configuration.
-			if binary.Properties.Static_executable == nil && ctx.Config().HostStaticBinaries() {
-				binary.Properties.Static_executable = BoolPtr(true)
-			}
-		} else {
-			// Static executables are not supported on Darwin or Windows
-			binary.Properties.Static_executable = nil
+	if ctx.Os().Linux() && ctx.Host() {
+		// Unless explicitly specified otherwise, host static binaries are built with -static
+		// if HostStaticBinaries is true for the product configuration.
+		if binary.Properties.Static_executable == nil && ctx.Config().HostStaticBinaries() {
+			binary.Properties.Static_executable = BoolPtr(true)
 		}
+	}
+
+	if ctx.Darwin() || ctx.Windows() {
+		// Static executables are not supported on Darwin or Windows
+		binary.Properties.Static_executable = nil
 	}
 }
 
@@ -615,6 +615,7 @@ func binaryBp2build(ctx android.TopDownMutatorContext, m *Module, typ string) {
 		Linkopts:          baseAttrs.linkopts,
 		Link_crt:          baseAttrs.linkCrt,
 		Use_libcrt:        baseAttrs.useLibcrt,
+		Use_version_lib:   baseAttrs.useVersionLib,
 		Rtti:              baseAttrs.rtti,
 		Stl:               baseAttrs.stl,
 		Cpp_std:           baseAttrs.cppStd,
@@ -630,6 +631,8 @@ func binaryBp2build(ctx android.TopDownMutatorContext, m *Module, typ string) {
 		},
 
 		Features: baseAttrs.features,
+
+		sdkAttributes: bp2BuildParseSdkAttributes(m),
 	}
 
 	ctx.CreateBazelTargetModule(bazel.BazelTargetModuleProperties{
@@ -663,8 +666,9 @@ type binaryAttributes struct {
 	Linkopts                 bazel.StringListAttribute
 	Additional_linker_inputs bazel.LabelListAttribute
 
-	Link_crt   bazel.BoolAttribute
-	Use_libcrt bazel.BoolAttribute
+	Link_crt        bazel.BoolAttribute
+	Use_libcrt      bazel.BoolAttribute
+	Use_version_lib bazel.BoolAttribute
 
 	Rtti    bazel.BoolAttribute
 	Stl     *string
@@ -673,4 +677,6 @@ type binaryAttributes struct {
 	Strip stripAttributes
 
 	Features bazel.StringListAttribute
+
+	sdkAttributes
 }
