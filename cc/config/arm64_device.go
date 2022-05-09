@@ -98,25 +98,28 @@ func init() {
 	pctx.SourcePathVariable("Arm64GccRoot",
 		"prebuilts/gcc/${HostPrebuiltTag}/aarch64/aarch64-linux-android-${arm64GccVersion}")
 
-	exportStringListStaticVariable("Arm64Ldflags", arm64Ldflags)
-	exportStringListStaticVariable("Arm64Lldflags", arm64Lldflags)
+	exportedVars.ExportStringListStaticVariable("Arm64Ldflags", arm64Ldflags)
+	exportedVars.ExportStringListStaticVariable("Arm64Lldflags", arm64Lldflags)
 
-	exportStringListStaticVariable("Arm64Cflags", arm64Cflags)
-	exportStringListStaticVariable("Arm64Cppflags", arm64Cppflags)
+	exportedVars.ExportStringListStaticVariable("Arm64Cflags", arm64Cflags)
+	exportedVars.ExportStringListStaticVariable("Arm64Cppflags", arm64Cppflags)
 
-	exportedStringListDictVars.Set("Arm64ArchVariantCflags", arm64ArchVariantCflags)
-	exportedStringListDictVars.Set("Arm64CpuVariantCflags", arm64CpuVariantCflags)
+	exportedVars.ExportVariableReferenceDict("Arm64ArchVariantCflags", arm64ArchVariantCflagsVar)
+	exportedVars.ExportVariableReferenceDict("Arm64CpuVariantCflags", arm64CpuVariantCflagsVar)
+	exportedVars.ExportVariableReferenceDict("Arm64CpuVariantLdflags", arm64CpuVariantLdflags)
 
-	pctx.StaticVariable("Arm64Armv8ACflags", strings.Join(arm64ArchVariantCflags["armv8-a"], " "))
-	pctx.StaticVariable("Arm64Armv8ABranchProtCflags", strings.Join(arm64ArchVariantCflags["armv8-a-branchprot"], " "))
-	pctx.StaticVariable("Arm64Armv82ACflags", strings.Join(arm64ArchVariantCflags["armv8-2a"], " "))
-	pctx.StaticVariable("Arm64Armv82ADotprodCflags", strings.Join(arm64ArchVariantCflags["armv8-2a-dotprod"], " "))
+	exportedVars.ExportStringListStaticVariable("Arm64Armv8ACflags", arm64ArchVariantCflags["armv8-a"])
+	exportedVars.ExportStringListStaticVariable("Arm64Armv8ABranchProtCflags", arm64ArchVariantCflags["armv8-a-branchprot"])
+	exportedVars.ExportStringListStaticVariable("Arm64Armv82ACflags", arm64ArchVariantCflags["armv8-2a"])
+	exportedVars.ExportStringListStaticVariable("Arm64Armv82ADotprodCflags", arm64ArchVariantCflags["armv8-2a-dotprod"])
 
-	pctx.StaticVariable("Arm64CortexA53Cflags", strings.Join(arm64CpuVariantCflags["cortex-a53"], " "))
-	pctx.StaticVariable("Arm64CortexA55Cflags", strings.Join(arm64CpuVariantCflags["cortex-a55"], " "))
-	pctx.StaticVariable("Arm64KryoCflags", strings.Join(arm64CpuVariantCflags["kryo"], " "))
-	pctx.StaticVariable("Arm64ExynosM1Cflags", strings.Join(arm64CpuVariantCflags["exynos-m1"], " "))
-	pctx.StaticVariable("Arm64ExynosM2Cflags", strings.Join(arm64CpuVariantCflags["exynos-m2"], " "))
+	exportedVars.ExportStringListStaticVariable("Arm64CortexA53Cflags", arm64CpuVariantCflags["cortex-a53"])
+	exportedVars.ExportStringListStaticVariable("Arm64CortexA55Cflags", arm64CpuVariantCflags["cortex-a55"])
+	exportedVars.ExportStringListStaticVariable("Arm64KryoCflags", arm64CpuVariantCflags["kryo"])
+	exportedVars.ExportStringListStaticVariable("Arm64ExynosM1Cflags", arm64CpuVariantCflags["exynos-m1"])
+	exportedVars.ExportStringListStaticVariable("Arm64ExynosM2Cflags", arm64CpuVariantCflags["exynos-m2"])
+
+	exportedVars.ExportStringListStaticVariable("Arm64FixCortexA53Ldflags", []string{"-Wl,--fix-cortex-a53-843419"})
 }
 
 var (
@@ -128,7 +131,6 @@ var (
 	}
 
 	arm64CpuVariantCflagsVar = map[string]string{
-		"":           "",
 		"cortex-a53": "${config.Arm64CortexA53Cflags}",
 		"cortex-a55": "${config.Arm64CortexA55Cflags}",
 		"cortex-a72": "${config.Arm64CortexA53Cflags}",
@@ -139,6 +141,15 @@ var (
 		"kryo385":    "${config.Arm64CortexA53Cflags}",
 		"exynos-m1":  "${config.Arm64ExynosM1Cflags}",
 		"exynos-m2":  "${config.Arm64ExynosM2Cflags}",
+	}
+
+	arm64CpuVariantLdflags = map[string]string{
+		"cortex-a53": "${config.Arm64FixCortexA53Ldflags}",
+		"cortex-a72": "${config.Arm64FixCortexA53Ldflags}",
+		"cortex-a73": "${config.Arm64FixCortexA53Ldflags}",
+		"kryo":       "${config.Arm64FixCortexA53Ldflags}",
+		"exynos-m1":  "${config.Arm64FixCortexA53Ldflags}",
+		"exynos-m2":  "${config.Arm64FixCortexA53Ldflags}",
 	}
 )
 
@@ -214,12 +225,7 @@ func arm64ToolchainFactory(arch android.Arch) Toolchain {
 	toolchainCflags = append(toolchainCflags,
 		variantOrDefault(arm64CpuVariantCflagsVar, arch.CpuVariant))
 
-	var extraLdflags string
-	switch arch.CpuVariant {
-	case "cortex-a53", "cortex-a72", "cortex-a73", "kryo", "exynos-m1", "exynos-m2":
-		extraLdflags = "-Wl,--fix-cortex-a53-843419"
-	}
-
+	extraLdflags := variantOrDefault(arm64CpuVariantLdflags, arch.CpuVariant)
 	return &toolchainArm64{
 		ldflags: strings.Join([]string{
 			"${config.Arm64Ldflags}",

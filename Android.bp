@@ -50,6 +50,7 @@ kernel_headers {
     name: "device_kernel_headers",
     vendor: true,
     recovery_available: true,
+    min_sdk_version: "apex_inherit",
 }
 
 cc_genrule {
@@ -59,6 +60,9 @@ cc_genrule {
     target: {
         linux_bionic: {
             enabled: true,
+        },
+        linux_musl: {
+            enabled: false,
         },
         linux_glibc: {
             enabled: false,
@@ -80,6 +84,9 @@ cc_genrule {
     target: {
         linux_bionic: {
             enabled: true,
+        },
+        linux_musl: {
+            enabled: false,
         },
         linux_glibc: {
             enabled: false,
@@ -111,4 +118,15 @@ genrule {
 
 dexpreopt_systemserver_check {
     name: "dexpreopt_systemserver_check",
+}
+
+// buildinfo.prop contains common properties for system/build.prop, like ro.build.version.*
+buildinfo_prop {
+    name: "buildinfo.prop",
+
+    // not installable because this will be included to system/build.prop
+    installable: false,
+
+    // Currently, only microdroid can refer to buildinfo.prop
+    visibility: ["//packages/modules/Virtualization/microdroid"],
 }

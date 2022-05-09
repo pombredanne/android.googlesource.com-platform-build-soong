@@ -779,6 +779,68 @@ func TestDataLibsRelativeInstallPath(t *testing.T) {
 	}
 }
 
+func TestTestBinaryTestSuites(t *testing.T) {
+	bp := `
+		cc_test {
+			name: "main_test",
+			srcs: ["main_test.cpp"],
+			test_suites: [
+				"suite_1",
+				"suite_2",
+			],
+			gtest: false,
+		}
+	`
+
+	ctx := prepareForCcTest.RunTestWithBp(t, bp).TestContext
+	module := ctx.ModuleForTests("main_test", "android_arm_armv7-a-neon").Module()
+
+	entries := android.AndroidMkEntriesForTest(t, ctx, module)[0]
+	compatEntries := entries.EntryMap["LOCAL_COMPATIBILITY_SUITE"]
+	if len(compatEntries) != 2 {
+		t.Errorf("expected two elements in LOCAL_COMPATIBILITY_SUITE. got %d", len(compatEntries))
+	}
+	if compatEntries[0] != "suite_1" {
+		t.Errorf("expected LOCAL_COMPATIBILITY_SUITE to be`suite_1`,"+
+			" but was '%s'", compatEntries[0])
+	}
+	if compatEntries[1] != "suite_2" {
+		t.Errorf("expected LOCAL_COMPATIBILITY_SUITE to be`suite_2`,"+
+			" but was '%s'", compatEntries[1])
+	}
+}
+
+func TestTestLibraryTestSuites(t *testing.T) {
+	bp := `
+		cc_test_library {
+			name: "main_test_lib",
+			srcs: ["main_test_lib.cpp"],
+			test_suites: [
+				"suite_1",
+				"suite_2",
+			],
+			gtest: false,
+		}
+	`
+
+	ctx := prepareForCcTest.RunTestWithBp(t, bp).TestContext
+	module := ctx.ModuleForTests("main_test_lib", "android_arm_armv7-a-neon_shared").Module()
+
+	entries := android.AndroidMkEntriesForTest(t, ctx, module)[0]
+	compatEntries := entries.EntryMap["LOCAL_COMPATIBILITY_SUITE"]
+	if len(compatEntries) != 2 {
+		t.Errorf("expected two elements in LOCAL_COMPATIBILITY_SUITE. got %d", len(compatEntries))
+	}
+	if compatEntries[0] != "suite_1" {
+		t.Errorf("expected LOCAL_COMPATIBILITY_SUITE to be`suite_1`,"+
+			" but was '%s'", compatEntries[0])
+	}
+	if compatEntries[1] != "suite_2" {
+		t.Errorf("expected LOCAL_COMPATIBILITY_SUITE to be`suite_2`,"+
+			" but was '%s'", compatEntries[1])
+	}
+}
+
 func TestVndkWhenVndkVersionIsNotSet(t *testing.T) {
 	ctx := testCcNoVndk(t, `
 		cc_library {
@@ -2944,13 +3006,13 @@ func TestStaticLibDepExport(t *testing.T) {
 	// Check the shared version of lib2.
 	variant := "android_arm64_armv8-a_shared"
 	module := ctx.ModuleForTests("lib2", variant).Module().(*Module)
-	checkStaticLibs(t, []string{"lib1", "libc++demangle", "libclang_rt.builtins-aarch64-android"}, module)
+	checkStaticLibs(t, []string{"lib1", "libc++demangle", "libclang_rt.builtins"}, module)
 
 	// Check the static version of lib2.
 	variant = "android_arm64_armv8-a_static"
 	module = ctx.ModuleForTests("lib2", variant).Module().(*Module)
 	// libc++_static is linked additionally.
-	checkStaticLibs(t, []string{"lib1", "libc++_static", "libc++demangle", "libclang_rt.builtins-aarch64-android"}, module)
+	checkStaticLibs(t, []string{"lib1", "libc++_static", "libc++demangle", "libclang_rt.builtins"}, module)
 }
 
 var compilerFlagsTestCases = []struct {
@@ -3943,7 +4005,6 @@ func TestIncludeDirectoryOrdering(t *testing.T) {
 		"${config.ArmGenericCflags}",
 		"-target",
 		"armv7a-linux-androideabi20",
-		"-B${config.ArmGccRoot}/arm-linux-androideabi/bin",
 	}
 
 	expectedIncludes := []string{

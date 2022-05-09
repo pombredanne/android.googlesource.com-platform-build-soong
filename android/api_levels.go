@@ -18,6 +18,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+
+	"android/soong/bazel"
+	"android/soong/starlark_fmt"
 )
 
 func init() {
@@ -304,24 +307,25 @@ var finalCodenamesMapKey = NewOnceKey("FinalCodenamesMap")
 func getFinalCodenamesMap(config Config) map[string]int {
 	return config.Once(finalCodenamesMapKey, func() interface{} {
 		apiLevelsMap := map[string]int{
-			"G":     9,
-			"I":     14,
-			"J":     16,
-			"J-MR1": 17,
-			"J-MR2": 18,
-			"K":     19,
-			"L":     21,
-			"L-MR1": 22,
-			"M":     23,
-			"N":     24,
-			"N-MR1": 25,
-			"O":     26,
-			"O-MR1": 27,
-			"P":     28,
-			"Q":     29,
-			"R":     30,
-			"S":     31,
-			"S-V2":  32,
+			"G":        9,
+			"I":        14,
+			"J":        16,
+			"J-MR1":    17,
+			"J-MR2":    18,
+			"K":        19,
+			"L":        21,
+			"L-MR1":    22,
+			"M":        23,
+			"N":        24,
+			"N-MR1":    25,
+			"O":        26,
+			"O-MR1":    27,
+			"P":        28,
+			"Q":        29,
+			"R":        30,
+			"S":        31,
+			"S-V2":     32,
+			"Tiramisu": 33,
 		}
 
 		// TODO: Differentiate "current" and "future".
@@ -348,24 +352,25 @@ var apiLevelsMapKey = NewOnceKey("ApiLevelsMap")
 func GetApiLevelsMap(config Config) map[string]int {
 	return config.Once(apiLevelsMapKey, func() interface{} {
 		apiLevelsMap := map[string]int{
-			"G":     9,
-			"I":     14,
-			"J":     16,
-			"J-MR1": 17,
-			"J-MR2": 18,
-			"K":     19,
-			"L":     21,
-			"L-MR1": 22,
-			"M":     23,
-			"N":     24,
-			"N-MR1": 25,
-			"O":     26,
-			"O-MR1": 27,
-			"P":     28,
-			"Q":     29,
-			"R":     30,
-			"S":     31,
-			"S-V2":  32,
+			"G":        9,
+			"I":        14,
+			"J":        16,
+			"J-MR1":    17,
+			"J-MR2":    18,
+			"K":        19,
+			"L":        21,
+			"L-MR1":    22,
+			"M":        23,
+			"N":        24,
+			"N-MR1":    25,
+			"O":        26,
+			"O-MR1":    27,
+			"P":        28,
+			"Q":        29,
+			"R":        30,
+			"S":        31,
+			"S-V2":     32,
+			"Tiramisu": 33,
 		}
 		for i, codename := range config.PlatformVersionActiveCodenames() {
 			apiLevelsMap[codename] = previewAPILevelBase + i
@@ -379,4 +384,22 @@ func (a *apiLevelsSingleton) GenerateBuildActions(ctx SingletonContext) {
 	apiLevelsMap := GetApiLevelsMap(ctx.Config())
 	apiLevelsJson := GetApiLevelsJson(ctx)
 	createApiLevelsJson(ctx, apiLevelsJson, apiLevelsMap)
+}
+
+func printApiLevelsStarlarkDict(config Config) string {
+	apiLevelsMap := GetApiLevelsMap(config)
+	valDict := make(map[string]string, len(apiLevelsMap))
+	for k, v := range apiLevelsMap {
+		valDict[k] = strconv.Itoa(v)
+	}
+	return starlark_fmt.PrintDict(valDict, 0)
+}
+
+func StarlarkApiLevelConfigs(config Config) string {
+	return fmt.Sprintf(bazel.GeneratedBazelFileWarning+`
+_api_levels = %s
+
+api_levels = _api_levels
+`, printApiLevelsStarlarkDict(config),
+	)
 }
