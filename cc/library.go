@@ -145,6 +145,8 @@ type StaticOrSharedProperties struct {
 
 	Tidy_disabled_srcs []string `android:"path,arch_variant"`
 
+	Tidy_timeout_srcs []string `android:"path,arch_variant"`
+
 	Sanitized Sanitized `android:"arch_variant"`
 
 	Cflags []string `android:"arch_variant"`
@@ -314,6 +316,7 @@ func libraryBp2Build(ctx android.TopDownMutatorContext, m *Module) {
 		Implementation_whole_archive_deps: linkerAttrs.implementationWholeArchiveDeps,
 		Whole_archive_deps:                *linkerAttrs.wholeArchiveDeps.Clone().Append(staticAttrs.Whole_archive_deps),
 		System_dynamic_deps:               *linkerAttrs.systemDynamicDeps.Clone().Append(staticAttrs.System_dynamic_deps),
+		sdkAttributes:                     bp2BuildParseSdkAttributes(m),
 	}
 
 	sharedCommonAttrs := staticOrSharedAttributes{
@@ -329,6 +332,7 @@ func libraryBp2Build(ctx android.TopDownMutatorContext, m *Module) {
 		Implementation_dynamic_deps: *linkerAttrs.implementationDynamicDeps.Clone().Append(sharedAttrs.Implementation_dynamic_deps),
 		Whole_archive_deps:          *linkerAttrs.wholeArchiveDeps.Clone().Append(sharedAttrs.Whole_archive_deps),
 		System_dynamic_deps:         *linkerAttrs.systemDynamicDeps.Clone().Append(sharedAttrs.System_dynamic_deps),
+		sdkAttributes:               bp2BuildParseSdkAttributes(m),
 	}
 
 	staticTargetAttrs := &bazelCcLibraryStaticAttributes{
@@ -348,6 +352,7 @@ func libraryBp2Build(ctx android.TopDownMutatorContext, m *Module) {
 		Stl:                      compilerAttrs.stl,
 		Cpp_std:                  compilerAttrs.cppStd,
 		C_std:                    compilerAttrs.cStd,
+		Use_version_lib:          linkerAttrs.useVersionLib,
 
 		Features: linkerAttrs.features,
 	}
@@ -370,6 +375,7 @@ func libraryBp2Build(ctx android.TopDownMutatorContext, m *Module) {
 		Stl:                      compilerAttrs.stl,
 		Cpp_std:                  compilerAttrs.cppStd,
 		C_std:                    compilerAttrs.cStd,
+		Use_version_lib:          linkerAttrs.useVersionLib,
 
 		Additional_linker_inputs: linkerAttrs.additionalLinkerInputs,
 
@@ -586,7 +592,8 @@ type libraryDecorator struct {
 	stripper         Stripper
 
 	// For whole_static_libs
-	objects Objects
+	objects                      Objects
+	wholeStaticLibsFromPrebuilts android.Paths
 
 	// Uses the module's name if empty, but can be overridden. Does not include
 	// shlib suffix.
@@ -1078,11 +1085,13 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 		srcs := android.PathsForModuleSrc(ctx, library.StaticProperties.Static.Srcs)
 		objs = objs.Append(compileObjs(ctx, buildFlags, android.DeviceStaticLibrary, srcs,
 			android.PathsForModuleSrc(ctx, library.StaticProperties.Static.Tidy_disabled_srcs),
+			android.PathsForModuleSrc(ctx, library.StaticProperties.Static.Tidy_timeout_srcs),
 			library.baseCompiler.pathDeps, library.baseCompiler.cFlagsDeps))
 	} else if library.shared() {
 		srcs := android.PathsForModuleSrc(ctx, library.SharedProperties.Shared.Srcs)
 		objs = objs.Append(compileObjs(ctx, buildFlags, android.DeviceSharedLibrary, srcs,
 			android.PathsForModuleSrc(ctx, library.SharedProperties.Shared.Tidy_disabled_srcs),
+			android.PathsForModuleSrc(ctx, library.SharedProperties.Shared.Tidy_timeout_srcs),
 			library.baseCompiler.pathDeps, library.baseCompiler.cFlagsDeps))
 	}
 
@@ -1343,6 +1352,7 @@ func (library *libraryDecorator) linkStatic(ctx ModuleContext,
 
 	library.objects = deps.WholeStaticLibObjs.Copy()
 	library.objects = library.objects.Append(objs)
+	library.wholeStaticLibsFromPrebuilts = android.CopyOfPaths(deps.WholeStaticLibsFromPrebuilts)
 
 	fileName := ctx.ModuleName() + staticLibraryExtension
 	outputFile := android.PathForModuleOut(ctx, fileName)
@@ -1368,9 +1378,10 @@ func (library *libraryDecorator) linkStatic(ctx ModuleContext,
 
 	if library.static() {
 		ctx.SetProvider(StaticLibraryInfoProvider, StaticLibraryInfo{
-			StaticLibrary: outputFile,
-			ReuseObjects:  library.reuseObjects,
-			Objects:       library.objects,
+			StaticLibrary:                outputFile,
+			ReuseObjects:                 library.reuseObjects,
+			Objects:                      library.objects,
+			WholeStaticLibsFromPrebuilts: library.wholeStaticLibsFromPrebuilts,
 
 			TransitiveStaticLibrariesForOrdering: android.NewDepSetBuilder(android.TOPOLOGICAL).
 				Direct(outputFile).
@@ -2474,6 +2485,7 @@ func sharedOrStaticLibraryBp2Build(ctx android.TopDownMutatorContext, module *Mo
 		Whole_archive_deps:                linkerAttrs.wholeArchiveDeps,
 		Implementation_whole_archive_deps: linkerAttrs.implementationWholeArchiveDeps,
 		System_dynamic_deps:               linkerAttrs.systemDynamicDeps,
+		sdkAttributes:                     bp2BuildParseSdkAttributes(module),
 	}
 
 	var attrs interface{}

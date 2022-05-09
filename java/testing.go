@@ -54,6 +54,8 @@ var PrepareForTestWithJavaBuildComponents = android.GroupFixturePreparers(
 		"build/soong/java/lint_defaults.txt": nil,
 		// Needed for apps that do not provide their own.
 		"build/make/target/product/security": nil,
+		// Required to generate Java used-by API coverage
+		"build/soong/scripts/gen_java_usedby_apex.sh": nil,
 	}.AddToFixture(),
 )
 
@@ -70,6 +72,10 @@ var PrepareForTestWithJavaDefaultModulesWithoutFakeDex2oatd = android.GroupFixtu
 		defaultJavaDir + "/framework/aidl": nil,
 		// Needed for various deps defined in GatherRequiredDepsForTest()
 		defaultJavaDir + "/a.java": nil,
+
+		// Needed for R8 rules on apps
+		"build/make/core/proguard.flags":             nil,
+		"build/make/core/proguard_basic_keeps.flags": nil,
 	}.AddToFixture(),
 	// The java default module definitions.
 	android.FixtureAddTextFile(defaultJavaDir+"/Android.bp", gatherRequiredDepsForTest()),
@@ -146,6 +152,10 @@ var PrepareForTestWithPrebuiltsOfCurrentApi = FixtureWithPrebuiltApis(map[string
 // This defines a file in the mock file system in a predefined location (prebuilts/sdk/Android.bp)
 // and so only one instance of this can be used in each fixture.
 func FixtureWithPrebuiltApis(release2Modules map[string][]string) android.FixturePreparer {
+	return FixtureWithPrebuiltApisAndExtensions(release2Modules, nil)
+}
+
+func FixtureWithPrebuiltApisAndExtensions(apiLevel2Modules map[string][]string, extensionLevel2Modules map[string][]string) android.FixturePreparer {
 	mockFS := android.MockFS{}
 	path := "prebuilts/sdk/Android.bp"
 
@@ -153,13 +163,19 @@ func FixtureWithPrebuiltApis(release2Modules map[string][]string) android.Fixtur
 			prebuilt_apis {
 				name: "sdk",
 				api_dirs: ["%s"],
+				extensions_dir: "extensions",
 				imports_sdk_version: "none",
 				imports_compile_dex: true,
 			}
-		`, strings.Join(android.SortedStringKeys(release2Modules), `", "`))
+		`, strings.Join(android.SortedStringKeys(apiLevel2Modules), `", "`))
 
-	for release, modules := range release2Modules {
+	for release, modules := range apiLevel2Modules {
 		mockFS.Merge(prebuiltApisFilesForModules([]string{release}, modules))
+	}
+	if extensionLevel2Modules != nil {
+		for release, modules := range extensionLevel2Modules {
+			mockFS.Merge(prebuiltExtensionApiFiles([]string{release}, modules))
+		}
 	}
 	return android.GroupFixturePreparers(
 		android.FixtureAddTextFile(path, bp),
@@ -194,6 +210,19 @@ func prebuiltApisFilesForModules(apiLevels []string, modules []string) map[strin
 			fs["prebuilts/sdk/current/core/android.jar"] = nil
 		}
 		fs[fmt.Sprintf("prebuilts/sdk/%s/public/framework.aidl", level)] = nil
+	}
+	return fs
+}
+
+func prebuiltExtensionApiFiles(extensionLevels []string, modules []string) map[string][]byte {
+	fs := make(map[string][]byte)
+	for _, level := range extensionLevels {
+		for _, sdkKind := range []android.SdkKind{android.SdkPublic, android.SdkSystem, android.SdkModule, android.SdkSystemServer} {
+			for _, lib := range modules {
+				fs[fmt.Sprintf("prebuilts/sdk/extensions/%s/%s/api/%s.txt", level, sdkKind, lib)] = nil
+				fs[fmt.Sprintf("prebuilts/sdk/extensions/%s/%s/api/%s-removed.txt", level, sdkKind, lib)] = nil
+			}
+		}
 	}
 	return fs
 }
