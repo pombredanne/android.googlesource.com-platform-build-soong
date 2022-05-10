@@ -23,12 +23,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"android/soong/shared"
 	"android/soong/ui/build"
 	"android/soong/ui/logger"
 	"android/soong/ui/metrics"
+	"android/soong/ui/signal"
 	"android/soong/ui/status"
 	"android/soong/ui/terminal"
 	"android/soong/ui/tracer"
@@ -60,7 +62,7 @@ type command struct {
 }
 
 // list of supported commands (flags) supported by soong ui
-var commands []command = []command{
+var commands = []command{
 	{
 		flag:        "--make-mode",
 		description: "build the modules by the target name (i.e. soong_docs)",
@@ -129,7 +131,8 @@ func main() {
 
 	// Create a terminal output that mimics Ninja's.
 	output := terminal.NewStatusOutput(c.stdio().Stdout(), os.Getenv("NINJA_STATUS"), c.simpleOutput,
-		build.OsEnvironment().IsEnvTrue("ANDROID_QUIET_BUILD"))
+		build.OsEnvironment().IsEnvTrue("ANDROID_QUIET_BUILD"),
+		build.OsEnvironment().IsEnvTrue("SOONG_UI_ANSI_OUTPUT"))
 
 	// Attach a new logger instance to the terminal output.
 	log := logger.New(output)
@@ -156,7 +159,7 @@ func main() {
 	stat.AddOutput(trace.StatusTracer())
 
 	// Set up a cleanup procedure in case the normal termination process doesn't work.
-	build.SetupSignals(log, cancel, func() {
+	signal.SetupSignals(log, cancel, func() {
 		trace.Close()
 		log.Cleanup()
 		stat.Finish()
@@ -202,6 +205,8 @@ func main() {
 	buildCtx.Verbosef("Parallelism (local/remote/highmem): %v/%v/%v",
 		config.Parallel(), config.RemoteParallel(), config.HighmemParallel())
 
+	setMaxFiles(buildCtx)
+
 	{
 		// The order of the function calls is important. The last defer function call
 		// is the first one that is executed to save the rbe metrics to a protobuf
@@ -216,7 +221,6 @@ func main() {
 		}
 		defer build.UploadMetrics(buildCtx, config, c.simpleOutput, buildStarted, files...)
 		defer met.Dump(soongMetricsFile)
-		defer build.DumpRBEMetrics(buildCtx, config, rbeMetricsFile)
 	}
 
 	// Read the time at the starting point.
@@ -521,7 +525,11 @@ func getCommand(args []string) (*command, []string, error) {
 	}
 
 	// command not found
-	return nil, nil, fmt.Errorf("Command not found: %q", args)
+	flags := make([]string, len(commands))
+	for i, c := range commands {
+		flags[i] = c.flag
+	}
+	return nil, nil, fmt.Errorf("Command not found: %q\nDid you mean one of these: %q", args, flags)
 }
 
 // For Bazel support, this moves files and directories from e.g. out/dist/$f to DIST_DIR/$f if necessary.
@@ -596,5 +604,26 @@ func populateExternalDistDirHelper(ctx build.Context, config build.Config, inter
 		if err := os.Rename(internalFilePath, externalFilePath); err != nil {
 			ctx.Fatalf("Unable to rename %s -> %s due to error %s", internalFilePath, externalFilePath, err)
 		}
+	}
+}
+
+func setMaxFiles(ctx build.Context) {
+	var limits syscall.Rlimit
+
+	err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &limits)
+	if err != nil {
+		ctx.Println("Failed to get file limit:", err)
+		return
+	}
+
+	ctx.Verbosef("Current file limits: %d soft, %d hard", limits.Cur, limits.Max)
+	if limits.Cur == limits.Max {
+		return
+	}
+
+	limits.Cur = limits.Max
+	err = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &limits)
+	if err != nil {
+		ctx.Println("Failed to increase file limit:", err)
 	}
 }
