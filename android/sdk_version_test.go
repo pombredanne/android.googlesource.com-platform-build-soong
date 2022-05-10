@@ -73,7 +73,7 @@ func TestSdkSpecFrom(t *testing.T) {
 		},
 	}
 
-	config := NullConfig("")
+	config := NullConfig("", "")
 
 	config.productVariables = productVariables{
 		Platform_sdk_version:              intPtr(31),
