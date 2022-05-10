@@ -46,6 +46,7 @@ func init() {
 			"-misc-no-recursion",
 			"-misc-non-private-member-variables-in-classes",
 			"-misc-unused-parameters",
+			"-performance-no-int-to-ptr",
 			// the following groups are excluded by -*
 			// -altera-*
 			// -cppcoreguidelines-*
@@ -122,6 +123,7 @@ var DefaultLocalTidyChecks = []PathBasedTidyCheck{
 	{"hardware/qcom", tidyExternalVendor},
 	{"vendor/", tidyExternalVendor},
 	{"vendor/google", tidyDefault},
+	{"vendor/google_arc/libs/org.chromium.arc.mojom", tidyExternalVendor},
 	{"vendor/google_devices", tidyExternalVendor},
 }
 
