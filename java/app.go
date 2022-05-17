@@ -63,13 +63,6 @@ type appProperties struct {
 	// list of resource labels to generate individual resource packages
 	Package_splits []string
 
-	// Names of modules to be overridden. Listed modules can only be other binaries
-	// (in Make or Soong).
-	// This does not completely prevent installation of the overridden binaries, but if both
-	// binaries would be installed by default (in PRODUCT_PACKAGES) the other binary will be removed
-	// from PRODUCT_PACKAGES.
-	Overrides []string
-
 	// list of native libraries that will be provided in or alongside the resulting jar
 	Jni_libs []string `android:"arch_variant"`
 
@@ -133,6 +126,13 @@ type overridableAppProperties struct {
 
 	// Whether to rename the package in resources to the override name rather than the base name. Defaults to true.
 	Rename_resources_package *bool
+
+	// Names of modules to be overridden. Listed modules can only be other binaries
+	// (in Make or Soong).
+	// This does not completely prevent installation of the overridden binaries, but if both
+	// binaries would be installed by default (in PRODUCT_PACKAGES) the other binary will be removed
+	// from PRODUCT_PACKAGES.
+	Overrides []string
 }
 
 type AndroidApp struct {
@@ -299,10 +299,6 @@ func (a *AndroidApp) checkAppSdkVersions(ctx android.ModuleContext) {
 
 // If an updatable APK sets min_sdk_version, min_sdk_vesion of JNI libs should match with it.
 // This check is enforced for "updatable" APKs (including APK-in-APEX).
-// b/155209650: until min_sdk_version is properly supported, use sdk_version instead.
-// because, sdk_version is overridden by min_sdk_version (if set as smaller)
-// and sdkLinkType is checked with dependencies so we can be sure that the whole dependency tree
-// will meet the requirements.
 func (a *AndroidApp) checkJniLibsSdkVersion(ctx android.ModuleContext, minSdkVersion android.ApiLevel) {
 	// It's enough to check direct JNI deps' sdk_version because all transitive deps from JNI deps are checked in cc.checkLinkType()
 	ctx.VisitDirectDeps(func(m android.Module) {
@@ -313,10 +309,10 @@ func (a *AndroidApp) checkJniLibsSdkVersion(ctx android.ModuleContext, minSdkVer
 		// The domain of cc.sdk_version is "current" and <number>
 		// We can rely on android.SdkSpec to convert it to <number> so that "current" is
 		// handled properly regardless of sdk finalization.
-		jniSdkVersion, err := android.SdkSpecFrom(ctx, dep.SdkVersion()).EffectiveVersion(ctx)
+		jniSdkVersion, err := android.SdkSpecFrom(ctx, dep.MinSdkVersion()).EffectiveVersion(ctx)
 		if err != nil || minSdkVersion.LessThan(jniSdkVersion) {
-			ctx.OtherModuleErrorf(dep, "sdk_version(%v) is higher than min_sdk_version(%v) of the containing android_app(%v)",
-				dep.SdkVersion(), minSdkVersion, ctx.ModuleName())
+			ctx.OtherModuleErrorf(dep, "min_sdk_version(%v) is higher than min_sdk_version(%v) of the containing android_app(%v)",
+				dep.MinSdkVersion(), minSdkVersion, ctx.ModuleName())
 			return
 		}
 
@@ -842,6 +838,10 @@ func (a *AndroidApp) Updatable() bool {
 	return Bool(a.appProperties.Updatable)
 }
 
+func (a *AndroidApp) SetUpdatable(val bool) {
+	a.appProperties.Updatable = &val
+}
+
 func (a *AndroidApp) getCertString(ctx android.BaseModuleContext) string {
 	certificate, overridden := ctx.DeviceConfig().OverrideCertificateFor(ctx.ModuleName())
 	if overridden {
@@ -913,7 +913,7 @@ func AndroidAppFactory() android.Module {
 
 	android.InitAndroidMultiTargetsArchModule(module, android.DeviceSupported, android.MultilibCommon)
 	android.InitDefaultableModule(module)
-	android.InitOverridableModule(module, &module.appProperties.Overrides)
+	android.InitOverridableModule(module, &module.overridableAppProperties.Overrides)
 	android.InitApexModule(module)
 	android.InitBazelModule(module)
 
@@ -1037,7 +1037,7 @@ func AndroidTestFactory() android.Module {
 
 	android.InitAndroidMultiTargetsArchModule(module, android.DeviceSupported, android.MultilibCommon)
 	android.InitDefaultableModule(module)
-	android.InitOverridableModule(module, &module.appProperties.Overrides)
+	android.InitOverridableModule(module, &module.overridableAppProperties.Overrides)
 	return module
 }
 
