@@ -19,7 +19,6 @@ package apex
 import (
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -995,6 +994,7 @@ type ApexInfoMutator interface {
 
 // apexInfoMutator delegates the work of identifying which modules need an ApexInfo and apex
 // specific variant to modules that support the ApexInfoMutator.
+// It also propagates updatable=true to apps of updatable apexes
 func apexInfoMutator(mctx android.TopDownMutatorContext) {
 	if !mctx.Module().Enabled() {
 		return
@@ -1002,8 +1002,8 @@ func apexInfoMutator(mctx android.TopDownMutatorContext) {
 
 	if a, ok := mctx.Module().(ApexInfoMutator); ok {
 		a.ApexInfoMutator(mctx)
-		return
 	}
+	enforceAppUpdatability(mctx)
 }
 
 // apexStrictUpdatibilityLintMutator propagates strict_updatability_linting to transitive deps of a mainline module
@@ -1030,6 +1030,22 @@ func apexStrictUpdatibilityLintMutator(mctx android.TopDownMutatorContext) {
 			}
 			// visit transitive deps
 			return true
+		})
+	}
+}
+
+// enforceAppUpdatability propagates updatable=true to apps of updatable apexes
+func enforceAppUpdatability(mctx android.TopDownMutatorContext) {
+	if !mctx.Module().Enabled() {
+		return
+	}
+	if apex, ok := mctx.Module().(*apexBundle); ok && apex.Updatable() {
+		// checking direct deps is sufficient since apex->apk is a direct edge, even when inherited via apex_defaults
+		mctx.VisitDirectDeps(func(module android.Module) {
+			// ignore android_test_app
+			if app, ok := module.(*java.AndroidApp); ok {
+				app.SetUpdatable(true)
+			}
 		})
 	}
 }
@@ -1657,20 +1673,7 @@ type androidApp interface {
 var _ androidApp = (*java.AndroidApp)(nil)
 var _ androidApp = (*java.AndroidAppImport)(nil)
 
-func sanitizedBuildIdForPath(ctx android.BaseModuleContext) string {
-	buildId := ctx.Config().BuildId()
-
-	// The build ID is used as a suffix for a filename, so ensure that
-	// the set of characters being used are sanitized.
-	// - any word character: [a-zA-Z0-9_]
-	// - dots: .
-	// - dashes: -
-	validRegex := regexp.MustCompile(`^[\w\.\-\_]+$`)
-	if !validRegex.MatchString(buildId) {
-		ctx.ModuleErrorf("Unable to use build id %s as filename suffix, valid characters are [a-z A-Z 0-9 _ . -].", buildId)
-	}
-	return buildId
-}
+const APEX_VERSION_PLACEHOLDER = "__APEX_VERSION_PLACEHOLDER__"
 
 func apexFileForAndroidApp(ctx android.BaseModuleContext, aapp androidApp) apexFile {
 	appDir := "app"
@@ -1681,7 +1684,7 @@ func apexFileForAndroidApp(ctx android.BaseModuleContext, aapp androidApp) apexF
 	// TODO(b/224589412, b/226559955): Ensure that the subdirname is suffixed
 	// so that PackageManager correctly invalidates the existing installed apk
 	// in favour of the new APK-in-APEX.  See bugs for more information.
-	dirInApex := filepath.Join(appDir, aapp.InstallApkName()+"@"+sanitizedBuildIdForPath(ctx))
+	dirInApex := filepath.Join(appDir, aapp.InstallApkName()+"@"+APEX_VERSION_PLACEHOLDER)
 	fileToCopy := aapp.OutputFile()
 
 	af := newApexFile(ctx, fileToCopy, aapp.BaseModuleName(), dirInApex, app, aapp)
@@ -1920,7 +1923,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 					// suffixed so that PackageManager correctly invalidates the
 					// existing installed apk in favour of the new APK-in-APEX.
 					// See bugs for more information.
-					appDirName := filepath.Join(appDir, ap.BaseModuleName()+"@"+sanitizedBuildIdForPath(ctx))
+					appDirName := filepath.Join(appDir, ap.BaseModuleName()+"@"+APEX_VERSION_PLACEHOLDER)
 					af := newApexFile(ctx, ap.OutputFile(), ap.BaseModuleName(), appDirName, appSet, ap)
 					af.certificate = java.PresignedCertificate
 					filesInfo = append(filesInfo, af)
