@@ -158,6 +158,22 @@ java_plugin {
 	})
 }
 
+func TestJavaLibraryJavaVersion(t *testing.T) {
+	runJavaLibraryTestCase(t, bp2buildTestCase{
+		blueprint: `java_library {
+    name: "java-lib-1",
+    srcs: ["a.java"],
+    java_version: "11",
+}`,
+		expectedBazelTargets: []string{
+			makeBazelTarget("java_library", "java-lib-1", attrNameToString{
+				"srcs":      `["a.java"]`,
+				"javacopts": `["-source 11 -target 11"]`,
+			}),
+		},
+	})
+}
+
 func TestJavaLibraryErrorproneJavacflagsEnabledManually(t *testing.T) {
 	runJavaLibraryTestCase(t, bp2buildTestCase{
 		blueprint: `java_library {
@@ -250,4 +266,109 @@ func TestJavaLibraryLogTags(t *testing.T) {
     ]`,
 			}),
 		}})
+}
+
+func TestJavaLibraryResources(t *testing.T) {
+	runJavaLibraryTestCase(t, bp2buildTestCase{
+		filesystem: map[string]string{
+			"res/a.res":      "",
+			"res/b.res":      "",
+			"res/dir1/b.res": "",
+		},
+		blueprint: `java_library {
+    name: "java-lib-1",
+	java_resources: ["res/a.res", "res/b.res"],
+}`,
+		expectedBazelTargets: []string{
+			makeBazelTarget("java_library", "java-lib-1", attrNameToString{
+				"resources": `[
+        "res/a.res",
+        "res/b.res",
+    ]`,
+			}),
+		},
+	})
+}
+
+func TestJavaLibraryResourceDirs(t *testing.T) {
+	runJavaLibraryTestCase(t, bp2buildTestCase{
+		filesystem: map[string]string{
+			"res/a.res":      "",
+			"res/b.res":      "",
+			"res/dir1/b.res": "",
+		},
+		blueprint: `java_library {
+    name: "java-lib-1",
+	java_resource_dirs: ["res"],
+}`,
+		expectedBazelTargets: []string{
+			makeBazelTarget("java_library", "java-lib-1", attrNameToString{
+				"resource_strip_prefix": `"res"`,
+				"resources": `[
+        "res/a.res",
+        "res/b.res",
+        "res/dir1/b.res",
+    ]`,
+			}),
+		},
+	})
+}
+
+func TestJavaLibraryResourcesExcludeDir(t *testing.T) {
+	runJavaLibraryTestCase(t, bp2buildTestCase{
+		filesystem: map[string]string{
+			"res/a.res":         "",
+			"res/exclude/b.res": "",
+		},
+		blueprint: `java_library {
+    name: "java-lib-1",
+	java_resource_dirs: ["res"],
+	exclude_java_resource_dirs: ["res/exclude"],
+}`,
+		expectedBazelTargets: []string{
+			makeBazelTarget("java_library", "java-lib-1", attrNameToString{
+				"resource_strip_prefix": `"res"`,
+				"resources":             `["res/a.res"]`,
+			}),
+		},
+	})
+}
+
+func TestJavaLibraryResourcesExcludeFile(t *testing.T) {
+	runJavaLibraryTestCase(t, bp2buildTestCase{
+		filesystem: map[string]string{
+			"res/a.res":            "",
+			"res/dir1/b.res":       "",
+			"res/dir1/exclude.res": "",
+		},
+		blueprint: `java_library {
+    name: "java-lib-1",
+	java_resource_dirs: ["res"],
+	exclude_java_resources: ["res/dir1/exclude.res"],
+}`,
+		expectedBazelTargets: []string{
+			makeBazelTarget("java_library", "java-lib-1", attrNameToString{
+				"resource_strip_prefix": `"res"`,
+				"resources": `[
+        "res/a.res",
+        "res/dir1/b.res",
+    ]`,
+			}),
+		},
+	})
+}
+
+func TestJavaLibraryResourcesFailsWithMultipleDirs(t *testing.T) {
+	runJavaLibraryTestCase(t, bp2buildTestCase{
+		filesystem: map[string]string{
+			"res/a.res":  "",
+			"res1/a.res": "",
+		},
+		blueprint: `java_library {
+    name: "java-lib-1",
+	java_resource_dirs: ["res", "res1"],
+}`,
+		expectedErr:          fmt.Errorf("bp2build does not support more than one directory in java_resource_dirs (b/226423379)"),
+		expectedBazelTargets: []string{},
+	})
 }

@@ -104,12 +104,15 @@ var (
 		"external/google-benchmark":                          Bp2BuildDefaultTrueRecursively,
 		"external/googletest":                                Bp2BuildDefaultTrueRecursively,
 		"external/gwp_asan":                                  Bp2BuildDefaultTrueRecursively,
+		"external/hamcrest":                                  Bp2BuildDefaultTrueRecursively,
 		"external/icu":                                       Bp2BuildDefaultTrueRecursively,
 		"external/icu/android_icu4j":                         Bp2BuildDefaultFalse, // java rules incomplete
 		"external/icu/icu4j":                                 Bp2BuildDefaultFalse, // java rules incomplete
+		"external/jarjar":                                    Bp2BuildDefaultTrueRecursively,
 		"external/javapoet":                                  Bp2BuildDefaultTrueRecursively,
 		"external/jemalloc_new":                              Bp2BuildDefaultTrueRecursively,
 		"external/jsoncpp":                                   Bp2BuildDefaultTrueRecursively,
+		"external/junit":                                     Bp2BuildDefaultTrueRecursively,
 		"external/libcap":                                    Bp2BuildDefaultTrueRecursively,
 		"external/libcxx":                                    Bp2BuildDefaultTrueRecursively,
 		"external/libcxxabi":                                 Bp2BuildDefaultTrueRecursively,
@@ -122,6 +125,7 @@ var (
 		"external/pcre":                                      Bp2BuildDefaultTrueRecursively,
 		"external/protobuf":                                  Bp2BuildDefaultTrueRecursively,
 		"external/python/six":                                Bp2BuildDefaultTrueRecursively,
+		"external/rappor":                                    Bp2BuildDefaultTrueRecursively,
 		"external/scudo":                                     Bp2BuildDefaultTrueRecursively,
 		"external/selinux/libselinux":                        Bp2BuildDefaultTrueRecursively,
 		"external/selinux/libsepol":                          Bp2BuildDefaultTrueRecursively,
@@ -175,6 +179,7 @@ var (
 		"system/libprocinfo":                                 Bp2BuildDefaultTrue,
 		"system/libziparchive":                               Bp2BuildDefaultTrueRecursively,
 		"system/logging/liblog":                              Bp2BuildDefaultTrueRecursively,
+		"system/memory/libmemunreachable":                    Bp2BuildDefaultTrueRecursively,
 		"system/sepolicy/apex":                               Bp2BuildDefaultTrueRecursively,
 		"system/timezone/apex":                               Bp2BuildDefaultTrueRecursively,
 		"system/timezone/output_data":                        Bp2BuildDefaultTrueRecursively,
@@ -305,6 +310,7 @@ var (
 		"libprotobuf-internal-python-srcs", // TODO(b/210751803), we don't handle path property for filegroups
 		"libprotobuf-java-full",            // TODO(b/210751803), we don't handle path property for filegroups
 		"libprotobuf-java-util-full",       // TODO(b/210751803), we don't handle path property for filegroups
+		"auto_value_plugin_resources",      // TODO(b/210751803), we don't handle path property for filegroups
 
 		// go deps:
 		"analyze_bcpf",                                                                               // depends on bpmodify a blueprint_go_binary.
@@ -313,6 +319,7 @@ var (
 		"host_bionic_linker_asm",                                                  // depends on extract_linker, a go binary.
 		"host_bionic_linker_script",                                               // depends on extract_linker, a go binary.
 		"libc_musl_sysroot_bionic_arch_headers",                                   // depends on soong_zip
+		"libc_musl_sysroot_zlib_headers",                                          // depends on soong_zip and zip2zip
 		"libc_musl_sysroot_bionic_headers",                                        // 218405924, depends on soong_zip and generates duplicate srcs
 		"libc_musl_sysroot_libc++_headers", "libc_musl_sysroot_libc++abi_headers", // depends on soong_zip, zip2zip
 		"robolectric-sqlite4java-native", // depends on soong_zip, a go binary
@@ -367,6 +374,10 @@ var (
 		"timezone-host",       // depends on unconverted modules: art.module.api.annotations
 		"truth-host-prebuilt", // depends on unconverted modules: truth-prebuilt
 		"truth-prebuilt",      // depends on unconverted modules: asm-7.0, guava
+
+		// b/215723302; awaiting tz{data,_version} to then rename targets conflicting with srcs
+		"tzdata",
+		"tz_version",
 	}
 
 	Bp2buildCcLibraryStaticOnlyList = []string{}

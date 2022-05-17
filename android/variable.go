@@ -199,6 +199,7 @@ type productVariables struct {
 	Platform_preview_sdk_version              *string  `json:",omitempty"`
 	Platform_min_supported_target_sdk_version *string  `json:",omitempty"`
 	Platform_base_os                          *string  `json:",omitempty"`
+	Platform_version_last_stable              *string  `json:",omitempty"`
 
 	DeviceName                            *string  `json:",omitempty"`
 	DeviceProduct                         *string  `json:",omitempty"`
@@ -351,6 +352,8 @@ type productVariables struct {
 	RecoverySnapshotDirsIncluded []string `json:",omitempty"`
 	HostFakeSnapshotEnabled      bool     `json:",omitempty"`
 
+	MultitreeUpdateMeta bool `json:",omitempty"`
+
 	BoardVendorSepolicyDirs           []string `json:",omitempty"`
 	BoardOdmSepolicyDirs              []string `json:",omitempty"`
 	BoardReqdMaskPolicy               []string `json:",omitempty"`
@@ -460,12 +463,13 @@ func (v *productVariables) SetDefaultConfig() {
 	*v = productVariables{
 		BuildNumberFile: stringPtr("build_number.txt"),
 
-		Platform_version_name:             stringPtr("S"),
-		Platform_sdk_version:              intPtr(30),
-		Platform_sdk_codename:             stringPtr("S"),
-		Platform_sdk_final:                boolPtr(false),
-		Platform_version_active_codenames: []string{"S"},
-		Platform_vndk_version:             stringPtr("S"),
+		Platform_version_name:               stringPtr("S"),
+		Platform_base_sdk_extension_version: intPtr(30),
+		Platform_sdk_version:                intPtr(30),
+		Platform_sdk_codename:               stringPtr("S"),
+		Platform_sdk_final:                  boolPtr(false),
+		Platform_version_active_codenames:   []string{"S"},
+		Platform_vndk_version:               stringPtr("S"),
 
 		HostArch:                   stringPtr("x86_64"),
 		HostSecondaryArch:          stringPtr("x86"),

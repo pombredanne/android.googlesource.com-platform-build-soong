@@ -42,6 +42,11 @@ func TestKotlin(t *testing.T) {
 		}
 		`)
 
+	kotlinStdlib := ctx.ModuleForTests("kotlin-stdlib", "android_common").
+		Output("turbine-combined/kotlin-stdlib.jar").Output
+	kotlinAnnotations := ctx.ModuleForTests("kotlin-annotations", "android_common").
+		Output("turbine-combined/kotlin-annotations.jar").Output
+
 	fooKotlinc := ctx.ModuleForTests("foo", "android_common").Rule("kotlinc")
 	fooJavac := ctx.ModuleForTests("foo", "android_common").Rule("javac")
 	fooJar := ctx.ModuleForTests("foo", "android_common").Output("combined/foo.jar")
@@ -67,6 +72,16 @@ func TestKotlin(t *testing.T) {
 	if !inList(fooKotlincClasses.String(), fooJar.Inputs.Strings()) {
 		t.Errorf("foo jar inputs %v does not contain %q",
 			fooJar.Inputs.Strings(), fooKotlincClasses.String())
+	}
+
+	if !inList(kotlinStdlib.String(), fooJar.Inputs.Strings()) {
+		t.Errorf("foo jar inputs %v does not contain %v",
+			fooJar.Inputs.Strings(), kotlinStdlib.String())
+	}
+
+	if !inList(kotlinAnnotations.String(), fooJar.Inputs.Strings()) {
+		t.Errorf("foo jar inputs %v does not contain %v",
+			fooJar.Inputs.Strings(), kotlinAnnotations.String())
 	}
 
 	if !inList(fooKotlincHeaderClasses.String(), fooHeaderJar.Inputs.Strings()) {
@@ -325,12 +340,17 @@ func TestKotlinCompose(t *testing.T) {
 		java_library {
 			name: "withcompose",
 			srcs: ["a.kt"],
+			plugins: ["plugin"],
 			static_libs: ["androidx.compose.runtime_runtime"],
 		}
 
 		java_library {
 			name: "nocompose",
 			srcs: ["a.kt"],
+		}
+
+		java_plugin {
+			name: "plugin",
 		}
 	`)
 
@@ -345,6 +365,9 @@ func TestKotlinCompose(t *testing.T) {
 
 	android.AssertStringDoesContain(t, "missing compose compiler plugin",
 		withCompose.VariablesForTestsRelativeToTop()["kotlincFlags"], "-Xplugin="+composeCompiler.String())
+
+	android.AssertStringListContains(t, "missing kapt compose compiler dependency",
+		withCompose.Rule("kapt").Implicits.Strings(), composeCompiler.String())
 
 	android.AssertStringListDoesNotContain(t, "unexpected compose compiler dependency",
 		noCompose.Rule("kotlinc").Implicits.Strings(), composeCompiler.String())

@@ -15,10 +15,13 @@
 package bazel
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/google/blueprint/proptools"
@@ -41,6 +44,19 @@ type pathFragment struct {
 type KeyValuePair struct {
 	Key   string
 	Value string
+}
+
+// AqueryDepset is a depset definition from Bazel's aquery response. This is
+// akin to the `depSetOfFiles` in the response proto, except:
+//   * direct artifacts are enumerated by full path instead of by ID
+//   * it has a hash of the depset contents, instead of an int ID (for determinism)
+// A depset is a data structure for efficient transitive handling of artifact
+// paths. A single depset consists of one or more artifact paths and one or
+// more "child" depsets.
+type AqueryDepset struct {
+	ContentHash            string
+	DirectArtifacts        []string
+	TransitiveDepSetHashes []string
 }
 
 // depSetOfFiles contains relevant portions of Bazel's aquery proto, DepSetOfFiles.
@@ -79,27 +95,32 @@ type BuildStatement struct {
 	Command      string
 	Depfile      *string
 	OutputPaths  []string
-	InputPaths   []string
 	SymlinkPaths []string
 	Env          []KeyValuePair
 	Mnemonic     string
+
+	// Inputs of this build statement, either as unexpanded depsets or expanded
+	// input paths. There should be no overlap between these fields; an input
+	// path should either be included as part of an unexpanded depset or a raw
+	// input path string, but not both.
+	InputDepsetHashes []string
+	InputPaths        []string
 }
 
 // A helper type for aquery processing which facilitates retrieval of path IDs from their
 // less readable Bazel structures (depset and path fragment).
 type aqueryArtifactHandler struct {
-	// Maps middleman artifact Id to input artifact depset ID.
-	// Middleman artifacts are treated as "substitute" artifacts for mixed builds. For example,
-	// if we find a middleman action which has outputs [foo, bar], and output [baz_middleman], then,
-	// for each other action which has input [baz_middleman], we add [foo, bar] to the inputs for
-	// that action instead.
-	middlemanIdToDepsetIds map[int][]int
-	// Maps depset Id to depset struct.
-	depsetIdToDepset map[int]depSetOfFiles
+	// Maps depset id to AqueryDepset, a representation of depset which is
+	// post-processed for middleman artifact handling, unhandled artifact
+	// dropping, content hashing, etc.
+	depsetIdToAqueryDepset map[int]AqueryDepset
+	// Maps content hash to AqueryDepset.
+	depsetHashToAqueryDepset map[string]AqueryDepset
+
 	// depsetIdToArtifactIdsCache is a memoization of depset flattening, because flattening
 	// may be an expensive operation.
-	depsetIdToArtifactIdsCache map[int][]int
-	// Maps artifact Id to fully expanded path.
+	depsetHashToArtifactPathsCache map[string][]string
+	// Maps artifact ContentHash to fully expanded path.
 	artifactIdToPath map[int]string
 }
 
@@ -115,7 +136,7 @@ var TemplateActionOverriddenTokens = map[string]string{
 var manifestFilePattern = regexp.MustCompile(".*/.+\\.runfiles/MANIFEST$")
 
 // The file name of py3wrapper.sh, which is used by py_binary targets.
-var py3wrapperFileName = "/py3wrapper.sh"
+const py3wrapperFileName = "/py3wrapper.sh"
 
 func newAqueryHandler(aqueryResult actionGraphContainer) (*aqueryArtifactHandler, error) {
 	pathFragments := map[int]pathFragment{}
@@ -132,12 +153,11 @@ func newAqueryHandler(aqueryResult actionGraphContainer) (*aqueryArtifactHandler
 		artifactIdToPath[artifact.Id] = artifactPath
 	}
 
-	depsetIdToDepset := map[int]depSetOfFiles{}
-	for _, depset := range aqueryResult.DepSetOfFiles {
-		depsetIdToDepset[depset.Id] = depset
-	}
-
-	// Do a pass through all actions to identify which artifacts are middleman artifacts.
+	// Map middleman artifact ContentHash to input artifact depset ID.
+	// Middleman artifacts are treated as "substitute" artifacts for mixed builds. For example,
+	// if we find a middleman action which has outputs [foo, bar], and output [baz_middleman], then,
+	// for each other action which has input [baz_middleman], we add [foo, bar] to the inputs for
+	// that action instead.
 	middlemanIdToDepsetIds := map[int][]int{}
 	for _, actionEntry := range aqueryResult.Actions {
 		if actionEntry.Mnemonic == "Middleman" {
@@ -146,196 +166,398 @@ func newAqueryHandler(aqueryResult actionGraphContainer) (*aqueryArtifactHandler
 			}
 		}
 	}
-	return &aqueryArtifactHandler{
-		middlemanIdToDepsetIds:     middlemanIdToDepsetIds,
-		depsetIdToDepset:           depsetIdToDepset,
-		depsetIdToArtifactIdsCache: map[int][]int{},
-		artifactIdToPath:           artifactIdToPath,
-	}, nil
+
+	// Store all depset IDs to validate all depset links are resolvable.
+	depsetIds := map[int]bool{}
+	for _, depset := range aqueryResult.DepSetOfFiles {
+		depsetIds[depset.Id] = true
+	}
+
+	depsetIdToDepset := map[int]depSetOfFiles{}
+	for _, depset := range aqueryResult.DepSetOfFiles {
+		depsetIdToDepset[depset.Id] = depset
+	}
+
+	aqueryHandler := aqueryArtifactHandler{
+		depsetIdToAqueryDepset:         map[int]AqueryDepset{},
+		depsetHashToAqueryDepset:       map[string]AqueryDepset{},
+		depsetHashToArtifactPathsCache: map[string][]string{},
+		artifactIdToPath:               artifactIdToPath,
+	}
+
+	// Validate and adjust aqueryResult.DepSetOfFiles values.
+	for _, depset := range aqueryResult.DepSetOfFiles {
+		_, err := aqueryHandler.populateDepsetMaps(depset, middlemanIdToDepsetIds, depsetIdToDepset)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return &aqueryHandler, nil
 }
 
+// Ensures that the handler's depsetIdToAqueryDepset map contains an entry for the given
+// depset.
+func (a *aqueryArtifactHandler) populateDepsetMaps(depset depSetOfFiles, middlemanIdToDepsetIds map[int][]int, depsetIdToDepset map[int]depSetOfFiles) (AqueryDepset, error) {
+	if aqueryDepset, containsDepset := a.depsetIdToAqueryDepset[depset.Id]; containsDepset {
+		return aqueryDepset, nil
+	}
+	transitiveDepsetIds := depset.TransitiveDepSetIds
+	directArtifactPaths := []string{}
+	for _, artifactId := range depset.DirectArtifactIds {
+		path, pathExists := a.artifactIdToPath[artifactId]
+		if !pathExists {
+			return AqueryDepset{}, fmt.Errorf("undefined input artifactId %d", artifactId)
+		}
+		// Filter out any inputs which are universally dropped, and swap middleman
+		// artifacts with their corresponding depsets.
+		if depsetsToUse, isMiddleman := middlemanIdToDepsetIds[artifactId]; isMiddleman {
+			// Swap middleman artifacts with their corresponding depsets and drop the middleman artifacts.
+			transitiveDepsetIds = append(transitiveDepsetIds, depsetsToUse...)
+		} else if strings.HasSuffix(path, py3wrapperFileName) || manifestFilePattern.MatchString(path) {
+			// Drop these artifacts.
+			// See go/python-binary-host-mixed-build for more details.
+			// 1) For py3wrapper.sh, there is no action for creating py3wrapper.sh in the aquery output of
+			// Bazel py_binary targets, so there is no Ninja build statements generated for creating it.
+			// 2) For MANIFEST file, SourceSymlinkManifest action is in aquery output of Bazel py_binary targets,
+			// but it doesn't contain sufficient information so no Ninja build statements are generated
+			// for creating it.
+			// So in mixed build mode, when these two are used as input of some Ninja build statement,
+			// since there is no build statement to create them, they should be removed from input paths.
+			// TODO(b/197135294): Clean up this custom runfiles handling logic when
+			// SourceSymlinkManifest and SymlinkTree actions are supported.
+		} else {
+			// TODO(b/216194240): Filter out bazel tools.
+			directArtifactPaths = append(directArtifactPaths, path)
+		}
+	}
+
+	childDepsetHashes := []string{}
+	for _, childDepsetId := range transitiveDepsetIds {
+		childDepset, exists := depsetIdToDepset[childDepsetId]
+		if !exists {
+			return AqueryDepset{}, fmt.Errorf("undefined input depsetId %d (referenced by depsetId %d)", childDepsetId, depset.Id)
+		}
+		childAqueryDepset, err := a.populateDepsetMaps(childDepset, middlemanIdToDepsetIds, depsetIdToDepset)
+		if err != nil {
+			return AqueryDepset{}, err
+		}
+		childDepsetHashes = append(childDepsetHashes, childAqueryDepset.ContentHash)
+	}
+	aqueryDepset := AqueryDepset{
+		ContentHash:            depsetContentHash(directArtifactPaths, childDepsetHashes),
+		DirectArtifacts:        directArtifactPaths,
+		TransitiveDepSetHashes: childDepsetHashes,
+	}
+	a.depsetIdToAqueryDepset[depset.Id] = aqueryDepset
+	a.depsetHashToAqueryDepset[aqueryDepset.ContentHash] = aqueryDepset
+	return aqueryDepset, nil
+}
+
+// getInputPaths flattens the depsets of the given IDs and returns all transitive
+// input paths contained in these depsets.
+// This is a potentially expensive operation, and should not be invoked except
+// for actions which need specialized input handling.
 func (a *aqueryArtifactHandler) getInputPaths(depsetIds []int) ([]string, error) {
 	inputPaths := []string{}
 
 	for _, inputDepSetId := range depsetIds {
-		inputArtifacts, err := a.artifactIdsFromDepsetId(inputDepSetId)
+		depset := a.depsetIdToAqueryDepset[inputDepSetId]
+		inputArtifacts, err := a.artifactPathsFromDepsetHash(depset.ContentHash)
 		if err != nil {
 			return nil, err
 		}
-		for _, inputId := range inputArtifacts {
-			if middlemanInputDepsetIds, isMiddlemanArtifact := a.middlemanIdToDepsetIds[inputId]; isMiddlemanArtifact {
-				// Add all inputs from middleman actions which created middleman artifacts which are
-				// in the inputs for this action.
-				swappedInputPaths, err := a.getInputPaths(middlemanInputDepsetIds)
-				if err != nil {
-					return nil, err
-				}
-				inputPaths = append(inputPaths, swappedInputPaths...)
-			} else {
-				inputPath, exists := a.artifactIdToPath[inputId]
-				if !exists {
-					return nil, fmt.Errorf("undefined input artifactId %d", inputId)
-				}
-				inputPaths = append(inputPaths, inputPath)
-			}
+		for _, inputPath := range inputArtifacts {
+			inputPaths = append(inputPaths, inputPath)
 		}
 	}
 
-	// TODO(b/197135294): Clean up this custom runfiles handling logic when
-	// SourceSymlinkManifest and SymlinkTree actions are supported.
-	filteredInputPaths := filterOutPy3wrapperAndManifestFileFromInputPaths(inputPaths)
-
-	return filteredInputPaths, nil
+	return inputPaths, nil
 }
 
-// See go/python-binary-host-mixed-build for more details.
-// 1) For py3wrapper.sh, there is no action for creating py3wrapper.sh in the aquery output of
-// Bazel py_binary targets, so there is no Ninja build statements generated for creating it.
-// 2) For MANIFEST file, SourceSymlinkManifest action is in aquery output of Bazel py_binary targets,
-// but it doesn't contain sufficient information so no Ninja build statements are generated
-// for creating it.
-// So in mixed build mode, when these two are used as input of some Ninja build statement,
-// since there is no build statement to create them, they should be removed from input paths.
-func filterOutPy3wrapperAndManifestFileFromInputPaths(inputPaths []string) []string {
-	filteredInputPaths := []string{}
-	for _, path := range inputPaths {
-		if strings.HasSuffix(path, py3wrapperFileName) || manifestFilePattern.MatchString(path) {
-			continue
-		}
-		filteredInputPaths = append(filteredInputPaths, path)
-	}
-	return filteredInputPaths
-}
-
-func (a *aqueryArtifactHandler) artifactIdsFromDepsetId(depsetId int) ([]int, error) {
-	if result, exists := a.depsetIdToArtifactIdsCache[depsetId]; exists {
+func (a *aqueryArtifactHandler) artifactPathsFromDepsetHash(depsetHash string) ([]string, error) {
+	if result, exists := a.depsetHashToArtifactPathsCache[depsetHash]; exists {
 		return result, nil
 	}
-	if depset, exists := a.depsetIdToDepset[depsetId]; exists {
-		result := depset.DirectArtifactIds
-		for _, childId := range depset.TransitiveDepSetIds {
-			childArtifactIds, err := a.artifactIdsFromDepsetId(childId)
+	if depset, exists := a.depsetHashToAqueryDepset[depsetHash]; exists {
+		result := depset.DirectArtifacts
+		for _, childHash := range depset.TransitiveDepSetHashes {
+			childArtifactIds, err := a.artifactPathsFromDepsetHash(childHash)
 			if err != nil {
 				return nil, err
 			}
 			result = append(result, childArtifactIds...)
 		}
-		a.depsetIdToArtifactIdsCache[depsetId] = result
+		a.depsetHashToArtifactPathsCache[depsetHash] = result
 		return result, nil
 	} else {
-		return nil, fmt.Errorf("undefined input depsetId %d", depsetId)
+		return nil, fmt.Errorf("undefined input depset hash %d", depsetHash)
 	}
 }
 
-// AqueryBuildStatements returns an array of BuildStatements which should be registered (and output
-// to a ninja file) to correspond one-to-one with the given action graph json proto (from a bazel
-// aquery invocation).
-func AqueryBuildStatements(aqueryJsonProto []byte) ([]BuildStatement, error) {
-	buildStatements := []BuildStatement{}
-
+// AqueryBuildStatements returns a slice of BuildStatements and a slice of AqueryDepset
+// which should be registered (and output  to a ninja file) to correspond with Bazel's
+// action graph, as described by the given action graph json proto.
+// BuildStatements are one-to-one with actions in the given action graph, and AqueryDepsets
+// are one-to-one with Bazel's depSetOfFiles objects.
+func AqueryBuildStatements(aqueryJsonProto []byte) ([]BuildStatement, []AqueryDepset, error) {
 	var aqueryResult actionGraphContainer
 	err := json.Unmarshal(aqueryJsonProto, &aqueryResult)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	aqueryHandler, err := newAqueryHandler(aqueryResult)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+
+	var buildStatements []BuildStatement
 
 	for _, actionEntry := range aqueryResult.Actions {
 		if shouldSkipAction(actionEntry) {
 			continue
 		}
-		outputPaths := []string{}
-		var depfile *string
-		for _, outputId := range actionEntry.OutputIds {
-			outputPath, exists := aqueryHandler.artifactIdToPath[outputId]
-			if !exists {
-				return nil, fmt.Errorf("undefined outputId %d", outputId)
-			}
-			ext := filepath.Ext(outputPath)
-			if ext == ".d" {
-				if depfile != nil {
-					return nil, fmt.Errorf("found multiple potential depfiles %q, %q", *depfile, outputPath)
-				} else {
-					depfile = &outputPath
-				}
-			} else {
-				outputPaths = append(outputPaths, outputPath)
-			}
-		}
-		inputPaths, err := aqueryHandler.getInputPaths(actionEntry.InputDepSetIds)
-		if err != nil {
-			return nil, err
-		}
 
-		buildStatement := BuildStatement{
-			Command:     strings.Join(proptools.ShellEscapeListIncludingSpaces(actionEntry.Arguments), " "),
-			Depfile:     depfile,
-			OutputPaths: outputPaths,
-			InputPaths:  inputPaths,
-			Env:         actionEntry.EnvironmentVariables,
-			Mnemonic:    actionEntry.Mnemonic,
-		}
-
+		var buildStatement BuildStatement
 		if isSymlinkAction(actionEntry) {
-			if len(inputPaths) != 1 || len(outputPaths) != 1 {
-				return nil, fmt.Errorf("Expect 1 input and 1 output to symlink action, got: input %q, output %q", inputPaths, outputPaths)
-			}
-			out := outputPaths[0]
-			outDir := proptools.ShellEscapeIncludingSpaces(filepath.Dir(out))
-			out = proptools.ShellEscapeIncludingSpaces(out)
-			in := filepath.Join("$PWD", proptools.ShellEscapeIncludingSpaces(inputPaths[0]))
-			// Use absolute paths, because some soong actions don't play well with relative paths (for example, `cp -d`).
-			buildStatement.Command = fmt.Sprintf("mkdir -p %[1]s && rm -f %[2]s && ln -sf %[3]s %[2]s", outDir, out, in)
-			buildStatement.SymlinkPaths = outputPaths[:]
+			buildStatement, err = aqueryHandler.symlinkActionBuildStatement(actionEntry)
 		} else if isTemplateExpandAction(actionEntry) && len(actionEntry.Arguments) < 1 {
-			if len(outputPaths) != 1 {
-				return nil, fmt.Errorf("Expect 1 output to template expand action, got: output %q", outputPaths)
-			}
-			expandedTemplateContent := expandTemplateContent(actionEntry)
-			// The expandedTemplateContent is escaped for being used in double quotes and shell unescape,
-			// and the new line characters (\n) are also changed to \\n which avoids some Ninja escape on \n, which might
-			// change \n to space and mess up the format of Python programs.
-			// sed is used to convert \\n back to \n before saving to output file.
-			// See go/python-binary-host-mixed-build for more details.
-			command := fmt.Sprintf(`/bin/bash -c 'echo "%[1]s" | sed "s/\\\\n/\\n/g" > %[2]s && chmod a+x %[2]s'`,
-				escapeCommandlineArgument(expandedTemplateContent), outputPaths[0])
-			buildStatement.Command = command
+			buildStatement, err = aqueryHandler.templateExpandActionBuildStatement(actionEntry)
 		} else if isPythonZipperAction(actionEntry) {
-			if len(inputPaths) < 1 || len(outputPaths) != 1 {
-				return nil, fmt.Errorf("Expect 1+ input and 1 output to python zipper action, got: input %q, output %q", inputPaths, outputPaths)
-			}
-			buildStatement.InputPaths, buildStatement.Command = removePy3wrapperScript(buildStatement)
-			buildStatement.Command = addCommandForPyBinaryRunfilesDir(buildStatement, inputPaths[0], outputPaths[0])
-			// Add the python zip file as input of the corresponding python binary stub script in Ninja build statements.
-			// In Ninja build statements, the outputs of dependents of a python binary have python binary stub script as input,
-			// which is not sufficient without the python zip file from which runfiles directory is created for py_binary.
-			//
-			// The following logic relies on that Bazel aquery output returns actions in the order that
-			// PythonZipper is after TemplateAction of creating Python binary stub script. If later Bazel doesn't return actions
-			// in that order, the following logic might not find the build statement generated for Python binary
-			// stub script and the build might fail. So the check of pyBinaryFound is added to help debug in case later Bazel might change aquery output.
-			// See go/python-binary-host-mixed-build for more details.
-			pythonZipFilePath := outputPaths[0]
-			pyBinaryFound := false
-			for i, _ := range buildStatements {
-				if len(buildStatements[i].OutputPaths) == 1 && buildStatements[i].OutputPaths[0]+".zip" == pythonZipFilePath {
-					buildStatements[i].InputPaths = append(buildStatements[i].InputPaths, pythonZipFilePath)
-					pyBinaryFound = true
-				}
-			}
-			if !pyBinaryFound {
-				return nil, fmt.Errorf("Could not find the correspondinging Python binary stub script of PythonZipper: %q", outputPaths)
-			}
+			buildStatement, err = aqueryHandler.pythonZipperActionBuildStatement(actionEntry, buildStatements)
 		} else if len(actionEntry.Arguments) < 1 {
-			return nil, fmt.Errorf("received action with no command: [%v]", buildStatement)
+			return nil, nil, fmt.Errorf("received action with no command: [%s]", actionEntry.Mnemonic)
+		} else {
+			buildStatement, err = aqueryHandler.normalActionBuildStatement(actionEntry)
+		}
+
+		if err != nil {
+			return nil, nil, err
 		}
 		buildStatements = append(buildStatements, buildStatement)
 	}
 
-	return buildStatements, nil
+	depsetsByHash := map[string]AqueryDepset{}
+	depsets := []AqueryDepset{}
+	for _, aqueryDepset := range aqueryHandler.depsetIdToAqueryDepset {
+		if prevEntry, hasKey := depsetsByHash[aqueryDepset.ContentHash]; hasKey {
+			// Two depsets collide on hash. Ensure that their contents are identical.
+			if !reflect.DeepEqual(aqueryDepset, prevEntry) {
+				return nil, nil, fmt.Errorf("Two different depsets have the same hash: %v, %v", prevEntry, aqueryDepset)
+			}
+		} else {
+			depsetsByHash[aqueryDepset.ContentHash] = aqueryDepset
+			depsets = append(depsets, aqueryDepset)
+		}
+	}
+
+	// Build Statements and depsets must be sorted by their content hash to
+	// preserve determinism between builds (this will result in consistent ninja file
+	// output). Note they are not sorted by their original IDs nor their Bazel ordering,
+	// as Bazel gives nondeterministic ordering / identifiers in aquery responses.
+	sort.Slice(buildStatements, func(i, j int) bool {
+		// For build statements, compare output lists. In Bazel, each output file
+		// may only have one action which generates it, so this will provide
+		// a deterministic ordering.
+		outputs_i := buildStatements[i].OutputPaths
+		outputs_j := buildStatements[j].OutputPaths
+		if len(outputs_i) != len(outputs_j) {
+			return len(outputs_i) < len(outputs_j)
+		}
+		if len(outputs_i) == 0 {
+			// No outputs for these actions, so compare commands.
+			return buildStatements[i].Command < buildStatements[j].Command
+		}
+		// There may be multiple outputs, but the output ordering is deterministic.
+		return outputs_i[0] < outputs_j[0]
+	})
+	sort.Slice(depsets, func(i, j int) bool {
+		return depsets[i].ContentHash < depsets[j].ContentHash
+	})
+	return buildStatements, depsets, nil
+}
+
+// depsetContentHash computes and returns a SHA256 checksum of the contents of
+// the given depset. This content hash may serve as the depset's identifier.
+// Using a content hash for an identifier is superior for determinism. (For example,
+// using an integer identifier which depends on the order in which the depsets are
+// created would result in nondeterministic depset IDs.)
+func depsetContentHash(directPaths []string, transitiveDepsetHashes []string) string {
+	h := sha256.New()
+	// Use newline as delimiter, as paths cannot contain newline.
+	h.Write([]byte(strings.Join(directPaths, "\n")))
+	h.Write([]byte(strings.Join(transitiveDepsetHashes, "\n")))
+	fullHash := fmt.Sprintf("%016x", h.Sum(nil))
+	return fullHash
+}
+
+func (aqueryHandler *aqueryArtifactHandler) depsetContentHashes(inputDepsetIds []int) ([]string, error) {
+	hashes := []string{}
+	for _, depsetId := range inputDepsetIds {
+		if aqueryDepset, exists := aqueryHandler.depsetIdToAqueryDepset[depsetId]; !exists {
+			return nil, fmt.Errorf("undefined input depsetId %d", depsetId)
+		} else {
+			hashes = append(hashes, aqueryDepset.ContentHash)
+		}
+	}
+	return hashes, nil
+}
+
+func (aqueryHandler *aqueryArtifactHandler) normalActionBuildStatement(actionEntry action) (BuildStatement, error) {
+	command := strings.Join(proptools.ShellEscapeListIncludingSpaces(actionEntry.Arguments), " ")
+	inputDepsetHashes, err := aqueryHandler.depsetContentHashes(actionEntry.InputDepSetIds)
+	if err != nil {
+		return BuildStatement{}, err
+	}
+	outputPaths, depfile, err := aqueryHandler.getOutputPaths(actionEntry)
+	if err != nil {
+		return BuildStatement{}, err
+	}
+
+	buildStatement := BuildStatement{
+		Command:           command,
+		Depfile:           depfile,
+		OutputPaths:       outputPaths,
+		InputDepsetHashes: inputDepsetHashes,
+		Env:               actionEntry.EnvironmentVariables,
+		Mnemonic:          actionEntry.Mnemonic,
+	}
+	return buildStatement, nil
+}
+
+func (aqueryHandler *aqueryArtifactHandler) pythonZipperActionBuildStatement(actionEntry action, prevBuildStatements []BuildStatement) (BuildStatement, error) {
+	inputPaths, err := aqueryHandler.getInputPaths(actionEntry.InputDepSetIds)
+	if err != nil {
+		return BuildStatement{}, err
+	}
+	outputPaths, depfile, err := aqueryHandler.getOutputPaths(actionEntry)
+	if err != nil {
+		return BuildStatement{}, err
+	}
+
+	if len(inputPaths) < 1 || len(outputPaths) != 1 {
+		return BuildStatement{}, fmt.Errorf("Expect 1+ input and 1 output to python zipper action, got: input %q, output %q", inputPaths, outputPaths)
+	}
+	command := strings.Join(proptools.ShellEscapeListIncludingSpaces(actionEntry.Arguments), " ")
+	inputPaths, command = removePy3wrapperScript(inputPaths, command)
+	command = addCommandForPyBinaryRunfilesDir(command, inputPaths[0], outputPaths[0])
+	// Add the python zip file as input of the corresponding python binary stub script in Ninja build statements.
+	// In Ninja build statements, the outputs of dependents of a python binary have python binary stub script as input,
+	// which is not sufficient without the python zip file from which runfiles directory is created for py_binary.
+	//
+	// The following logic relies on that Bazel aquery output returns actions in the order that
+	// PythonZipper is after TemplateAction of creating Python binary stub script. If later Bazel doesn't return actions
+	// in that order, the following logic might not find the build statement generated for Python binary
+	// stub script and the build might fail. So the check of pyBinaryFound is added to help debug in case later Bazel might change aquery output.
+	// See go/python-binary-host-mixed-build for more details.
+	pythonZipFilePath := outputPaths[0]
+	pyBinaryFound := false
+	for i, _ := range prevBuildStatements {
+		if len(prevBuildStatements[i].OutputPaths) == 1 && prevBuildStatements[i].OutputPaths[0]+".zip" == pythonZipFilePath {
+			prevBuildStatements[i].InputPaths = append(prevBuildStatements[i].InputPaths, pythonZipFilePath)
+			pyBinaryFound = true
+		}
+	}
+	if !pyBinaryFound {
+		return BuildStatement{}, fmt.Errorf("Could not find the correspondinging Python binary stub script of PythonZipper: %q", outputPaths)
+	}
+
+	buildStatement := BuildStatement{
+		Command:     command,
+		Depfile:     depfile,
+		OutputPaths: outputPaths,
+		InputPaths:  inputPaths,
+		Env:         actionEntry.EnvironmentVariables,
+		Mnemonic:    actionEntry.Mnemonic,
+	}
+	return buildStatement, nil
+}
+
+func (aqueryHandler *aqueryArtifactHandler) templateExpandActionBuildStatement(actionEntry action) (BuildStatement, error) {
+	outputPaths, depfile, err := aqueryHandler.getOutputPaths(actionEntry)
+	if err != nil {
+		return BuildStatement{}, err
+	}
+	if len(outputPaths) != 1 {
+		return BuildStatement{}, fmt.Errorf("Expect 1 output to template expand action, got: output %q", outputPaths)
+	}
+	expandedTemplateContent := expandTemplateContent(actionEntry)
+	// The expandedTemplateContent is escaped for being used in double quotes and shell unescape,
+	// and the new line characters (\n) are also changed to \\n which avoids some Ninja escape on \n, which might
+	// change \n to space and mess up the format of Python programs.
+	// sed is used to convert \\n back to \n before saving to output file.
+	// See go/python-binary-host-mixed-build for more details.
+	command := fmt.Sprintf(`/bin/bash -c 'echo "%[1]s" | sed "s/\\\\n/\\n/g" > %[2]s && chmod a+x %[2]s'`,
+		escapeCommandlineArgument(expandedTemplateContent), outputPaths[0])
+	inputDepsetHashes, err := aqueryHandler.depsetContentHashes(actionEntry.InputDepSetIds)
+	if err != nil {
+		return BuildStatement{}, err
+	}
+
+	buildStatement := BuildStatement{
+		Command:           command,
+		Depfile:           depfile,
+		OutputPaths:       outputPaths,
+		InputDepsetHashes: inputDepsetHashes,
+		Env:               actionEntry.EnvironmentVariables,
+		Mnemonic:          actionEntry.Mnemonic,
+	}
+	return buildStatement, nil
+}
+
+func (aqueryHandler *aqueryArtifactHandler) symlinkActionBuildStatement(actionEntry action) (BuildStatement, error) {
+	outputPaths, depfile, err := aqueryHandler.getOutputPaths(actionEntry)
+	if err != nil {
+		return BuildStatement{}, err
+	}
+
+	inputPaths, err := aqueryHandler.getInputPaths(actionEntry.InputDepSetIds)
+	if err != nil {
+		return BuildStatement{}, err
+	}
+	if len(inputPaths) != 1 || len(outputPaths) != 1 {
+		return BuildStatement{}, fmt.Errorf("Expect 1 input and 1 output to symlink action, got: input %q, output %q", inputPaths, outputPaths)
+	}
+	out := outputPaths[0]
+	outDir := proptools.ShellEscapeIncludingSpaces(filepath.Dir(out))
+	out = proptools.ShellEscapeIncludingSpaces(out)
+	in := filepath.Join("$PWD", proptools.ShellEscapeIncludingSpaces(inputPaths[0]))
+	// Use absolute paths, because some soong actions don't play well with relative paths (for example, `cp -d`).
+	command := fmt.Sprintf("mkdir -p %[1]s && rm -f %[2]s && ln -sf %[3]s %[2]s", outDir, out, in)
+	symlinkPaths := outputPaths[:]
+
+	buildStatement := BuildStatement{
+		Command:      command,
+		Depfile:      depfile,
+		OutputPaths:  outputPaths,
+		InputPaths:   inputPaths,
+		Env:          actionEntry.EnvironmentVariables,
+		Mnemonic:     actionEntry.Mnemonic,
+		SymlinkPaths: symlinkPaths,
+	}
+	return buildStatement, nil
+}
+
+func (aqueryHandler *aqueryArtifactHandler) getOutputPaths(actionEntry action) (outputPaths []string, depfile *string, err error) {
+	for _, outputId := range actionEntry.OutputIds {
+		outputPath, exists := aqueryHandler.artifactIdToPath[outputId]
+		if !exists {
+			err = fmt.Errorf("undefined outputId %d", outputId)
+			return
+		}
+		ext := filepath.Ext(outputPath)
+		if ext == ".d" {
+			if depfile != nil {
+				err = fmt.Errorf("found multiple potential depfiles %q, %q", *depfile, outputPath)
+				return
+			} else {
+				depfile = &outputPath
+			}
+		} else {
+			outputPaths = append(outputPaths, outputPath)
+		}
+	}
+	return
 }
 
 // expandTemplateContent substitutes the tokens in a template.
@@ -372,10 +594,10 @@ func escapeCommandlineArgument(str string) string {
 // removed from input paths and command of creating python zip file.
 // See go/python-binary-host-mixed-build for more details.
 // TODO(b/205879240) remove this after py3wrapper.sh could be created in the mixed build mode.
-func removePy3wrapperScript(bs BuildStatement) (newInputPaths []string, newCommand string) {
+func removePy3wrapperScript(inputPaths []string, command string) (newInputPaths []string, newCommand string) {
 	// Remove from inputs
 	filteredInputPaths := []string{}
-	for _, path := range bs.InputPaths {
+	for _, path := range inputPaths {
 		if !strings.HasSuffix(path, py3wrapperFileName) {
 			filteredInputPaths = append(filteredInputPaths, path)
 		}
@@ -384,7 +606,7 @@ func removePy3wrapperScript(bs BuildStatement) (newInputPaths []string, newComma
 
 	// Remove from command line
 	var re = regexp.MustCompile(`\S*` + py3wrapperFileName)
-	newCommand = re.ReplaceAllString(bs.Command, "")
+	newCommand = re.ReplaceAllString(command, "")
 	return
 }
 
@@ -395,14 +617,14 @@ func removePy3wrapperScript(bs BuildStatement) (newInputPaths []string, newComma
 // so MANIFEST file could not be created, which also blocks the creation of runfiles directory.
 // See go/python-binary-host-mixed-build for more details.
 // TODO(b/197135294) create runfiles directory from MANIFEST file once it can be created from SourceSymlinkManifest action.
-func addCommandForPyBinaryRunfilesDir(bs BuildStatement, zipperCommandPath, zipFilePath string) string {
+func addCommandForPyBinaryRunfilesDir(oldCommand string, zipperCommandPath, zipFilePath string) string {
 	// Unzip the zip file, zipFilePath looks like <python_binary>.zip
 	runfilesDirName := zipFilePath[0:len(zipFilePath)-4] + ".runfiles"
 	command := fmt.Sprintf("%s x %s -d %s", zipperCommandPath, zipFilePath, runfilesDirName)
 	// Create a symbolic link in <python_binary>.runfiles/, which is the expected structure
 	// when running the python binary stub script.
 	command += fmt.Sprintf(" && ln -sf runfiles/__main__ %s", runfilesDirName)
-	return bs.Command + " && " + command
+	return oldCommand + " && " + command
 }
 
 func isSymlinkAction(a action) bool {

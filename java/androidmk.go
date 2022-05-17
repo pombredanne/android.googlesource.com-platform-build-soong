@@ -132,6 +132,16 @@ func (library *Library) AndroidMkEntries() []android.AndroidMkEntries {
 	return entriesList
 }
 
+func (j *JavaFuzzLibrary) AndroidMkEntries() []android.AndroidMkEntries {
+	entriesList := j.Library.AndroidMkEntries()
+	entries := &entriesList[0]
+	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
+		entries.AddStrings("LOCAL_COMPATIBILITY_SUITE", "null-suite")
+		androidMkWriteTestData(j.jniFilePaths, entries)
+	})
+	return entriesList
+}
+
 // Called for modules that are a component of a test suite.
 func testSuiteComponent(entries *android.AndroidMkEntries, test_suites []string, perTestcaseDirectory bool) {
 	entries.SetString("LOCAL_MODULE_TAGS", "tests")
@@ -414,8 +424,8 @@ func (app *AndroidApp) AndroidMkEntries() []android.AndroidMkEntries {
 
 func (a *AndroidApp) getOverriddenPackages() []string {
 	var overridden []string
-	if len(a.appProperties.Overrides) > 0 {
-		overridden = append(overridden, a.appProperties.Overrides...)
+	if len(a.overridableAppProperties.Overrides) > 0 {
+		overridden = append(overridden, a.overridableAppProperties.Overrides...)
 	}
 	// When APK name is overridden via PRODUCT_PACKAGE_NAME_OVERRIDES
 	// ensure that the original name is overridden.
@@ -531,6 +541,9 @@ func (dstubs *Droidstubs) AndroidMkEntries() []android.AndroidMkEntries {
 	outputFile := android.OptionalPathForPath(dstubs.stubsSrcJar)
 	if !outputFile.Valid() {
 		outputFile = android.OptionalPathForPath(dstubs.apiFile)
+	}
+	if !outputFile.Valid() {
+		outputFile = android.OptionalPathForPath(dstubs.apiVersionsXml)
 	}
 	return []android.AndroidMkEntries{android.AndroidMkEntries{
 		Class:      "JAVA_LIBRARIES",

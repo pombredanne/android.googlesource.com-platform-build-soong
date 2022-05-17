@@ -19,6 +19,7 @@ package apex
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -33,6 +34,7 @@ import (
 	prebuilt_etc "android/soong/etc"
 	"android/soong/filesystem"
 	"android/soong/java"
+	"android/soong/multitree"
 	"android/soong/python"
 	"android/soong/rust"
 	"android/soong/sh"
@@ -48,7 +50,7 @@ func registerApexBuildComponents(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("apex_vndk", vndkApexBundleFactory)
 	ctx.RegisterModuleType("apex_defaults", defaultsFactory)
 	ctx.RegisterModuleType("prebuilt_apex", PrebuiltFactory)
-	ctx.RegisterModuleType("override_apex", overrideApexFactory)
+	ctx.RegisterModuleType("override_apex", OverrideApexFactory)
 	ctx.RegisterModuleType("apex_set", apexSetFactory)
 
 	ctx.PreArchMutators(registerPreArchMutators)
@@ -157,12 +159,6 @@ type apexBundleProperties struct {
 	// Only the default version can install symbol files in $(PRODUCT_OUT}/apex,
 	// or else conflicting build rules may be created.
 	Multi_install_skip_symbol_files *bool
-
-	// List of SDKs that are used to build this APEX. A reference to an SDK should be either
-	// `name#version` or `name` which is an alias for `name#current`. If left empty,
-	// `platform#current` is implied. This value affects all modules included in this APEX. In
-	// other words, they are also built with the SDKs specified here.
-	Uses_sdks []string
 
 	// The type of APEX to build. Controls what the APEX payload is. Either 'image', 'zip' or
 	// 'both'. When set to image, contents are stored in a filesystem image inside a zip
@@ -358,6 +354,7 @@ type apexBundle struct {
 	android.OverridableModuleBase
 	android.SdkBase
 	android.BazelModuleBase
+	multitree.ExportableModuleBase
 
 	// Properties
 	properties            apexBundleProperties
@@ -611,30 +608,34 @@ type dependencyTag struct {
 	sourceOnly bool
 }
 
-func (d dependencyTag) ReplaceSourceWithPrebuilt() bool {
+func (d *dependencyTag) String() string {
+	return fmt.Sprintf("apex.dependencyTag{%q}", d.name)
+}
+
+func (d *dependencyTag) ReplaceSourceWithPrebuilt() bool {
 	return !d.sourceOnly
 }
 
 var _ android.ReplaceSourceWithPrebuilt = &dependencyTag{}
 
 var (
-	androidAppTag   = dependencyTag{name: "androidApp", payload: true}
-	bpfTag          = dependencyTag{name: "bpf", payload: true}
-	certificateTag  = dependencyTag{name: "certificate"}
-	executableTag   = dependencyTag{name: "executable", payload: true}
-	fsTag           = dependencyTag{name: "filesystem", payload: true}
-	bcpfTag         = dependencyTag{name: "bootclasspathFragment", payload: true, sourceOnly: true}
-	sscpfTag        = dependencyTag{name: "systemserverclasspathFragment", payload: true, sourceOnly: true}
-	compatConfigTag = dependencyTag{name: "compatConfig", payload: true, sourceOnly: true}
-	javaLibTag      = dependencyTag{name: "javaLib", payload: true}
-	jniLibTag       = dependencyTag{name: "jniLib", payload: true}
-	keyTag          = dependencyTag{name: "key"}
-	prebuiltTag     = dependencyTag{name: "prebuilt", payload: true}
-	rroTag          = dependencyTag{name: "rro", payload: true}
-	sharedLibTag    = dependencyTag{name: "sharedLib", payload: true}
-	testForTag      = dependencyTag{name: "test for"}
-	testTag         = dependencyTag{name: "test", payload: true}
-	shBinaryTag     = dependencyTag{name: "shBinary", payload: true}
+	androidAppTag   = &dependencyTag{name: "androidApp", payload: true}
+	bpfTag          = &dependencyTag{name: "bpf", payload: true}
+	certificateTag  = &dependencyTag{name: "certificate"}
+	executableTag   = &dependencyTag{name: "executable", payload: true}
+	fsTag           = &dependencyTag{name: "filesystem", payload: true}
+	bcpfTag         = &dependencyTag{name: "bootclasspathFragment", payload: true, sourceOnly: true}
+	sscpfTag        = &dependencyTag{name: "systemserverclasspathFragment", payload: true, sourceOnly: true}
+	compatConfigTag = &dependencyTag{name: "compatConfig", payload: true, sourceOnly: true}
+	javaLibTag      = &dependencyTag{name: "javaLib", payload: true}
+	jniLibTag       = &dependencyTag{name: "jniLib", payload: true}
+	keyTag          = &dependencyTag{name: "key"}
+	prebuiltTag     = &dependencyTag{name: "prebuilt", payload: true}
+	rroTag          = &dependencyTag{name: "rro", payload: true}
+	sharedLibTag    = &dependencyTag{name: "sharedLib", payload: true}
+	testForTag      = &dependencyTag{name: "test for"}
+	testTag         = &dependencyTag{name: "test", payload: true}
+	shBinaryTag     = &dependencyTag{name: "shBinary", payload: true}
 )
 
 // TODO(jiyong): shorten this function signature
@@ -789,19 +790,6 @@ func (a *apexBundle) DepsMutator(ctx android.BottomUpMutatorContext) {
 	commonVariation := ctx.Config().AndroidCommonTarget.Variations()
 	ctx.AddFarVariationDependencies(commonVariation, fsTag, a.properties.Filesystems...)
 	ctx.AddFarVariationDependencies(commonVariation, compatConfigTag, a.properties.Compat_configs...)
-
-	// Marks that this APEX (in fact all the modules in it) has to be built with the given SDKs.
-	// This field currently isn't used.
-	// TODO(jiyong): consider dropping this feature
-	// TODO(jiyong): ensure that all apexes are with non-empty uses_sdks
-	if len(a.properties.Uses_sdks) > 0 {
-		sdkRefs := []android.SdkRef{}
-		for _, str := range a.properties.Uses_sdks {
-			parsed := android.ParseSdkRef(ctx, str, "uses_sdks")
-			sdkRefs = append(sdkRefs, parsed)
-		}
-		a.BuildWithSdks(sdkRefs)
-	}
 }
 
 // DepsMutator for the overridden properties.
@@ -966,7 +954,6 @@ func (a *apexBundle) ApexInfoMutator(mctx android.TopDownMutatorContext) {
 	apexInfo := android.ApexInfo{
 		ApexVariationName: apexVariationName,
 		MinSdkVersion:     minSdkVersion,
-		RequiredSdks:      a.RequiredSdks(),
 		Updatable:         a.Updatable(),
 		UsePlatformApis:   a.UsePlatformApis(),
 		InApexVariants:    []string{apexVariationName},
@@ -994,6 +981,7 @@ type ApexInfoMutator interface {
 
 // apexInfoMutator delegates the work of identifying which modules need an ApexInfo and apex
 // specific variant to modules that support the ApexInfoMutator.
+// It also propagates updatable=true to apps of updatable apexes
 func apexInfoMutator(mctx android.TopDownMutatorContext) {
 	if !mctx.Module().Enabled() {
 		return
@@ -1001,8 +989,8 @@ func apexInfoMutator(mctx android.TopDownMutatorContext) {
 
 	if a, ok := mctx.Module().(ApexInfoMutator); ok {
 		a.ApexInfoMutator(mctx)
-		return
 	}
+	enforceAppUpdatability(mctx)
 }
 
 // apexStrictUpdatibilityLintMutator propagates strict_updatability_linting to transitive deps of a mainline module
@@ -1029,6 +1017,22 @@ func apexStrictUpdatibilityLintMutator(mctx android.TopDownMutatorContext) {
 			}
 			// visit transitive deps
 			return true
+		})
+	}
+}
+
+// enforceAppUpdatability propagates updatable=true to apps of updatable apexes
+func enforceAppUpdatability(mctx android.TopDownMutatorContext) {
+	if !mctx.Module().Enabled() {
+		return
+	}
+	if apex, ok := mctx.Module().(*apexBundle); ok && apex.Updatable() {
+		// checking direct deps is sufficient since apex->apk is a direct edge, even when inherited via apex_defaults
+		mctx.VisitDirectDeps(func(module android.Module) {
+			// ignore android_test_app
+			if app, ok := module.(*java.AndroidApp); ok {
+				app.SetUpdatable(true)
+			}
 		})
 	}
 }
@@ -1359,6 +1363,21 @@ func (a *apexBundle) OutputFiles(tag string) (android.Paths, error) {
 	}
 }
 
+var _ multitree.Exportable = (*apexBundle)(nil)
+
+func (a *apexBundle) Exportable() bool {
+	if a.properties.ApexType == flattenedApex {
+		return false
+	}
+	return true
+}
+
+func (a *apexBundle) TaggedOutputs() map[string]android.Paths {
+	ret := make(map[string]android.Paths)
+	ret["apex"] = android.Paths{a.outputFile}
+	return ret
+}
+
 var _ cc.Coverage = (*apexBundle)(nil)
 
 // Implements cc.Coverage
@@ -1656,13 +1675,33 @@ type androidApp interface {
 var _ androidApp = (*java.AndroidApp)(nil)
 var _ androidApp = (*java.AndroidAppImport)(nil)
 
+func sanitizedBuildIdForPath(ctx android.BaseModuleContext) string {
+	buildId := ctx.Config().BuildId()
+
+	// The build ID is used as a suffix for a filename, so ensure that
+	// the set of characters being used are sanitized.
+	// - any word character: [a-zA-Z0-9_]
+	// - dots: .
+	// - dashes: -
+	validRegex := regexp.MustCompile(`^[\w\.\-\_]+$`)
+	if !validRegex.MatchString(buildId) {
+		ctx.ModuleErrorf("Unable to use build id %s as filename suffix, valid characters are [a-z A-Z 0-9 _ . -].", buildId)
+	}
+	return buildId
+}
+
 func apexFileForAndroidApp(ctx android.BaseModuleContext, aapp androidApp) apexFile {
 	appDir := "app"
 	if aapp.Privileged() {
 		appDir = "priv-app"
 	}
-	dirInApex := filepath.Join(appDir, aapp.InstallApkName())
+
+	// TODO(b/224589412, b/226559955): Ensure that the subdirname is suffixed
+	// so that PackageManager correctly invalidates the existing installed apk
+	// in favour of the new APK-in-APEX.  See bugs for more information.
+	dirInApex := filepath.Join(appDir, aapp.InstallApkName()+"@"+sanitizedBuildIdForPath(ctx))
 	fileToCopy := aapp.OutputFile()
+
 	af := newApexFile(ctx, fileToCopy, aapp.BaseModuleName(), dirInApex, app, aapp)
 	af.jacocoReportClassesFile = aapp.JacocoReportClassesFile()
 	af.lintDepSets = aapp.LintDepSets()
@@ -1717,7 +1756,7 @@ func (a *apexBundle) WalkPayloadDeps(ctx android.ModuleContext, do android.Paylo
 		if _, ok := depTag.(android.ExcludeFromApexContentsTag); ok {
 			return false
 		}
-		if dt, ok := depTag.(dependencyTag); ok && !dt.payload {
+		if dt, ok := depTag.(*dependencyTag); ok && !dt.payload {
 			return false
 		}
 
@@ -1895,8 +1934,12 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 					if ap.Privileged() {
 						appDir = "priv-app"
 					}
-					af := newApexFile(ctx, ap.OutputFile(), ap.BaseModuleName(),
-						filepath.Join(appDir, ap.BaseModuleName()), appSet, ap)
+					// TODO(b/224589412, b/226559955): Ensure that the dirname is
+					// suffixed so that PackageManager correctly invalidates the
+					// existing installed apk in favour of the new APK-in-APEX.
+					// See bugs for more information.
+					appDirName := filepath.Join(appDir, ap.BaseModuleName()+"@"+sanitizedBuildIdForPath(ctx))
+					af := newApexFile(ctx, ap.OutputFile(), ap.BaseModuleName(), appDirName, appSet, ap)
 					af.certificate = java.PresignedCertificate
 					filesInfo = append(filesInfo, af)
 				} else {
@@ -2361,6 +2404,7 @@ func newApexBundle() *apexBundle {
 	android.InitSdkAwareModule(module)
 	android.InitOverridableModule(module, &module.overridableProperties.Overrides)
 	android.InitBazelModule(module)
+	multitree.InitExportableModule(module)
 	return module
 }
 
@@ -2411,6 +2455,7 @@ func DefaultsFactory(props ...interface{}) android.Module {
 type OverrideApex struct {
 	android.ModuleBase
 	android.OverrideModuleBase
+	android.BazelModuleBase
 }
 
 func (o *OverrideApex) GenerateAndroidBuildActions(ctx android.ModuleContext) {
@@ -2419,14 +2464,62 @@ func (o *OverrideApex) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 // override_apex is used to create an apex module based on another apex module by overriding some of
 // its properties.
-func overrideApexFactory() android.Module {
+func OverrideApexFactory() android.Module {
 	m := &OverrideApex{}
 
 	m.AddProperties(&overridableProperties{})
 
 	android.InitAndroidMultiTargetsArchModule(m, android.DeviceSupported, android.MultilibCommon)
 	android.InitOverrideModule(m)
+	android.InitBazelModule(m)
 	return m
+}
+
+func (o *OverrideApex) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
+	if ctx.ModuleType() != "override_apex" {
+		return
+	}
+
+	baseApexModuleName := o.OverrideModuleBase.GetOverriddenModuleName()
+	baseModule, baseApexExists := ctx.ModuleFromName(baseApexModuleName)
+	if !baseApexExists {
+		panic(fmt.Errorf("Base apex module doesn't exist: %s", baseApexModuleName))
+	}
+
+	a, baseModuleIsApex := baseModule.(*apexBundle)
+	if !baseModuleIsApex {
+		panic(fmt.Errorf("Base module is not apex module: %s", baseApexModuleName))
+	}
+	attrs, props := convertWithBp2build(a, ctx)
+
+	for _, p := range o.GetProperties() {
+		overridableProperties, ok := p.(*overridableProperties)
+		if !ok {
+			continue
+		}
+		// Key
+		if overridableProperties.Key != nil {
+			attrs.Key = bazel.LabelAttribute{}
+			attrs.Key.SetValue(android.BazelLabelForModuleDepSingle(ctx, *overridableProperties.Key))
+		}
+
+		// Certificate
+		if overridableProperties.Certificate != nil {
+			attrs.Certificate = bazel.LabelAttribute{}
+			attrs.Certificate.SetValue(android.BazelLabelForModuleDepSingle(ctx, *overridableProperties.Certificate))
+		}
+
+		// Prebuilts
+		prebuiltsLabelList := android.BazelLabelForModuleDeps(ctx, overridableProperties.Prebuilts)
+		attrs.Prebuilts = bazel.MakeLabelListAttribute(prebuiltsLabelList)
+
+		// Compressible
+		if overridableProperties.Compressible != nil {
+			attrs.Compressible = bazel.BoolAttribute{Value: overridableProperties.Compressible}
+		}
+	}
+
+	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: o.Name()}, &attrs)
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -3132,33 +3225,6 @@ func makeApexAvailableBaseline() map[string][]string {
 	//
 	// Module separator
 	//
-	m["com.android.permission"] = []string{
-		"car-ui-lib",
-		"iconloader",
-		"kotlin-annotations",
-		"kotlin-stdlib",
-		"kotlin-stdlib-jdk7",
-		"kotlin-stdlib-jdk8",
-		"kotlinx-coroutines-android",
-		"kotlinx-coroutines-android-nodeps",
-		"kotlinx-coroutines-core",
-		"kotlinx-coroutines-core-nodeps",
-		"permissioncontroller-statsd",
-		"GooglePermissionController",
-		"PermissionController",
-		"SettingsLibActionBarShadow",
-		"SettingsLibAppPreference",
-		"SettingsLibBarChartPreference",
-		"SettingsLibLayoutPreference",
-		"SettingsLibProgressBar",
-		"SettingsLibSearchWidget",
-		"SettingsLibSettingsTheme",
-		"SettingsLibRestrictedLockUtils",
-		"SettingsLibHelpUtils",
-	}
-	//
-	// Module separator
-	//
 	m["com.android.runtime"] = []string{
 		"bionic_libc_platform_headers",
 		"libarm-optimized-routines-math",
@@ -3406,6 +3472,11 @@ func (a *apexBundle) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 		return
 	}
 
+	attrs, props := convertWithBp2build(a, ctx)
+	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: a.Name()}, &attrs)
+}
+
+func convertWithBp2build(a *apexBundle, ctx android.TopDownMutatorContext) (bazelApexBundleAttributes, bazel.BazelTargetModuleProperties) {
 	var manifestLabelAttribute bazel.LabelAttribute
 	if a.properties.Manifest != nil {
 		manifestLabelAttribute.SetValue(android.BazelLabelForModuleSrcSingle(ctx, *a.properties.Manifest))
@@ -3417,8 +3488,15 @@ func (a *apexBundle) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 	}
 
 	var fileContextsLabelAttribute bazel.LabelAttribute
-	if a.properties.File_contexts != nil {
+	if a.properties.File_contexts == nil {
+		// See buildFileContexts(), if file_contexts is not specified the default one is used, which is //system/sepolicy/apex:<module name>-file_contexts
+		fileContextsLabelAttribute.SetValue(android.BazelLabelForModuleDepSingle(ctx, a.Name()+"-file_contexts"))
+	} else if strings.HasPrefix(*a.properties.File_contexts, ":") {
+		// File_contexts is a module
 		fileContextsLabelAttribute.SetValue(android.BazelLabelForModuleDepSingle(ctx, *a.properties.File_contexts))
+	} else {
+		// File_contexts is a file
+		fileContextsLabelAttribute.SetValue(android.BazelLabelForModuleSrcSingle(ctx, *a.properties.File_contexts))
 	}
 
 	// TODO(b/219503907) this would need to be set to a.MinSdkVersionValue(ctx) but
@@ -3476,7 +3554,7 @@ func (a *apexBundle) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 		compressibleAttribute.Value = a.overridableProperties.Compressible
 	}
 
-	attrs := &bazelApexBundleAttributes{
+	attrs := bazelApexBundleAttributes{
 		Manifest:              manifestLabelAttribute,
 		Android_manifest:      androidManifestLabelAttribute,
 		File_contexts:         fileContextsLabelAttribute,
@@ -3494,10 +3572,10 @@ func (a *apexBundle) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 
 	props := bazel.BazelTargetModuleProperties{
 		Rule_class:        "apex",
-		Bzl_load_location: "//build/bazel/rules:apex.bzl",
+		Bzl_load_location: "//build/bazel/rules/apex:apex.bzl",
 	}
 
-	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: a.Name()}, attrs)
+	return attrs, props
 }
 
 // The following conversions are based on this table where the rows are the compile_multilib

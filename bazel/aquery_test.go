@@ -223,7 +223,7 @@ func TestAqueryMultiArchGenrule(t *testing.T) {
     "parentId": 13
   }]
 }`
-	actualbuildStatements, _ := AqueryBuildStatements([]byte(inputString))
+	actualbuildStatements, actualDepsets, _ := AqueryBuildStatements([]byte(inputString))
 	expectedBuildStatements := []BuildStatement{}
 	for _, arch := range []string{"arm", "arm64", "x86", "x86_64"} {
 		expectedBuildStatements = append(expectedBuildStatements,
@@ -234,11 +234,6 @@ func TestAqueryMultiArchGenrule(t *testing.T) {
 				OutputPaths: []string{
 					fmt.Sprintf("bazel-out/sourceroot/k8-fastbuild/bin/bionic/libc/syscalls-%s.S", arch),
 				},
-				InputPaths: []string{
-					"../sourceroot/bionic/libc/SYSCALLS.TXT",
-					"../sourceroot/bionic/libc/tools/gensyscalls.py",
-					"../bazel_tools/tools/genrule/genrule-setup.sh",
-				},
 				Env: []KeyValuePair{
 					KeyValuePair{Key: "PATH", Value: "/bin:/usr/bin:/usr/local/bin"},
 				},
@@ -246,6 +241,19 @@ func TestAqueryMultiArchGenrule(t *testing.T) {
 			})
 	}
 	assertBuildStatements(t, expectedBuildStatements, actualbuildStatements)
+
+	expectedFlattenedInputs := []string{
+		"../sourceroot/bionic/libc/SYSCALLS.TXT",
+		"../sourceroot/bionic/libc/tools/gensyscalls.py",
+		"../bazel_tools/tools/genrule/genrule-setup.sh",
+	}
+	// In this example, each depset should have the same expected inputs.
+	for _, actualDepset := range actualDepsets {
+		actualFlattenedInputs := flattenDepsets([]string{actualDepset.ContentHash}, actualDepsets)
+		if !reflect.DeepEqual(actualFlattenedInputs, expectedFlattenedInputs) {
+			t.Errorf("Expected flattened inputs %v, but got %v", expectedFlattenedInputs, actualFlattenedInputs)
+		}
+	}
 }
 
 func TestInvalidOutputId(t *testing.T) {
@@ -280,11 +288,11 @@ func TestInvalidOutputId(t *testing.T) {
   }]
 }`
 
-	_, err := AqueryBuildStatements([]byte(inputString))
+	_, _, err := AqueryBuildStatements([]byte(inputString))
 	assertError(t, err, "undefined outputId 3")
 }
 
-func TestInvalidInputDepsetId(t *testing.T) {
+func TestInvalidInputDepsetIdFromAction(t *testing.T) {
 	const inputString = `
 {
   "artifacts": [{
@@ -316,8 +324,45 @@ func TestInvalidInputDepsetId(t *testing.T) {
   }]
 }`
 
-	_, err := AqueryBuildStatements([]byte(inputString))
+	_, _, err := AqueryBuildStatements([]byte(inputString))
 	assertError(t, err, "undefined input depsetId 2")
+}
+
+func TestInvalidInputDepsetIdFromDepset(t *testing.T) {
+	const inputString = `
+{
+  "artifacts": [{
+    "id": 1,
+    "pathFragmentId": 1
+  }, {
+    "id": 2,
+    "pathFragmentId": 2
+  }],
+  "actions": [{
+    "targetId": 1,
+    "actionKey": "x",
+    "mnemonic": "x",
+    "arguments": ["touch", "foo"],
+    "inputDepSetIds": [1],
+    "outputIds": [1],
+    "primaryOutputId": 1
+  }],
+  "depSetOfFiles": [{
+    "id": 1,
+    "directArtifactIds": [1, 2],
+    "transitiveDepSetIds": [42]
+  }],
+  "pathFragments": [{
+    "id": 1,
+    "label": "one"
+  }, {
+    "id": 2,
+    "label": "two"
+  }]
+}`
+
+	_, _, err := AqueryBuildStatements([]byte(inputString))
+	assertError(t, err, "undefined input depsetId 42 (referenced by depsetId 1)")
 }
 
 func TestInvalidInputArtifactId(t *testing.T) {
@@ -352,7 +397,7 @@ func TestInvalidInputArtifactId(t *testing.T) {
   }]
 }`
 
-	_, err := AqueryBuildStatements([]byte(inputString))
+	_, _, err := AqueryBuildStatements([]byte(inputString))
 	assertError(t, err, "undefined input artifactId 3")
 }
 
@@ -389,7 +434,7 @@ func TestInvalidPathFragmentId(t *testing.T) {
   }]
 }`
 
-	_, err := AqueryBuildStatements([]byte(inputString))
+	_, _, err := AqueryBuildStatements([]byte(inputString))
 	assertError(t, err, "undefined path fragment id 3")
 }
 
@@ -431,7 +476,7 @@ func TestDepfiles(t *testing.T) {
   }]
 }`
 
-	actual, err := AqueryBuildStatements([]byte(inputString))
+	actual, _, err := AqueryBuildStatements([]byte(inputString))
 	if err != nil {
 		t.Errorf("Unexpected error %q", err)
 	}
@@ -492,7 +537,7 @@ func TestMultipleDepfiles(t *testing.T) {
   }]
 }`
 
-	_, err := AqueryBuildStatements([]byte(inputString))
+	_, _, err := AqueryBuildStatements([]byte(inputString))
 	assertError(t, err, `found multiple potential depfiles "two.d", "other.d"`)
 }
 
@@ -699,23 +744,31 @@ func TestTransitiveInputDepsets(t *testing.T) {
   }]
 }`
 
-	actualbuildStatements, _ := AqueryBuildStatements([]byte(inputString))
-	// Inputs for the action are test_{i} from 1 to 20, and test_root. These inputs
-	// are given via a deep depset, but the depset is flattened when returned as a
-	// BuildStatement slice.
-	inputPaths := []string{"bazel-out/sourceroot/k8-fastbuild/bin/testpkg/test_root"}
-	for i := 1; i < 20; i++ {
-		inputPaths = append(inputPaths, fmt.Sprintf("bazel-out/sourceroot/k8-fastbuild/bin/testpkg/test_%d", i))
-	}
+	actualbuildStatements, actualDepsets, _ := AqueryBuildStatements([]byte(inputString))
+
 	expectedBuildStatements := []BuildStatement{
 		BuildStatement{
 			Command:     "/bin/bash -c 'touch bazel-out/sourceroot/k8-fastbuild/bin/testpkg/test_out'",
 			OutputPaths: []string{"bazel-out/sourceroot/k8-fastbuild/bin/testpkg/test_out"},
-			InputPaths:  inputPaths,
 			Mnemonic:    "Action",
 		},
 	}
 	assertBuildStatements(t, expectedBuildStatements, actualbuildStatements)
+
+	// Inputs for the action are test_{i} from 1 to 20, and test_root. These inputs
+	// are given via a deep depset, but the depset is flattened when returned as a
+	// BuildStatement slice.
+	expectedFlattenedInputs := []string{}
+	for i := 1; i < 20; i++ {
+		expectedFlattenedInputs = append(expectedFlattenedInputs, fmt.Sprintf("bazel-out/sourceroot/k8-fastbuild/bin/testpkg/test_%d", i))
+	}
+	expectedFlattenedInputs = append(expectedFlattenedInputs, "bazel-out/sourceroot/k8-fastbuild/bin/testpkg/test_root")
+
+	actualDepsetHashes := actualbuildStatements[0].InputDepsetHashes
+	actualFlattenedInputs := flattenDepsets(actualDepsetHashes, actualDepsets)
+	if !reflect.DeepEqual(actualFlattenedInputs, expectedFlattenedInputs) {
+		t.Errorf("Expected flattened inputs %v, but got %v", expectedFlattenedInputs, actualFlattenedInputs)
+	}
 }
 
 func TestMiddlemenAction(t *testing.T) {
@@ -785,23 +838,72 @@ func TestMiddlemenAction(t *testing.T) {
   }]
 }`
 
-	actual, err := AqueryBuildStatements([]byte(inputString))
+	actualBuildStatements, actualDepsets, err := AqueryBuildStatements([]byte(inputString))
 	if err != nil {
 		t.Errorf("Unexpected error %q", err)
 	}
-	if expected := 1; len(actual) != expected {
-		t.Fatalf("Expected %d build statements, got %d", expected, len(actual))
+	if expected := 1; len(actualBuildStatements) != expected {
+		t.Fatalf("Expected %d build statements, got %d", expected, len(actualBuildStatements))
 	}
 
-	bs := actual[0]
-	expectedInputs := []string{"middleinput_one", "middleinput_two", "maininput_one", "maininput_two"}
-	if !reflect.DeepEqual(bs.InputPaths, expectedInputs) {
-		t.Errorf("Expected main action inputs %q, but got %q", expectedInputs, bs.InputPaths)
+	expectedDepsetFiles := [][]string{
+		[]string{"middleinput_one", "middleinput_two"},
+		[]string{"middleinput_one", "middleinput_two", "maininput_one", "maininput_two"},
+	}
+	assertFlattenedDepsets(t, actualDepsets, expectedDepsetFiles)
+
+	bs := actualBuildStatements[0]
+	if len(bs.InputPaths) > 0 {
+		t.Errorf("Expected main action raw inputs to be empty, but got %q", bs.InputPaths)
 	}
 
 	expectedOutputs := []string{"output"}
 	if !reflect.DeepEqual(bs.OutputPaths, expectedOutputs) {
 		t.Errorf("Expected main action outputs %q, but got %q", expectedOutputs, bs.OutputPaths)
+	}
+
+	expectedFlattenedInputs := []string{"middleinput_one", "middleinput_two", "maininput_one", "maininput_two"}
+	actualFlattenedInputs := flattenDepsets(bs.InputDepsetHashes, actualDepsets)
+
+	if !reflect.DeepEqual(actualFlattenedInputs, expectedFlattenedInputs) {
+		t.Errorf("Expected flattened inputs %v, but got %v", expectedFlattenedInputs, actualFlattenedInputs)
+	}
+}
+
+// Returns the contents of given depsets in concatenated post order.
+func flattenDepsets(depsetHashesToFlatten []string, allDepsets []AqueryDepset) []string {
+	depsetsByHash := map[string]AqueryDepset{}
+	for _, depset := range allDepsets {
+		depsetsByHash[depset.ContentHash] = depset
+	}
+	result := []string{}
+	for _, depsetId := range depsetHashesToFlatten {
+		result = append(result, flattenDepset(depsetId, depsetsByHash)...)
+	}
+	return result
+}
+
+// Returns the contents of a given depset in post order.
+func flattenDepset(depsetHashToFlatten string, allDepsets map[string]AqueryDepset) []string {
+	depset := allDepsets[depsetHashToFlatten]
+	result := []string{}
+	for _, depsetId := range depset.TransitiveDepSetHashes {
+		result = append(result, flattenDepset(depsetId, allDepsets)...)
+	}
+	result = append(result, depset.DirectArtifacts...)
+	return result
+}
+
+func assertFlattenedDepsets(t *testing.T, actualDepsets []AqueryDepset, expectedDepsetFiles [][]string) {
+	t.Helper()
+	if len(actualDepsets) != len(expectedDepsetFiles) {
+		t.Errorf("Expected %d depsets, but got %d depsets", expectedDepsetFiles, actualDepsets)
+	}
+	for i, actualDepset := range actualDepsets {
+		actualFlattenedInputs := flattenDepsets([]string{actualDepset.ContentHash}, actualDepsets)
+		if !reflect.DeepEqual(actualFlattenedInputs, expectedDepsetFiles[i]) {
+			t.Errorf("Expected depset files: %v, but got %v", expectedDepsetFiles[i], actualFlattenedInputs)
+		}
 	}
 }
 
@@ -849,7 +951,7 @@ func TestSimpleSymlink(t *testing.T) {
   }]
 }`
 
-	actual, err := AqueryBuildStatements([]byte(inputString))
+	actual, _, err := AqueryBuildStatements([]byte(inputString))
 
 	if err != nil {
 		t.Errorf("Unexpected error %q", err)
@@ -913,7 +1015,7 @@ func TestSymlinkQuotesPaths(t *testing.T) {
   }]
 }`
 
-	actual, err := AqueryBuildStatements([]byte(inputString))
+	actual, _, err := AqueryBuildStatements([]byte(inputString))
 
 	if err != nil {
 		t.Errorf("Unexpected error %q", err)
@@ -970,7 +1072,7 @@ func TestSymlinkMultipleInputs(t *testing.T) {
   }]
 }`
 
-	_, err := AqueryBuildStatements([]byte(inputString))
+	_, _, err := AqueryBuildStatements([]byte(inputString))
 	assertError(t, err, `Expect 1 input and 1 output to symlink action, got: input ["file" "other_file"], output ["symlink"]`)
 }
 
@@ -1011,7 +1113,7 @@ func TestSymlinkMultipleOutputs(t *testing.T) {
   }]
 }`
 
-	_, err := AqueryBuildStatements([]byte(inputString))
+	_, _, err := AqueryBuildStatements([]byte(inputString))
 	assertError(t, err, `Expect 1 input and 1 output to symlink action, got: input ["file"], output ["symlink" "other_symlink"]`)
 }
 
@@ -1045,7 +1147,7 @@ func TestTemplateExpandActionSubstitutions(t *testing.T) {
   }]
 }`
 
-	actual, err := AqueryBuildStatements([]byte(inputString))
+	actual, _, err := AqueryBuildStatements([]byte(inputString))
 
 	if err != nil {
 		t.Errorf("Unexpected error %q", err)
@@ -1091,7 +1193,7 @@ func TestTemplateExpandActionNoOutput(t *testing.T) {
   }]
 }`
 
-	_, err := AqueryBuildStatements([]byte(inputString))
+	_, _, err := AqueryBuildStatements([]byte(inputString))
 	assertError(t, err, `Expect 1 output to template expand action, got: output []`)
 }
 
@@ -1211,7 +1313,7 @@ func TestPythonZipperActionSuccess(t *testing.T) {
     "label": "python_binary"
   }]
 }`
-	actual, err := AqueryBuildStatements([]byte(inputString))
+	actual, _, err := AqueryBuildStatements([]byte(inputString))
 
 	if err != nil {
 		t.Errorf("Unexpected error %q", err)
@@ -1264,7 +1366,7 @@ func TestPythonZipperActionNoInput(t *testing.T) {
     "label": "python_binary.zip"
   }]
 }`
-	_, err := AqueryBuildStatements([]byte(inputString))
+	_, _, err := AqueryBuildStatements([]byte(inputString))
 	assertError(t, err, `Expect 1+ input and 1 output to python zipper action, got: input [], output ["python_binary.zip"]`)
 }
 
@@ -1360,7 +1462,7 @@ func TestPythonZipperActionNoOutput(t *testing.T) {
     "parentId": 11
   }]
 }`
-	_, err := AqueryBuildStatements([]byte(inputString))
+	_, _, err := AqueryBuildStatements([]byte(inputString))
 	assertError(t, err, `Expect 1+ input and 1 output to python zipper action, got: input ["../bazel_tools/tools/zip/zipper/zipper" "python_binary.py"], output []`)
 }
 

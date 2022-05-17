@@ -170,6 +170,9 @@ type CommonProperties struct {
 	}
 
 	Instrument bool `blueprint:"mutated"`
+	// If true, then the module supports statically including the jacocoagent
+	// into the library.
+	Supports_static_instrumentation bool `blueprint:"mutated"`
 
 	// List of files to include in the META-INF/services folder of the resulting jar.
 	Services []string `android:"path,arch_variant"`
@@ -442,9 +445,6 @@ type Module struct {
 	// manifest file to use instead of properties.Manifest
 	overrideManifest android.OptionalPath
 
-	// map of SDK version to class loader context
-	classLoaderContexts dexpreopt.ClassLoaderContextMap
-
 	// list of plugins that this java module is exporting
 	exportedPluginJars android.Paths
 
@@ -605,7 +605,8 @@ func (j *Module) shouldInstrument(ctx android.BaseModuleContext) bool {
 }
 
 func (j *Module) shouldInstrumentStatic(ctx android.BaseModuleContext) bool {
-	return j.shouldInstrument(ctx) &&
+	return j.properties.Supports_static_instrumentation &&
+		j.shouldInstrument(ctx) &&
 		(ctx.Config().IsEnvTrue("EMMA_INSTRUMENT_STATIC") ||
 			ctx.Config().UnbundledBuild())
 }
@@ -723,8 +724,10 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 			if component, ok := dep.(SdkLibraryComponentDependency); ok {
 				if lib := component.OptionalSdkLibraryImplementation(); lib != nil {
 					// Add library as optional if it's one of the optional compatibility libs.
-					optional := android.InList(*lib, dexpreopt.OptionalCompatUsesLibs)
-					tag := makeUsesLibraryDependencyTag(dexpreopt.AnySdkVersion, optional, true)
+					tag := usesLibReqTag
+					if android.InList(*lib, dexpreopt.OptionalCompatUsesLibs) {
+						tag = usesLibOptTag
+					}
 					ctx.AddVariationDependencies(nil, tag, *lib)
 				}
 			}
@@ -745,9 +748,7 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 		// Kotlin files
 		ctx.AddVariationDependencies(nil, kotlinStdlibTag,
 			"kotlin-stdlib", "kotlin-stdlib-jdk7", "kotlin-stdlib-jdk8")
-		if len(j.properties.Plugins) > 0 {
-			ctx.AddVariationDependencies(nil, kotlinAnnotationsTag, "kotlin-annotations")
-		}
+		ctx.AddVariationDependencies(nil, kotlinAnnotationsTag, "kotlin-annotations")
 	}
 
 	// Framework libraries need special handling in static coverage builds: they should not have
@@ -1019,6 +1020,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		ctx.PropertyErrorf("common_srcs", "common_srcs must be .kt files")
 	}
 
+	nonGeneratedSrcJars := srcFiles.FilterByExt(".srcjar")
 	srcFiles = j.genSources(ctx, srcFiles, flags)
 
 	// Collect javac flags only after computing the full set of srcFiles to
@@ -1103,8 +1105,6 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		flags.classpath = append(flags.classpath, deps.kotlinStdlib...)
 		flags.classpath = append(flags.classpath, deps.kotlinAnnotations...)
 
-		flags.dexClasspath = append(flags.dexClasspath, deps.kotlinAnnotations...)
-
 		flags.kotlincClasspath = append(flags.kotlincClasspath, flags.bootClasspath...)
 		flags.kotlincClasspath = append(flags.kotlincClasspath, flags.classpath...)
 
@@ -1136,9 +1136,12 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		// Jar kotlin classes into the final jar after javac
 		if BoolDefault(j.properties.Static_kotlin_stdlib, true) {
 			kotlinJars = append(kotlinJars, deps.kotlinStdlib...)
+			kotlinJars = append(kotlinJars, deps.kotlinAnnotations...)
 			kotlinHeaderJars = append(kotlinHeaderJars, deps.kotlinStdlib...)
+			kotlinHeaderJars = append(kotlinHeaderJars, deps.kotlinAnnotations...)
 		} else {
 			flags.dexClasspath = append(flags.dexClasspath, deps.kotlinStdlib...)
+			flags.dexClasspath = append(flags.dexClasspath, deps.kotlinAnnotations...)
 		}
 	}
 
@@ -1481,22 +1484,22 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	}
 
 	if ctx.Device() {
-		lintSDKVersionString := func(sdkSpec android.SdkSpec) string {
+		lintSDKVersion := func(sdkSpec android.SdkSpec) android.ApiLevel {
 			if v := sdkSpec.ApiLevel; !v.IsPreview() {
-				return v.String()
+				return v
 			} else {
-				return ctx.Config().DefaultAppTargetSdk(ctx).String()
+				return ctx.Config().DefaultAppTargetSdk(ctx)
 			}
 		}
 
 		j.linter.name = ctx.ModuleName()
-		j.linter.srcs = srcFiles
-		j.linter.srcJars = srcJars
+		j.linter.srcs = append(srcFiles, nonGeneratedSrcJars...)
+		j.linter.srcJars, _ = android.FilterPathList(srcJars, nonGeneratedSrcJars)
 		j.linter.classpath = append(append(android.Paths(nil), flags.bootClasspath...), flags.classpath...)
 		j.linter.classes = j.implementationJarFile
-		j.linter.minSdkVersion = lintSDKVersionString(j.MinSdkVersion(ctx))
-		j.linter.targetSdkVersion = lintSDKVersionString(j.TargetSdkVersion(ctx))
-		j.linter.compileSdkVersion = lintSDKVersionString(j.SdkVersion(ctx))
+		j.linter.minSdkVersion = lintSDKVersion(j.MinSdkVersion(ctx))
+		j.linter.targetSdkVersion = lintSDKVersion(j.TargetSdkVersion(ctx))
+		j.linter.compileSdkVersion = lintSDKVersion(j.SdkVersion(ctx))
 		j.linter.compileSdkKind = j.SdkVersion(ctx).Kind
 		j.linter.javaLanguageLevel = flags.javaVersion.String()
 		j.linter.kotlinLanguageLevel = "1.3"
@@ -1910,6 +1913,9 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			case bootClasspathTag:
 				deps.bootClasspath = append(deps.bootClasspath, dep.HeaderJars...)
 			case libTag, instrumentationForTag:
+				if _, ok := module.(*Plugin); ok {
+					ctx.ModuleErrorf("a java_plugin (%s) cannot be used as a libs dependency", otherName)
+				}
 				deps.classpath = append(deps.classpath, dep.HeaderJars...)
 				deps.dexClasspath = append(deps.dexClasspath, dep.HeaderJars...)
 				deps.aidlIncludeDirs = append(deps.aidlIncludeDirs, dep.AidlIncludeDirs...)
@@ -1918,6 +1924,9 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			case java9LibTag:
 				deps.java9Classpath = append(deps.java9Classpath, dep.HeaderJars...)
 			case staticLibTag:
+				if _, ok := module.(*Plugin); ok {
+					ctx.ModuleErrorf("a java_plugin (%s) cannot be used as a static_libs dependency", otherName)
+				}
 				deps.classpath = append(deps.classpath, dep.HeaderJars...)
 				deps.staticJars = append(deps.staticJars, dep.ImplementationJars...)
 				deps.staticHeaderJars = append(deps.staticHeaderJars, dep.HeaderJars...)

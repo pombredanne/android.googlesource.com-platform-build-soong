@@ -427,7 +427,8 @@ func TestUpdatableApps_JniLibShouldBeBuiltAgainstMinSdkVersion(t *testing.T) {
 			name: "libjni",
 			stl: "none",
 			system_shared_libs: [],
-			sdk_version: "29",
+			sdk_version: "current",
+			min_sdk_version: "29",
 		}
 	`
 	fs := map[string][]byte{
@@ -481,12 +482,13 @@ func TestUpdatableApps_ErrorIfJniLibDoesntSupportMinSdkVersion(t *testing.T) {
 			name: "libjni",
 			stl: "none",
 			sdk_version: "current",
+			min_sdk_version: "current",
 		}
 	`
-	testJavaError(t, `"libjni" .*: sdk_version\(current\) is higher than min_sdk_version\(29\)`, bp)
+	testJavaError(t, `"libjni" .*: min_sdk_version\(current\) is higher than min_sdk_version\(29\)`, bp)
 }
 
-func TestUpdatableApps_ErrorIfDepSdkVersionIsHigher(t *testing.T) {
+func TestUpdatableApps_ErrorIfDepMinSdkVersionIsHigher(t *testing.T) {
 	bp := cc.GatherRequiredDepsForTest(android.Android) + `
 		android_app {
 			name: "foo",
@@ -503,6 +505,7 @@ func TestUpdatableApps_ErrorIfDepSdkVersionIsHigher(t *testing.T) {
 			shared_libs: ["libbar"],
 			system_shared_libs: [],
 			sdk_version: "27",
+			min_sdk_version: "27",
 		}
 
 		cc_library {
@@ -510,6 +513,7 @@ func TestUpdatableApps_ErrorIfDepSdkVersionIsHigher(t *testing.T) {
 			stl: "none",
 			system_shared_libs: [],
 			sdk_version: "current",
+			min_sdk_version: "current",
 		}
 	`
 	testJavaError(t, `"libjni" .*: links "libbar" built against newer API version "current"`, bp)
@@ -1962,7 +1966,7 @@ func TestOverrideAndroidApp(t *testing.T) {
 
 		// Check if the overrides field values are correctly aggregated.
 		mod := variant.Module().(*AndroidApp)
-		android.AssertDeepEquals(t, "overrides property", expected.overrides, mod.appProperties.Overrides)
+		android.AssertDeepEquals(t, "overrides property", expected.overrides, mod.overridableAppProperties.Overrides)
 
 		// Test Overridable property: Logging_parent
 		logging_parent := mod.aapt.LoggingParent
@@ -1977,6 +1981,64 @@ func TestOverrideAndroidApp(t *testing.T) {
 			expectedPackage = ""
 		}
 		checkAapt2LinkFlag(t, aapt2Flags, "rename-resources-package", expectedPackage)
+	}
+}
+
+func TestOverrideAndroidAppOverrides(t *testing.T) {
+	ctx, _ := testJava(
+		t, `
+		android_app {
+			name: "foo",
+			srcs: ["a.java"],
+			sdk_version: "current",
+			overrides: ["qux"]
+		}
+
+		android_app {
+			name: "bar",
+			srcs: ["b.java"],
+			sdk_version: "current",
+			overrides: ["foo"]
+		}
+
+		override_android_app {
+			name: "foo_override",
+			base: "foo",
+			overrides: ["bar"]
+		}
+		`)
+
+	expectedVariants := []struct {
+		name        string
+		moduleName  string
+		variantName string
+		overrides   []string
+	}{
+		{
+			name:        "foo",
+			moduleName:  "foo",
+			variantName: "android_common",
+			overrides:   []string{"qux"},
+		},
+		{
+			name:        "bar",
+			moduleName:  "bar",
+			variantName: "android_common",
+			overrides:   []string{"foo"},
+		},
+		{
+			name:        "foo",
+			moduleName:  "foo_override",
+			variantName: "android_common_foo_override",
+			overrides:   []string{"bar", "foo"},
+		},
+	}
+	for _, expected := range expectedVariants {
+		variant := ctx.ModuleForTests(expected.name, expected.variantName)
+
+		// Check if the overrides field values are correctly aggregated.
+		mod := variant.Module().(*AndroidApp)
+		android.AssertDeepEquals(t, "overrides property", expected.overrides, mod.overridableAppProperties.Overrides)
 	}
 }
 
@@ -2160,9 +2222,9 @@ func TestOverrideAndroidTest(t *testing.T) {
 
 		// Check if the overrides field values are correctly aggregated.
 		mod := variant.Module().(*AndroidTest)
-		if !reflect.DeepEqual(expected.overrides, mod.appProperties.Overrides) {
+		if !reflect.DeepEqual(expected.overrides, mod.overridableAppProperties.Overrides) {
 			t.Errorf("Incorrect overrides property value, expected: %q, got: %q",
-				expected.overrides, mod.appProperties.Overrides)
+				expected.overrides, mod.overridableAppProperties.Overrides)
 		}
 
 		// Check if javac classpath has the correct jar file path. This checks instrumentation_for overrides.
@@ -2505,12 +2567,20 @@ func TestUsesLibraries(t *testing.T) {
 	prebuilt := result.ModuleForTests("prebuilt", "android_common")
 
 	// Test that implicit dependencies on java_sdk_library instances are passed to the manifest.
-	// This should not include explicit `uses_libs`/`optional_uses_libs` entries.
+	// These also include explicit `uses_libs`/`optional_uses_libs` entries, as they may be
+	// propagated from dependencies.
 	actualManifestFixerArgs := app.Output("manifest_fixer/AndroidManifest.xml").Args["args"]
 	expectManifestFixerArgs := `--extract-native-libs=true ` +
 		`--uses-library qux ` +
 		`--uses-library quuz ` +
-		`--uses-library runtime-library`
+		`--uses-library foo ` +
+		`--uses-library com.non.sdk.lib ` +
+		`--uses-library runtime-library ` +
+		`--uses-library runtime-required-x ` +
+		`--uses-library runtime-required-y ` +
+		`--optional-uses-library bar ` +
+		`--optional-uses-library runtime-optional-x ` +
+		`--optional-uses-library runtime-optional-y`
 	android.AssertStringDoesContain(t, "manifest_fixer args", actualManifestFixerArgs, expectManifestFixerArgs)
 
 	// Test that all libraries are verified (library order matters).

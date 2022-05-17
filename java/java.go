@@ -300,19 +300,11 @@ var _ android.LicenseAnnotationsDependencyTag = dependencyTag{}
 
 type usesLibraryDependencyTag struct {
 	dependencyTag
-
-	// SDK version in which the library appared as a standalone library.
-	sdkVersion int
-
-	// If the dependency is optional or required.
-	optional bool
-
-	// Whether this is an implicit dependency inferred by Soong, or an explicit one added via
-	// `uses_libs`/`optional_uses_libs` properties.
-	implicit bool
+	sdkVersion int  // SDK version in which the library appared as a standalone library.
+	optional   bool // If the dependency is optional or required.
 }
 
-func makeUsesLibraryDependencyTag(sdkVersion int, optional bool, implicit bool) usesLibraryDependencyTag {
+func makeUsesLibraryDependencyTag(sdkVersion int, optional bool) usesLibraryDependencyTag {
 	return usesLibraryDependencyTag{
 		dependencyTag: dependencyTag{
 			name:          fmt.Sprintf("uses-library-%d", sdkVersion),
@@ -320,7 +312,6 @@ func makeUsesLibraryDependencyTag(sdkVersion int, optional bool, implicit bool) 
 		},
 		sdkVersion: sdkVersion,
 		optional:   optional,
-		implicit:   implicit,
 	}
 }
 
@@ -351,6 +342,11 @@ var (
 	syspropPublicStubDepTag = dependencyTag{name: "sysprop public stub"}
 	jniInstallTag           = installDependencyTag{name: "jni install"}
 	binaryInstallTag        = installDependencyTag{name: "binary install"}
+	usesLibReqTag           = makeUsesLibraryDependencyTag(dexpreopt.AnySdkVersion, false)
+	usesLibOptTag           = makeUsesLibraryDependencyTag(dexpreopt.AnySdkVersion, true)
+	usesLibCompat28OptTag   = makeUsesLibraryDependencyTag(28, true)
+	usesLibCompat29ReqTag   = makeUsesLibraryDependencyTag(29, false)
+	usesLibCompat30OptTag   = makeUsesLibraryDependencyTag(30, true)
 )
 
 func IsLibDepTag(depTag blueprint.DependencyTag) bool {
@@ -1996,10 +1992,8 @@ func addCLCFromDep(ctx android.ModuleContext, depModule android.Module,
 	depTag := ctx.OtherModuleDependencyTag(depModule)
 	if depTag == libTag {
 		// Ok, propagate <uses-library> through non-static library dependencies.
-	} else if tag, ok := depTag.(usesLibraryDependencyTag); ok &&
-		tag.sdkVersion == dexpreopt.AnySdkVersion && tag.implicit {
-		// Ok, propagate <uses-library> through non-compatibility implicit <uses-library>
-		// dependencies.
+	} else if tag, ok := depTag.(usesLibraryDependencyTag); ok && tag.sdkVersion == dexpreopt.AnySdkVersion {
+		// Ok, propagate <uses-library> through non-compatibility <uses-library> dependencies.
 	} else if depTag == staticLibTag {
 		// Propagate <uses-library> through static library dependencies, unless it is a component
 		// library (such as stubs). Component libraries have a dependency on their SDK library,
@@ -2017,14 +2011,56 @@ func addCLCFromDep(ctx android.ModuleContext, depModule android.Module,
 	// <uses_library> and should not be added to CLC, but the transitive <uses-library> dependencies
 	// from its CLC should be added to the current CLC.
 	if sdkLib != nil {
-		clcMap.AddContext(ctx, dexpreopt.AnySdkVersion, *sdkLib, false, true,
+		clcMap.AddContext(ctx, dexpreopt.AnySdkVersion, *sdkLib, false,
 			dep.DexJarBuildPath().PathOrNil(), dep.DexJarInstallPath(), dep.ClassLoaderContexts())
 	} else {
 		clcMap.AddContextMap(dep.ClassLoaderContexts(), depName)
 	}
 }
 
+type javaResourcesAttributes struct {
+	Resources             bazel.LabelListAttribute
+	Resource_strip_prefix *string
+}
+
+func (m *Library) convertJavaResourcesAttributes(ctx android.TopDownMutatorContext) *javaResourcesAttributes {
+	var resources bazel.LabelList
+	var resourceStripPrefix *string
+
+	if m.properties.Java_resources != nil {
+		resources.Append(android.BazelLabelForModuleSrc(ctx, m.properties.Java_resources))
+	}
+
+	//TODO(b/179889880) handle case where glob includes files outside package
+	resDeps := ResourceDirsToFiles(
+		ctx,
+		m.properties.Java_resource_dirs,
+		m.properties.Exclude_java_resource_dirs,
+		m.properties.Exclude_java_resources,
+	)
+
+	for i, resDep := range resDeps {
+		dir, files := resDep.dir, resDep.files
+
+		resources.Append(bazel.MakeLabelList(android.RootToModuleRelativePaths(ctx, files)))
+
+		// Bazel includes the relative path from the WORKSPACE root when placing the resource
+		// inside the JAR file, so we need to remove that prefix
+		resourceStripPrefix = proptools.StringPtr(dir.String())
+		if i > 0 {
+			// TODO(b/226423379) allow multiple resource prefixes
+			ctx.ModuleErrorf("bp2build does not support more than one directory in java_resource_dirs (b/226423379)")
+		}
+	}
+
+	return &javaResourcesAttributes{
+		Resources:             bazel.MakeLabelListAttribute(resources),
+		Resource_strip_prefix: resourceStripPrefix,
+	}
+}
+
 type javaCommonAttributes struct {
+	*javaResourcesAttributes
 	Srcs      bazel.LabelListAttribute
 	Plugins   bazel.LabelListAttribute
 	Javacopts bazel.StringListAttribute
@@ -2089,6 +2125,11 @@ func (m *Library) convertLibraryAttrsBp2Build(ctx android.TopDownMutatorContext)
 	if m.properties.Javacflags != nil {
 		javacopts = append(javacopts, m.properties.Javacflags...)
 	}
+	if m.properties.Java_version != nil {
+		javaVersion := normalizeJavaVersion(ctx, *m.properties.Java_version).String()
+		javacopts = append(javacopts, fmt.Sprintf("-source %s -target %s", javaVersion, javaVersion))
+	}
+
 	epEnabled := m.properties.Errorprone.Enabled
 	//TODO(b/227504307) add configuration that depends on RUN_ERROR_PRONE environment variable
 	if Bool(epEnabled) {
@@ -2096,7 +2137,8 @@ func (m *Library) convertLibraryAttrsBp2Build(ctx android.TopDownMutatorContext)
 	}
 
 	commonAttrs := &javaCommonAttributes{
-		Srcs: javaSrcs,
+		Srcs:                    javaSrcs,
+		javaResourcesAttributes: m.convertJavaResourcesAttributes(ctx),
 		Plugins: bazel.MakeLabelListAttribute(
 			android.BazelLabelForModuleDeps(ctx, m.properties.Plugins),
 		),

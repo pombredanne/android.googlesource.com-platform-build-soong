@@ -36,7 +36,8 @@ var (
 	mergeProvenanceMetaData = pctx.AndroidStaticRule("mergeProvenanceMetaData",
 		blueprint.RuleParams{
 			Command: `rm -rf $out $out.temp && ` +
-				`echo -e "# proto-file: build/soong/provenance/proto/provenance_metadata.proto\n# proto-message: ProvenanceMetaDataList" > $out && ` +
+				`echo "# proto-file: build/soong/provenance/proto/provenance_metadata.proto" > $out && ` +
+				`echo "# proto-message: ProvenanceMetaDataList" >> $out && ` +
 				`touch $out.temp && cat $out.temp $in | grep -v "^#.*" >> $out && rm -rf $out.temp`,
 		})
 )
@@ -60,29 +61,32 @@ func provenanceInfoSingletonFactory() android.Singleton {
 }
 
 type provenanceInfoSingleton struct {
+	mergedMetaDataFile android.OutputPath
 }
 
-func (b *provenanceInfoSingleton) GenerateBuildActions(context android.SingletonContext) {
+func (p *provenanceInfoSingleton) GenerateBuildActions(context android.SingletonContext) {
 	allMetaDataFiles := make([]android.Path, 0)
 	context.VisitAllModulesIf(moduleFilter, func(module android.Module) {
 		if p, ok := module.(ProvenanceMetadata); ok {
 			allMetaDataFiles = append(allMetaDataFiles, p.ProvenanceMetaDataFile())
 		}
 	})
-	mergedMetaDataFile := android.PathForOutput(context, "provenance_metadata.textproto")
+	p.mergedMetaDataFile = android.PathForOutput(context, "provenance_metadata.textproto")
 	context.Build(pctx, android.BuildParams{
 		Rule:        mergeProvenanceMetaData,
 		Description: "merge provenance metadata",
 		Inputs:      allMetaDataFiles,
-		Output:      mergedMetaDataFile,
+		Output:      p.mergedMetaDataFile,
 	})
 
 	context.Build(pctx, android.BuildParams{
 		Rule:        blueprint.Phony,
 		Description: "phony rule of merge provenance metadata",
-		Inputs:      []android.Path{mergedMetaDataFile},
+		Inputs:      []android.Path{p.mergedMetaDataFile},
 		Output:      android.PathForPhony(context, "provenance_metadata"),
 	})
+
+	context.Phony("droidcore", android.PathForPhony(context, "provenance_metadata"))
 }
 
 func moduleFilter(module android.Module) bool {
@@ -110,3 +114,9 @@ func GenerateArtifactProvenanceMetaData(ctx android.ModuleContext, artifactPath 
 
 	return artifactMetaDataFile
 }
+
+func (p *provenanceInfoSingleton) MakeVars(ctx android.MakeVarsContext) {
+	ctx.DistForGoal("droidcore", p.mergedMetaDataFile)
+}
+
+var _ android.SingletonMakeVarsProvider = (*provenanceInfoSingleton)(nil)
