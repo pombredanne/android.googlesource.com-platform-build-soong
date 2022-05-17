@@ -25,6 +25,8 @@ import (
 	"android/soong/cc"
 	"android/soong/genrule"
 	"android/soong/java"
+
+	"github.com/google/blueprint/proptools"
 )
 
 // Prepare for running an sdk test with an apex.
@@ -81,6 +83,11 @@ var prepareForSdkTest = android.GroupFixturePreparers(
 		}
 	}),
 
+	// Add a build number file.
+	android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+		variables.BuildNumberFile = proptools.StringPtr(BUILD_NUMBER_FILE)
+	}),
+
 	// Make sure that every test provides all the source files.
 	android.PrepareForTestDisallowNonExistentPaths,
 	android.MockFS{
@@ -135,13 +142,17 @@ func getSdkSnapshotBuildInfo(t *testing.T, result *android.TestResult, sdk *sdk)
 		androidBpContents:            sdk.GetAndroidBpContentsForTests(),
 		androidUnversionedBpContents: sdk.GetUnversionedAndroidBpContentsForTests(),
 		androidVersionedBpContents:   sdk.GetVersionedAndroidBpContentsForTests(),
+		infoContents:                 sdk.GetInfoContentsForTests(),
 		snapshotTestCustomizations:   map[snapshotTest]*snapshotTestCustomization{},
+		targetBuildRelease:           sdk.builderForTests.targetBuildRelease,
 	}
 
 	buildParams := sdk.BuildParamsForTests()
 	copyRules := &strings.Builder{}
 	otherCopyRules := &strings.Builder{}
 	snapshotDirPrefix := sdk.builderForTests.snapshotDir.String() + "/"
+
+	seenBuildNumberFile := false
 	for _, bp := range buildParams {
 		switch bp.Rule.String() {
 		case android.Cp.String():
@@ -151,8 +162,14 @@ func getSdkSnapshotBuildInfo(t *testing.T, result *android.TestResult, sdk *sdk)
 			src := android.NormalizePathForTesting(bp.Input)
 			// We differentiate between copy rules for the snapshot, and copy rules for the install file.
 			if strings.HasPrefix(output.String(), snapshotDirPrefix) {
-				// Get source relative to build directory.
-				_, _ = fmt.Fprintf(copyRules, "%s -> %s\n", src, dest)
+				// Don't include the build-number.txt file in the copy rules as that would break lots of
+				// tests, just verify that it is copied here as it should appear in every snapshot.
+				if output.Base() == BUILD_NUMBER_FILE {
+					seenBuildNumberFile = true
+				} else {
+					// Get source relative to build directory.
+					_, _ = fmt.Fprintf(copyRules, "%s -> %s\n", src, dest)
+				}
 				info.snapshotContents = append(info.snapshotContents, dest)
 			} else {
 				_, _ = fmt.Fprintf(otherCopyRules, "%s -> %s\n", src, dest)
@@ -186,6 +203,10 @@ func getSdkSnapshotBuildInfo(t *testing.T, result *android.TestResult, sdk *sdk)
 			// Save the zips to be merged into the intermediate zip.
 			info.mergeZips = android.NormalizePathsForTesting(bp.Inputs)
 		}
+	}
+
+	if !seenBuildNumberFile {
+		panic(fmt.Sprintf("Every snapshot must include the %s file", BUILD_NUMBER_FILE))
 	}
 
 	info.copyRules = copyRules.String()
@@ -252,6 +273,13 @@ func CheckSnapshot(t *testing.T, result *android.TestResult, name string, dir st
 		fs[filepath.Join(snapshotSubDir, dest)] = nil
 	}
 	fs[filepath.Join(snapshotSubDir, "Android.bp")] = []byte(snapshotBuildInfo.androidBpContents)
+
+	// If the generated snapshot builders not for the current release then it cannot be loaded by
+	// the current release.
+	currentBuildRelease := latestBuildRelease()
+	if snapshotBuildInfo.targetBuildRelease != currentBuildRelease {
+		return
+	}
 
 	// The preparers from the original source fixture.
 	sourcePreparers := result.Preparer()
@@ -375,6 +403,17 @@ func checkMergeZips(expected ...string) snapshotBuildInfoChecker {
 	}
 }
 
+// Check that the snapshot's info contents are ciorrect.
+//
+// Both the expected and actual string are both trimmed before comparing.
+func checkInfoContents(expected string) snapshotBuildInfoChecker {
+	return func(info *snapshotBuildInfo) {
+		info.t.Helper()
+		android.AssertTrimmedStringEquals(info.t, "info contents do not match",
+			expected, info.infoContents)
+	}
+}
+
 type resultChecker func(t *testing.T, result *android.TestResult)
 
 // snapshotTestPreparer registers a preparer that will be used to customize the specified
@@ -452,6 +491,9 @@ type snapshotBuildInfo struct {
 	// The contents of the versioned Android.bp file
 	androidVersionedBpContents string
 
+	// The contents of the info file.
+	infoContents string
+
 	// The paths, relative to the snapshot root, of all files and directories copied into the
 	// snapshot.
 	snapshotContents []string
@@ -475,6 +517,9 @@ type snapshotBuildInfo struct {
 
 	// The final output zip.
 	outputZip string
+
+	// The target build release.
+	targetBuildRelease *buildRelease
 
 	// The test specific customizations for each snapshot test.
 	snapshotTestCustomizations map[snapshotTest]*snapshotTestCustomization

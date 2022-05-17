@@ -68,7 +68,6 @@ type platformBootclasspathProperties struct {
 func platformBootclasspathFactory() android.SingletonModule {
 	m := &platformBootclasspathModule{}
 	m.AddProperties(&m.properties)
-	// TODO(satayev): split apex jars into separate configs.
 	initClasspathFragment(m, BOOTCLASSPATH)
 	android.InitAndroidArchModule(m, android.DeviceSupported, android.MultilibCommon)
 	return m
@@ -316,7 +315,7 @@ func (b *platformBootclasspathModule) generateHiddenAPIBuildActions(ctx android.
 
 	// Generate the monolithic stub-flags.csv file.
 	stubFlags := hiddenAPISingletonPaths(ctx).stubFlags
-	buildRuleToGenerateHiddenAPIStubFlagsFile(ctx, "platform-bootclasspath-monolithic-hiddenapi-stub-flags", "monolithic hidden API stub flags", stubFlags, bootDexJarByModule.bootDexJars(), input, monolithicInfo.StubFlagsPaths)
+	buildRuleToGenerateHiddenAPIStubFlagsFile(ctx, "platform-bootclasspath-monolithic-hiddenapi-stub-flags", "monolithic hidden API stub flags", stubFlags, bootDexJarByModule.bootDexJars(), input, monolithicInfo.StubFlagSubsets)
 
 	// Generate the annotation-flags.csv file from all the module annotations.
 	annotationFlags := android.PathForModuleOut(ctx, "hiddenapi-monolithic", "annotation-flags-from-classes.csv")
@@ -329,7 +328,7 @@ func (b *platformBootclasspathModule) generateHiddenAPIBuildActions(ctx android.
 	allAnnotationFlagFiles := android.Paths{annotationFlags}
 	allAnnotationFlagFiles = append(allAnnotationFlagFiles, monolithicInfo.AnnotationFlagsPaths...)
 	allFlags := hiddenAPISingletonPaths(ctx).flags
-	buildRuleToGenerateHiddenApiFlags(ctx, "hiddenAPIFlagsFile", "monolithic hidden API flags", allFlags, stubFlags, allAnnotationFlagFiles, monolithicInfo.FlagsFilesByCategory, monolithicInfo.AllFlagsPaths, android.OptionalPath{})
+	buildRuleToGenerateHiddenApiFlags(ctx, "hiddenAPIFlagsFile", "monolithic hidden API flags", allFlags, stubFlags, allAnnotationFlagFiles, monolithicInfo.FlagsFilesByCategory, monolithicInfo.FlagSubsets, android.OptionalPath{})
 
 	// Generate an intermediate monolithic hiddenapi-metadata.csv file directly from the annotations
 	// in the source code.
@@ -423,9 +422,6 @@ func (b *platformBootclasspathModule) generateBootImageBuildActions(ctx android.
 
 	// Generate the framework profile rule
 	bootFrameworkProfileRule(ctx, imageConfig)
-
-	// Generate the updatable bootclasspath packages rule.
-	generateUpdatableBcpPackagesRule(ctx, imageConfig, apexModules)
 
 	// Copy platform module dex jars to their predefined locations.
 	platformBootDexJarsByModule := extractEncodedDexJarsFromModules(ctx, platformModules)
