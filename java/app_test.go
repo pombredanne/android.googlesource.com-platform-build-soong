@@ -27,7 +27,6 @@ import (
 	"android/soong/android"
 	"android/soong/cc"
 	"android/soong/dexpreopt"
-	"android/soong/genrule"
 )
 
 // testApp runs tests using the prepareForJavaTest
@@ -428,7 +427,8 @@ func TestUpdatableApps_JniLibShouldBeBuiltAgainstMinSdkVersion(t *testing.T) {
 			name: "libjni",
 			stl: "none",
 			system_shared_libs: [],
-			sdk_version: "29",
+			sdk_version: "current",
+			min_sdk_version: "29",
 		}
 	`
 	fs := map[string][]byte{
@@ -482,12 +482,13 @@ func TestUpdatableApps_ErrorIfJniLibDoesntSupportMinSdkVersion(t *testing.T) {
 			name: "libjni",
 			stl: "none",
 			sdk_version: "current",
+			min_sdk_version: "current",
 		}
 	`
-	testJavaError(t, `"libjni" .*: sdk_version\(current\) is higher than min_sdk_version\(29\)`, bp)
+	testJavaError(t, `"libjni" .*: min_sdk_version\(current\) is higher than min_sdk_version\(29\)`, bp)
 }
 
-func TestUpdatableApps_ErrorIfDepSdkVersionIsHigher(t *testing.T) {
+func TestUpdatableApps_ErrorIfDepMinSdkVersionIsHigher(t *testing.T) {
 	bp := cc.GatherRequiredDepsForTest(android.Android) + `
 		android_app {
 			name: "foo",
@@ -504,6 +505,7 @@ func TestUpdatableApps_ErrorIfDepSdkVersionIsHigher(t *testing.T) {
 			shared_libs: ["libbar"],
 			system_shared_libs: [],
 			sdk_version: "27",
+			min_sdk_version: "27",
 		}
 
 		cc_library {
@@ -511,6 +513,7 @@ func TestUpdatableApps_ErrorIfDepSdkVersionIsHigher(t *testing.T) {
 			stl: "none",
 			system_shared_libs: [],
 			sdk_version: "current",
+			min_sdk_version: "current",
 		}
 	`
 	testJavaError(t, `"libjni" .*: links "libbar" built against newer API version "current"`, bp)
@@ -2042,6 +2045,41 @@ func TestOverrideAndroidAppOverrides(t *testing.T) {
 	}
 }
 
+func TestOverrideAndroidAppWithPrebuilt(t *testing.T) {
+	result := PrepareForTestWithJavaDefaultModules.RunTestWithBp(
+		t, `
+		android_app {
+			name: "foo",
+			srcs: ["a.java"],
+			sdk_version: "current",
+		}
+
+		override_android_app {
+			name: "bar",
+			base: "foo",
+		}
+
+		android_app_import {
+			name: "bar",
+			prefer: true,
+			apk: "bar.apk",
+			presigned: true,
+		}
+		`)
+
+	// An app that has an override that also has a prebuilt should not be hidden.
+	foo := result.ModuleForTests("foo", "android_common")
+	if foo.Module().IsHideFromMake() {
+		t.Errorf("expected foo to have HideFromMake false")
+	}
+
+	// An override that also has a prebuilt should be hidden.
+	barOverride := result.ModuleForTests("foo", "android_common_bar")
+	if !barOverride.Module().IsHideFromMake() {
+		t.Errorf("expected bar override variant of foo to have HideFromMake true")
+	}
+}
+
 func TestOverrideAndroidAppStem(t *testing.T) {
 	ctx, _ := testJava(t, `
 		android_app {
@@ -2783,116 +2821,6 @@ func TestCodelessApp(t *testing.T) {
 	}
 }
 
-func TestEmbedNotice(t *testing.T) {
-	result := android.GroupFixturePreparers(
-		PrepareForTestWithJavaDefaultModules,
-		cc.PrepareForTestWithCcDefaultModules,
-		genrule.PrepareForTestWithGenRuleBuildComponents,
-		android.MockFS{
-			"APP_NOTICE":     nil,
-			"GENRULE_NOTICE": nil,
-			"LIB_NOTICE":     nil,
-			"TOOL_NOTICE":    nil,
-		}.AddToFixture(),
-	).RunTestWithBp(t, `
-		android_app {
-			name: "foo",
-			srcs: ["a.java"],
-			static_libs: ["javalib"],
-			jni_libs: ["libjni"],
-			notice: "APP_NOTICE",
-			embed_notices: true,
-			sdk_version: "current",
-		}
-
-		// No embed_notice flag
-		android_app {
-			name: "bar",
-			srcs: ["a.java"],
-			jni_libs: ["libjni"],
-			notice: "APP_NOTICE",
-			sdk_version: "current",
-		}
-
-		// No NOTICE files
-		android_app {
-			name: "baz",
-			srcs: ["a.java"],
-			embed_notices: true,
-			sdk_version: "current",
-		}
-
-		cc_library {
-			name: "libjni",
-			system_shared_libs: [],
-			stl: "none",
-			notice: "LIB_NOTICE",
-			sdk_version: "current",
-		}
-
-		java_library {
-			name: "javalib",
-			srcs: [
-				":gen",
-			],
-			sdk_version: "current",
-		}
-
-		genrule {
-			name: "gen",
-			tools: ["gentool"],
-			out: ["gen.java"],
-			notice: "GENRULE_NOTICE",
-		}
-
-		java_binary_host {
-			name: "gentool",
-			srcs: ["b.java"],
-			notice: "TOOL_NOTICE",
-		}
-	`)
-
-	// foo has NOTICE files to process, and embed_notices is true.
-	foo := result.ModuleForTests("foo", "android_common")
-	// verify merge notices rule.
-	mergeNotices := foo.Rule("mergeNoticesRule")
-	noticeInputs := mergeNotices.Inputs.Strings()
-	// TOOL_NOTICE should be excluded as it's a host module.
-	if len(mergeNotices.Inputs) != 3 {
-		t.Errorf("number of input notice files: expected = 3, actual = %q", noticeInputs)
-	}
-	if !inList("APP_NOTICE", noticeInputs) {
-		t.Errorf("APP_NOTICE is missing from notice files, %q", noticeInputs)
-	}
-	if !inList("LIB_NOTICE", noticeInputs) {
-		t.Errorf("LIB_NOTICE is missing from notice files, %q", noticeInputs)
-	}
-	if !inList("GENRULE_NOTICE", noticeInputs) {
-		t.Errorf("GENRULE_NOTICE is missing from notice files, %q", noticeInputs)
-	}
-	// aapt2 flags should include -A <NOTICE dir> so that its contents are put in the APK's /assets.
-	res := foo.Output("package-res.apk")
-	aapt2Flags := res.Args["flags"]
-	e := "-A out/soong/.intermediates/foo/android_common/NOTICE"
-	android.AssertStringDoesContain(t, "expected.apkPath", aapt2Flags, e)
-
-	// bar has NOTICE files to process, but embed_notices is not set.
-	bar := result.ModuleForTests("bar", "android_common")
-	res = bar.Output("package-res.apk")
-	aapt2Flags = res.Args["flags"]
-	e = "-A out/soong/.intermediates/bar/android_common/NOTICE"
-	android.AssertStringDoesNotContain(t, "bar shouldn't have the asset dir flag for NOTICE", aapt2Flags, e)
-
-	// baz's embed_notice is true, but it doesn't have any NOTICE files.
-	baz := result.ModuleForTests("baz", "android_common")
-	res = baz.Output("package-res.apk")
-	aapt2Flags = res.Args["flags"]
-	e = "-A out/soong/.intermediates/baz/android_common/NOTICE"
-	if strings.Contains(aapt2Flags, e) {
-		t.Errorf("baz shouldn't have the asset dir flag for NOTICE: %q", e)
-	}
-}
-
 func TestUncompressDex(t *testing.T) {
 	testCases := []struct {
 		name string
@@ -3119,4 +3047,25 @@ func TestTargetSdkVersionManifestFixer(t *testing.T) {
 		manifestFixerArgs := foo.Output("manifest_fixer/AndroidManifest.xml").Args["args"]
 		android.AssertStringDoesContain(t, testCase.name, manifestFixerArgs, "--targetSdkVersion  "+testCase.targetSdkVersionExpected)
 	}
+}
+
+func TestAppMissingCertificateAllowMissingDependencies(t *testing.T) {
+	result := android.GroupFixturePreparers(
+		PrepareForTestWithJavaDefaultModules,
+		android.PrepareForTestWithAllowMissingDependencies,
+		android.PrepareForTestWithAndroidMk,
+	).RunTestWithBp(t, `
+		android_app {
+			name: "foo",
+			srcs: ["a.java"],
+			certificate: ":missing_certificate",
+			sdk_version: "current",
+		}`)
+
+	foo := result.ModuleForTests("foo", "android_common")
+	fooApk := foo.Output("foo.apk")
+	if fooApk.Rule != android.ErrorRule {
+		t.Fatalf("expected ErrorRule for foo.apk, got %s", fooApk.Rule.String())
+	}
+	android.AssertStringDoesContain(t, "expected error rule message", fooApk.Args["error"], "missing dependencies: missing_certificate\n")
 }
