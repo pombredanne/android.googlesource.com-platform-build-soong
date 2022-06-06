@@ -324,7 +324,7 @@ func (binary *Binary) AndroidMkEntries() []android.AndroidMkEntries {
 }
 
 func (app *AndroidApp) AndroidMkEntries() []android.AndroidMkEntries {
-	if app.hideApexVariantFromMake || app.appProperties.HideFromMake {
+	if app.hideApexVariantFromMake || app.IsHideFromMake() {
 		return []android.AndroidMkEntries{android.AndroidMkEntries{
 			Disabled: true,
 		}}
@@ -623,6 +623,7 @@ func (dstubs *Droidstubs) AndroidMkEntries() []android.AndroidMkEntries {
 					if dstubs.apiLintReport != nil {
 						fmt.Fprintf(w, "$(call dist-for-goals,%s,%s:%s)\n", dstubs.Name()+"-api-lint",
 							dstubs.apiLintReport.String(), "apilint/"+dstubs.Name()+"-lint-report.txt")
+						fmt.Fprintf(w, "$(call declare-0p-target,%s)\n", dstubs.apiLintReport.String())
 					}
 				}
 				if dstubs.checkNullabilityWarningsTimestamp != nil {

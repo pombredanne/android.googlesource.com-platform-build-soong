@@ -39,14 +39,18 @@ var (
 	Bp2buildDefaultConfig = Bp2BuildConfig{
 		"art/libartpalette":                     Bp2BuildDefaultTrueRecursively,
 		"art/libdexfile":                        Bp2BuildDefaultTrueRecursively,
+		"art/libnativebridge":                   Bp2BuildDefaultTrueRecursively,
 		"art/runtime":                           Bp2BuildDefaultTrueRecursively,
 		"art/tools":                             Bp2BuildDefaultTrue,
 		"bionic":                                Bp2BuildDefaultTrueRecursively,
 		"bootable/recovery/tools/recovery_l10n": Bp2BuildDefaultTrue,
+		"build/bazel/examples/apex/minimal":     Bp2BuildDefaultTrueRecursively,
 		"build/bazel/examples/soong_config_variables":        Bp2BuildDefaultTrueRecursively,
-		"build/bazel/examples/apex/minimal":                  Bp2BuildDefaultTrueRecursively,
-		"build/make/tools/signapk":                           Bp2BuildDefaultTrue,
+		"build/bazel/examples/python":                        Bp2BuildDefaultTrueRecursively,
+		"build/bazel/examples/gensrcs":                       Bp2BuildDefaultTrueRecursively,
 		"build/make/target/product/security":                 Bp2BuildDefaultTrue,
+		"build/make/tools/signapk":                           Bp2BuildDefaultTrue,
+		"build/make/tools/zipalign":                          Bp2BuildDefaultTrueRecursively,
 		"build/soong":                                        Bp2BuildDefaultTrue,
 		"build/soong/cc/libbuildversion":                     Bp2BuildDefaultTrue, // Skip tests subdir
 		"build/soong/cc/ndkstubgen":                          Bp2BuildDefaultTrue,
@@ -90,6 +94,7 @@ var (
 		"development/samples/VoicemailProviderDemo":          Bp2BuildDefaultTrue,
 		"development/samples/WiFiDirectDemo":                 Bp2BuildDefaultTrue,
 		"development/sdk":                                    Bp2BuildDefaultTrueRecursively,
+		"external/aac":                                       Bp2BuildDefaultTrueRecursively,
 		"external/arm-optimized-routines":                    Bp2BuildDefaultTrueRecursively,
 		"external/auto/android-annotation-stubs":             Bp2BuildDefaultTrueRecursively,
 		"external/auto/common":                               Bp2BuildDefaultTrueRecursively,
@@ -99,7 +104,11 @@ var (
 		"external/brotli":                                    Bp2BuildDefaultTrue,
 		"external/conscrypt":                                 Bp2BuildDefaultTrue,
 		"external/e2fsprogs":                                 Bp2BuildDefaultTrueRecursively,
+		"external/eigen":                                     Bp2BuildDefaultTrueRecursively,
+		"external/erofs-utils":                               Bp2BuildDefaultTrueRecursively,
 		"external/error_prone":                               Bp2BuildDefaultTrueRecursively,
+		"external/f2fs-tools":                                Bp2BuildDefaultTrue,
+		"external/flac":                                      Bp2BuildDefaultTrueRecursively,
 		"external/fmtlib":                                    Bp2BuildDefaultTrueRecursively,
 		"external/google-benchmark":                          Bp2BuildDefaultTrueRecursively,
 		"external/googletest":                                Bp2BuildDefaultTrueRecursively,
@@ -113,10 +122,14 @@ var (
 		"external/jemalloc_new":                              Bp2BuildDefaultTrueRecursively,
 		"external/jsoncpp":                                   Bp2BuildDefaultTrueRecursively,
 		"external/junit":                                     Bp2BuildDefaultTrueRecursively,
+		"external/libavc":                                    Bp2BuildDefaultTrueRecursively,
 		"external/libcap":                                    Bp2BuildDefaultTrueRecursively,
 		"external/libcxx":                                    Bp2BuildDefaultTrueRecursively,
 		"external/libcxxabi":                                 Bp2BuildDefaultTrueRecursively,
 		"external/libevent":                                  Bp2BuildDefaultTrueRecursively,
+		"external/libgav1":                                   Bp2BuildDefaultTrueRecursively,
+		"external/libhevc":                                   Bp2BuildDefaultTrueRecursively,
+		"external/libmpeg2":                                  Bp2BuildDefaultTrueRecursively,
 		"external/libpng":                                    Bp2BuildDefaultTrueRecursively,
 		"external/lz4/lib":                                   Bp2BuildDefaultTrue,
 		"external/lzma/C":                                    Bp2BuildDefaultTrueRecursively,
@@ -130,11 +143,17 @@ var (
 		"external/selinux/libselinux":                        Bp2BuildDefaultTrueRecursively,
 		"external/selinux/libsepol":                          Bp2BuildDefaultTrueRecursively,
 		"external/zlib":                                      Bp2BuildDefaultTrueRecursively,
+		"external/zopfli":                                    Bp2BuildDefaultTrueRecursively,
 		"external/zstd":                                      Bp2BuildDefaultTrueRecursively,
+		"frameworks/av/media/codecs/g711/decoder":            Bp2BuildDefaultTrueRecursively,
+		"frameworks/av/services/minijail":                    Bp2BuildDefaultTrueRecursively,
 		"frameworks/base/media/tests/MediaDump":              Bp2BuildDefaultTrue,
 		"frameworks/base/startop/apps/test":                  Bp2BuildDefaultTrue,
 		"frameworks/base/tests/appwidgets/AppWidgetHostTest": Bp2BuildDefaultTrueRecursively,
 		"frameworks/native/libs/adbd_auth":                   Bp2BuildDefaultTrueRecursively,
+		"frameworks/native/libs/arect":                       Bp2BuildDefaultTrueRecursively,
+		"frameworks/native/libs/math":                        Bp2BuildDefaultTrueRecursively,
+		"frameworks/native/libs/nativebase":                  Bp2BuildDefaultTrueRecursively,
 		"frameworks/native/opengl/tests/gl2_cameraeye":       Bp2BuildDefaultTrue,
 		"frameworks/native/opengl/tests/gl2_java":            Bp2BuildDefaultTrue,
 		"frameworks/native/opengl/tests/testLatency":         Bp2BuildDefaultTrue,
@@ -160,8 +179,10 @@ var (
 		"prebuilts/clang/host/linux-x86":                     Bp2BuildDefaultTrueRecursively,
 		"prebuilts/tools/common/m2":                          Bp2BuildDefaultTrue,
 		"system/apex":                                        Bp2BuildDefaultFalse, // TODO(b/207466993): flaky failures
-		"system/apex/proto":                                  Bp2BuildDefaultTrueRecursively,
+		"system/apex/apexer":                                 Bp2BuildDefaultTrue,
 		"system/apex/libs":                                   Bp2BuildDefaultTrueRecursively,
+		"system/apex/proto":                                  Bp2BuildDefaultTrueRecursively,
+		"system/apex/tools":                                  Bp2BuildDefaultTrueRecursively,
 		"system/core/debuggerd":                              Bp2BuildDefaultTrueRecursively,
 		"system/core/diagnose_usb":                           Bp2BuildDefaultTrueRecursively,
 		"system/core/libasyncio":                             Bp2BuildDefaultTrue,
@@ -175,10 +196,15 @@ var (
 		"system/core/libutils":                               Bp2BuildDefaultTrueRecursively,
 		"system/core/libvndksupport":                         Bp2BuildDefaultTrueRecursively,
 		"system/core/property_service/libpropertyinfoparser": Bp2BuildDefaultTrueRecursively,
+		"system/libartpalette":                               Bp2BuildDefaultTrueRecursively,
 		"system/libbase":                                     Bp2BuildDefaultTrueRecursively,
+		"system/libfmq":                                      Bp2BuildDefaultTrue,
+		"system/libhwbinder":                                 Bp2BuildDefaultTrueRecursively,
 		"system/libprocinfo":                                 Bp2BuildDefaultTrue,
 		"system/libziparchive":                               Bp2BuildDefaultTrueRecursively,
 		"system/logging/liblog":                              Bp2BuildDefaultTrueRecursively,
+		"system/media/audio":                                 Bp2BuildDefaultTrueRecursively,
+		"system/memory/libion":                               Bp2BuildDefaultTrueRecursively,
 		"system/memory/libmemunreachable":                    Bp2BuildDefaultTrueRecursively,
 		"system/sepolicy/apex":                               Bp2BuildDefaultTrueRecursively,
 		"system/timezone/apex":                               Bp2BuildDefaultTrueRecursively,
@@ -227,7 +253,7 @@ var (
 
 		"prebuilts/bundletool":/* recursive = */ true,
 		"prebuilts/gcc":/* recursive = */ true,
-		"prebuilts/build-tools":/* recursive = */ false,
+		"prebuilts/build-tools":/* recursive = */ true,
 		"prebuilts/jdk/jdk11":/* recursive = */ false,
 		"prebuilts/sdk":/* recursive = */ false,
 		"prebuilts/sdk/current/extras/app-toolkit":/* recursive = */ false,
@@ -237,6 +263,25 @@ var (
 	}
 
 	Bp2buildModuleAlwaysConvertList = []string{
+		// cc mainline modules
+		"code_coverage.policy",
+		"code_coverage.policy.other",
+		"codec2_soft_exports",
+		"com.android.media.swcodec-ld.config.txt",
+		"com.android.media.swcodec-mediaswcodec.rc",
+		"flatbuffer_headers",
+		"gemmlowp_headers",
+		"gl_headers",
+		"libaudioclient_aidl_conversion_util",
+		"libaudioutils_fixedfft",
+		"libbluetooth-types-header",
+		"libcodec2_headers",
+		"libcodec2_internal",
+		"libdmabufheap",
+		"libgui_bufferqueue_sources",
+		"libnativeloader-headers",
+		"libsync",
+
 		//external/avb
 		"avbtool",
 		"libavb",
@@ -276,22 +321,24 @@ var (
 
 	Bp2buildModuleDoNotConvertList = []string{
 		// cc bugs
-		"libsepol",                                  // TODO(b/207408632): Unsupported case of .l sources in cc library rules
 		"libactivitymanager_aidl",                   // TODO(b/207426160): Unsupported use of aidl sources (via Dactivity_manager_procstate_aidl) in a cc_library
 		"gen-kotlin-build-file.py",                  // TODO(b/198619163) module has same name as source
 		"libgtest_ndk_c++", "libgtest_main_ndk_c++", // TODO(b/201816222): Requires sdk_version support.
 		"linkerconfig", "mdnsd", // TODO(b/202876379): has arch-variant static_executable
-		"linker",       // TODO(b/228316882): cc_binary uses link_crt
-		"libdebuggerd", // TODO(b/228314770): support product variable-specific header_libs
-		"versioner",    // TODO(b/228313961):  depends on prebuilt shared library libclang-cpp_host as a shared library, which does not supply expected providers for a shared library
+		"linker",                // TODO(b/228316882): cc_binary uses link_crt
+		"libdebuggerd",          // TODO(b/228314770): support product variable-specific header_libs
+		"versioner",             // TODO(b/228313961):  depends on prebuilt shared library libclang-cpp_host as a shared library, which does not supply expected providers for a shared library
+		"f2fs.fibmap",           // ld.lld: error: undefined symbol: _IO
+		"f2fscrypt",             // TODO(b/234340806):  error: incompatible integer to pointer conversion initializing 'FILE *' (aka 'struct _IO_FILE *') with an expression of type 'int', and  error: incomplete definition of type 'struct mntent'
+		"apexer", "apexer_test", // Requires aapt2
+		"apexer_test_host_tools",
+		"host_apex_verifier",
 
 		// java bugs
 		"libbase_ndk", // TODO(b/186826477): fails to link libctscamera2_jni for device (required for CtsCameraTestCases)
 
 		// python protos
-		"libprotobuf-python",                           // TODO(b/196084681): contains .proto sources
-		"apex_build_info_proto", "apex_manifest_proto", // TODO(b/196084681): a python lib with proto sources
-		"linker_config_proto", // TODO(b/196084681): contains .proto sources
+		"libprotobuf-python", // Has a handcrafted alternative
 
 		// genrule incompatibilities
 		"brotli-fuzzer-corpus",                                       // TODO(b/202015218): outputs are in location incompatible with bazel genrule handling.
@@ -329,15 +376,14 @@ var (
 		"libtombstoned_client_rust_bridge_code", "libtombstoned_client_wrapper", // rust conversions are not supported
 
 		// unconverted deps
-		"CarHTMLViewer",                // depends on unconverted modules android.car-stubs, car-ui-lib
-		"abb",                          // depends on unconverted modules: libcmd, libbinder
-		"adb",                          // depends on unconverted modules: AdbWinApi, libandroidfw, libopenscreen-discovery, libopenscreen-platform-impl, libusb, bin2c_fastdeployagent, AdbWinUsbApi
-		"android_icu4j_srcgen",         // depends on unconverted modules: currysrc
-		"android_icu4j_srcgen_binary",  // depends on unconverted modules: android_icu4j_srcgen, currysrc
-		"apex_manifest_proto_java",     // b/210751803, depends on libprotobuf-java-full
-		"art-script",                   // depends on unconverted modules: dalvikvm, dex2oat
-		"bin2c_fastdeployagent",        // depends on unconverted modules: deployagent
-		"chkcon", "sefcontext_compile", // depends on unconverted modules: libsepol
+		"CarHTMLViewer",                                              // depends on unconverted modules android.car-stubs, car-ui-lib
+		"abb",                                                        // depends on unconverted modules: libcmd, libbinder
+		"adb",                                                        // depends on unconverted modules: AdbWinApi, libandroidfw, libopenscreen-discovery, libopenscreen-platform-impl, libusb, bin2c_fastdeployagent, AdbWinUsbApi
+		"android_icu4j_srcgen",                                       // depends on unconverted modules: currysrc
+		"android_icu4j_srcgen_binary",                                // depends on unconverted modules: android_icu4j_srcgen, currysrc
+		"apex_manifest_proto_java",                                   // b/210751803, depends on libprotobuf-java-full
+		"art-script",                                                 // depends on unconverted modules: dalvikvm, dex2oat
+		"bin2c_fastdeployagent",                                      // depends on unconverted modules: deployagent
 		"com.android.runtime",                                        // depends on unconverted modules: bionic-linker-config, linkerconfig
 		"conv_linker_config",                                         // depends on unconverted modules: linker_config_proto
 		"currysrc",                                                   // depends on unconverted modules: currysrc_org.eclipse, guavalib, jopt-simple-4.9
