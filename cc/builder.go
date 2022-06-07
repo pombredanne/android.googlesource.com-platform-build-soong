@@ -202,36 +202,22 @@ var (
 		},
 		"clangBin", "format")
 
-	// Rule for invoking clang-tidy (a clang-based linter).
-	clangTidyDep, clangTidyDepRE = pctx.RemoteStaticRules("clangTidyDep",
-		blueprint.RuleParams{
-			Depfile: "$out",
-			Deps:    blueprint.DepsGCC,
-			Command: "${config.CcWrapper}$ccCmd $cFlags -E -o /dev/null $in " +
-				"-MQ $tidyFile -MD -MF $out",
-			CommandDeps: []string{"$ccCmd"},
-		},
-		&remoteexec.REParams{
-			Labels:       map[string]string{"type": "lint", "tool": "clang-tidy", "lang": "cpp"},
-			ExecStrategy: "${config.REClangTidyExecStrategy}",
-			Inputs:       []string{"$in"},
-			Platform:     map[string]string{remoteexec.PoolKey: "${config.REClangTidyPool}"},
-		}, []string{"ccCmd", "cFlags", "tidyFile"}, []string{})
-
+	// Rules for invoking clang-tidy (a clang-based linter).
 	clangTidy, clangTidyRE = pctx.RemoteStaticRules("clangTidy",
 		blueprint.RuleParams{
 			Depfile: "${out}.d",
 			Deps:    blueprint.DepsGCC,
-			Command: "cp ${out}.dep ${out}.d && " +
-				"$tidyVars$reTemplate${config.ClangBin}/clang-tidy $tidyFlags $in -- $cFlags && " +
-				"touch $out",
-			CommandDeps: []string{"${config.ClangBin}/clang-tidy"},
+			Command: "CLANG_CMD=$clangCmd TIDY_FILE=$out " +
+				"$tidyVars$reTemplate${config.ClangBin}/clang-tidy.sh $in $tidyFlags -- $cFlags",
+			CommandDeps: []string{"${config.ClangBin}/clang-tidy.sh", "$ccCmd", "$tidyCmd"},
 		},
 		&remoteexec.REParams{
 			Labels:               map[string]string{"type": "lint", "tool": "clang-tidy", "lang": "cpp"},
 			ExecStrategy:         "${config.REClangTidyExecStrategy}",
-			Inputs:               []string{"$in", "${out}.dep"},
-			EnvironmentVariables: []string{"TIDY_TIMEOUT"},
+			Inputs:               []string{"$in"},
+			OutputFiles:          []string{"${out}", "${out}.d"},
+			ToolchainInputs:      []string{"$ccCmd", "$tidyCmd"},
+			EnvironmentVariables: []string{"CLANG_CMD", "TIDY_FILE", "TIDY_TIMEOUT"},
 			// Although clang-tidy has an option to "fix" source files, that feature is hardly useable
 			// under parallel compilation and RBE. So we assume no OutputFiles here.
 			// The clang-tidy fix option is best run locally in single thread.
@@ -239,7 +225,7 @@ var (
 			// (1) New timestamps trigger clang and clang-tidy compilations again.
 			// (2) Changing source files caused concurrent clang or clang-tidy jobs to crash.
 			Platform: map[string]string{remoteexec.PoolKey: "${config.REClangTidyPool}"},
-		}, []string{"cFlags", "tidyFlags", "tidyVars"}, []string{})
+		}, []string{"cFlags", "ccCmd", "clangCmd", "tidyCmd", "tidyFlags", "tidyVars"}, []string{})
 
 	_ = pctx.SourcePathVariable("yasmCmd", "prebuilts/misc/${config.HostPrebuiltTag}/yasm/yasm")
 
@@ -636,6 +622,7 @@ func transformSourceToObj(ctx ModuleContext, subdir string, srcFiles, noTidySrcs
 			continue
 		}
 
+		// ccCmd is "clang" or "clang++"
 		ccDesc := ccCmd
 
 		ccCmd = "${config.ClangBin}/" + ccCmd
@@ -681,43 +668,30 @@ func transformSourceToObj(ctx ModuleContext, subdir string, srcFiles, noTidySrcs
 		//  Even with tidy, some src file could be skipped by noTidySrcsMap.
 		if tidy && !noTidySrcsMap[srcFile.String()] {
 			tidyFile := android.ObjPathWithExt(ctx, subdir, srcFile, "tidy")
-			tidyDepFile := android.ObjPathWithExt(ctx, subdir, srcFile, "tidy.dep")
 			tidyFiles = append(tidyFiles, tidyFile)
+			tidyCmd := "${config.ClangBin}/clang-tidy"
 
-			ruleDep := clangTidyDep
 			rule := clangTidy
 			if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_CLANG_TIDY") {
-				ruleDep = clangTidyDepRE
 				rule = clangTidyRE
 			}
 
 			sharedCFlags := shareFlags("cFlags", moduleFlags)
 			srcRelPath := srcFile.Rel()
 
-			// Add the .tidy.d rule
-			ctx.Build(pctx, android.BuildParams{
-				Rule:        ruleDep,
-				Description: "clang-tidy-dep " + srcRelPath,
-				Output:      tidyDepFile,
-				Input:       srcFile,
-				Implicits:   cFlagsDeps,
-				OrderOnly:   pathDeps,
-				Args: map[string]string{
-					"ccCmd":    ccCmd,
-					"cFlags":   sharedCFlags,
-					"tidyFile": tidyFile.String(),
-				},
-			})
-			// Add the .tidy rule with order only dependency on the .tidy.d file
+			// Add the .tidy rule
 			ctx.Build(pctx, android.BuildParams{
 				Rule:        rule,
 				Description: "clang-tidy " + srcRelPath,
 				Output:      tidyFile,
 				Input:       srcFile,
 				Implicits:   cFlagsDeps,
-				OrderOnly:   append(android.Paths{}, tidyDepFile),
+				OrderOnly:   pathDeps,
 				Args: map[string]string{
 					"cFlags":    sharedCFlags,
+					"ccCmd":     ccCmd,
+					"clangCmd":  ccDesc,
+					"tidyCmd":   tidyCmd,
 					"tidyFlags": shareFlags("tidyFlags", config.TidyFlagsForSrcFile(srcFile, flags.tidyFlags)),
 					"tidyVars":  tidyVars, // short and not shared
 				},
@@ -855,24 +829,13 @@ func transformObjToDynamicBinary(ctx android.ModuleContext,
 	deps = append(deps, crtBegin...)
 	deps = append(deps, crtEnd...)
 
-	var depFile android.WritablePath
-	var depFileLdFlags string
-	depsType := blueprint.DepsNone
-	if !ctx.Windows() && !ctx.Darwin() {
-		// lld only supports --dependency-file for elf files
-		depFile = outputFile.ReplaceExtension(ctx, "d")
-		depFileLdFlags = " -Wl,--dependency-file=" + depFile.String()
-		depsType = blueprint.DepsGCC
-		implicitOutputs = append(implicitOutputs, depFile)
-	}
-
 	rule := ld
 	args := map[string]string{
 		"ldCmd":         ldCmd,
 		"crtBegin":      strings.Join(crtBegin.Strings(), " "),
 		"libFlags":      strings.Join(libFlagsList, " "),
 		"extraLibFlags": flags.extraLibFlags,
-		"ldFlags":       flags.globalLdFlags + " " + flags.localLdFlags + depFileLdFlags,
+		"ldFlags":       flags.globalLdFlags + " " + flags.localLdFlags,
 		"crtEnd":        strings.Join(crtEnd.Strings(), " "),
 	}
 	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_CXX_LINKS") {
@@ -883,8 +846,6 @@ func transformObjToDynamicBinary(ctx android.ModuleContext,
 
 	ctx.Build(pctx, android.BuildParams{
 		Rule:            rule,
-		Deps:            depsType,
-		Depfile:         depFile,
 		Description:     "link " + outputFile.Base(),
 		Output:          outputFile,
 		ImplicitOutputs: implicitOutputs,
@@ -957,9 +918,10 @@ func unzipRefDump(ctx android.ModuleContext, zippedRefDump android.Path, baseNam
 	return outputFile
 }
 
-// sourceAbiDiff registers a build statement to compare linked sAbi dump files (.ldump).
+// sourceAbiDiff registers a build statement to compare linked sAbi dump files (.lsdump).
 func sourceAbiDiff(ctx android.ModuleContext, inputDump android.Path, referenceDump android.Path,
-	baseName, exportedHeaderFlags string, checkAllApis, isLlndk, isNdk, isVndkExt bool) android.OptionalPath {
+	baseName, exportedHeaderFlags string, diffFlags []string,
+	checkAllApis, isLlndk, isNdk, isVndkExt bool) android.OptionalPath {
 
 	outputFile := android.PathForModuleOut(ctx, baseName+".abidiff")
 	libName := strings.TrimSuffix(baseName, filepath.Ext(baseName))
@@ -990,6 +952,8 @@ func sourceAbiDiff(ctx android.ModuleContext, inputDump android.Path, referenceD
 	if isVndkExt {
 		extraFlags = append(extraFlags, "-allow-extensions")
 	}
+	// TODO(b/232891473): Simplify the above logic with diffFlags.
+	extraFlags = append(extraFlags, diffFlags...)
 
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        sAbiDiff,
@@ -1038,33 +1002,18 @@ func transformObjsToObj(ctx android.ModuleContext, objFiles android.Paths,
 
 	ldCmd := "${config.ClangBin}/clang++"
 
-	var implicitOutputs android.WritablePaths
-	var depFile android.WritablePath
-	var depFileLdFlags string
-	depsType := blueprint.DepsNone
-	if !ctx.Windows() && !ctx.Darwin() {
-		// lld only supports --dependency-file for elf files
-		depFile = outputFile.ReplaceExtension(ctx, "d")
-		depFileLdFlags = " -Wl,--dependency-file=" + depFile.String()
-		depsType = blueprint.DepsGCC
-		implicitOutputs = append(implicitOutputs, depFile)
-	}
-
 	rule := partialLd
 	args := map[string]string{
 		"ldCmd":   ldCmd,
-		"ldFlags": flags.globalLdFlags + " " + flags.localLdFlags + depFileLdFlags,
+		"ldFlags": flags.globalLdFlags + " " + flags.localLdFlags,
 	}
 	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_CXX_LINKS") {
 		rule = partialLdRE
 		args["inCommaList"] = strings.Join(objFiles.Strings(), ",")
 		args["implicitInputs"] = strings.Join(deps.Strings(), ",")
-		args["implicitOutputs"] = strings.Join(implicitOutputs.Strings(), ",")
 	}
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        rule,
-		Deps:        depsType,
-		Depfile:     depFile,
 		Description: "link " + outputFile.Base(),
 		Output:      outputFile,
 		Inputs:      objFiles,
