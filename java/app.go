@@ -99,7 +99,6 @@ type appProperties struct {
 
 	// cc.Coverage related properties
 	PreventInstall    bool `blueprint:"mutated"`
-	HideFromMake      bool `blueprint:"mutated"`
 	IsCoverageVariant bool `blueprint:"mutated"`
 
 	// Whether this app is considered mainline updatable or not. When set to true, this will enforce
@@ -305,10 +304,6 @@ func (a *AndroidApp) checkAppSdkVersions(ctx android.ModuleContext) {
 
 // If an updatable APK sets min_sdk_version, min_sdk_vesion of JNI libs should match with it.
 // This check is enforced for "updatable" APKs (including APK-in-APEX).
-// b/155209650: until min_sdk_version is properly supported, use sdk_version instead.
-// because, sdk_version is overridden by min_sdk_version (if set as smaller)
-// and sdkLinkType is checked with dependencies so we can be sure that the whole dependency tree
-// will meet the requirements.
 func (a *AndroidApp) checkJniLibsSdkVersion(ctx android.ModuleContext, minSdkVersion android.ApiLevel) {
 	// It's enough to check direct JNI deps' sdk_version because all transitive deps from JNI deps are checked in cc.checkLinkType()
 	ctx.VisitDirectDeps(func(m android.Module) {
@@ -319,10 +314,10 @@ func (a *AndroidApp) checkJniLibsSdkVersion(ctx android.ModuleContext, minSdkVer
 		// The domain of cc.sdk_version is "current" and <number>
 		// We can rely on android.SdkSpec to convert it to <number> so that "current" is
 		// handled properly regardless of sdk finalization.
-		jniSdkVersion, err := android.SdkSpecFrom(ctx, dep.SdkVersion()).EffectiveVersion(ctx)
+		jniSdkVersion, err := android.SdkSpecFrom(ctx, dep.MinSdkVersion()).EffectiveVersion(ctx)
 		if err != nil || minSdkVersion.LessThan(jniSdkVersion) {
-			ctx.OtherModuleErrorf(dep, "sdk_version(%v) is higher than min_sdk_version(%v) of the containing android_app(%v)",
-				dep.SdkVersion(), minSdkVersion, ctx.ModuleName())
+			ctx.OtherModuleErrorf(dep, "min_sdk_version(%v) is higher than min_sdk_version(%v) of the containing android_app(%v)",
+				dep.MinSdkVersion(), minSdkVersion, ctx.ModuleName())
 			return
 		}
 
@@ -851,6 +846,10 @@ func (a *AndroidApp) Updatable() bool {
 	return Bool(a.appProperties.Updatable)
 }
 
+func (a *AndroidApp) SetUpdatable(val bool) {
+	a.appProperties.Updatable = &val
+}
+
 func (a *AndroidApp) getCertString(ctx android.BaseModuleContext) string {
 	certificate, overridden := ctx.DeviceConfig().OverrideCertificateFor(ctx.ModuleName())
 	if overridden {
@@ -889,10 +888,6 @@ func (a *AndroidApp) SetPreventInstall() {
 	a.appProperties.PreventInstall = true
 }
 
-func (a *AndroidApp) HideFromMake() {
-	a.appProperties.HideFromMake = true
-}
-
 func (a *AndroidApp) MarkAsCoverageVariant(coverage bool) {
 	a.appProperties.IsCoverageVariant = coverage
 }
@@ -909,6 +904,7 @@ func AndroidAppFactory() android.Module {
 	module.Module.dexProperties.Optimize.Shrink = proptools.BoolPtr(true)
 
 	module.Module.properties.Instrument = true
+	module.Module.properties.Supports_static_instrumentation = true
 	module.Module.properties.Installable = proptools.BoolPtr(true)
 
 	module.addHostAndDeviceProperties()
@@ -1028,6 +1024,7 @@ func AndroidTestFactory() android.Module {
 	module.Module.dexProperties.Optimize.EnabledByDefault = true
 
 	module.Module.properties.Instrument = true
+	module.Module.properties.Supports_static_instrumentation = true
 	module.Module.properties.Installable = proptools.BoolPtr(true)
 	module.appProperties.Use_embedded_native_libs = proptools.BoolPtr(true)
 	module.appProperties.AlwaysPackageNativeLibs = true

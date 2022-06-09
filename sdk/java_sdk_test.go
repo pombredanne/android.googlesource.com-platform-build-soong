@@ -71,90 +71,6 @@ func TestSdkDependsOnSourceEvenWhenPrebuiltPreferred(t *testing.T) {
 	)
 }
 
-func TestBasicSdkWithJavaLibrary(t *testing.T) {
-	result := android.GroupFixturePreparers(
-		prepareForSdkTestWithJava,
-		prepareForSdkTestWithApex,
-	).RunTestWithBp(t, `
-		sdk {
-			name: "mysdk",
-			java_header_libs: ["sdkmember"],
-		}
-
-		sdk_snapshot {
-			name: "mysdk@1",
-			java_header_libs: ["sdkmember_mysdk@1"],
-		}
-
-		sdk_snapshot {
-			name: "mysdk@2",
-			java_header_libs: ["sdkmember_mysdk@2"],
-		}
-
-		java_library {
-			name: "sdkmember",
-			srcs: ["Test.java"],
-			system_modules: "none",
-			sdk_version: "none",
-			host_supported: true,
-		}
-
-		java_import {
-			name: "sdkmember_mysdk@1",
-			sdk_member_name: "sdkmember",
-			host_supported: true,
-		}
-
-		java_import {
-			name: "sdkmember_mysdk@2",
-			sdk_member_name: "sdkmember",
-			host_supported: true,
-		}
-
-		java_library {
-			name: "myjavalib",
-			srcs: ["Test.java"],
-			libs: ["sdkmember"],
-			system_modules: "none",
-			sdk_version: "none",
-			compile_dex: true,
-			host_supported: true,
-			apex_available: [
-				"myapex",
-				"myapex2",
-			],
-		}
-
-		apex {
-			name: "myapex",
-			java_libs: ["myjavalib"],
-			uses_sdks: ["mysdk@1"],
-			key: "myapex.key",
-			certificate: ":myapex.cert",
-			updatable: false,
-		}
-
-		apex {
-			name: "myapex2",
-			java_libs: ["myjavalib"],
-			uses_sdks: ["mysdk@2"],
-			key: "myapex.key",
-			certificate: ":myapex.cert",
-			updatable: false,
-		}
-	`)
-
-	sdkMemberV1 := result.ModuleForTests("sdkmember_mysdk@1", "android_common").Rule("combineJar").Output
-	sdkMemberV2 := result.ModuleForTests("sdkmember_mysdk@2", "android_common").Rule("combineJar").Output
-
-	javalibForMyApex := result.ModuleForTests("myjavalib", "android_common_apex10000_mysdk_1")
-	javalibForMyApex2 := result.ModuleForTests("myjavalib", "android_common_apex10000_mysdk_2")
-
-	// Depending on the uses_sdks value, different libs are linked
-	ensureListContains(t, pathsToStrings(javalibForMyApex.Rule("javac").Implicits), sdkMemberV1.String())
-	ensureListContains(t, pathsToStrings(javalibForMyApex2.Rule("javac").Implicits), sdkMemberV2.String())
-}
-
 func TestSnapshotWithJavaHeaderLibrary(t *testing.T) {
 	result := android.GroupFixturePreparers(
 		prepareForSdkTestWithJava,
@@ -735,7 +651,19 @@ module_exports_snapshot {
 }
 
 func TestSnapshotWithJavaSystemModules(t *testing.T) {
-	result := android.GroupFixturePreparers(prepareForSdkTestWithJavaSdkLibrary).RunTestWithBp(t, `
+	result := android.GroupFixturePreparers(
+		prepareForSdkTestWithJava,
+		java.PrepareForTestWithJavaDefaultModules,
+		java.PrepareForTestWithJavaSdkLibraryFiles,
+		java.FixtureWithPrebuiltApisAndExtensions(map[string][]string{
+			"31":      {"myjavalib"},
+			"32":      {"myjavalib"},
+			"current": {"myjavalib"},
+		}, map[string][]string{
+			"1": {"myjavalib"},
+			"2": {"myjavalib"},
+		}),
+	).RunTestWithBp(t, `
 		sdk {
 			name: "mysdk",
 			java_header_libs: ["exported-system-module"],
@@ -879,6 +807,53 @@ sdk_snapshot {
 .intermediates/myjavalib.stubs/android_common/javac/myjavalib.stubs.jar -> sdk_library/public/myjavalib-stubs.jar
 .intermediates/myjavalib.stubs.source/android_common/metalava/myjavalib.stubs.source_api.txt -> sdk_library/public/myjavalib.txt
 .intermediates/myjavalib.stubs.source/android_common/metalava/myjavalib.stubs.source_removed.txt -> sdk_library/public/myjavalib-removed.txt
+`),
+		checkInfoContents(result.Config, `
+[
+  {
+    "@type": "sdk",
+    "@name": "mysdk",
+    "java_header_libs": [
+      "exported-system-module",
+      "system-module"
+    ],
+    "java_sdk_libs": [
+      "myjavalib"
+    ],
+    "java_system_modules": [
+      "my-system-modules"
+    ]
+  },
+  {
+    "@type": "java_library",
+    "@name": "exported-system-module"
+  },
+  {
+    "@type": "java_system_modules",
+    "@name": "my-system-modules",
+    "@deps": [
+      "exported-system-module",
+      "system-module"
+    ]
+  },
+  {
+    "@type": "java_sdk_library",
+    "@name": "myjavalib",
+    "dist_stem": "myjavalib",
+    "scopes": {
+      "public": {
+        "current_api": "sdk_library/public/myjavalib.txt",
+        "latest_api": "out/soong/.intermediates/prebuilts/sdk/myjavalib.api.public.latest/gen/myjavalib.api.public.latest",
+        "latest_removed_api": "out/soong/.intermediates/prebuilts/sdk/myjavalib-removed.api.public.latest/gen/myjavalib-removed.api.public.latest",
+        "removed_api": "sdk_library/public/myjavalib-removed.txt"
+      }
+    }
+  },
+  {
+    "@type": "java_library",
+    "@name": "system-module"
+  }
+]
 `),
 	)
 }
