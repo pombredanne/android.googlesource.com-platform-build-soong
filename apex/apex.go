@@ -2523,8 +2523,10 @@ func (o *OverrideApex) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 		}
 
 		// Prebuilts
-		prebuiltsLabelList := android.BazelLabelForModuleDeps(ctx, overridableProperties.Prebuilts)
-		attrs.Prebuilts = bazel.MakeLabelListAttribute(prebuiltsLabelList)
+		if overridableProperties.Prebuilts != nil {
+			prebuiltsLabelList := android.BazelLabelForModuleDeps(ctx, overridableProperties.Prebuilts)
+			attrs.Prebuilts = bazel.MakeLabelListAttribute(prebuiltsLabelList)
+		}
 
 		// Compressible
 		if overridableProperties.Compressible != nil {
@@ -2545,6 +2547,11 @@ func (o *OverrideApex) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 		// from the soong_injection's product_vars, so product config is decoupled from bp2build.
 		if overridableProperties.Package_name != "" {
 			attrs.Package_name = &overridableProperties.Package_name
+		}
+
+		// Logging parent
+		if overridableProperties.Logging_parent != "" {
+			attrs.Logging_parent = &overridableProperties.Logging_parent
 		}
 	}
 
@@ -3488,6 +3495,7 @@ type bazelApexBundleAttributes struct {
 	Native_shared_libs_64 bazel.LabelListAttribute
 	Compressible          bazel.BoolAttribute
 	Package_name          *string
+	Logging_parent        *string
 }
 
 type convertedNativeSharedLibs struct {
@@ -3587,6 +3595,11 @@ func convertWithBp2build(a *apexBundle, ctx android.TopDownMutatorContext) (baze
 		packageName = &a.overridableProperties.Package_name
 	}
 
+	var loggingParent *string
+	if a.overridableProperties.Logging_parent != "" {
+		loggingParent = &a.overridableProperties.Logging_parent
+	}
+
 	attrs := bazelApexBundleAttributes{
 		Manifest:              manifestLabelAttribute,
 		Android_manifest:      androidManifestLabelAttribute,
@@ -3602,6 +3615,7 @@ func convertWithBp2build(a *apexBundle, ctx android.TopDownMutatorContext) (baze
 		Prebuilts:             prebuiltsLabelListAttribute,
 		Compressible:          compressibleAttribute,
 		Package_name:          packageName,
+		Logging_parent:        loggingParent,
 	}
 
 	props := bazel.BazelTargetModuleProperties{

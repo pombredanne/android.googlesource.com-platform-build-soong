@@ -37,14 +37,15 @@ const (
 
 var (
 	Bp2buildDefaultConfig = Bp2BuildConfig{
-		"art/libartpalette":                     Bp2BuildDefaultTrueRecursively,
-		"art/libdexfile":                        Bp2BuildDefaultTrueRecursively,
-		"art/libnativebridge":                   Bp2BuildDefaultTrueRecursively,
-		"art/runtime":                           Bp2BuildDefaultTrueRecursively,
-		"art/tools":                             Bp2BuildDefaultTrue,
-		"bionic":                                Bp2BuildDefaultTrueRecursively,
-		"bootable/recovery/tools/recovery_l10n": Bp2BuildDefaultTrue,
-		"build/bazel/examples/apex/minimal":     Bp2BuildDefaultTrueRecursively,
+		"prebuilts/runtime/mainline/platform/sdk":            Bp2BuildDefaultTrueRecursively,
+		"art/libartpalette":                                  Bp2BuildDefaultTrueRecursively,
+		"art/libdexfile":                                     Bp2BuildDefaultTrueRecursively,
+		"art/libnativebridge":                                Bp2BuildDefaultTrueRecursively,
+		"art/runtime":                                        Bp2BuildDefaultTrueRecursively,
+		"art/tools":                                          Bp2BuildDefaultTrue,
+		"bionic":                                             Bp2BuildDefaultTrueRecursively,
+		"bootable/recovery/tools/recovery_l10n":              Bp2BuildDefaultTrue,
+		"build/bazel/examples/apex/minimal":                  Bp2BuildDefaultTrueRecursively,
 		"build/bazel/examples/soong_config_variables":        Bp2BuildDefaultTrueRecursively,
 		"build/bazel/examples/python":                        Bp2BuildDefaultTrueRecursively,
 		"build/bazel/examples/gensrcs":                       Bp2BuildDefaultTrueRecursively,
@@ -267,20 +268,53 @@ var (
 		"code_coverage.policy",
 		"code_coverage.policy.other",
 		"codec2_soft_exports",
+		"com.android.media.swcodec-androidManifest",
 		"com.android.media.swcodec-ld.config.txt",
 		"com.android.media.swcodec-mediaswcodec.rc",
+		"com.android.media.swcodec.certificate",
+		"com.android.media.swcodec.key",
+		"com.android.neuralnetworks-androidManifest",
+		"com.android.neuralnetworks.certificate",
+		"com.android.neuralnetworks.key",
 		"flatbuffer_headers",
 		"gemmlowp_headers",
 		"gl_headers",
+		"libandroid_runtime_vm_headers",
 		"libaudioclient_aidl_conversion_util",
 		"libaudioutils_fixedfft",
+		"libbinder_headers_platform_shared",
 		"libbluetooth-types-header",
 		"libcodec2_headers",
 		"libcodec2_internal",
 		"libdmabufheap",
+		"libgsm",
 		"libgui_bufferqueue_sources",
+		"libhardware_headers",
 		"libnativeloader-headers",
+		"libnativewindow_headers",
+		"libneuralnetworks_headers",
+		"libopus",
+		"libprocpartition",
+		"libserviceutils",
+		"libstagefright_amrnb_common",
+		"libstagefright_amrwbdec",
+		"libstagefright_enc_common",
+		"libstagefright_foundation_headers",
+		"libstagefright_headers",
+		"libstagefright_m4vh263dec",
+		"libstagefright_m4vh263enc",
+		"libstagefright_mp3dec_headers",
 		"libsync",
+		"libtextclassifier_hash_headers",
+		"libtextclassifier_hash_static",
+		"libui-types",
+		"libvorbisidec",
+		"media_ndk_headers",
+		"mediaswcodec.policy",
+		"mediaswcodec.xml",
+		"philox_random_headers",
+		"server_configurable_flags",
+		"tensorflow_headers",
 
 		//external/avb
 		"avbtool",
@@ -295,6 +329,7 @@ var (
 
 		//system/extras/ext4_utils
 		"libext4_utils",
+		"mke2fs_conf",
 
 		//system/extras/libfec
 		"libfec",
@@ -325,12 +360,10 @@ var (
 		"gen-kotlin-build-file.py",                  // TODO(b/198619163) module has same name as source
 		"libgtest_ndk_c++", "libgtest_main_ndk_c++", // TODO(b/201816222): Requires sdk_version support.
 		"linkerconfig", "mdnsd", // TODO(b/202876379): has arch-variant static_executable
-		"linker",                // TODO(b/228316882): cc_binary uses link_crt
-		"libdebuggerd",          // TODO(b/228314770): support product variable-specific header_libs
-		"versioner",             // TODO(b/228313961):  depends on prebuilt shared library libclang-cpp_host as a shared library, which does not supply expected providers for a shared library
-		"f2fs.fibmap",           // ld.lld: error: undefined symbol: _IO
-		"f2fscrypt",             // TODO(b/234340806):  error: incompatible integer to pointer conversion initializing 'FILE *' (aka 'struct _IO_FILE *') with an expression of type 'int', and  error: incomplete definition of type 'struct mntent'
-		"apexer", "apexer_test", // Requires aapt2
+		"linker",       // TODO(b/228316882): cc_binary uses link_crt
+		"libdebuggerd", // TODO(b/228314770): support product variable-specific header_libs
+		"versioner",    // TODO(b/228313961):  depends on prebuilt shared library libclang-cpp_host as a shared library, which does not supply expected providers for a shared library
+		"apexer_test",  // Requires aapt2
 		"apexer_test_host_tools",
 		"host_apex_verifier",
 
