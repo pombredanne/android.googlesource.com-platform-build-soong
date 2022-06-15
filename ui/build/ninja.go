@@ -141,8 +141,6 @@ func runNinjaForBuild(ctx Context, config Config) {
 
 			// RBE client
 			"RBE_compare",
-			"RBE_num_local_reruns",
-			"RBE_num_remote_reruns",
 			"RBE_exec_root",
 			"RBE_exec_strategy",
 			"RBE_invocation_id",
@@ -169,9 +167,6 @@ func runNinjaForBuild(ctx Context, config Config) {
 			"CCACHE_BASEDIR",
 			"CCACHE_CPP2",
 			"CCACHE_DIR",
-
-			// LLVM compiler wrapper options
-			"TOOLCHAIN_RUSAGE_OUTPUT",
 		}, config.BuildBrokenNinjaUsesEnvVars()...)...)
 	}
 

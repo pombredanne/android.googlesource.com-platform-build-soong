@@ -22,7 +22,6 @@ import (
 	"strings"
 
 	"android/soong/android"
-	"android/soong/snapshot"
 )
 
 var _ android.ImageInterface = (*Module)(nil)
@@ -342,11 +341,11 @@ func (m *Module) RecoveryAvailable() bool {
 }
 
 func (m *Module) ExtraVariants() []string {
-	return m.Properties.ExtraVersionedImageVariations
+	return m.Properties.ExtraVariants
 }
 
 func (m *Module) AppendExtraVariant(extraVariant string) {
-	m.Properties.ExtraVersionedImageVariations = append(m.Properties.ExtraVersionedImageVariations, extraVariant)
+	m.Properties.ExtraVariants = append(m.Properties.ExtraVariants, extraVariant)
 }
 
 func (m *Module) SetRamdiskVariantNeeded(b bool) {
@@ -366,8 +365,8 @@ func (m *Module) SetCoreVariantNeeded(b bool) {
 }
 
 func (m *Module) SnapshotVersion(mctx android.BaseModuleContext) string {
-	if snapshot, ok := m.linker.(SnapshotInterface); ok {
-		return snapshot.Version()
+	if snapshot, ok := m.linker.(snapshotInterface); ok {
+		return snapshot.version()
 	} else {
 		mctx.ModuleErrorf("version is unknown for snapshot prebuilt")
 		// Should we be panicking here instead?
@@ -497,7 +496,7 @@ func MutateImage(mctx android.BaseModuleContext, m ImageMutatableModule) {
 		// BOARD_VNDK_VERSION. The other modules are regarded as AOSP, or
 		// PLATFORM_VNDK_VERSION.
 		if m.HasVendorVariant() {
-			if snapshot.IsVendorProprietaryModule(mctx) {
+			if isVendorProprietaryModule(mctx) {
 				vendorVariants = append(vendorVariants, boardVndkVersion)
 			} else {
 				vendorVariants = append(vendorVariants, platformVndkVersion)
@@ -526,7 +525,7 @@ func MutateImage(mctx android.BaseModuleContext, m ImageMutatableModule) {
 				platformVndkVersion,
 				boardVndkVersion,
 			)
-		} else if snapshot.IsVendorProprietaryModule(mctx) {
+		} else if isVendorProprietaryModule(mctx) {
 			vendorVariants = append(vendorVariants, boardVndkVersion)
 		} else {
 			vendorVariants = append(vendorVariants, platformVndkVersion)
@@ -580,10 +579,10 @@ func MutateImage(mctx android.BaseModuleContext, m ImageMutatableModule) {
 
 	// If using a snapshot, the recovery variant under AOSP directories is not needed,
 	// except for kernel headers, which needs all variants.
-	if !m.KernelHeadersDecorator() &&
+	if m.KernelHeadersDecorator() &&
 		!m.IsSnapshotPrebuilt() &&
 		usingRecoverySnapshot &&
-		!snapshot.IsRecoveryProprietaryModule(mctx) {
+		!isRecoveryProprietaryModule(mctx) {
 		recoveryVariantNeeded = false
 	}
 
@@ -630,7 +629,7 @@ func (c *Module) RecoveryVariantNeeded(ctx android.BaseModuleContext) bool {
 }
 
 func (c *Module) ExtraImageVariations(ctx android.BaseModuleContext) []string {
-	return c.Properties.ExtraVersionedImageVariations
+	return c.Properties.ExtraVariants
 }
 
 func squashVendorSrcs(m *Module) {

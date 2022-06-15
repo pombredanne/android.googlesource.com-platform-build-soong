@@ -17,7 +17,6 @@ package main
 import (
 	"bytes"
 	"io"
-	"regexp"
 	"testing"
 	"time"
 )
@@ -50,7 +49,7 @@ func Test_runWithTimeout(t *testing.T) {
 			args: args{
 				command: "echo",
 				args:    []string{"foo"},
-				timeout: 10 * time.Second,
+				timeout: 1 * time.Second,
 			},
 			wantStdout: "foo\n",
 		},
@@ -58,22 +57,20 @@ func Test_runWithTimeout(t *testing.T) {
 			name: "timed out",
 			args: args{
 				command: "sh",
-				args:    []string{"-c", "sleep 10 && echo foo"},
+				args:    []string{"-c", "sleep 1 && echo foo"},
 				timeout: 1 * time.Millisecond,
 			},
-			wantStderr: ".*: process timed out after .*\n",
-			wantErr:    true,
+			wantErr: true,
 		},
 		{
 			name: "on_timeout command",
 			args: args{
 				command:      "sh",
-				args:         []string{"-c", "sleep 10 && echo foo"},
+				args:         []string{"-c", "sleep 1 && echo foo"},
 				timeout:      1 * time.Millisecond,
 				onTimeoutCmd: "echo bar",
 			},
 			wantStdout: "bar\n",
-			wantStderr: ".*: process timed out after .*\n.*: running on_timeout command `echo bar`\n",
 			wantErr:    true,
 		},
 	}
@@ -89,7 +86,7 @@ func Test_runWithTimeout(t *testing.T) {
 			if gotStdout := stdout.String(); gotStdout != tt.wantStdout {
 				t.Errorf("runWithTimeout() gotStdout = %v, want %v", gotStdout, tt.wantStdout)
 			}
-			if gotStderr := stderr.String(); !regexp.MustCompile(tt.wantStderr).MatchString(gotStderr) {
+			if gotStderr := stderr.String(); gotStderr != tt.wantStderr {
 				t.Errorf("runWithTimeout() gotStderr = %v, want %v", gotStderr, tt.wantStderr)
 			}
 		})

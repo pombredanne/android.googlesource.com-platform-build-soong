@@ -19,7 +19,6 @@ import (
 	"strings"
 
 	"github.com/google/blueprint"
-	"github.com/google/blueprint/proptools"
 
 	"android/soong/remoteexec"
 )
@@ -174,7 +173,7 @@ func (p PackageContext) SourcePathVariableWithEnvOverride(name, path, env string
 // package-scoped variable's initialization.
 func (p PackageContext) HostBinToolVariable(name, path string) blueprint.Variable {
 	return p.VariableFunc(name, func(ctx PackageVarContext) string {
-		return proptools.NinjaAndShellEscape(ctx.Config().HostToolPath(ctx, path).String())
+		return ctx.Config().HostToolPath(ctx, path).String()
 	})
 }
 
@@ -184,7 +183,7 @@ func (p PackageContext) HostBinToolVariable(name, path string) blueprint.Variabl
 // package-scoped variable's initialization.
 func (p PackageContext) HostJNIToolVariable(name, path string) blueprint.Variable {
 	return p.VariableFunc(name, func(ctx PackageVarContext) string {
-		return proptools.NinjaAndShellEscape(ctx.Config().HostJNIToolPath(ctx, path).String())
+		return ctx.Config().HostJNIToolPath(ctx, path).String()
 	})
 }
 
@@ -194,7 +193,7 @@ func (p PackageContext) HostJNIToolVariable(name, path string) blueprint.Variabl
 // part of a package-scoped variable's initialization.
 func (p PackageContext) HostJavaToolVariable(name, path string) blueprint.Variable {
 	return p.VariableFunc(name, func(ctx PackageVarContext) string {
-		return proptools.NinjaAndShellEscape(ctx.Config().HostJavaToolPath(ctx, path).String())
+		return ctx.Config().HostJavaToolPath(ctx, path).String()
 	})
 }
 

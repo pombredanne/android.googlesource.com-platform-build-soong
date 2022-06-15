@@ -18,10 +18,11 @@ readonly ANDROID_TOP="$(cd $(dirname $0)/../../..; pwd)"
 cd "$ANDROID_TOP"
 
 export OUT_DIR="${OUT_DIR:-out}"
+readonly SOONG_OUT="${OUT_DIR}/soong"
 
-build/soong/soong_ui.bash --make-mode "${OUT_DIR}/host/${OS}-x86/bin/cuj_tests"
+build/soong/soong_ui.bash --make-mode "${SOONG_OUT}/host/${OS}-x86/bin/cuj_tests"
 
-"${OUT_DIR}/host/${OS}-x86/bin/cuj_tests" || true
+"${SOONG_OUT}/host/${OS}-x86/bin/cuj_tests" || true
 
 if [ -n "${DIST_DIR}" ]; then
   cp -r "${OUT_DIR}/cuj_tests/logs" "${DIST_DIR}"

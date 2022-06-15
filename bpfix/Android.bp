@@ -52,6 +52,5 @@ bootstrap_go_package {
     ],
     deps: [
         "blueprint-parser",
-        "blueprint-pathtools",
     ],
 }

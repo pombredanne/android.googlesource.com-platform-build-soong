@@ -87,9 +87,7 @@ func main() {
 		usage("--module configuration file is required")
 	}
 
-	// NOTE: duplicating --out_dir here is incorrect (one should be the another
-	// plus "/soong" but doing so apparently breaks dexpreopt
-	ctx := &builderContext{android.NullConfig(*outDir, *outDir)}
+	ctx := &builderContext{android.NullConfig(*outDir)}
 
 	globalSoongConfigData, err := ioutil.ReadFile(*globalSoongConfigPath)
 	if err != nil {

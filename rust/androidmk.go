@@ -50,8 +50,8 @@ func (mod *Module) AndroidMkEntries() []android.AndroidMkEntries {
 	}
 
 	ret := android.AndroidMkEntries{
-		OutputFile: android.OptionalPathForPath(mod.UnstrippedOutputFile()),
-		Include:    "$(BUILD_SYSTEM)/soong_cc_rust_prebuilt.mk",
+		OutputFile: mod.unstrippedOutputFile,
+		Include:    "$(BUILD_SYSTEM)/soong_rust_prebuilt.mk",
 		ExtraEntries: []android.AndroidMkExtraEntriesFunc{
 			func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
 				entries.AddStrings("LOCAL_RLIB_LIBRARIES", mod.Properties.AndroidMkRlibs...)
@@ -106,9 +106,6 @@ func (test *testDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidM
 			}
 			entries.SetBoolIfTrue("LOCAL_DISABLE_AUTO_GENERATE_TEST_CONFIG", !BoolDefault(test.Properties.Auto_gen_config, true))
 			entries.SetBoolIfTrue("LOCAL_IS_UNIT_TEST", Bool(test.Properties.Test_options.Unit_test))
-			if test.Properties.Data_bins != nil {
-				entries.AddStrings("LOCAL_TEST_DATA_BINS", test.Properties.Data_bins...)
-			}
 		})
 
 	cc.AndroidMkWriteTestData(test.data, ret)
@@ -140,15 +137,10 @@ func (library *libraryDecorator) AndroidMk(ctx AndroidMkContext, ret *android.An
 	} else if library.shared() {
 		ret.Class = "SHARED_LIBRARIES"
 	}
+
 	if library.distFile.Valid() {
 		ret.DistFiles = android.MakeDefaultDistFiles(library.distFile.Path())
 	}
-	ret.ExtraEntries = append(ret.ExtraEntries,
-		func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-			if library.tocFile.Valid() {
-				entries.SetString("LOCAL_SOONG_TOC", library.tocFile.String())
-			}
-		})
 }
 
 func (procMacro *procMacroDecorator) AndroidMk(ctx AndroidMkContext, ret *android.AndroidMkEntries) {
@@ -189,14 +181,19 @@ func (compiler *baseCompiler) AndroidMk(ctx AndroidMkContext, ret *android.Andro
 		return
 	}
 
-	if compiler.strippedOutputFile.Valid() {
+	var unstrippedOutputFile android.OptionalPath
+	// Soong installation is only supported for host modules. Have Make
+	// installation trigger Soong installation.
+	if ctx.Target().Os.Class == android.Host {
+		ret.OutputFile = android.OptionalPathForPath(compiler.path)
+	} else if compiler.strippedOutputFile.Valid() {
+		unstrippedOutputFile = ret.OutputFile
 		ret.OutputFile = compiler.strippedOutputFile
 	}
-
 	ret.ExtraEntries = append(ret.ExtraEntries,
 		func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
-			entries.SetPath("LOCAL_SOONG_UNSTRIPPED_BINARY", compiler.unstrippedOutputFile)
-			path, file := filepath.Split(compiler.path.String())
+			entries.SetOptionalPath("LOCAL_SOONG_UNSTRIPPED_BINARY", unstrippedOutputFile)
+			path, file := filepath.Split(compiler.path.ToMakePath().String())
 			stem, suffix, _ := android.SplitFileExt(file)
 			entries.SetString("LOCAL_MODULE_SUFFIX", suffix)
 			entries.SetString("LOCAL_MODULE_PATH", path)
@@ -208,24 +205,24 @@ func (fuzz *fuzzDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *andro
 	ctx.SubAndroidMk(entries, fuzz.binaryDecorator)
 
 	var fuzzFiles []string
-	for _, d := range fuzz.fuzzPackagedModule.Corpus {
+	for _, d := range fuzz.corpus {
 		fuzzFiles = append(fuzzFiles,
-			filepath.Dir(fuzz.fuzzPackagedModule.CorpusIntermediateDir.String())+":corpus/"+d.Base())
+			filepath.Dir(fuzz.corpusIntermediateDir.String())+":corpus/"+d.Base())
 	}
 
-	for _, d := range fuzz.fuzzPackagedModule.Data {
+	for _, d := range fuzz.data {
 		fuzzFiles = append(fuzzFiles,
-			filepath.Dir(fuzz.fuzzPackagedModule.DataIntermediateDir.String())+":data/"+d.Rel())
+			filepath.Dir(fuzz.dataIntermediateDir.String())+":data/"+d.Rel())
 	}
 
-	if fuzz.fuzzPackagedModule.Dictionary != nil {
+	if fuzz.dictionary != nil {
 		fuzzFiles = append(fuzzFiles,
-			filepath.Dir(fuzz.fuzzPackagedModule.Dictionary.String())+":"+fuzz.fuzzPackagedModule.Dictionary.Base())
+			filepath.Dir(fuzz.dictionary.String())+":"+fuzz.dictionary.Base())
 	}
 
-	if fuzz.fuzzPackagedModule.Config != nil {
+	if fuzz.config != nil {
 		fuzzFiles = append(fuzzFiles,
-			filepath.Dir(fuzz.fuzzPackagedModule.Config.String())+":config.json")
+			filepath.Dir(fuzz.config.String())+":config.json")
 	}
 
 	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext,

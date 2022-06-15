@@ -7,8 +7,6 @@ set -o pipefail
 
 source "$(dirname "$0")/lib.sh"
 
-readonly GENERATED_BUILD_FILE_NAME="BUILD.bazel"
-
 function test_smoke {
   setup
   run_soong
@@ -17,10 +15,10 @@ function test_smoke {
 function test_null_build() {
   setup
   run_soong
-  local bootstrap_mtime1=$(stat -c "%y" out/soong/bootstrap.ninja)
+  local bootstrap_mtime1=$(stat -c "%y" out/soong/.bootstrap/build.ninja)
   local output_mtime1=$(stat -c "%y" out/soong/build.ninja)
   run_soong
-  local bootstrap_mtime2=$(stat -c "%y" out/soong/bootstrap.ninja)
+  local bootstrap_mtime2=$(stat -c "%y" out/soong/.bootstrap/build.ninja)
   local output_mtime2=$(stat -c "%y" out/soong/build.ninja)
 
   if [[ "$bootstrap_mtime1" == "$bootstrap_mtime2" ]]; then
@@ -36,12 +34,12 @@ function test_null_build() {
 function test_soong_build_rebuilt_if_blueprint_changes() {
   setup
   run_soong
-  local mtime1=$(stat -c "%y" out/soong/bootstrap.ninja)
+  local mtime1=$(stat -c "%y" out/soong/.bootstrap/build.ninja)
 
   sed -i 's/pluginGenSrcCmd/pluginGenSrcCmd2/g' build/blueprint/bootstrap/bootstrap.go
 
   run_soong
-  local mtime2=$(stat -c "%y" out/soong/bootstrap.ninja)
+  local mtime2=$(stat -c "%y" out/soong/.bootstrap/build.ninja)
 
   if [[ "$mtime1" == "$mtime2" ]]; then
     fail "Bootstrap Ninja file did not change"
@@ -144,7 +142,7 @@ EOF
   run_soong
   local ninja_mtime1=$(stat -c "%y" out/soong/build.ninja)
 
-  local glob_deps_file=out/soong/globs/build/0.d
+  local glob_deps_file=out/soong/.primary/globs/0.d
 
   if [ -e "$glob_deps_file" ]; then
     fail "Glob deps file unexpectedly written on first build"
@@ -472,88 +470,25 @@ EOF
   fi
 }
 
-function test_soong_docs_smoke() {
+function test_null_build_after_docs {
   setup
-
-  run_soong soong_docs
-
-  [[ -e "out/soong/docs/soong_build.html" ]] || fail "Documentation for main page not created"
-  [[ -e "out/soong/docs/cc.html" ]] || fail "Documentation for C++ modules not created"
-}
-
-function test_null_build_after_soong_docs() {
-  setup
-
   run_soong
-  local ninja_mtime1=$(stat -c "%y" out/soong/build.ninja)
+  local mtime1=$(stat -c "%y" out/soong/build.ninja)
 
-  run_soong soong_docs
-  local docs_mtime1=$(stat -c "%y" out/soong/docs/soong_build.html)
-
-  run_soong soong_docs
-  local docs_mtime2=$(stat -c "%y" out/soong/docs/soong_build.html)
-
-  if [[ "$docs_mtime1" != "$docs_mtime2" ]]; then
-    fail "Output Ninja file changed on null build"
-  fi
-
+  prebuilts/build-tools/linux-x86/bin/ninja -f out/soong/build.ninja soong_docs
   run_soong
-  local ninja_mtime2=$(stat -c "%y" out/soong/build.ninja)
+  local mtime2=$(stat -c "%y" out/soong/build.ninja)
 
-  if [[ "$ninja_mtime1" != "$ninja_mtime2" ]]; then
+  if [[ "$mtime1" != "$mtime2" ]]; then
     fail "Output Ninja file changed on null build"
-  fi
-}
-
-function test_write_to_source_tree {
-  setup
-  mkdir -p a
-  cat > a/Android.bp <<EOF
-genrule {
-  name: "write_to_source_tree",
-  out: ["write_to_source_tree"],
-  cmd: "touch file_in_source_tree && touch \$(out)",
-}
-EOF
-  readonly EXPECTED_OUT=out/soong/.intermediates/a/write_to_source_tree/gen/write_to_source_tree
-  readonly ERROR_LOG=${MOCK_TOP}/out/error.log
-  readonly ERROR_MSG="Read-only file system"
-  readonly ERROR_HINT_PATTERN="BUILD_BROKEN_SRC_DIR"
-  # Test in ReadOnly source tree
-  run_ninja BUILD_BROKEN_SRC_DIR_IS_WRITABLE=false ${EXPECTED_OUT} &> /dev/null && \
-    fail "Write to source tree should not work in a ReadOnly source tree"
-
-  if grep -q "${ERROR_MSG}" ${ERROR_LOG} && grep -q "${ERROR_HINT_PATTERN}" ${ERROR_LOG} ; then
-    echo Error message and error hint found in logs >/dev/null
-  else
-    fail "Did not find Read-only error AND error hint in error.log"
-  fi
-
-  # Test in ReadWrite source tree
-  run_ninja BUILD_BROKEN_SRC_DIR_IS_WRITABLE=true ${EXPECTED_OUT} &> /dev/null || \
-    fail "Write to source tree did not succeed in a ReadWrite source tree"
-
-  if  grep -q "${ERROR_MSG}\|${ERROR_HINT_PATTERN}" ${ERROR_LOG} ; then
-    fail "Found read-only error OR error hint in error.log"
   fi
 }
 
 function test_bp2build_smoke {
   setup
-  run_soong bp2build
-  [[ -e out/soong/bp2build_workspace_marker ]] || fail "bp2build marker file not created"
+  GENERATE_BAZEL_FILES=1 run_soong
+  [[ -e out/soong/.bootstrap/bp2build_workspace_marker ]] || fail "bp2build marker file not created"
   [[ -e out/soong/workspace ]] || fail "Bazel workspace not created"
-}
-
-function test_bp2build_generates_marker_file {
-  setup
-  create_mock_bazel
-
-  run_soong bp2build
-
-  if [[ ! -f "./out/soong/bp2build_workspace_marker" ]]; then
-    fail "Marker file was not generated"
-  fi
 }
 
 function test_bp2build_add_android_bp {
@@ -569,9 +504,9 @@ filegroup {
 }
 EOF
 
-  run_soong bp2build
-  [[ -e out/soong/bp2build/a/${GENERATED_BUILD_FILE_NAME} ]] || fail "a/${GENERATED_BUILD_FILE_NAME} not created"
-  [[ -L out/soong/workspace/a/${GENERATED_BUILD_FILE_NAME} ]] || fail "a/${GENERATED_BUILD_FILE_NAME} not symlinked"
+  GENERATE_BAZEL_FILES=1 run_soong
+  [[ -e out/soong/bp2build/a/BUILD ]] || fail "a/BUILD not created"
+  [[ -L out/soong/workspace/a/BUILD ]] || fail "a/BUILD not symlinked"
 
   mkdir -p b
   touch b/b.txt
@@ -583,19 +518,19 @@ filegroup {
 }
 EOF
 
-  run_soong bp2build
-  [[ -e out/soong/bp2build/b/${GENERATED_BUILD_FILE_NAME} ]] || fail "a/${GENERATED_BUILD_FILE_NAME} not created"
-  [[ -L out/soong/workspace/b/${GENERATED_BUILD_FILE_NAME} ]] || fail "a/${GENERATED_BUILD_FILE_NAME} not symlinked"
+  GENERATE_BAZEL_FILES=1 run_soong
+  [[ -e out/soong/bp2build/b/BUILD ]] || fail "a/BUILD not created"
+  [[ -L out/soong/workspace/b/BUILD ]] || fail "a/BUILD not symlinked"
 }
 
 function test_bp2build_null_build {
   setup
 
-  run_soong bp2build
-  local mtime1=$(stat -c "%y" out/soong/bp2build_workspace_marker)
+  GENERATE_BAZEL_FILES=1 run_soong
+  local mtime1=$(stat -c "%y" out/soong/build.ninja)
 
-  run_soong bp2build
-  local mtime2=$(stat -c "%y" out/soong/bp2build_workspace_marker)
+  GENERATE_BAZEL_FILES=1 run_soong
+  local mtime2=$(stat -c "%y" out/soong/build.ninja)
 
   if [[ "$mtime1" != "$mtime2" ]]; then
     fail "Output Ninja file changed on null build"
@@ -615,62 +550,21 @@ filegroup {
 }
 EOF
 
-  run_soong bp2build
-  grep -q a1.txt "out/soong/bp2build/a/${GENERATED_BUILD_FILE_NAME}" || fail "a1.txt not in ${GENERATED_BUILD_FILE_NAME} file"
+  GENERATE_BAZEL_FILES=1 run_soong
+  grep -q a1.txt out/soong/bp2build/a/BUILD || fail "a1.txt not in BUILD file"
 
   touch a/a2.txt
-  run_soong bp2build
-  grep -q a2.txt "out/soong/bp2build/a/${GENERATED_BUILD_FILE_NAME}" || fail "a2.txt not in ${GENERATED_BUILD_FILE_NAME} file"
-}
-
-function test_multiple_soong_build_modes() {
-  setup
-  run_soong json-module-graph bp2build nothing
-  if [[ ! -f "out/soong/bp2build_workspace_marker" ]]; then
-    fail "bp2build marker file was not generated"
-  fi
-
-
-  if [[ ! -f "out/soong/module-graph.json" ]]; then
-    fail "JSON file was not created"
-  fi
-
-  if [[ ! -f "out/soong/build.ninja" ]]; then
-    fail "Main build.ninja file was not created"
-  fi
+  GENERATE_BAZEL_FILES=1 run_soong
+  grep -q a2.txt out/soong/bp2build/a/BUILD || fail "a2.txt not in BUILD file"
 }
 
 function test_dump_json_module_graph() {
   setup
-  run_soong json-module-graph
-  if [[ ! -r "out/soong/module-graph.json" ]]; then
+  SOONG_DUMP_JSON_MODULE_GRAPH="$MOCK_TOP/modules.json" run_soong
+  if [[ ! -r "$MOCK_TOP/modules.json" ]]; then
     fail "JSON file was not created"
   fi
 }
-
-function test_json_module_graph_back_and_forth_null_build() {
-  setup
-
-  run_soong
-  local ninja_mtime1=$(stat -c "%y" out/soong/build.ninja)
-
-  run_soong json-module-graph
-  local json_mtime1=$(stat -c "%y" out/soong/module-graph.json)
-
-  run_soong
-  local ninja_mtime2=$(stat -c "%y" out/soong/build.ninja)
-  if [[ "$ninja_mtime1" != "$ninja_mtime2" ]]; then
-    fail "Output Ninja file changed after writing JSON module graph"
-  fi
-
-  run_soong json-module-graph
-  local json_mtime2=$(stat -c "%y" out/soong/module-graph.json)
-  if [[ "$json_mtime1" != "$json_mtime2" ]]; then
-    fail "JSON module graph file changed after writing Ninja file"
-  fi
-
-}
-
 
 function test_bp2build_bazel_workspace_structure {
   setup
@@ -686,11 +580,11 @@ filegroup {
 }
 EOF
 
-  run_soong bp2build
+  GENERATE_BAZEL_FILES=1 run_soong
   [[ -e out/soong/workspace ]] || fail "Bazel workspace not created"
   [[ -d out/soong/workspace/a/b ]] || fail "module directory not a directory"
-  [[ -L "out/soong/workspace/a/b/${GENERATED_BUILD_FILE_NAME}" ]] || fail "${GENERATED_BUILD_FILE_NAME} file not symlinked"
-  [[ "$(readlink -f out/soong/workspace/a/b/${GENERATED_BUILD_FILE_NAME})" =~ "bp2build/a/b/${GENERATED_BUILD_FILE_NAME}"$ ]] \
+  [[ -L out/soong/workspace/a/b/BUILD ]] || fail "BUILD file not symlinked"
+  [[ "$(readlink -f out/soong/workspace/a/b/BUILD)" =~ bp2build/a/b/BUILD$ ]] \
     || fail "BUILD files symlinked at the wrong place"
   [[ -L out/soong/workspace/a/b/b.txt ]] || fail "a/b/b.txt not symlinked"
   [[ -L out/soong/workspace/a/a.txt ]] || fail "a/b/a.txt not symlinked"
@@ -710,10 +604,10 @@ filegroup {
 }
 EOF
 
-  run_soong bp2build
+  GENERATE_BAZEL_FILES=1 run_soong
 
   touch a/a2.txt  # No reference in the .bp file needed
-  run_soong bp2build
+  GENERATE_BAZEL_FILES=1 run_soong
   [[ -L out/soong/workspace/a/a2.txt ]] || fail "a/a2.txt not symlinked"
 }
 
@@ -722,7 +616,7 @@ function test_bp2build_build_file_precedence {
 
   mkdir -p a
   touch a/a.txt
-  touch a/${GENERATED_BUILD_FILE_NAME}
+  touch a/BUILD
   cat > a/Android.bp <<EOF
 filegroup {
   name: "a",
@@ -731,16 +625,16 @@ filegroup {
 }
 EOF
 
-  run_soong bp2build
-  [[ -L "out/soong/workspace/a/${GENERATED_BUILD_FILE_NAME}" ]] || fail "${GENERATED_BUILD_FILE_NAME} file not symlinked"
-  [[ "$(readlink -f out/soong/workspace/a/${GENERATED_BUILD_FILE_NAME})" =~ "bp2build/a/${GENERATED_BUILD_FILE_NAME}"$ ]] \
-    || fail "${GENERATED_BUILD_FILE_NAME} files symlinked to the wrong place"
+  GENERATE_BAZEL_FILES=1 run_soong
+  [[ -L out/soong/workspace/a/BUILD ]] || fail "BUILD file not symlinked"
+  [[ "$(readlink -f out/soong/workspace/a/BUILD)" =~ bp2build/a/BUILD$ ]] \
+    || fail "BUILD files symlinked to the wrong place"
 }
 
 function test_bp2build_reports_multiple_errors {
   setup
 
-  mkdir -p "a/${GENERATED_BUILD_FILE_NAME}"
+  mkdir -p a/BUILD
   touch a/a.txt
   cat > a/Android.bp <<EOF
 filegroup {
@@ -750,7 +644,7 @@ filegroup {
 }
 EOF
 
-  mkdir -p "b/${GENERATED_BUILD_FILE_NAME}"
+  mkdir -p b/BUILD
   touch b/b.txt
   cat > b/Android.bp <<EOF
 filegroup {
@@ -760,75 +654,17 @@ filegroup {
 }
 EOF
 
-  if run_soong bp2build >& "$MOCK_TOP/errors"; then
+  if GENERATE_BAZEL_FILES=1 run_soong >& "$MOCK_TOP/errors"; then
     fail "Build should have failed"
   fi
 
-  grep -q "a/${GENERATED_BUILD_FILE_NAME}' exist" "$MOCK_TOP/errors" || fail "Error for a/${GENERATED_BUILD_FILE_NAME} not found"
-  grep -q "b/${GENERATED_BUILD_FILE_NAME}' exist" "$MOCK_TOP/errors" || fail "Error for b/${GENERATED_BUILD_FILE_NAME} not found"
-}
-
-function test_bp2build_back_and_forth_null_build {
-  setup
-
-  run_soong
-  local output_mtime1=$(stat -c "%y" out/soong/build.ninja)
-
-  run_soong bp2build
-  local output_mtime2=$(stat -c "%y" out/soong/build.ninja)
-  if [[ "$output_mtime1" != "$output_mtime2" ]]; then
-    fail "Output Ninja file changed when switching to bp2build"
-  fi
-
-  local marker_mtime1=$(stat -c "%y" out/soong/bp2build_workspace_marker)
-
-  run_soong
-  local output_mtime3=$(stat -c "%y" out/soong/build.ninja)
-  local marker_mtime2=$(stat -c "%y" out/soong/bp2build_workspace_marker)
-  if [[ "$output_mtime1" != "$output_mtime3" ]]; then
-    fail "Output Ninja file changed when switching to regular build from bp2build"
-  fi
-  if [[ "$marker_mtime1" != "$marker_mtime2" ]]; then
-    fail "bp2build marker file changed when switching to regular build from bp2build"
-  fi
-
-  run_soong bp2build
-  local output_mtime4=$(stat -c "%y" out/soong/build.ninja)
-  local marker_mtime3=$(stat -c "%y" out/soong/bp2build_workspace_marker)
-  if [[ "$output_mtime1" != "$output_mtime4" ]]; then
-    fail "Output Ninja file changed when switching back to bp2build"
-  fi
-  if [[ "$marker_mtime1" != "$marker_mtime3" ]]; then
-    fail "bp2build marker file changed when switching back to bp2build"
-  fi
-}
-
-function test_queryview_smoke() {
-  setup
-
-  run_soong queryview
-  [[ -e out/soong/queryview/WORKSPACE ]] || fail "queryview WORKSPACE file not created"
-
-}
-
-function test_queryview_null_build() {
-  setup
-
-  run_soong queryview
-  local output_mtime1=$(stat -c "%y" out/soong/queryview.marker)
-
-  run_soong queryview
-  local output_mtime2=$(stat -c "%y" out/soong/queryview.marker)
-
-  if [[ "$output_mtime1" != "$output_mtime2" ]]; then
-    fail "Queryview marker file changed on null build"
-  fi
+  grep -q "a/BUILD' exist" "$MOCK_TOP/errors" || fail "Error for a/BUILD not found"
+  grep -q "b/BUILD' exist" "$MOCK_TOP/errors" || fail "Error for b/BUILD not found"
 }
 
 test_smoke
 test_null_build
-test_soong_docs_smoke
-test_null_build_after_soong_docs
+test_null_build_after_docs
 test_soong_build_rebuilt_if_blueprint_changes
 test_glob_noop_incremental
 test_add_file_to_glob
@@ -838,16 +674,9 @@ test_delete_android_bp
 test_add_file_to_soong_build
 test_glob_during_bootstrapping
 test_soong_build_rerun_iff_environment_changes
-test_multiple_soong_build_modes
 test_dump_json_module_graph
-test_json_module_graph_back_and_forth_null_build
-test_write_to_source_tree
-test_queryview_smoke
-test_queryview_null_build
 test_bp2build_smoke
-test_bp2build_generates_marker_file
 test_bp2build_null_build
-test_bp2build_back_and_forth_null_build
 test_bp2build_add_android_bp
 test_bp2build_add_to_glob
 test_bp2build_bazel_workspace_structure

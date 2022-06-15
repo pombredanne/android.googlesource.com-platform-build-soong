@@ -15,9 +15,8 @@
 package cc
 
 import (
-	"fmt"
-
 	"android/soong/android"
+	"fmt"
 )
 
 func getNdkStlFamily(m LinkableInterface) string {
@@ -91,6 +90,26 @@ func (stl *stl) begin(ctx BaseModuleContext) {
 				return ""
 			default:
 				ctx.ModuleErrorf("stl: %q is not a supported STL for windows", s)
+				return ""
+			}
+		} else if ctx.Fuchsia() {
+			switch s {
+			case "c++_static":
+				return "libc++_static"
+			case "c++_shared":
+				return "libc++"
+			case "libc++", "libc++_static":
+				return s
+			case "none":
+				return ""
+			case "":
+				if ctx.static() {
+					return "libc++_static"
+				} else {
+					return "libc++"
+				}
+			default:
+				ctx.ModuleErrorf("stl: %q is not a supported STL on Fuchsia", s)
 				return ""
 			}
 		} else {
@@ -180,9 +199,7 @@ func (stl *stl) deps(ctx BaseModuleContext, deps Deps) Deps {
 			deps.StaticLibs = append(deps.StaticLibs, stl.Properties.SelectedStl, "ndk_libc++abi")
 		}
 		if needsLibAndroidSupport(ctx) {
-			// Use LateStaticLibs for ndk_libandroid_support so that its include directories
-			// come after ndk_libc++_static or ndk_libc++_shared.
-			deps.LateStaticLibs = append(deps.LateStaticLibs, "ndk_libandroid_support")
+			deps.StaticLibs = append(deps.StaticLibs, "ndk_libandroid_support")
 		}
 		deps.StaticLibs = append(deps.StaticLibs, "ndk_libunwind")
 	default:

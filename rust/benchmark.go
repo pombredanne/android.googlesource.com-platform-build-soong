@@ -101,7 +101,6 @@ func (benchmark *benchmarkDecorator) compilerFlags(ctx ModuleContext, flags Flag
 func (benchmark *benchmarkDecorator) compilerDeps(ctx DepsContext, deps Deps) Deps {
 	deps = benchmark.binaryDecorator.compilerDeps(ctx, deps)
 
-	deps.Rustlibs = append(deps.Rustlibs, "libtest")
 	deps.Rustlibs = append(deps.Rustlibs, "libcriterion")
 
 	return deps

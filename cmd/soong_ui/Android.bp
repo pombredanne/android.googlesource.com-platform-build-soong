@@ -20,7 +20,6 @@ blueprint_go_binary {
     name: "soong_ui",
     deps: [
         "soong-ui-build",
-        "soong-ui-signal",
         "soong-ui-logger",
         "soong-ui-terminal",
         "soong-ui-tracer",

@@ -34,15 +34,13 @@ import (
 	"android/soong/makedeps"
 	"android/soong/response"
 
-	"google.golang.org/protobuf/encoding/prototext"
+	"github.com/golang/protobuf/proto"
 )
 
 var (
-	sandboxesRoot  string
-	outputDir      string
-	manifestFile   string
-	keepOutDir     bool
-	writeIfChanged bool
+	sandboxesRoot string
+	manifestFile  string
+	keepOutDir    bool
 )
 
 const (
@@ -53,14 +51,10 @@ const (
 func init() {
 	flag.StringVar(&sandboxesRoot, "sandbox-path", "",
 		"root of temp directory to put the sandbox into")
-	flag.StringVar(&outputDir, "output-dir", "",
-		"directory which will contain all output files and only output files")
 	flag.StringVar(&manifestFile, "manifest", "",
 		"textproto manifest describing the sandboxed command(s)")
 	flag.BoolVar(&keepOutDir, "keep-out-dir", false,
 		"whether to keep the sandbox directory when done")
-	flag.BoolVar(&writeIfChanged, "write-if-changed", false,
-		"only write the output files if they have changed")
 }
 
 func usageViolation(violation string) {
@@ -170,7 +164,7 @@ func run() error {
 		if useSubDir {
 			localTempDir = filepath.Join(localTempDir, strconv.Itoa(i))
 		}
-		depFile, err := runCommand(command, localTempDir, i)
+		depFile, err := runCommand(command, localTempDir)
 		if err != nil {
 			// Running the command failed, keep the temporary output directory around in
 			// case a user wants to inspect it for debugging purposes.  Soong will delete
@@ -200,24 +194,6 @@ func run() error {
 	return nil
 }
 
-// createCommandScript will create and return an exec.Cmd that runs rawCommand.
-//
-// rawCommand is executed via a script in the sandbox.
-// scriptPath is the temporary where the script is created.
-// scriptPathInSandbox is the path to the script in the sbox environment.
-//
-// returns an exec.Cmd that can be ran from within sbox context if no error, or nil if error.
-// caller must ensure script is cleaned up if function succeeds.
-//
-func createCommandScript(rawCommand, scriptPath, scriptPathInSandbox string) (*exec.Cmd, error) {
-	err := os.WriteFile(scriptPath, []byte(rawCommand), 0644)
-	if err != nil {
-		return nil, fmt.Errorf("failed to write command %s... to %s",
-			rawCommand[0:40], scriptPath)
-	}
-	return exec.Command("bash", scriptPathInSandbox), nil
-}
-
 // readManifest reads an sbox manifest from a textproto file.
 func readManifest(file string) (*sbox_proto.Manifest, error) {
 	manifestData, err := ioutil.ReadFile(file)
@@ -227,7 +203,7 @@ func readManifest(file string) (*sbox_proto.Manifest, error) {
 
 	manifest := sbox_proto.Manifest{}
 
-	err = prototext.Unmarshal(manifestData, &manifest)
+	err = proto.UnmarshalText(string(manifestData), &manifest)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing manifest %q: %w", file, err)
 	}
@@ -237,16 +213,10 @@ func readManifest(file string) (*sbox_proto.Manifest, error) {
 
 // runCommand runs a single command from a manifest.  If the command references the
 // __SBOX_DEPFILE__ placeholder it returns the name of the depfile that was used.
-func runCommand(command *sbox_proto.Command, tempDir string, commandIndex int) (depFile string, err error) {
+func runCommand(command *sbox_proto.Command, tempDir string) (depFile string, err error) {
 	rawCommand := command.GetCommand()
 	if rawCommand == "" {
 		return "", fmt.Errorf("command is required")
-	}
-
-	// Remove files from the output directory
-	err = clearOutputDirectory(command.CopyAfter, outputDir, writeType(writeIfChanged))
-	if err != nil {
-		return "", err
 	}
 
 	pathToTempDirInSbox := tempDir
@@ -260,7 +230,7 @@ func runCommand(command *sbox_proto.Command, tempDir string, commandIndex int) (
 	}
 
 	// Copy in any files specified by the manifest.
-	err = copyFiles(command.CopyBefore, "", tempDir, requireFromExists, alwaysWrite)
+	err = copyFiles(command.CopyBefore, "", tempDir, false)
 	if err != nil {
 		return "", err
 	}
@@ -285,14 +255,7 @@ func runCommand(command *sbox_proto.Command, tempDir string, commandIndex int) (
 		return "", err
 	}
 
-	scriptName := fmt.Sprintf("sbox_command.%d.bash", commandIndex)
-	scriptPath := joinPath(tempDir, scriptName)
-	scriptPathInSandbox := joinPath(pathToTempDirInSbox, scriptName)
-	cmd, err := createCommandScript(rawCommand, scriptPath, scriptPathInSandbox)
-	if err != nil {
-		return "", err
-	}
-
+	cmd := exec.Command("bash", "-c", rawCommand)
 	buf := &bytes.Buffer{}
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = buf
@@ -317,7 +280,7 @@ func runCommand(command *sbox_proto.Command, tempDir string, commandIndex int) (
 		// especially useful for linters with baselines that print an error message on failure
 		// with a command to copy the output lint errors to the new baseline.  Use a copy instead of
 		// a move to leave the sandbox intact for manual inspection
-		copyFiles(command.CopyAfter, tempDir, "", allowFromNotExists, writeType(writeIfChanged))
+		copyFiles(command.CopyAfter, tempDir, "", true)
 	}
 
 	// If the command  was executed but failed with an error, print a debugging message before
@@ -326,9 +289,9 @@ func runCommand(command *sbox_proto.Command, tempDir string, commandIndex int) (
 		fmt.Fprintf(os.Stderr,
 			"The failing command was run inside an sbox sandbox in temporary directory\n"+
 				"%s\n"+
-				"The failing command line can be found in\n"+
+				"The failing command line was:\n"+
 				"%s\n",
-			tempDir, scriptPath)
+			tempDir, rawCommand)
 	}
 
 	// Write the command's combined stdout/stderr.
@@ -338,16 +301,39 @@ func runCommand(command *sbox_proto.Command, tempDir string, commandIndex int) (
 		return "", err
 	}
 
-	err = validateOutputFiles(command.CopyAfter, tempDir, outputDir, rawCommand)
-	if err != nil {
-		return "", err
-	}
+	missingOutputErrors := validateOutputFiles(command.CopyAfter, tempDir)
 
-	// the created files match the declared files; now move them
-	err = moveFiles(command.CopyAfter, tempDir, "", writeType(writeIfChanged))
-	if err != nil {
-		return "", err
+	if len(missingOutputErrors) > 0 {
+		// find all created files for making a more informative error message
+		createdFiles := findAllFilesUnder(tempDir)
+
+		// build error message
+		errorMessage := "mismatch between declared and actual outputs\n"
+		errorMessage += "in sbox command(" + rawCommand + ")\n\n"
+		errorMessage += "in sandbox " + tempDir + ",\n"
+		errorMessage += fmt.Sprintf("failed to create %v files:\n", len(missingOutputErrors))
+		for _, missingOutputError := range missingOutputErrors {
+			errorMessage += "  " + missingOutputError.Error() + "\n"
+		}
+		if len(createdFiles) < 1 {
+			errorMessage += "created 0 files."
+		} else {
+			errorMessage += fmt.Sprintf("did create %v files:\n", len(createdFiles))
+			creationMessages := createdFiles
+			maxNumCreationLines := 10
+			if len(creationMessages) > maxNumCreationLines {
+				creationMessages = creationMessages[:maxNumCreationLines]
+				creationMessages = append(creationMessages, fmt.Sprintf("...%v more", len(createdFiles)-maxNumCreationLines))
+			}
+			for _, creationMessage := range creationMessages {
+				errorMessage += "  " + creationMessage + "\n"
+			}
+		}
+
+		return "", errors.New(errorMessage)
 	}
+	// the created files match the declared files; now move them
+	err = moveFiles(command.CopyAfter, tempDir, "")
 
 	return depFile, nil
 }
@@ -368,9 +354,8 @@ func makeOutputDirs(copies []*sbox_proto.Copy, sandboxDir string) error {
 
 // validateOutputFiles verifies that all files that have a rule to be copied out of the sandbox
 // were created by the command.
-func validateOutputFiles(copies []*sbox_proto.Copy, sandboxDir, outputDir, rawCommand string) error {
+func validateOutputFiles(copies []*sbox_proto.Copy, sandboxDir string) []error {
 	var missingOutputErrors []error
-	var incorrectOutputDirectoryErrors []error
 	for _, copyPair := range copies {
 		fromPath := joinPath(sandboxDir, copyPair.GetFrom())
 		fileInfo, err := os.Stat(fromPath)
@@ -381,91 +366,17 @@ func validateOutputFiles(copies []*sbox_proto.Copy, sandboxDir, outputDir, rawCo
 		if fileInfo.IsDir() {
 			missingOutputErrors = append(missingOutputErrors, fmt.Errorf("%s: not a file", fromPath))
 		}
-
-		toPath := copyPair.GetTo()
-		if rel, err := filepath.Rel(outputDir, toPath); err != nil {
-			return err
-		} else if strings.HasPrefix(rel, "../") {
-			incorrectOutputDirectoryErrors = append(incorrectOutputDirectoryErrors,
-				fmt.Errorf("%s is not under %s", toPath, outputDir))
-		}
 	}
-
-	const maxErrors = 10
-
-	if len(incorrectOutputDirectoryErrors) > 0 {
-		errorMessage := ""
-		more := 0
-		if len(incorrectOutputDirectoryErrors) > maxErrors {
-			more = len(incorrectOutputDirectoryErrors) - maxErrors
-			incorrectOutputDirectoryErrors = incorrectOutputDirectoryErrors[:maxErrors]
-		}
-
-		for _, err := range incorrectOutputDirectoryErrors {
-			errorMessage += err.Error() + "\n"
-		}
-		if more > 0 {
-			errorMessage += fmt.Sprintf("...%v more", more)
-		}
-
-		return errors.New(errorMessage)
-	}
-
-	if len(missingOutputErrors) > 0 {
-		// find all created files for making a more informative error message
-		createdFiles := findAllFilesUnder(sandboxDir)
-
-		// build error message
-		errorMessage := "mismatch between declared and actual outputs\n"
-		errorMessage += "in sbox command(" + rawCommand + ")\n\n"
-		errorMessage += "in sandbox " + sandboxDir + ",\n"
-		errorMessage += fmt.Sprintf("failed to create %v files:\n", len(missingOutputErrors))
-		for _, missingOutputError := range missingOutputErrors {
-			errorMessage += "  " + missingOutputError.Error() + "\n"
-		}
-		if len(createdFiles) < 1 {
-			errorMessage += "created 0 files."
-		} else {
-			errorMessage += fmt.Sprintf("did create %v files:\n", len(createdFiles))
-			creationMessages := createdFiles
-			if len(creationMessages) > maxErrors {
-				creationMessages = creationMessages[:maxErrors]
-				creationMessages = append(creationMessages, fmt.Sprintf("...%v more", len(createdFiles)-maxErrors))
-			}
-			for _, creationMessage := range creationMessages {
-				errorMessage += "  " + creationMessage + "\n"
-			}
-		}
-
-		return errors.New(errorMessage)
-	}
-
-	return nil
+	return missingOutputErrors
 }
 
-type existsType bool
-
-const (
-	requireFromExists  existsType = false
-	allowFromNotExists            = true
-)
-
-type writeType bool
-
-const (
-	alwaysWrite        writeType = false
-	onlyWriteIfChanged           = true
-)
-
-// copyFiles copies files in or out of the sandbox.  If exists is allowFromNotExists then errors
-// caused by a from path not existing are ignored.  If write is onlyWriteIfChanged then the output
-// file is compared to the input file and not written to if it is the same, avoiding updating
-// the timestamp.
-func copyFiles(copies []*sbox_proto.Copy, fromDir, toDir string, exists existsType, write writeType) error {
+// copyFiles copies files in or out of the sandbox.  If allowFromNotExists is true then errors
+// caused by a from path not existing are ignored.
+func copyFiles(copies []*sbox_proto.Copy, fromDir, toDir string, allowFromNotExists bool) error {
 	for _, copyPair := range copies {
 		fromPath := joinPath(fromDir, copyPair.GetFrom())
 		toPath := joinPath(toDir, copyPair.GetTo())
-		err := copyOneFile(fromPath, toPath, copyPair.GetExecutable(), exists, write)
+		err := copyOneFile(fromPath, toPath, copyPair.GetExecutable(), allowFromNotExists)
 		if err != nil {
 			return fmt.Errorf("error copying %q to %q: %w", fromPath, toPath, err)
 		}
@@ -474,11 +385,8 @@ func copyFiles(copies []*sbox_proto.Copy, fromDir, toDir string, exists existsTy
 }
 
 // copyOneFile copies a file and its permissions.  If forceExecutable is true it adds u+x to the
-// permissions.  If exists is allowFromNotExists it returns nil if the from path doesn't exist.
-// If write is onlyWriteIfChanged then the output file is compared to the input file and not written to
-// if it is the same, avoiding updating the timestamp.
-func copyOneFile(from string, to string, forceExecutable bool, exists existsType,
-	write writeType) error {
+// permissions.  If allowFromNotExists is true it returns nil if the from path doesn't exist.
+func copyOneFile(from string, to string, forceExecutable, allowFromNotExists bool) error {
 	err := os.MkdirAll(filepath.Dir(to), 0777)
 	if err != nil {
 		return err
@@ -486,7 +394,7 @@ func copyOneFile(from string, to string, forceExecutable bool, exists existsType
 
 	stat, err := os.Stat(from)
 	if err != nil {
-		if os.IsNotExist(err) && exists == allowFromNotExists {
+		if os.IsNotExist(err) && allowFromNotExists {
 			return nil
 		}
 		return err
@@ -495,10 +403,6 @@ func copyOneFile(from string, to string, forceExecutable bool, exists existsType
 	perm := stat.Mode()
 	if forceExecutable {
 		perm = perm | 0100 // u+x
-	}
-
-	if write == onlyWriteIfChanged && filesHaveSameContents(from, to) {
-		return nil
 	}
 
 	in, err := os.Open(from)
@@ -574,7 +478,7 @@ func copyOneRspFile(rspFile *sbox_proto.RspFile, toDir, toDirInSandbox string) e
 		to := applyPathMappings(rspFile.PathMappings, from)
 
 		// Copy the file into the sandbox.
-		err := copyOneFile(from, joinPath(toDir, to), false, requireFromExists, alwaysWrite)
+		err := copyOneFile(from, joinPath(toDir, to), false, false)
 		if err != nil {
 			return err
 		}
@@ -621,20 +525,15 @@ func applyPathMappings(pathMappings []*sbox_proto.PathMapping, path string) stri
 
 // moveFiles moves files specified by a set of copy rules.  It uses os.Rename, so it is restricted
 // to moving files where the source and destination are in the same filesystem.  This is OK for
-// sbox because the temporary directory is inside the out directory.  If write is onlyWriteIfChanged
-// then the output file is compared to the input file and not written to if it is the same, avoiding
-// updating the timestamp.  Otherwise it always updates the timestamp of the new file.
-func moveFiles(copies []*sbox_proto.Copy, fromDir, toDir string, write writeType) error {
+// sbox because the temporary directory is inside the out directory.  It updates the timestamp
+// of the new file.
+func moveFiles(copies []*sbox_proto.Copy, fromDir, toDir string) error {
 	for _, copyPair := range copies {
 		fromPath := joinPath(fromDir, copyPair.GetFrom())
 		toPath := joinPath(toDir, copyPair.GetTo())
 		err := os.MkdirAll(filepath.Dir(toPath), 0777)
 		if err != nil {
 			return err
-		}
-
-		if write == onlyWriteIfChanged && filesHaveSameContents(fromPath, toPath) {
-			continue
 		}
 
 		err = os.Rename(fromPath, toPath)
@@ -650,37 +549,6 @@ func moveFiles(copies []*sbox_proto.Copy, fromDir, toDir string, write writeType
 			return err
 		}
 	}
-	return nil
-}
-
-// clearOutputDirectory removes all files in the output directory if write is alwaysWrite, or
-// any files not listed in copies if write is onlyWriteIfChanged
-func clearOutputDirectory(copies []*sbox_proto.Copy, outputDir string, write writeType) error {
-	if outputDir == "" {
-		return fmt.Errorf("output directory must be set")
-	}
-
-	if write == alwaysWrite {
-		// When writing all the output files remove the whole output directory
-		return os.RemoveAll(outputDir)
-	}
-
-	outputFiles := make(map[string]bool, len(copies))
-	for _, copyPair := range copies {
-		outputFiles[copyPair.GetTo()] = true
-	}
-
-	existingFiles := findAllFilesUnder(outputDir)
-	for _, existingFile := range existingFiles {
-		fullExistingFile := filepath.Join(outputDir, existingFile)
-		if !outputFiles[fullExistingFile] {
-			err := os.Remove(fullExistingFile)
-			if err != nil {
-				return fmt.Errorf("failed to remove obsolete output file %s: %w", fullExistingFile, err)
-			}
-		}
-	}
-
 	return nil
 }
 
@@ -725,66 +593,6 @@ func joinPath(dir, file string) string {
 		return file
 	}
 	return filepath.Join(dir, file)
-}
-
-// filesHaveSameContents compares the contents if two files, returning true if they are the same
-// and returning false if they are different or any errors occur.
-func filesHaveSameContents(a, b string) bool {
-	// Compare the sizes of the two files
-	statA, err := os.Stat(a)
-	if err != nil {
-		return false
-	}
-	statB, err := os.Stat(b)
-	if err != nil {
-		return false
-	}
-
-	if statA.Size() != statB.Size() {
-		return false
-	}
-
-	// Open the two files
-	fileA, err := os.Open(a)
-	if err != nil {
-		return false
-	}
-	defer fileA.Close()
-	fileB, err := os.Open(b)
-	if err != nil {
-		return false
-	}
-	defer fileB.Close()
-
-	// Compare the files 1MB at a time
-	const bufSize = 1 * 1024 * 1024
-	bufA := make([]byte, bufSize)
-	bufB := make([]byte, bufSize)
-
-	remain := statA.Size()
-	for remain > 0 {
-		toRead := int64(bufSize)
-		if toRead > remain {
-			toRead = remain
-		}
-
-		_, err = io.ReadFull(fileA, bufA[:toRead])
-		if err != nil {
-			return false
-		}
-		_, err = io.ReadFull(fileB, bufB[:toRead])
-		if err != nil {
-			return false
-		}
-
-		if bytes.Compare(bufA[:toRead], bufB[:toRead]) != 0 {
-			return false
-		}
-
-		remain -= toRead
-	}
-
-	return true
 }
 
 func makeAbsPathEnv(pathEnv string) (string, error) {

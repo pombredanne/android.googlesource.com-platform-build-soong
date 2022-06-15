@@ -21,7 +21,9 @@ import (
 )
 
 var (
-	linuxBionicCflags = []string{
+	linuxBionicCflags = ClangFilterUnknownCflags([]string{
+		"-fdiagnostics-color",
+
 		"-Wa,--noexecstack",
 
 		"-fPIC",
@@ -32,44 +34,41 @@ var (
 
 		// From x86_64_device
 		"-ffunction-sections",
+		"-finline-functions",
+		"-finline-limit=300",
 		"-fno-short-enums",
+		"-funswitch-loops",
 		"-funwind-tables",
+		"-fno-canonical-system-headers",
 
 		// Tell clang where the gcc toolchain is
 		"--gcc-toolchain=${LinuxBionicGccRoot}",
 
 		// This is normally in ClangExtraTargetCflags, but this is considered host
 		"-nostdlibinc",
-	}
+	})
 
-	linuxBionicLdflags = []string{
+	linuxBionicLdflags = ClangFilterUnknownCflags([]string{
 		"-Wl,-z,noexecstack",
 		"-Wl,-z,relro",
 		"-Wl,-z,now",
 		"-Wl,--build-id=md5",
+		"-Wl,--warn-shared-textrel",
 		"-Wl,--fatal-warnings",
 		"-Wl,--hash-style=gnu",
 		"-Wl,--no-undefined-version",
 
 		// Use the device gcc toolchain
 		"--gcc-toolchain=${LinuxBionicGccRoot}",
-	}
+	})
 
-	// Embed the linker into host bionic binaries. This is needed to support host bionic,
-	// as the linux kernel requires that the ELF interpreter referenced by PT_INTERP be
-	// either an absolute path, or relative from CWD. To work around this, we extract
-	// the load sections from the runtime linker ELF binary and embed them into each host
-	// bionic binary, omitting the PT_INTERP declaration. The kernel will treat it as a static
-	// binary, and then we use a special entry point to fix up the arguments passed by
-	// the kernel before jumping to the embedded linker.
-	linuxBionicCrtBeginSharedBinary = append(android.CopyOf(bionicCrtBeginSharedBinary),
-		"host_bionic_linker_script")
+	linuxBionicLldflags = ClangFilterUnknownLldflags(linuxBionicLdflags)
 )
 
 func init() {
 	pctx.StaticVariable("LinuxBionicCflags", strings.Join(linuxBionicCflags, " "))
 	pctx.StaticVariable("LinuxBionicLdflags", strings.Join(linuxBionicLdflags, " "))
-	pctx.StaticVariable("LinuxBionicLldflags", strings.Join(linuxBionicLdflags, " "))
+	pctx.StaticVariable("LinuxBionicLldflags", strings.Join(linuxBionicLldflags, " "))
 
 	// Use the device gcc toolchain for now
 	pctx.StaticVariable("LinuxBionicGccRoot", "${X86_64GccRoot}")
@@ -77,7 +76,6 @@ func init() {
 
 type toolchainLinuxBionic struct {
 	toolchain64Bit
-	toolchainBionic
 }
 
 func (t *toolchainLinuxBionic) Name() string {
@@ -105,29 +103,29 @@ func (t *toolchainLinuxBionic) ClangTriple() string {
 	return "x86_64-linux-android"
 }
 
-func (t *toolchainLinuxBionic) Cflags() string {
+func (t *toolchainLinuxBionic) ClangCflags() string {
 	return "${config.LinuxBionicCflags}"
 }
 
-func (t *toolchainLinuxBionic) Cppflags() string {
+func (t *toolchainLinuxBionic) ClangCppflags() string {
 	return ""
 }
 
-func (t *toolchainLinuxBionic) Ldflags() string {
+func (t *toolchainLinuxBionic) ClangLdflags() string {
 	return "${config.LinuxBionicLdflags}"
 }
 
-func (t *toolchainLinuxBionic) Lldflags() string {
+func (t *toolchainLinuxBionic) ClangLldflags() string {
 	return "${config.LinuxBionicLldflags}"
 }
 
-func (t *toolchainLinuxBionic) ToolchainCflags() string {
+func (t *toolchainLinuxBionic) ToolchainClangCflags() string {
 	return "-m64 -march=x86-64" +
 		// TODO: We're not really android, but we don't have a triple yet b/31393676
 		" -U__ANDROID__"
 }
 
-func (t *toolchainLinuxBionic) ToolchainLdflags() string {
+func (t *toolchainLinuxBionic) ToolchainClangLdflags() string {
 	return "-m64"
 }
 
@@ -135,12 +133,12 @@ func (t *toolchainLinuxBionic) AvailableLibraries() []string {
 	return nil
 }
 
-func (toolchainLinuxBionic) LibclangRuntimeLibraryArch() string {
-	return "x86_64"
+func (t *toolchainLinuxBionic) Bionic() bool {
+	return true
 }
 
-func (toolchainLinuxBionic) CrtBeginSharedBinary() []string {
-	return linuxBionicCrtBeginSharedBinary
+func (toolchainLinuxBionic) LibclangRuntimeLibraryArch() string {
+	return "x86_64"
 }
 
 var toolchainLinuxBionicSingleton Toolchain = &toolchainLinuxBionic{}

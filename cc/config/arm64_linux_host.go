@@ -15,15 +15,14 @@
 package config
 
 import (
-	"strings"
-
 	"android/soong/android"
+	"strings"
 )
 
 var (
 	// This is a host toolchain but flags for device toolchain are required
 	// as the flags are actually for Bionic-based builds.
-	linuxCrossCflags = append(deviceGlobalCflags,
+	linuxCrossCflags = ClangFilterUnknownCflags(append(deviceGlobalCflags,
 		// clang by default enables PIC when the clang triple is set to *-android.
 		// See toolchain/llvm-project/clang/lib/Driver/ToolChains/CommonArgs.cpp#920.
 		// However, for this host target, we don't set "-android" to avoid __ANDROID__ macro
@@ -34,27 +33,18 @@ var (
 		// This is normally in ClangExtraTargetCflags, but that's for device and we need
 		// the same for host
 		"-nostdlibinc",
-	)
+	))
 
-	linuxCrossLdflags = []string{
+	linuxCrossLdflags = ClangFilterUnknownCflags([]string{
 		"-Wl,-z,noexecstack",
 		"-Wl,-z,relro",
 		"-Wl,-z,now",
 		"-Wl,--build-id=md5",
+		"-Wl,--warn-shared-textrel",
 		"-Wl,--fatal-warnings",
 		"-Wl,--hash-style=gnu",
 		"-Wl,--no-undefined-version",
-	}
-
-	// Embed the linker into host bionic binaries. This is needed to support host bionic,
-	// as the linux kernel requires that the ELF interpreter referenced by PT_INTERP be
-	// either an absolute path, or relative from CWD. To work around this, we extract
-	// the load sections from the runtime linker ELF binary and embed them into each host
-	// bionic binary, omitting the PT_INTERP declaration. The kernel will treat it as a static
-	// binary, and then we use a special entry point to fix up the arguments passed by
-	// the kernel before jumping to the embedded linker.
-	linuxArm64CrtBeginSharedBinary = append(android.CopyOf(bionicCrtBeginSharedBinary),
-		"host_bionic_linker_script")
+	})
 )
 
 func init() {
@@ -73,18 +63,14 @@ func (toolchainLinuxArm64) ClangTriple() string {
 	return "aarch64-linux"
 }
 
-func (toolchainLinuxArm64) Cflags() string {
+func (toolchainLinuxArm64) ClangCflags() string {
 	// The inherited flags + extra flags
-	return "${config.Arm64Cflags} ${config.LinuxBionicArm64Cflags}"
-}
-
-func (toolchainLinuxArm64) CrtBeginSharedBinary() []string {
-	return linuxArm64CrtBeginSharedBinary
+	return "${config.Arm64ClangCflags} ${config.LinuxBionicArm64Cflags}"
 }
 
 func linuxArm64ToolchainFactory(arch android.Arch) Toolchain {
 	archVariant := "armv8-a" // for host, default to armv8-a
-	toolchainCflags := []string{arm64ArchVariantCflagsVar[archVariant]}
+	toolchainClangCflags := []string{arm64ClangArchVariantCflagsVar[archVariant]}
 
 	// We don't specify CPU architecture for host. Conservatively assume
 	// the host CPU needs the fix
@@ -103,7 +89,7 @@ func linuxArm64ToolchainFactory(arch android.Arch) Toolchain {
 		"${config.LinuxBionicArm64Ldflags}",
 		extraLdflags,
 	}, " ")
-	ret.toolchainArm64.toolchainCflags = strings.Join(toolchainCflags, " ")
+	ret.toolchainArm64.toolchainClangCflags = strings.Join(toolchainClangCflags, " ")
 	return &ret
 }
 

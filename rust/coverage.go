@@ -22,7 +22,6 @@ import (
 
 var CovLibraryName = "libprofile-clang-extras"
 
-// Add '%c' to default specifier after we resolve http://b/210012154
 const profileInstrFlag = "-fprofile-instr-generate=/data/misc/trace/clang-%p-%m.profraw"
 
 type coverage struct {
@@ -56,14 +55,10 @@ func (cov *coverage) flags(ctx ModuleContext, flags Flags, deps PathDeps) (Flags
 		flags.Coverage = true
 		coverage := ctx.GetDirectDepWithTag(CovLibraryName, cc.CoverageDepTag).(cc.LinkableInterface)
 		flags.RustFlags = append(flags.RustFlags,
-			"-Z instrument-coverage", "-g")
+			"-Z instrument-coverage", "-g", "-C link-dead-code")
 		flags.LinkFlags = append(flags.LinkFlags,
 			profileInstrFlag, "-g", coverage.OutputFile().Path().String(), "-Wl,--wrap,open")
 		deps.StaticLibs = append(deps.StaticLibs, coverage.OutputFile().Path())
-		if cc.EnableContinuousCoverage(ctx) {
-			flags.RustFlags = append(flags.RustFlags, "-C llvm-args=--runtime-counter-relocation")
-			flags.LinkFlags = append(flags.LinkFlags, "-Wl,-mllvm,-runtime-counter-relocation")
-		}
 	}
 
 	return flags, deps

@@ -20,9 +20,9 @@ import (
 	"strings"
 
 	"android/soong/android"
+	_ "android/soong/cc/config"
 
 	"github.com/google/blueprint"
-	"github.com/google/blueprint/proptools"
 )
 
 func init() {
@@ -41,14 +41,6 @@ var (
 			CommandDeps: []string{"$ccCmd"},
 		},
 		"ccCmd", "cFlags")
-
-	stripRule = pctx.AndroidStaticRule("stripRule",
-		blueprint.RuleParams{
-			Command: `$stripCmd --strip-unneeded --remove-section=.rel.BTF ` +
-				`--remove-section=.rel.BTF.ext --remove-section=.BTF.ext $in -o $out`,
-			CommandDeps: []string{"$stripCmd"},
-		},
-		"stripCmd")
 )
 
 func registerBpfBuildComponents(ctx android.RegistrationContext) {
@@ -72,11 +64,6 @@ type BpfProperties struct {
 	Cflags       []string
 	Include_dirs []string
 	Sub_dir      string
-	// If set to true, generate BTF debug info for maps & programs
-	Btf    *bool
-	Vendor *bool
-
-	VendorInternal bool `blueprint:"mutated"`
 }
 
 type bpf struct {
@@ -85,41 +72,6 @@ type bpf struct {
 	properties BpfProperties
 
 	objs android.Paths
-}
-
-var _ android.ImageInterface = (*bpf)(nil)
-
-func (bpf *bpf) ImageMutatorBegin(ctx android.BaseModuleContext) {}
-
-func (bpf *bpf) CoreVariantNeeded(ctx android.BaseModuleContext) bool {
-	return !proptools.Bool(bpf.properties.Vendor)
-}
-
-func (bpf *bpf) RamdiskVariantNeeded(ctx android.BaseModuleContext) bool {
-	return false
-}
-
-func (bpf *bpf) VendorRamdiskVariantNeeded(ctx android.BaseModuleContext) bool {
-	return false
-}
-
-func (bpf *bpf) DebugRamdiskVariantNeeded(ctx android.BaseModuleContext) bool {
-	return false
-}
-
-func (bpf *bpf) RecoveryVariantNeeded(ctx android.BaseModuleContext) bool {
-	return false
-}
-
-func (bpf *bpf) ExtraImageVariations(ctx android.BaseModuleContext) []string {
-	if proptools.Bool(bpf.properties.Vendor) {
-		return []string{"vendor"}
-	}
-	return nil
-}
-
-func (bpf *bpf) SetImageVariation(ctx android.BaseModuleContext, variation string, module android.Module) {
-	bpf.properties.VendorInternal = variation == "vendor"
 }
 
 func (bpf *bpf) GenerateAndroidBuildActions(ctx android.ModuleContext) {
@@ -147,14 +99,10 @@ func (bpf *bpf) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 	cflags = append(cflags, bpf.properties.Cflags...)
 
-	if proptools.Bool(bpf.properties.Btf) {
-		cflags = append(cflags, "-g")
-	}
-
 	srcs := android.PathsForModuleSrc(ctx, bpf.properties.Srcs)
 
 	for _, src := range srcs {
-		obj := android.ObjPathWithExt(ctx, "unstripped", src, "o")
+		obj := android.ObjPathWithExt(ctx, "", src, "o")
 
 		ctx.Build(pctx, android.BuildParams{
 			Rule:   ccRule,
@@ -166,21 +114,7 @@ func (bpf *bpf) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			},
 		})
 
-		if proptools.Bool(bpf.properties.Btf) {
-			objStripped := android.ObjPathWithExt(ctx, "", src, "o")
-			ctx.Build(pctx, android.BuildParams{
-				Rule:   stripRule,
-				Input:  obj,
-				Output: objStripped,
-				Args: map[string]string{
-					"stripCmd": "${config.ClangBin}/llvm-strip",
-				},
-			})
-			bpf.objs = append(bpf.objs, objStripped.WithoutRel())
-		} else {
-			bpf.objs = append(bpf.objs, obj.WithoutRel())
-		}
-
+		bpf.objs = append(bpf.objs, obj.WithoutRel())
 	}
 }
 
@@ -191,12 +125,7 @@ func (bpf *bpf) AndroidMk() android.AndroidMkData {
 			fmt.Fprintln(w)
 			fmt.Fprintln(w, "LOCAL_PATH :=", moduleDir)
 			fmt.Fprintln(w)
-			var localModulePath string
-			if bpf.properties.VendorInternal {
-				localModulePath = "LOCAL_MODULE_PATH := $(TARGET_OUT_VENDOR_ETC)/bpf"
-			} else {
-				localModulePath = "LOCAL_MODULE_PATH := $(TARGET_OUT_ETC)/bpf"
-			}
+			localModulePath := "LOCAL_MODULE_PATH := $(TARGET_OUT_ETC)/bpf"
 			if len(bpf.properties.Sub_dir) > 0 {
 				localModulePath += "/" + bpf.properties.Sub_dir
 			}

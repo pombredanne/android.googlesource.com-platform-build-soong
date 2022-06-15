@@ -33,7 +33,6 @@ type procMacroDecorator struct {
 }
 
 type procMacroInterface interface {
-	ProcMacro() bool
 }
 
 var _ compiler = (*procMacroDecorator)(nil)
@@ -64,19 +63,12 @@ func (procMacro *procMacroDecorator) compilerProps() []interface{} {
 		&procMacro.Properties)
 }
 
-func (procMacro *procMacroDecorator) compilerFlags(ctx ModuleContext, flags Flags) Flags {
-	flags = procMacro.baseCompiler.compilerFlags(ctx, flags)
-	flags.RustFlags = append(flags.RustFlags, "--extern proc_macro")
-	return flags
-}
-
 func (procMacro *procMacroDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) android.Path {
 	fileName := procMacro.getStem(ctx) + ctx.toolchain().ProcMacroSuffix()
 	outputFile := android.PathForModuleOut(ctx, fileName)
 
 	srcPath, _ := srcPathFromModuleSrcs(ctx, procMacro.baseCompiler.Properties.Srcs)
 	TransformSrctoProcMacro(ctx, srcPath, deps, flags, outputFile)
-	procMacro.baseCompiler.unstrippedOutputFile = outputFile
 	return outputFile
 }
 
@@ -89,10 +81,6 @@ func (procMacro *procMacroDecorator) getStem(ctx ModuleContext) string {
 
 func (procMacro *procMacroDecorator) autoDep(ctx android.BottomUpMutatorContext) autoDep {
 	return rlibAutoDep
-}
-
-func (procMacro *procMacroDecorator) ProcMacro() bool {
-	return true
 }
 
 func (procMacro *procMacroDecorator) everInstallable() bool {

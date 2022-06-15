@@ -15,10 +15,7 @@
 package android
 
 import (
-	"fmt"
-	"path"
 	"reflect"
-	"runtime"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
@@ -68,10 +65,10 @@ func (l *loadHookContext) moduleFactories() map[string]blueprint.ModuleFactory {
 	return l.bp.ModuleFactories()
 }
 
-func (l *loadHookContext) appendPrependHelper(props []interface{},
-	extendFn func([]interface{}, interface{}, proptools.ExtendPropertyFilterFunc) error) {
+func (l *loadHookContext) AppendProperties(props ...interface{}) {
 	for _, p := range props {
-		err := extendFn(l.Module().base().GetProperties(), p, nil)
+		err := proptools.AppendMatchingProperties(l.Module().base().customizableProperties,
+			p, nil)
 		if err != nil {
 			if propertyErr, ok := err.(*proptools.ExtendPropertyError); ok {
 				l.PropertyErrorf(propertyErr.Property, "%s", propertyErr.Err.Error())
@@ -81,29 +78,24 @@ func (l *loadHookContext) appendPrependHelper(props []interface{},
 		}
 	}
 }
-func (l *loadHookContext) AppendProperties(props ...interface{}) {
-	l.appendPrependHelper(props, proptools.AppendMatchingProperties)
-}
 
 func (l *loadHookContext) PrependProperties(props ...interface{}) {
-	l.appendPrependHelper(props, proptools.PrependMatchingProperties)
+	for _, p := range props {
+		err := proptools.PrependMatchingProperties(l.Module().base().customizableProperties,
+			p, nil)
+		if err != nil {
+			if propertyErr, ok := err.(*proptools.ExtendPropertyError); ok {
+				l.PropertyErrorf(propertyErr.Property, "%s", propertyErr.Err.Error())
+			} else {
+				panic(err)
+			}
+		}
+	}
 }
 
 func (l *loadHookContext) CreateModule(factory ModuleFactory, props ...interface{}) Module {
 	inherited := []interface{}{&l.Module().base().commonProperties}
-
-	var typeName string
-	if typeNameLookup, ok := ModuleTypeByFactory()[reflect.ValueOf(factory)]; ok {
-		typeName = typeNameLookup
-	} else {
-		factoryPtr := reflect.ValueOf(factory).Pointer()
-		factoryFunc := runtime.FuncForPC(factoryPtr)
-		filePath, _ := factoryFunc.FileLine(factoryPtr)
-		typeName = fmt.Sprintf("%s_%s", path.Base(filePath), factoryFunc.Name())
-	}
-	typeName = typeName + "_loadHookModule"
-
-	module := l.bp.CreateModule(ModuleFactoryAdaptor(factory), typeName, append(inherited, props...)...).(Module)
+	module := l.bp.CreateModule(ModuleFactoryAdaptor(factory), append(inherited, props...)...).(Module)
 
 	if l.Module().base().variableProperties != nil && module.base().variableProperties != nil {
 		src := l.Module().base().variableProperties

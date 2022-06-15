@@ -52,10 +52,10 @@ var (
 	// A copy rule.
 	Cp = pctx.AndroidStaticRule("Cp",
 		blueprint.RuleParams{
-			Command:     "rm -f $out && cp $cpPreserveSymlinks $cpFlags $in $out$extraCmds",
+			Command:     "rm -f $out && cp $cpPreserveSymlinks $cpFlags $in $out",
 			Description: "cp $out",
 		},
-		"cpFlags", "extraCmds")
+		"cpFlags")
 
 	// A copy rule that only updates the output if it changed.
 	CpIfChanged = pctx.AndroidStaticRule("CpIfChanged",
@@ -68,10 +68,10 @@ var (
 
 	CpExecutable = pctx.AndroidStaticRule("CpExecutable",
 		blueprint.RuleParams{
-			Command:     "rm -f $out && cp $cpPreserveSymlinks $cpFlags $in $out && chmod +x $out$extraCmds",
+			Command:     "rm -f $out && cp $cpPreserveSymlinks $cpFlags $in $out && chmod +x $out",
 			Description: "cp $out",
 		},
-		"cpFlags", "extraCmds")
+		"cpFlags")
 
 	// A timestamp touch rule.
 	Touch = pctx.AndroidStaticRule("Touch",
@@ -186,15 +186,6 @@ func WriteFileRule(ctx BuilderContext, outputFile WritablePath, content string) 
 		return
 	}
 	buildWriteFileRule(ctx, outputFile, content)
-}
-
-func CatFileRule(ctx BuilderContext, paths Paths, outputFile WritablePath) {
-	ctx.Build(pctx, BuildParams{
-		Rule:        Cat,
-		Inputs:      paths,
-		Output:      outputFile,
-		Description: "combine files to " + outputFile.Base(),
-	})
 }
 
 // shellUnescape reverses proptools.ShellEscape

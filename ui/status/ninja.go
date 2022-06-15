@@ -19,12 +19,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
-	"strings"
 	"syscall"
 	"time"
 
-	"google.golang.org/protobuf/proto"
+	"github.com/golang/protobuf/proto"
 
 	"android/soong/ui/logger"
 	"android/soong/ui/status/ninja_frontend"
@@ -160,10 +158,9 @@ func (n *NinjaReader) run() {
 					err = fmt.Errorf("exited with code: %d", exitCode)
 				}
 
-				outputWithErrorHint := errorHintGenerator.GetOutputWithErrorHint(msg.EdgeFinished.GetOutput(), exitCode)
 				n.status.FinishAction(ActionResult{
 					Action: started,
-					Output: outputWithErrorHint,
+					Output: msg.EdgeFinished.GetOutput(),
 					Error:  err,
 					Stats: ActionResultStats{
 						UserTime:                   msg.EdgeFinished.GetUserTime(),
@@ -221,54 +218,4 @@ func readVarInt(r *bufio.Reader) (int, error) {
 	}
 
 	return ret, nil
-}
-
-// key is pattern in stdout/stderr
-// value is error hint
-var allErrorHints = map[string]string{
-	"Read-only file system": `\nWrite to a read-only file system detected. Possible fixes include
-1. Generate file directly to out/ which is ReadWrite, #recommend solution
-2. BUILD_BROKEN_SRC_DIR_RW_ALLOWLIST := <my/path/1> <my/path/2> #discouraged, subset of source tree will be RW
-3. BUILD_BROKEN_SRC_DIR_IS_WRITABLE := true #highly discouraged, entire source tree will be RW
-`,
-}
-var errorHintGenerator = *newErrorHintGenerator(allErrorHints)
-
-type ErrorHintGenerator struct {
-	allErrorHints                map[string]string
-	allErrorHintPatternsCompiled *regexp.Regexp
-}
-
-func newErrorHintGenerator(allErrorHints map[string]string) *ErrorHintGenerator {
-	var allErrorHintPatterns []string
-	for errorHintPattern, _ := range allErrorHints {
-		allErrorHintPatterns = append(allErrorHintPatterns, errorHintPattern)
-	}
-	allErrorHintPatternsRegex := strings.Join(allErrorHintPatterns[:], "|")
-	re := regexp.MustCompile(allErrorHintPatternsRegex)
-	return &ErrorHintGenerator{
-		allErrorHints:                allErrorHints,
-		allErrorHintPatternsCompiled: re,
-	}
-}
-
-func (errorHintGenerator *ErrorHintGenerator) GetOutputWithErrorHint(rawOutput string, buildExitCode int) string {
-	if buildExitCode == 0 {
-		return rawOutput
-	}
-	errorHint := errorHintGenerator.getErrorHint(rawOutput)
-	if errorHint == nil {
-		return rawOutput
-	}
-	return rawOutput + *errorHint
-}
-
-// Returns the error hint corresponding to the FIRST match in raw output
-func (errorHintGenerator *ErrorHintGenerator) getErrorHint(rawOutput string) *string {
-	firstMatch := errorHintGenerator.allErrorHintPatternsCompiled.FindString(rawOutput)
-	if _, found := errorHintGenerator.allErrorHints[firstMatch]; found {
-		errorHint := errorHintGenerator.allErrorHints[firstMatch]
-		return &errorHint
-	}
-	return nil
 }

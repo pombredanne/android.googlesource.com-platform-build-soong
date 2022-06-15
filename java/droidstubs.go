@@ -26,9 +26,6 @@ import (
 	"android/soong/remoteexec"
 )
 
-// The values allowed for Droidstubs' Api_levels_sdk_type
-var allowedApiLevelSdkTypes = []string{"public", "system", "module-lib"}
-
 func init() {
 	RegisterStubsBuildComponents(android.InitRegistrationContext)
 }
@@ -132,14 +129,11 @@ type DroidstubsProperties struct {
 	// whicih can be used for scheduling purposes
 	High_mem *bool
 
-	// if set to true, Metalava will allow framework SDK to contain API levels annotations.
+	// is set to true, Metalava will allow framework SDK to contain API levels annotations.
 	Api_levels_annotations_enabled *bool
 
 	// the dirs which Metalava extracts API levels annotations from.
 	Api_levels_annotations_dirs []string
-
-	// the sdk kind which Metalava extracts API levels annotations from. Supports 'public', 'system' and 'module-lib' for now; defaults to public.
-	Api_levels_sdk_type *string
 
 	// the filename which Metalava extracts API levels annotations from. Defaults to android.jar.
 	Api_levels_jar_filename *string
@@ -334,11 +328,7 @@ func (d *Droidstubs) annotationsFlags(ctx android.ModuleContext, cmd *android.Ru
 		// TODO(tnorbye): find owners to fix these warnings when annotation was enabled.
 		cmd.FlagWithArg("--hide ", "HiddenTypedefConstant").
 			FlagWithArg("--hide ", "SuperfluousPrefix").
-			FlagWithArg("--hide ", "AnnotationExtraction").
-			// b/222738070
-			FlagWithArg("--hide ", "BannedThrow").
-			// b/223382732
-			FlagWithArg("--hide ", "ChangedDefault")
+			FlagWithArg("--hide ", "AnnotationExtraction")
 	}
 }
 
@@ -383,7 +373,6 @@ func (d *Droidstubs) apiLevelsAnnotationsFlags(ctx android.ModuleContext, cmd *a
 
 	filename := proptools.StringDefault(d.properties.Api_levels_jar_filename, "android.jar")
 
-	var dirs []string
 	ctx.VisitDirectDepsWithTag(metalavaAPILevelsAnnotationsDirTag, func(m android.Module) {
 		if t, ok := m.(*ExportedDroiddocDir); ok {
 			for _, dep := range t.deps {
@@ -400,41 +389,12 @@ func (d *Droidstubs) apiLevelsAnnotationsFlags(ctx android.ModuleContext, cmd *a
 					cmd.Implicit(dep)
 				}
 			}
-
-			dirs = append(dirs, t.dir.String())
+			cmd.FlagWithArg("--android-jar-pattern ", t.dir.String()+"/%/public/"+filename)
 		} else {
 			ctx.PropertyErrorf("api_levels_annotations_dirs",
 				"module %q is not a metalava api-levels-annotations dir", ctx.OtherModuleName(m))
 		}
 	})
-
-	// Add all relevant --android-jar-pattern patterns for Metalava.
-	// When parsing a stub jar for a specific version, Metalava picks the first pattern that defines
-	// an actual file present on disk (in the order the patterns were passed). For system APIs for
-	// privileged apps that are only defined since API level 21 (Lollipop), fallback to public stubs
-	// for older releases. Similarly, module-lib falls back to system API.
-	var sdkDirs []string
-	switch proptools.StringDefault(d.properties.Api_levels_sdk_type, "public") {
-	case "module-lib":
-		sdkDirs = []string{"module-lib", "system", "public"}
-	case "system":
-		sdkDirs = []string{"system", "public"}
-	case "public":
-		sdkDirs = []string{"public"}
-	default:
-		ctx.PropertyErrorf("api_levels_sdk_type", "needs to be one of %v", allowedApiLevelSdkTypes)
-		return
-	}
-
-	for _, sdkDir := range sdkDirs {
-		for _, dir := range dirs {
-			cmd.FlagWithArg("--android-jar-pattern ", fmt.Sprintf("%s/%%/%s/%s", dir, sdkDir, filename))
-		}
-	}
-}
-
-func metalavaUseRbe(ctx android.ModuleContext) bool {
-	return ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_METALAVA")
 }
 
 func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersion javaVersion, srcs android.Paths,
@@ -445,7 +405,7 @@ func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersi
 	cmd := rule.Command()
 	cmd.FlagWithArg("ANDROID_PREFS_ROOT=", homeDir.String())
 
-	if metalavaUseRbe(ctx) {
+	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_METALAVA") {
 		rule.Remoteable(android.RemoteRuleSupports{RBE: true})
 		execStrategy := ctx.Config().GetenvWithDefault("RBE_METALAVA_EXEC_STRATEGY", remoteexec.LocalExecStrategy)
 		labels := map[string]string{"type": "tool", "name": "metalava"}
@@ -480,10 +440,7 @@ func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersi
 		Flag("--quiet").
 		Flag("--format=v2").
 		FlagWithArg("--repeat-errors-max ", "10").
-		FlagWithArg("--hide ", "UnresolvedImport").
-		FlagWithArg("--hide ", "InvalidNullabilityOverride").
-		// b/223382732
-		FlagWithArg("--hide ", "ChangedDefault")
+		FlagWithArg("--hide ", "UnresolvedImport")
 
 	return cmd
 }
@@ -579,8 +536,7 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 			`\n` +
 			`If it is not possible to do so, there are workarounds:\n` +
 			`\n` +
-			`1. You can suppress the errors with @SuppressLint("<id>")\n` +
-			`   where the <id> is given in brackets in the error message above.\n`
+			`1. You can suppress the errors with @SuppressLint("<id>")\n`
 
 		if baselineFile.Valid() {
 			cmd.FlagWithInput("--baseline:api-lint ", baselineFile.Path())
@@ -669,21 +625,90 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 
 	// TODO(b/183630617): rewrapper doesn't support restat rules
-	if !metalavaUseRbe(ctx) {
-		rule.Restat()
-	}
+	// rule.Restat()
 
 	zipSyncCleanupCmd(rule, srcJarDir)
 
-	if apiCheckEnabled(ctx, d.properties.Check_api.Current, "current") {
-		d.generateCheckCurrentCheckedInApiIsUpToDateBuildRules(ctx)
-
-		// Make sure that whenever the API stubs are generated that the current checked in API files are
-		// checked to make sure that they are up-to-date.
-		cmd.Validation(d.checkCurrentApiTimestamp)
-	}
-
 	rule.Build("metalava", "metalava merged")
+
+	if apiCheckEnabled(ctx, d.properties.Check_api.Current, "current") {
+
+		if len(d.Javadoc.properties.Out) > 0 {
+			ctx.PropertyErrorf("out", "out property may not be combined with check_api")
+		}
+
+		apiFile := android.PathForModuleSrc(ctx, String(d.properties.Check_api.Current.Api_file))
+		removedApiFile := android.PathForModuleSrc(ctx, String(d.properties.Check_api.Current.Removed_api_file))
+		baselineFile := android.OptionalPathForModuleSrc(ctx, d.properties.Check_api.Current.Baseline_file)
+
+		if baselineFile.Valid() {
+			ctx.PropertyErrorf("baseline_file", "current API check can't have a baseline file. (module %s)", ctx.ModuleName())
+		}
+
+		d.checkCurrentApiTimestamp = android.PathForModuleOut(ctx, "metalava", "check_current_api.timestamp")
+
+		rule := android.NewRuleBuilder(pctx, ctx)
+
+		// Diff command line.
+		// -F matches the closest "opening" line, such as "package android {"
+		// and "  public class Intent {".
+		diff := `diff -u -F '{ *$'`
+
+		rule.Command().Text("( true")
+		rule.Command().
+			Text(diff).
+			Input(apiFile).Input(d.apiFile)
+
+		rule.Command().
+			Text(diff).
+			Input(removedApiFile).Input(d.removedApiFile)
+
+		msg := fmt.Sprintf(`\n******************************\n`+
+			`You have tried to change the API from what has been previously approved.\n\n`+
+			`To make these errors go away, you have two choices:\n`+
+			`   1. You can add '@hide' javadoc comments (and remove @SystemApi/@TestApi/etc)\n`+
+			`      to the new methods, etc. shown in the above diff.\n\n`+
+			`   2. You can update current.txt and/or removed.txt by executing the following command:\n`+
+			`         m %s-update-current-api\n\n`+
+			`      To submit the revised current.txt to the main Android repository,\n`+
+			`      you will need approval.\n`+
+			`******************************\n`, ctx.ModuleName())
+
+		rule.Command().
+			Text("touch").Output(d.checkCurrentApiTimestamp).
+			Text(") || (").
+			Text("echo").Flag("-e").Flag(`"` + msg + `"`).
+			Text("; exit 38").
+			Text(")")
+
+		rule.Build("metalavaCurrentApiCheck", "check current API")
+
+		d.updateCurrentApiTimestamp = android.PathForModuleOut(ctx, "metalava", "update_current_api.timestamp")
+
+		// update API rule
+		rule = android.NewRuleBuilder(pctx, ctx)
+
+		rule.Command().Text("( true")
+
+		rule.Command().
+			Text("cp").Flag("-f").
+			Input(d.apiFile).Flag(apiFile.String())
+
+		rule.Command().
+			Text("cp").Flag("-f").
+			Input(d.removedApiFile).Flag(removedApiFile.String())
+
+		msg = "failed to update public API"
+
+		rule.Command().
+			Text("touch").Output(d.updateCurrentApiTimestamp).
+			Text(") || (").
+			Text("echo").Flag("-e").Flag(`"` + msg + `"`).
+			Text("; exit 38").
+			Text(")")
+
+		rule.Build("metalavaCurrentApiUpdate", "update current API")
+	}
 
 	if String(d.properties.Check_nullability_warnings) != "" {
 		if d.nullabilityWarningsFile == nil {
@@ -719,84 +744,6 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 
 		rule.Build("nullabilityWarningsCheck", "nullability warnings check")
 	}
-}
-
-func (d *Droidstubs) generateCheckCurrentCheckedInApiIsUpToDateBuildRules(ctx android.ModuleContext) {
-	if len(d.Javadoc.properties.Out) > 0 {
-		ctx.PropertyErrorf("out", "out property may not be combined with check_api")
-	}
-
-	apiFile := android.PathForModuleSrc(ctx, String(d.properties.Check_api.Current.Api_file))
-	removedApiFile := android.PathForModuleSrc(ctx, String(d.properties.Check_api.Current.Removed_api_file))
-	baselineFile := android.OptionalPathForModuleSrc(ctx, d.properties.Check_api.Current.Baseline_file)
-
-	if baselineFile.Valid() {
-		ctx.PropertyErrorf("baseline_file", "current API check can't have a baseline file. (module %s)", ctx.ModuleName())
-	}
-
-	d.checkCurrentApiTimestamp = android.PathForModuleOut(ctx, "metalava", "check_current_api.timestamp")
-
-	rule := android.NewRuleBuilder(pctx, ctx)
-
-	// Diff command line.
-	// -F matches the closest "opening" line, such as "package android {"
-	// and "  public class Intent {".
-	diff := `diff -u -F '{ *$'`
-
-	rule.Command().Text("( true")
-	rule.Command().
-		Text(diff).
-		Input(apiFile).Input(d.apiFile)
-
-	rule.Command().
-		Text(diff).
-		Input(removedApiFile).Input(d.removedApiFile)
-
-	msg := fmt.Sprintf(`\n******************************\n`+
-		`You have tried to change the API from what has been previously approved.\n\n`+
-		`To make these errors go away, you have two choices:\n`+
-		`   1. You can add '@hide' javadoc comments (and remove @SystemApi/@TestApi/etc)\n`+
-		`      to the new methods, etc. shown in the above diff.\n\n`+
-		`   2. You can update current.txt and/or removed.txt by executing the following command:\n`+
-		`         m %s-update-current-api\n\n`+
-		`      To submit the revised current.txt to the main Android repository,\n`+
-		`      you will need approval.\n`+
-		`******************************\n`, ctx.ModuleName())
-
-	rule.Command().
-		Text("touch").Output(d.checkCurrentApiTimestamp).
-		Text(") || (").
-		Text("echo").Flag("-e").Flag(`"` + msg + `"`).
-		Text("; exit 38").
-		Text(")")
-
-	rule.Build("metalavaCurrentApiCheck", "check current API")
-
-	d.updateCurrentApiTimestamp = android.PathForModuleOut(ctx, "metalava", "update_current_api.timestamp")
-
-	// update API rule
-	rule = android.NewRuleBuilder(pctx, ctx)
-
-	rule.Command().Text("( true")
-
-	rule.Command().
-		Text("cp").Flag("-f").
-		Input(d.apiFile).Flag(apiFile.String())
-
-	rule.Command().
-		Text("cp").Flag("-f").
-		Input(d.removedApiFile).Flag(removedApiFile.String())
-
-	msg = "failed to update public API"
-
-	rule.Command().
-		Text("touch").Output(d.updateCurrentApiTimestamp).
-		Text(") || (").
-		Text("echo").Flag("-e").Flag(`"` + msg + `"`).
-		Text("; exit 38").
-		Text(")")
-
-	rule.Build("metalavaCurrentApiUpdate", "update current API")
 }
 
 func StubsDefaultsFactory() android.Module {

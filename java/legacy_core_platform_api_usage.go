@@ -81,6 +81,7 @@ var legacyCorePlatformApiModules = []string{
 	"ds-car-docs", // for AAOS API documentation only
 	"DynamicSystemInstallationService",
 	"EmergencyInfo-lib",
+	"ethernet-service",
 	"EthernetServiceTests",
 	"ExternalStorageProvider",
 	"face-V1-0-javalib",
@@ -227,27 +228,17 @@ func init() {
 	}
 }
 
-var legacyCorePlatformApiLookupKey = android.NewOnceKey("legacyCorePlatformApiLookup")
-
-func getLegacyCorePlatformApiLookup(config android.Config) map[string]struct{} {
-	return config.Once(legacyCorePlatformApiLookupKey, func() interface{} {
-		return legacyCorePlatformApiLookup
-	}).(map[string]struct{})
+func useLegacyCorePlatformApi(ctx android.EarlyModuleContext) bool {
+	return useLegacyCorePlatformApiByName(ctx.ModuleName())
 }
 
-// useLegacyCorePlatformApi checks to see whether the supplied module name is in the list of modules
-// that are able to use the legacy core platform API and returns true if it does, false otherwise.
-//
-// This method takes the module name separately from the context as this may be being called for a
-// module that is not the target of the supplied context.
-func useLegacyCorePlatformApi(ctx android.EarlyModuleContext, moduleName string) bool {
-	lookup := getLegacyCorePlatformApiLookup(ctx.Config())
-	_, found := lookup[moduleName]
+func useLegacyCorePlatformApiByName(name string) bool {
+	_, found := legacyCorePlatformApiLookup[name]
 	return found
 }
 
 func corePlatformSystemModules(ctx android.EarlyModuleContext) string {
-	if useLegacyCorePlatformApi(ctx, ctx.ModuleName()) {
+	if useLegacyCorePlatformApi(ctx) {
 		return config.LegacyCorePlatformSystemModules
 	} else {
 		return config.StableCorePlatformSystemModules
@@ -255,7 +246,7 @@ func corePlatformSystemModules(ctx android.EarlyModuleContext) string {
 }
 
 func corePlatformBootclasspathLibraries(ctx android.EarlyModuleContext) []string {
-	if useLegacyCorePlatformApi(ctx, ctx.ModuleName()) {
+	if useLegacyCorePlatformApi(ctx) {
 		return config.LegacyCorePlatformBootclasspathLibraries
 	} else {
 		return config.StableCorePlatformBootclasspathLibraries

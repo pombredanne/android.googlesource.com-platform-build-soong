@@ -38,16 +38,16 @@ type binarySdkMemberType struct {
 	android.SdkMemberTypeBase
 }
 
-func (mt *binarySdkMemberType) AddDependencies(ctx android.SdkDependencyContext, dependencyTag blueprint.DependencyTag, names []string) {
-	targets := ctx.MultiTargets()
+func (mt *binarySdkMemberType) AddDependencies(mctx android.BottomUpMutatorContext, dependencyTag blueprint.DependencyTag, names []string) {
+	targets := mctx.MultiTargets()
 	for _, bin := range names {
 		for _, target := range targets {
 			variations := target.Variations()
-			if ctx.Device() {
+			if mctx.Device() {
 				variations = append(variations,
 					blueprint.Variation{Mutator: "image", Variation: android.CoreVariation})
 			}
-			ctx.AddFarVariationDependencies(variations, dependencyTag, bin)
+			mctx.AddFarVariationDependencies(variations, dependencyTag, bin)
 		}
 	}
 }

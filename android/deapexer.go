@@ -15,8 +15,6 @@
 package android
 
 import (
-	"strings"
-
 	"github.com/google/blueprint"
 )
 
@@ -71,18 +69,11 @@ import (
 
 // The information exported by the `deapexer` module, access it using `DeapxerInfoProvider`.
 type DeapexerInfo struct {
-	apexModuleName string
-
 	// map from the name of an exported file from a prebuilt_apex to the path to that file. The
 	// exported file name is the apex relative path, e.g. javalib/core-libart.jar.
 	//
 	// See Prebuilt.ApexInfoMutator for more information.
-	exports map[string]WritablePath
-}
-
-// ApexModuleName returns the name of the APEX module that provided the info.
-func (i DeapexerInfo) ApexModuleName() string {
-	return i.apexModuleName
+	exports map[string]Path
 }
 
 // PrebuiltExportPath provides the path, or nil if not available, of a file exported from the
@@ -91,7 +82,7 @@ func (i DeapexerInfo) ApexModuleName() string {
 // The exported file is identified by the apex relative path, e.g. "javalib/core-libart.jar".
 //
 // See apex/deapexer.go for more information.
-func (i DeapexerInfo) PrebuiltExportPath(apexRelativePath string) WritablePath {
+func (i DeapexerInfo) PrebuiltExportPath(apexRelativePath string) Path {
 	path := i.exports[apexRelativePath]
 	return path
 }
@@ -104,10 +95,9 @@ var DeapexerProvider = blueprint.NewProvider(DeapexerInfo{})
 // for use with a prebuilt_apex module.
 //
 // See apex/deapexer.go for more information.
-func NewDeapexerInfo(apexModuleName string, exports map[string]WritablePath) DeapexerInfo {
+func NewDeapexerInfo(exports map[string]Path) DeapexerInfo {
 	return DeapexerInfo{
-		apexModuleName: apexModuleName,
-		exports:        exports,
+		exports: exports,
 	}
 }
 
@@ -142,62 +132,4 @@ type RequiresFilesFromPrebuiltApexTag interface {
 
 	// Method that differentiates this interface from others.
 	RequiresFilesFromPrebuiltApex()
-}
-
-// FindDeapexerProviderForModule searches through the direct dependencies of the current context
-// module for a DeapexerTag dependency and returns its DeapexerInfo. If a single nonambiguous
-// deapexer module isn't found then errors are reported with ctx.ModuleErrorf and nil is returned.
-func FindDeapexerProviderForModule(ctx ModuleContext) *DeapexerInfo {
-	var di *DeapexerInfo
-	ctx.VisitDirectDepsWithTag(DeapexerTag, func(m Module) {
-		c := ctx.OtherModuleProvider(m, DeapexerProvider).(DeapexerInfo)
-		p := &c
-		if di != nil {
-			// If two DeapexerInfo providers have been found then check if they are
-			// equivalent. If they are then use the selected one, otherwise fail.
-			if selected := equivalentDeapexerInfoProviders(di, p); selected != nil {
-				di = selected
-				return
-			}
-			ctx.ModuleErrorf("Multiple installable prebuilt APEXes provide ambiguous deapexers: %s and %s",
-				di.ApexModuleName(), p.ApexModuleName())
-		}
-		di = p
-	})
-	if di != nil {
-		return di
-	}
-	ai := ctx.Provider(ApexInfoProvider).(ApexInfo)
-	ctx.ModuleErrorf("No prebuilt APEX provides a deapexer module for APEX variant %s", ai.ApexVariationName)
-	return nil
-}
-
-// removeCompressedApexSuffix removes the _compressed suffix from the name if present.
-func removeCompressedApexSuffix(name string) string {
-	return strings.TrimSuffix(name, "_compressed")
-}
-
-// equivalentDeapexerInfoProviders checks to make sure that the two DeapexerInfo structures are
-// equivalent.
-//
-// At the moment <x> and <x>_compressed APEXes are treated as being equivalent.
-//
-// If they are not equivalent then this returns nil, otherwise, this returns the DeapexerInfo that
-// should be used by the build, which is always the uncompressed one. That ensures that the behavior
-// of the build is not dependent on which prebuilt APEX is visited first.
-func equivalentDeapexerInfoProviders(p1 *DeapexerInfo, p2 *DeapexerInfo) *DeapexerInfo {
-	n1 := removeCompressedApexSuffix(p1.ApexModuleName())
-	n2 := removeCompressedApexSuffix(p2.ApexModuleName())
-
-	// If the names don't match then they are not equivalent.
-	if n1 != n2 {
-		return nil
-	}
-
-	// Select the uncompressed APEX.
-	if n1 == removeCompressedApexSuffix(n1) {
-		return p1
-	} else {
-		return p2
-	}
 }

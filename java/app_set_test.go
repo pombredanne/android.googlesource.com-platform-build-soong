@@ -17,20 +17,19 @@ package java
 import (
 	"fmt"
 	"reflect"
-	"strings"
 	"testing"
 
 	"android/soong/android"
 )
 
 func TestAndroidAppSet(t *testing.T) {
-	result := PrepareForTestWithJavaDefaultModules.RunTestWithBp(t, `
+	ctx, _ := testJava(t, `
 		android_app_set {
 			name: "foo",
 			set: "prebuilts/apks/app.apks",
 			prerelease: true,
 		}`)
-	module := result.ModuleForTests("foo", "android_common")
+	module := ctx.ModuleForTests("foo", "android_common")
 	const packedSplitApks = "foo.zip"
 	params := module.Output(packedSplitApks)
 	if params.Rule == nil {
@@ -42,22 +41,9 @@ func TestAndroidAppSet(t *testing.T) {
 	if s := params.Args["partition"]; s != "system" {
 		t.Errorf("wrong partition value: '%s', expected 'system'", s)
 	}
-
-	android.AssertPathRelativeToTopEquals(t, "incorrect output path",
-		"out/soong/.intermediates/foo/android_common/foo.apk", params.Output)
-
-	android.AssertPathsRelativeToTopEquals(t, "incorrect implicit output paths",
-		[]string{
-			"out/soong/.intermediates/foo/android_common/foo.zip",
-			"out/soong/.intermediates/foo/android_common/apkcerts.txt",
-		},
-		params.ImplicitOutputs.Paths())
-
-	mkEntries := android.AndroidMkEntriesForTest(t, result.TestContext, module.Module())[0]
+	mkEntries := android.AndroidMkEntriesForTest(t, ctx, module.Module())[0]
 	actualInstallFile := mkEntries.EntryMap["LOCAL_APK_SET_INSTALL_FILE"]
-	expectedInstallFile := []string{
-		strings.Replace(params.ImplicitOutputs[0].String(), android.OutSoongDir, result.Config.SoongOutDir(), 1),
-	}
+	expectedInstallFile := []string{"foo.apk"}
 	if !reflect.DeepEqual(actualInstallFile, expectedInstallFile) {
 		t.Errorf("Unexpected LOCAL_APK_SET_INSTALL_FILE value: '%s', expected: '%s',",
 			actualInstallFile, expectedInstallFile)

@@ -51,9 +51,6 @@ type RuntimeResourceOverlayProperties struct {
 	// Name of the signing certificate lineage file.
 	Lineage *string
 
-	// For overriding the --rotation-min-sdk-version property of apksig
-	RotationMinSdkVersion *string
-
 	// optional theme name. If specified, the overlay package will be applied
 	// only when the ro.boot.vendor.overlay.theme system property is set to the same value.
 	Theme *string
@@ -93,22 +90,6 @@ type RuntimeResourceOverlayModule interface {
 	Theme() string
 }
 
-// RRO's partition logic is different from the partition logic of other modules defined in soong/android/paths.go
-// The default partition for RRO is "/product" and not "/system"
-func rroPartition(ctx android.ModuleContext) string {
-	var partition string
-	if ctx.DeviceSpecific() {
-		partition = ctx.DeviceConfig().OdmPath()
-	} else if ctx.SocSpecific() {
-		partition = ctx.DeviceConfig().VendorPath()
-	} else if ctx.SystemExtSpecific() {
-		partition = ctx.DeviceConfig().SystemExtPath()
-	} else {
-		partition = ctx.DeviceConfig().ProductPath()
-	}
-	return partition
-}
-
 func (r *RuntimeResourceOverlay) DepsMutator(ctx android.BottomUpMutatorContext) {
 	sdkDep := decodeSdkDep(ctx, android.SdkContext(r))
 	if sdkDep.hasFrameworkLibs() {
@@ -142,7 +123,7 @@ func (r *RuntimeResourceOverlay) GenerateAndroidBuildActions(ctx android.ModuleC
 		aaptLinkFlags = append(aaptLinkFlags,
 			"--rename-overlay-target-package "+*r.overridableProperties.Target_package_name)
 	}
-	r.aapt.buildActions(ctx, r, nil, nil, aaptLinkFlags...)
+	r.aapt.buildActions(ctx, r, nil, aaptLinkFlags...)
 
 	// Sign the built package
 	_, certificates := collectAppDeps(ctx, r, false, false)
@@ -152,15 +133,11 @@ func (r *RuntimeResourceOverlay) GenerateAndroidBuildActions(ctx android.ModuleC
 	if lineage := String(r.properties.Lineage); lineage != "" {
 		lineageFile = android.PathForModuleSrc(ctx, lineage)
 	}
-
-	rotationMinSdkVersion := String(r.properties.RotationMinSdkVersion)
-
-	SignAppPackage(ctx, signed, r.aapt.exportPackage, certificates, nil, lineageFile, rotationMinSdkVersion)
+	SignAppPackage(ctx, signed, r.aapt.exportPackage, certificates, nil, lineageFile)
 	r.certificate = certificates[0]
 
 	r.outputFile = signed
-	partition := rroPartition(ctx)
-	r.installDir = android.PathForModuleInPartitionInstall(ctx, partition, "overlay", String(r.properties.Theme))
+	r.installDir = android.PathForModuleInstall(ctx, "overlay", String(r.properties.Theme))
 	ctx.InstallFile(r.installDir, r.outputFile.Base(), r.outputFile)
 }
 

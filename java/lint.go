@@ -75,9 +75,9 @@ type linter struct {
 	extraLintCheckJars      android.Paths
 	test                    bool
 	library                 bool
-	minSdkVersion           android.ApiLevel
-	targetSdkVersion        android.ApiLevel
-	compileSdkVersion       android.ApiLevel
+	minSdkVersion           string
+	targetSdkVersion        string
+	compileSdkVersion       string
 	compileSdkKind          android.SdkKind
 	javaLanguageLevel       string
 	kotlinLanguageLevel     string
@@ -102,12 +102,12 @@ type lintOutputsIntf interface {
 	lintOutputs() *lintOutputs
 }
 
-type LintDepSetsIntf interface {
+type lintDepSetsIntf interface {
 	LintDepSets() LintDepSets
 
 	// Methods used to propagate strict_updatability_linting values.
-	GetStrictUpdatabilityLinting() bool
-	SetStrictUpdatabilityLinting(bool)
+	getStrictUpdatabilityLinting() bool
+	setStrictUpdatabilityLinting(bool)
 }
 
 type LintDepSets struct {
@@ -158,15 +158,15 @@ func (l *linter) LintDepSets() LintDepSets {
 	return l.outputs.depSets
 }
 
-func (l *linter) GetStrictUpdatabilityLinting() bool {
+func (l *linter) getStrictUpdatabilityLinting() bool {
 	return BoolDefault(l.properties.Lint.Strict_updatability_linting, false)
 }
 
-func (l *linter) SetStrictUpdatabilityLinting(strictLinting bool) {
+func (l *linter) setStrictUpdatabilityLinting(strictLinting bool) {
 	l.properties.Lint.Strict_updatability_linting = &strictLinting
 }
 
-var _ LintDepSetsIntf = (*linter)(nil)
+var _ lintDepSetsIntf = (*linter)(nil)
 
 var _ lintOutputsIntf = (*linter)(nil)
 
@@ -273,7 +273,7 @@ func (l *linter) writeLintProjectXML(ctx android.ModuleContext, rule *android.Ru
 	cmd.FlagForEachArg("--error_check ", l.properties.Lint.Error_checks)
 	cmd.FlagForEachArg("--fatal_check ", l.properties.Lint.Fatal_checks)
 
-	if l.GetStrictUpdatabilityLinting() {
+	if l.getStrictUpdatabilityLinting() {
 		// Verify the module does not baseline issues that endanger safe updatability.
 		if baselinePath := l.getBaselineFilepath(ctx); baselinePath.Valid() {
 			cmd.FlagWithInput("--baseline ", baselinePath.Path())
@@ -300,7 +300,7 @@ func (l *linter) generateManifest(ctx android.ModuleContext, rule *android.RuleB
 		Text(`echo "<manifest xmlns:android='http://schemas.android.com/apk/res/android'" &&`).
 		Text(`echo "    android:versionCode='1' android:versionName='1' >" &&`).
 		Textf(`echo "  <uses-sdk android:minSdkVersion='%s' android:targetSdkVersion='%s'/>" &&`,
-			l.minSdkVersion.String(), l.targetSdkVersion.String()).
+			l.minSdkVersion, l.targetSdkVersion).
 		Text(`echo "</manifest>"`).
 		Text(") >").Output(manifestPath)
 
@@ -325,7 +325,7 @@ func (l *linter) lint(ctx android.ModuleContext) {
 		return
 	}
 
-	if l.minSdkVersion.CompareTo(l.compileSdkVersion) == -1 {
+	if l.minSdkVersion != l.compileSdkVersion {
 		l.extraMainlineLintErrors = append(l.extraMainlineLintErrors, updatabilityChecks...)
 		_, filtered := android.FilterList(l.properties.Lint.Warning_checks, updatabilityChecks)
 		if len(filtered) != 0 {
@@ -377,12 +377,11 @@ func (l *linter) lint(ctx android.ModuleContext) {
 	html := android.PathForModuleOut(ctx, "lint", "lint-report.html")
 	text := android.PathForModuleOut(ctx, "lint", "lint-report.txt")
 	xml := android.PathForModuleOut(ctx, "lint", "lint-report.xml")
-	baseline := android.PathForModuleOut(ctx, "lint", "lint-baseline.xml")
 
 	depSetsBuilder := NewLintDepSetBuilder().Direct(html, text, xml)
 
 	ctx.VisitDirectDepsWithTag(staticLibTag, func(dep android.Module) {
-		if depLint, ok := dep.(LintDepSetsIntf); ok {
+		if depLint, ok := dep.(lintDepSetsIntf); ok {
 			depSetsBuilder.Transitive(depLint.LintDepSets())
 		}
 	})
@@ -427,7 +426,7 @@ func (l *linter) lint(ctx android.ModuleContext) {
 		FlagWithOutput("--html ", html).
 		FlagWithOutput("--text ", text).
 		FlagWithOutput("--xml ", xml).
-		FlagWithArg("--compile-sdk-version ", l.compileSdkVersion.String()).
+		FlagWithArg("--compile-sdk-version ", l.compileSdkVersion).
 		FlagWithArg("--java-language-level ", l.javaLanguageLevel).
 		FlagWithArg("--kotlin-language-level ", l.kotlinLanguageLevel).
 		FlagWithArg("--url ", fmt.Sprintf(".=.,%s=out", android.PathForOutput(ctx).String())).
@@ -447,8 +446,6 @@ func (l *linter) lint(ctx android.ModuleContext) {
 	if lintBaseline.Valid() {
 		cmd.FlagWithInput("--baseline ", lintBaseline.Path())
 	}
-
-	cmd.FlagWithOutput("--write-reference-baseline ", baseline)
 
 	cmd.Text("|| (").Text("if [ -e").Input(text).Text("]; then cat").Input(text).Text("; fi; exit 7)")
 
@@ -660,10 +657,10 @@ func lintZip(ctx android.BuilderContext, paths android.Paths, outputPath android
 // Enforce the strict updatability linting to all applicable transitive dependencies.
 func enforceStrictUpdatabilityLintingMutator(ctx android.TopDownMutatorContext) {
 	m := ctx.Module()
-	if d, ok := m.(LintDepSetsIntf); ok && d.GetStrictUpdatabilityLinting() {
+	if d, ok := m.(lintDepSetsIntf); ok && d.getStrictUpdatabilityLinting() {
 		ctx.VisitDirectDepsWithTag(staticLibTag, func(d android.Module) {
-			if a, ok := d.(LintDepSetsIntf); ok {
-				a.SetStrictUpdatabilityLinting(true)
+			if a, ok := d.(lintDepSetsIntf); ok {
+				a.setStrictUpdatabilityLinting(true)
 			}
 		})
 	}

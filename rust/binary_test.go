@@ -106,28 +106,11 @@ func TestBinaryFlags(t *testing.T) {
 			srcs: ["foo.rs"],
 		}`)
 
-	fizzBuzz := ctx.ModuleForTests("fizz-buzz", "linux_glibc_x86_64").Rule("rustc")
+	fizzBuzz := ctx.ModuleForTests("fizz-buzz", "linux_glibc_x86_64").Output("fizz-buzz")
 
 	flags := fizzBuzz.Args["rustcFlags"]
 	if strings.Contains(flags, "--test") {
 		t.Errorf("extra --test flag, rustcFlags: %#v", flags)
-	}
-}
-
-// Test that the bootstrap property sets the appropriate linker
-func TestBootstrap(t *testing.T) {
-	ctx := testRust(t, `
-		rust_binary {
-			name: "foo",
-			srcs: ["foo.rs"],
-			bootstrap: true,
-		}`)
-
-	foo := ctx.ModuleForTests("foo", "android_arm64_armv8-a").Rule("rustc")
-
-	flag := "-Wl,-dynamic-linker,/system/bin/bootstrap/linker64"
-	if !strings.Contains(foo.Args["linkFlags"], flag) {
-		t.Errorf("missing link flag to use bootstrap linker, expecting %#v, linkFlags: %#v", flag, foo.Args["linkFlags"])
 	}
 }
 
@@ -139,7 +122,7 @@ func TestStaticBinaryFlags(t *testing.T) {
 			static_executable: true,
 		}`)
 
-	fizzOut := ctx.ModuleForTests("fizz", "android_arm64_armv8-a").Rule("rustc")
+	fizzOut := ctx.ModuleForTests("fizz", "android_arm64_armv8-a").Output("fizz")
 	fizzMod := ctx.ModuleForTests("fizz", "android_arm64_armv8-a").Module().(*Module)
 
 	flags := fizzOut.Args["rustcFlags"]
@@ -173,7 +156,7 @@ func TestLinkObjects(t *testing.T) {
 			name: "libfoo",
 		}`)
 
-	fizzBuzz := ctx.ModuleForTests("fizz-buzz", "android_arm64_armv8-a").Rule("rustc")
+	fizzBuzz := ctx.ModuleForTests("fizz-buzz", "android_arm64_armv8-a").Output("fizz-buzz")
 	linkFlags := fizzBuzz.Args["linkFlags"]
 	if !strings.Contains(linkFlags, "/libfoo.so") {
 		t.Errorf("missing shared dependency 'libfoo.so' in linkFlags: %#v", linkFlags)
@@ -197,17 +180,15 @@ func TestStrippedBinary(t *testing.T) {
 	`)
 
 	foo := ctx.ModuleForTests("foo", "android_arm64_armv8-a")
-	foo.Output("unstripped/foo")
-	foo.Output("foo")
-
+	foo.Output("stripped/foo")
 	// Check that the `cp` rules is using the stripped version as input.
 	cp := foo.Rule("android.Cp")
-	if strings.HasSuffix(cp.Input.String(), "unstripped/foo") {
+	if !strings.HasSuffix(cp.Input.String(), "stripped/foo") {
 		t.Errorf("installed binary not based on stripped version: %v", cp.Input)
 	}
 
-	fizzBar := ctx.ModuleForTests("bar", "android_arm64_armv8-a").MaybeOutput("unstripped/bar")
+	fizzBar := ctx.ModuleForTests("bar", "android_arm64_armv8-a").MaybeOutput("stripped/bar")
 	if fizzBar.Rule != nil {
-		t.Errorf("unstripped binary exists, so stripped binary has incorrectly been generated")
+		t.Errorf("stripped version of bar has been generated")
 	}
 }

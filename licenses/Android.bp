@@ -18,11 +18,6 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-filegroup {
-    name: "Apache-2.0-License-Text",
-    srcs: ["LICENSE"],
-}
-
 license {
     name: "Android-Apache-2.0",
     package_name: "Android",
@@ -497,36 +492,36 @@ license_kind {
 
 license_kind {
     name: "SPDX-license-identifier-CC-BY-ND",
-    conditions: ["by_exception_only"],
+    conditions: ["restricted"],
 }
 
 license_kind {
     name: "SPDX-license-identifier-CC-BY-ND-1.0",
-    conditions: ["by_exception_only"],
+    conditions: ["restricted"],
     url: "https://spdx.org/licenses/CC-BY-ND-1.0.html",
 }
 
 license_kind {
     name: "SPDX-license-identifier-CC-BY-ND-2.0",
-    conditions: ["by_exception_only"],
+    conditions: ["restricted"],
     url: "https://spdx.org/licenses/CC-BY-ND-2.0.html",
 }
 
 license_kind {
     name: "SPDX-license-identifier-CC-BY-ND-2.5",
-    conditions: ["by_exception_only"],
+    conditions: ["restricted"],
     url: "https://spdx.org/licenses/CC-BY-ND-2.5.html",
 }
 
 license_kind {
     name: "SPDX-license-identifier-CC-BY-ND-3.0",
-    conditions: ["by_exception_only"],
+    conditions: ["restricted"],
     url: "https://spdx.org/licenses/CC-BY-ND-3.0.html",
 }
 
 license_kind {
     name: "SPDX-license-identifier-CC-BY-ND-4.0",
-    conditions: ["by_exception_only"],
+    conditions: ["restricted"],
     url: "https://spdx.org/licenses/CC-BY-ND-4.0.html",
 }
 
@@ -567,10 +562,7 @@ license_kind {
 
 license_kind {
     name: "SPDX-license-identifier-CC-BY-SA-ND",
-    conditions: [
-        "restricted",
-        "by_exception_only",
-    ],
+    conditions: ["restricted"],
 }
 
 license_kind {
