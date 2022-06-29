@@ -50,7 +50,6 @@ type SanitizeProperties struct {
 		}
 	}
 	SanitizerEnabled bool `blueprint:"mutated"`
-	SanitizeDep      bool `blueprint:"mutated"`
 
 	// Used when we need to place libraries in their own directory, such as ASAN.
 	InSanitizerDir bool `blueprint:"mutated"`
@@ -444,18 +443,10 @@ func (mod *Module) IsSanitizerExplicitlyDisabled(t cc.SanitizerType) bool {
 	return mod.sanitize.isSanitizerExplicitlyDisabled(t)
 }
 
-func (mod *Module) SanitizeDep() bool {
-	return mod.sanitize.Properties.SanitizeDep
-}
-
 func (mod *Module) SetSanitizer(t cc.SanitizerType, b bool) {
 	if !Bool(mod.sanitize.Properties.Sanitize.Never) {
 		mod.sanitize.SetSanitizer(t, b)
 	}
-}
-
-func (mod *Module) SetSanitizeDep(b bool) {
-	mod.sanitize.Properties.SanitizeDep = b
 }
 
 func (mod *Module) StaticallyLinked() bool {

@@ -117,6 +117,13 @@ var (
 
 	commonGlobalConlyflags = []string{}
 
+	commonGlobalAsflags = []string{
+		"-D__ASSEMBLY__",
+		// TODO(b/235105792): override global -fdebug-default-version=5, it is causing $TMPDIR to
+		// end up in the dwarf data for crtend_so.S.
+		"-fdebug-default-version=4",
+	}
+
 	deviceGlobalCflags = []string{
 		"-ffunction-sections",
 		"-fdata-sections",
@@ -191,7 +198,6 @@ var (
 		"-Werror=int-in-bool-context",
 		"-Werror=int-to-pointer-cast",
 		"-Werror=pointer-to-int-cast",
-		"-Werror=string-compare",
 		"-Werror=xor-used-as-pow",
 		// http://b/161386391 for -Wno-void-pointer-to-enum-cast
 		"-Wno-void-pointer-to-enum-cast",
@@ -225,7 +231,6 @@ var (
 		"-Wno-misleading-indentation",               // http://b/153746954
 		"-Wno-zero-as-null-pointer-constant",        // http://b/68236239
 		"-Wno-deprecated-anon-enum-enum-conversion", // http://b/153746485
-		"-Wno-string-compare",                       // http://b/153764102
 		"-Wno-pessimizing-move",                     // http://b/154270751
 		// New warnings to be fixed after clang-r399163
 		"-Wno-non-c-typedef-for-linkage", // http://b/161304145
@@ -279,15 +284,15 @@ var (
 		"-w",
 	}
 
-	CStdVersion               = "gnu99"
+	CStdVersion               = "gnu11"
 	CppStdVersion             = "gnu++17"
-	ExperimentalCStdVersion   = "gnu11"
+	ExperimentalCStdVersion   = "gnu17"
 	ExperimentalCppStdVersion = "gnu++2a"
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r450784d"
-	ClangDefaultShortVersion = "14.0.6"
+	ClangDefaultVersion      = "clang-r450784e"
+	ClangDefaultShortVersion = "14.0.7"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{
@@ -315,6 +320,7 @@ func init() {
 	}
 
 	exportedVars.ExportStringListStaticVariable("CommonGlobalConlyflags", commonGlobalConlyflags)
+	exportedVars.ExportStringListStaticVariable("CommonGlobalAsflags", commonGlobalAsflags)
 	exportedVars.ExportStringListStaticVariable("DeviceGlobalCppflags", deviceGlobalCppflags)
 	exportedVars.ExportStringListStaticVariable("DeviceGlobalLdflags", deviceGlobalLdflags)
 	exportedVars.ExportStringListStaticVariable("DeviceGlobalLldflags", deviceGlobalLldflags)
@@ -371,6 +377,11 @@ func init() {
 	exportedVars.ExportStringListStaticVariable("NoOverrideExternalGlobalCflags", noOverrideExternalGlobalCflags)
 	exportedVars.ExportStringListStaticVariable("CommonGlobalCppflags", commonGlobalCppflags)
 	exportedVars.ExportStringListStaticVariable("ExternalCflags", extraExternalCflags)
+
+	exportedVars.ExportString("CStdVersion", CStdVersion)
+	exportedVars.ExportString("CppStdVersion", CppStdVersion)
+	exportedVars.ExportString("ExperimentalCStdVersion", ExperimentalCStdVersion)
+	exportedVars.ExportString("ExperimentalCppStdVersion", ExperimentalCppStdVersion)
 
 	// Everything in these lists is a crime against abstraction and dependency tracking.
 	// Do not add anything to this list.

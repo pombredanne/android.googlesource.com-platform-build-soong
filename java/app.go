@@ -63,13 +63,6 @@ type appProperties struct {
 	// list of resource labels to generate individual resource packages
 	Package_splits []string
 
-	// Names of modules to be overridden. Listed modules can only be other binaries
-	// (in Make or Soong).
-	// This does not completely prevent installation of the overridden binaries, but if both
-	// binaries would be installed by default (in PRODUCT_PACKAGES) the other binary will be removed
-	// from PRODUCT_PACKAGES.
-	Overrides []string
-
 	// list of native libraries that will be provided in or alongside the resulting jar
 	Jni_libs []string `android:"arch_variant"`
 
@@ -106,7 +99,6 @@ type appProperties struct {
 
 	// cc.Coverage related properties
 	PreventInstall    bool `blueprint:"mutated"`
-	HideFromMake      bool `blueprint:"mutated"`
 	IsCoverageVariant bool `blueprint:"mutated"`
 
 	// Whether this app is considered mainline updatable or not. When set to true, this will enforce
@@ -133,6 +125,13 @@ type overridableAppProperties struct {
 
 	// Whether to rename the package in resources to the override name rather than the base name. Defaults to true.
 	Rename_resources_package *bool
+
+	// Names of modules to be overridden. Listed modules can only be other binaries
+	// (in Make or Soong).
+	// This does not completely prevent installation of the overridden binaries, but if both
+	// binaries would be installed by default (in PRODUCT_PACKAGES) the other binary will be removed
+	// from PRODUCT_PACKAGES.
+	Overrides []string
 }
 
 type AndroidApp struct {
@@ -299,10 +298,6 @@ func (a *AndroidApp) checkAppSdkVersions(ctx android.ModuleContext) {
 
 // If an updatable APK sets min_sdk_version, min_sdk_vesion of JNI libs should match with it.
 // This check is enforced for "updatable" APKs (including APK-in-APEX).
-// b/155209650: until min_sdk_version is properly supported, use sdk_version instead.
-// because, sdk_version is overridden by min_sdk_version (if set as smaller)
-// and sdkLinkType is checked with dependencies so we can be sure that the whole dependency tree
-// will meet the requirements.
 func (a *AndroidApp) checkJniLibsSdkVersion(ctx android.ModuleContext, minSdkVersion android.ApiLevel) {
 	// It's enough to check direct JNI deps' sdk_version because all transitive deps from JNI deps are checked in cc.checkLinkType()
 	ctx.VisitDirectDeps(func(m android.Module) {
@@ -313,10 +308,10 @@ func (a *AndroidApp) checkJniLibsSdkVersion(ctx android.ModuleContext, minSdkVer
 		// The domain of cc.sdk_version is "current" and <number>
 		// We can rely on android.SdkSpec to convert it to <number> so that "current" is
 		// handled properly regardless of sdk finalization.
-		jniSdkVersion, err := android.SdkSpecFrom(ctx, dep.SdkVersion()).EffectiveVersion(ctx)
+		jniSdkVersion, err := android.SdkSpecFrom(ctx, dep.MinSdkVersion()).EffectiveVersion(ctx)
 		if err != nil || minSdkVersion.LessThan(jniSdkVersion) {
-			ctx.OtherModuleErrorf(dep, "sdk_version(%v) is higher than min_sdk_version(%v) of the containing android_app(%v)",
-				dep.SdkVersion(), minSdkVersion, ctx.ModuleName())
+			ctx.OtherModuleErrorf(dep, "min_sdk_version(%v) is higher than min_sdk_version(%v) of the containing android_app(%v)",
+				dep.MinSdkVersion(), minSdkVersion, ctx.ModuleName())
 			return
 		}
 
@@ -586,19 +581,17 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 	a.onDeviceDir = android.InstallPathToOnDevicePath(ctx, a.installDir)
 
+	a.classLoaderContexts = a.usesLibrary.classLoaderContextForUsesLibDeps(ctx)
+
+	var noticeAssetPath android.WritablePath
 	if Bool(a.appProperties.Embed_notices) || ctx.Config().IsEnvTrue("ALWAYS_EMBED_NOTICES") {
-		noticeFile := android.PathForModuleOut(ctx, "NOTICE.html.gz")
-		android.BuildNoticeHtmlOutputFromLicenseMetadata(ctx, noticeFile)
-		noticeAssetPath := android.PathForModuleOut(ctx, "NOTICE", "NOTICE.html.gz")
-		builder := android.NewRuleBuilder(pctx, ctx)
-		builder.Command().Text("cp").
-			Input(noticeFile).
-			Output(noticeAssetPath)
-		builder.Build("notice_dir", "Building notice dir")
+		// The rule to create the notice file can't be generated yet, as the final output path
+		// for the apk isn't known yet.  Add the path where the notice file will be generated to the
+		// aapt rules now before calling aaptBuildActions, the rule to create the notice file will
+		// be generated later.
+		noticeAssetPath = android.PathForModuleOut(ctx, "NOTICE", "NOTICE.html.gz")
 		a.aapt.noticeFile = android.OptionalPathForPath(noticeAssetPath)
 	}
-
-	a.classLoaderContexts = a.usesLibrary.classLoaderContextForUsesLibDeps(ctx)
 
 	// Process all building blocks, from AAPT to certificates.
 	a.aaptBuildActions(ctx)
@@ -671,6 +664,23 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 		a.extraOutputFiles = append(a.extraOutputFiles, v4SignatureFile)
 	}
 
+	if a.aapt.noticeFile.Valid() {
+		// Generating the notice file rule has to be here after a.outputFile is known.
+		noticeFile := android.PathForModuleOut(ctx, "NOTICE.html.gz")
+		android.BuildNoticeHtmlOutputFromLicenseMetadata(
+			ctx, noticeFile, "", "",
+			[]string{
+				a.installDir.String() + "/",
+				android.PathForModuleInstall(ctx).String() + "/",
+				a.outputFile.String(),
+			})
+		builder := android.NewRuleBuilder(pctx, ctx)
+		builder.Command().Text("cp").
+			Input(noticeFile).
+			Output(noticeAssetPath)
+		builder.Build("notice_dir", "Building notice dir")
+	}
+
 	for _, split := range a.aapt.splits {
 		// Sign the split APKs
 		packageFile := android.PathForModuleOut(ctx, a.installApkName+"_"+split.suffix+".apk")
@@ -730,7 +740,7 @@ func collectAppDeps(ctx android.ModuleContext, app appDepsInterface,
 		tag := ctx.OtherModuleDependencyTag(module)
 
 		if IsJniDepTag(tag) || cc.IsSharedDepTag(tag) {
-			if dep, ok := module.(*cc.Module); ok {
+			if dep, ok := module.(cc.LinkableInterface); ok {
 				if dep.IsNdk(ctx.Config()) || dep.IsStubs() {
 					return false
 				}
@@ -842,6 +852,10 @@ func (a *AndroidApp) Updatable() bool {
 	return Bool(a.appProperties.Updatable)
 }
 
+func (a *AndroidApp) SetUpdatable(val bool) {
+	a.appProperties.Updatable = &val
+}
+
 func (a *AndroidApp) getCertString(ctx android.BaseModuleContext) string {
 	certificate, overridden := ctx.DeviceConfig().OverrideCertificateFor(ctx.ModuleName())
 	if overridden {
@@ -880,10 +894,6 @@ func (a *AndroidApp) SetPreventInstall() {
 	a.appProperties.PreventInstall = true
 }
 
-func (a *AndroidApp) HideFromMake() {
-	a.appProperties.HideFromMake = true
-}
-
 func (a *AndroidApp) MarkAsCoverageVariant(coverage bool) {
 	a.appProperties.IsCoverageVariant = coverage
 }
@@ -913,7 +923,7 @@ func AndroidAppFactory() android.Module {
 
 	android.InitAndroidMultiTargetsArchModule(module, android.DeviceSupported, android.MultilibCommon)
 	android.InitDefaultableModule(module)
-	android.InitOverridableModule(module, &module.appProperties.Overrides)
+	android.InitOverridableModule(module, &module.overridableAppProperties.Overrides)
 	android.InitApexModule(module)
 	android.InitBazelModule(module)
 
@@ -1017,7 +1027,7 @@ func (a *AndroidTest) OverridablePropertiesDepsMutator(ctx android.BottomUpMutat
 func AndroidTestFactory() android.Module {
 	module := &AndroidTest{}
 
-	module.Module.dexProperties.Optimize.EnabledByDefault = true
+	module.Module.dexProperties.Optimize.EnabledByDefault = false
 
 	module.Module.properties.Instrument = true
 	module.Module.properties.Supports_static_instrumentation = true
@@ -1037,7 +1047,7 @@ func AndroidTestFactory() android.Module {
 
 	android.InitAndroidMultiTargetsArchModule(module, android.DeviceSupported, android.MultilibCommon)
 	android.InitDefaultableModule(module)
-	android.InitOverridableModule(module, &module.appProperties.Overrides)
+	android.InitOverridableModule(module, &module.overridableAppProperties.Overrides)
 	return module
 }
 
@@ -1071,6 +1081,7 @@ func (a *AndroidTestHelperApp) InstallInTestcases() bool {
 func AndroidTestHelperAppFactory() android.Module {
 	module := &AndroidTestHelperApp{}
 
+	// TODO(b/192032291): Disable by default after auditing downstream usage.
 	module.Module.dexProperties.Optimize.EnabledByDefault = true
 
 	module.Module.properties.Installable = proptools.BoolPtr(true)

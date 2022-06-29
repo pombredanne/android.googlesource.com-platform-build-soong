@@ -618,7 +618,12 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 
 		// Create a NOTICE file, and embed it as an asset file in the APEX.
 		a.htmlGzNotice = android.PathForModuleOut(ctx, "NOTICE.html.gz")
-		android.BuildNoticeHtmlOutputFromLicenseMetadata(ctx, a.htmlGzNotice)
+		android.BuildNoticeHtmlOutputFromLicenseMetadata(
+			ctx, a.htmlGzNotice, "", "",
+			[]string{
+				android.PathForModuleInstall(ctx).String() + "/",
+				android.PathForModuleInPartitionInstall(ctx, "apex").String() + "/",
+			})
 		noticeAssetPath := android.PathForModuleOut(ctx, "NOTICE", "NOTICE.html.gz")
 		builder := android.NewRuleBuilder(pctx, ctx)
 		builder.Command().Text("cp").
@@ -649,6 +654,8 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			implicitInputs = append(implicitInputs, a.manifestJsonOut)
 			optFlags = append(optFlags, "--manifest_json "+a.manifestJsonOut.String())
 		}
+
+		optFlags = append(optFlags, "--apex_version "+defaultManifestVersion)
 
 		optFlags = append(optFlags, "--payload_fs_type "+a.payloadFsType.string())
 

@@ -324,7 +324,7 @@ func (binary *Binary) AndroidMkEntries() []android.AndroidMkEntries {
 }
 
 func (app *AndroidApp) AndroidMkEntries() []android.AndroidMkEntries {
-	if app.hideApexVariantFromMake || app.appProperties.HideFromMake {
+	if app.hideApexVariantFromMake || app.IsHideFromMake() {
 		return []android.AndroidMkEntries{android.AndroidMkEntries{
 			Disabled: true,
 		}}
@@ -424,8 +424,8 @@ func (app *AndroidApp) AndroidMkEntries() []android.AndroidMkEntries {
 
 func (a *AndroidApp) getOverriddenPackages() []string {
 	var overridden []string
-	if len(a.appProperties.Overrides) > 0 {
-		overridden = append(overridden, a.appProperties.Overrides...)
+	if len(a.overridableAppProperties.Overrides) > 0 {
+		overridden = append(overridden, a.overridableAppProperties.Overrides...)
 	}
 	// When APK name is overridden via PRODUCT_PACKAGE_NAME_OVERRIDES
 	// ensure that the original name is overridden.
@@ -542,6 +542,9 @@ func (dstubs *Droidstubs) AndroidMkEntries() []android.AndroidMkEntries {
 	if !outputFile.Valid() {
 		outputFile = android.OptionalPathForPath(dstubs.apiFile)
 	}
+	if !outputFile.Valid() {
+		outputFile = android.OptionalPathForPath(dstubs.apiVersionsXml)
+	}
 	return []android.AndroidMkEntries{android.AndroidMkEntries{
 		Class:      "JAVA_LIBRARIES",
 		OutputFile: outputFile,
@@ -620,6 +623,7 @@ func (dstubs *Droidstubs) AndroidMkEntries() []android.AndroidMkEntries {
 					if dstubs.apiLintReport != nil {
 						fmt.Fprintf(w, "$(call dist-for-goals,%s,%s:%s)\n", dstubs.Name()+"-api-lint",
 							dstubs.apiLintReport.String(), "apilint/"+dstubs.Name()+"-lint-report.txt")
+						fmt.Fprintf(w, "$(call declare-0p-target,%s)\n", dstubs.apiLintReport.String())
 					}
 				}
 				if dstubs.checkNullabilityWarningsTimestamp != nil {

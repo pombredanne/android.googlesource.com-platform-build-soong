@@ -17,6 +17,7 @@ package bazel
 import (
 	"fmt"
 	"reflect"
+	"sort"
 	"testing"
 )
 
@@ -224,7 +225,7 @@ func TestAqueryMultiArchGenrule(t *testing.T) {
   }]
 }`
 	actualbuildStatements, actualDepsets, _ := AqueryBuildStatements([]byte(inputString))
-	expectedBuildStatements := []BuildStatement{}
+	var expectedBuildStatements []BuildStatement
 	for _, arch := range []string{"arm", "arm64", "x86", "x86_64"} {
 		expectedBuildStatements = append(expectedBuildStatements,
 			BuildStatement{
@@ -234,9 +235,8 @@ func TestAqueryMultiArchGenrule(t *testing.T) {
 				OutputPaths: []string{
 					fmt.Sprintf("bazel-out/sourceroot/k8-fastbuild/bin/bionic/libc/syscalls-%s.S", arch),
 				},
-				InputDepsetIds: []int{1},
 				Env: []KeyValuePair{
-					KeyValuePair{Key: "PATH", Value: "/bin:/usr/bin:/usr/local/bin"},
+					{Key: "PATH", Value: "/bin:/usr/bin:/usr/local/bin"},
 				},
 				Mnemonic: "Genrule",
 			})
@@ -248,9 +248,12 @@ func TestAqueryMultiArchGenrule(t *testing.T) {
 		"../sourceroot/bionic/libc/tools/gensyscalls.py",
 		"../bazel_tools/tools/genrule/genrule-setup.sh",
 	}
-	actualFlattenedInputs := flattenDepsets([]int{1}, actualDepsets)
-	if !reflect.DeepEqual(actualFlattenedInputs, expectedFlattenedInputs) {
-		t.Errorf("Expected flattened inputs %v, but got %v", expectedFlattenedInputs, actualFlattenedInputs)
+	// In this example, each depset should have the same expected inputs.
+	for _, actualDepset := range actualDepsets {
+		actualFlattenedInputs := flattenDepsets([]string{actualDepset.ContentHash}, actualDepsets)
+		if !reflect.DeepEqual(actualFlattenedInputs, expectedFlattenedInputs) {
+			t.Errorf("Expected flattened inputs %v, but got %v", expectedFlattenedInputs, actualFlattenedInputs)
+		}
 	}
 }
 
@@ -745,11 +748,10 @@ func TestTransitiveInputDepsets(t *testing.T) {
 	actualbuildStatements, actualDepsets, _ := AqueryBuildStatements([]byte(inputString))
 
 	expectedBuildStatements := []BuildStatement{
-		BuildStatement{
-			Command:        "/bin/bash -c 'touch bazel-out/sourceroot/k8-fastbuild/bin/testpkg/test_out'",
-			OutputPaths:    []string{"bazel-out/sourceroot/k8-fastbuild/bin/testpkg/test_out"},
-			InputDepsetIds: []int{1},
-			Mnemonic:       "Action",
+		{
+			Command:     "/bin/bash -c 'touch bazel-out/sourceroot/k8-fastbuild/bin/testpkg/test_out'",
+			OutputPaths: []string{"bazel-out/sourceroot/k8-fastbuild/bin/testpkg/test_out"},
+			Mnemonic:    "Action",
 		},
 	}
 	assertBuildStatements(t, expectedBuildStatements, actualbuildStatements)
@@ -757,13 +759,14 @@ func TestTransitiveInputDepsets(t *testing.T) {
 	// Inputs for the action are test_{i} from 1 to 20, and test_root. These inputs
 	// are given via a deep depset, but the depset is flattened when returned as a
 	// BuildStatement slice.
-	expectedFlattenedInputs := []string{}
+	var expectedFlattenedInputs []string
 	for i := 1; i < 20; i++ {
 		expectedFlattenedInputs = append(expectedFlattenedInputs, fmt.Sprintf("bazel-out/sourceroot/k8-fastbuild/bin/testpkg/test_%d", i))
 	}
 	expectedFlattenedInputs = append(expectedFlattenedInputs, "bazel-out/sourceroot/k8-fastbuild/bin/testpkg/test_root")
 
-	actualFlattenedInputs := flattenDepsets([]int{1}, actualDepsets)
+	actualDepsetHashes := actualbuildStatements[0].InputDepsetHashes
+	actualFlattenedInputs := flattenDepsets(actualDepsetHashes, actualDepsets)
 	if !reflect.DeepEqual(actualFlattenedInputs, expectedFlattenedInputs) {
 		t.Errorf("Expected flattened inputs %v, but got %v", expectedFlattenedInputs, actualFlattenedInputs)
 	}
@@ -844,14 +847,15 @@ func TestMiddlemenAction(t *testing.T) {
 		t.Fatalf("Expected %d build statements, got %d", expected, len(actualBuildStatements))
 	}
 
+	expectedDepsetFiles := [][]string{
+		{"middleinput_one", "middleinput_two", "maininput_one", "maininput_two"},
+		{"middleinput_one", "middleinput_two"},
+	}
+	assertFlattenedDepsets(t, actualDepsets, expectedDepsetFiles)
+
 	bs := actualBuildStatements[0]
 	if len(bs.InputPaths) > 0 {
 		t.Errorf("Expected main action raw inputs to be empty, but got %q", bs.InputPaths)
-	}
-
-	expectedInputDepsets := []int{2}
-	if !reflect.DeepEqual(bs.InputDepsetIds, expectedInputDepsets) {
-		t.Errorf("Expected main action depset IDs %v, but got %v", expectedInputDepsets, bs.InputDepsetIds)
 	}
 
 	expectedOutputs := []string{"output"}
@@ -859,23 +863,8 @@ func TestMiddlemenAction(t *testing.T) {
 		t.Errorf("Expected main action outputs %q, but got %q", expectedOutputs, bs.OutputPaths)
 	}
 
-	expectedAllDepsets := []AqueryDepset{
-		{
-			Id:              1,
-			DirectArtifacts: []string{"middleinput_one", "middleinput_two"},
-		},
-		{
-			Id:                  2,
-			DirectArtifacts:     []string{"maininput_one", "maininput_two"},
-			TransitiveDepSetIds: []int{1},
-		},
-	}
-	if !reflect.DeepEqual(actualDepsets, expectedAllDepsets) {
-		t.Errorf("Expected depsets %v, but got %v", expectedAllDepsets, actualDepsets)
-	}
-
 	expectedFlattenedInputs := []string{"middleinput_one", "middleinput_two", "maininput_one", "maininput_two"}
-	actualFlattenedInputs := flattenDepsets(bs.InputDepsetIds, actualDepsets)
+	actualFlattenedInputs := flattenDepsets(bs.InputDepsetHashes, actualDepsets)
 
 	if !reflect.DeepEqual(actualFlattenedInputs, expectedFlattenedInputs) {
 		t.Errorf("Expected flattened inputs %v, but got %v", expectedFlattenedInputs, actualFlattenedInputs)
@@ -883,27 +872,40 @@ func TestMiddlemenAction(t *testing.T) {
 }
 
 // Returns the contents of given depsets in concatenated post order.
-func flattenDepsets(depsetIdsToFlatten []int, allDepsets []AqueryDepset) []string {
-	depsetsById := map[int]AqueryDepset{}
+func flattenDepsets(depsetHashesToFlatten []string, allDepsets []AqueryDepset) []string {
+	depsetsByHash := map[string]AqueryDepset{}
 	for _, depset := range allDepsets {
-		depsetsById[depset.Id] = depset
+		depsetsByHash[depset.ContentHash] = depset
 	}
-	result := []string{}
-	for _, depsetId := range depsetIdsToFlatten {
-		result = append(result, flattenDepset(depsetId, depsetsById)...)
+	var result []string
+	for _, depsetId := range depsetHashesToFlatten {
+		result = append(result, flattenDepset(depsetId, depsetsByHash)...)
 	}
 	return result
 }
 
 // Returns the contents of a given depset in post order.
-func flattenDepset(depsetIdToFlatten int, allDepsets map[int]AqueryDepset) []string {
-	depset := allDepsets[depsetIdToFlatten]
-	result := []string{}
-	for _, depsetId := range depset.TransitiveDepSetIds {
+func flattenDepset(depsetHashToFlatten string, allDepsets map[string]AqueryDepset) []string {
+	depset := allDepsets[depsetHashToFlatten]
+	var result []string
+	for _, depsetId := range depset.TransitiveDepSetHashes {
 		result = append(result, flattenDepset(depsetId, allDepsets)...)
 	}
 	result = append(result, depset.DirectArtifacts...)
 	return result
+}
+
+func assertFlattenedDepsets(t *testing.T, actualDepsets []AqueryDepset, expectedDepsetFiles [][]string) {
+	t.Helper()
+	if len(actualDepsets) != len(expectedDepsetFiles) {
+		t.Errorf("Expected %d depsets, but got %d depsets", len(expectedDepsetFiles), len(actualDepsets))
+	}
+	for i, actualDepset := range actualDepsets {
+		actualFlattenedInputs := flattenDepsets([]string{actualDepset.ContentHash}, actualDepsets)
+		if !reflect.DeepEqual(actualFlattenedInputs, expectedDepsetFiles[i]) {
+			t.Errorf("Expected depset files: %v, but got %v", expectedDepsetFiles[i], actualFlattenedInputs)
+		}
+	}
 }
 
 func TestSimpleSymlink(t *testing.T) {
@@ -957,7 +959,7 @@ func TestSimpleSymlink(t *testing.T) {
 	}
 
 	expectedBuildStatements := []BuildStatement{
-		BuildStatement{
+		{
 			Command: "mkdir -p one/symlink_subdir && " +
 				"rm -f one/symlink_subdir/symlink && " +
 				"ln -sf $PWD/one/file_subdir/file one/symlink_subdir/symlink",
@@ -1021,7 +1023,7 @@ func TestSymlinkQuotesPaths(t *testing.T) {
 	}
 
 	expectedBuildStatements := []BuildStatement{
-		BuildStatement{
+		{
 			Command: "mkdir -p 'one/symlink subdir' && " +
 				"rm -f 'one/symlink subdir/symlink' && " +
 				"ln -sf $PWD/'one/file subdir/file' 'one/symlink subdir/symlink'",
@@ -1153,7 +1155,7 @@ func TestTemplateExpandActionSubstitutions(t *testing.T) {
 	}
 
 	expectedBuildStatements := []BuildStatement{
-		BuildStatement{
+		{
 			Command: "/bin/bash -c 'echo \"Test template substitutions: abcd, python3\" | sed \"s/\\\\\\\\n/\\\\n/g\" > template_file && " +
 				"chmod a+x template_file'",
 			OutputPaths: []string{"template_file"},
@@ -1319,14 +1321,14 @@ func TestPythonZipperActionSuccess(t *testing.T) {
 	}
 
 	expectedBuildStatements := []BuildStatement{
-		BuildStatement{
+		{
 			Command: "/bin/bash -c 'echo \"Test template substitutions: abcd, python3\" | sed \"s/\\\\\\\\n/\\\\n/g\" > python_binary && " +
 				"chmod a+x python_binary'",
 			InputPaths:  []string{"python_binary.zip"},
 			OutputPaths: []string{"python_binary"},
 			Mnemonic:    "TemplateExpand",
 		},
-		BuildStatement{
+		{
 			Command: "../bazel_tools/tools/zip/zipper/zipper cC python_binary.zip __main__.py=bazel-out/k8-fastbuild/bin/python_binary.temp " +
 				"__init__.py= runfiles/__main__/__init__.py= runfiles/__main__/python_binary.py=python_binary.py  && " +
 				"../bazel_tools/tools/zip/zipper/zipper x python_binary.zip -d python_binary.runfiles && ln -sf runfiles/__main__ python_binary.runfiles",
@@ -1483,50 +1485,54 @@ func assertBuildStatements(t *testing.T, expected []BuildStatement, actual []Bui
 			len(expected), len(actual), expected, actual)
 		return
 	}
-ACTUAL_LOOP:
-	for _, actualStatement := range actual {
-		for _, expectedStatement := range expected {
-			if buildStatementEquals(actualStatement, expectedStatement) {
-				continue ACTUAL_LOOP
-			}
+	type compareFn = func(i int, j int) bool
+	byCommand := func(slice []BuildStatement) compareFn {
+		return func(i int, j int) bool {
+			return slice[i].Command < slice[j].Command
 		}
-		t.Errorf("unexpected build statement %#v.\n expected: %#v",
-			actualStatement, expected)
-		return
+	}
+	sort.SliceStable(expected, byCommand(expected))
+	sort.SliceStable(actual, byCommand(actual))
+	for i, actualStatement := range actual {
+		expectedStatement := expected[i]
+		if differingField := buildStatementEquals(actualStatement, expectedStatement); differingField != "" {
+			t.Errorf("%s differs\nunexpected build statement %#v.\nexpected: %#v",
+				differingField, actualStatement, expected)
+			return
+		}
 	}
 }
 
-func buildStatementEquals(first BuildStatement, second BuildStatement) bool {
+func buildStatementEquals(first BuildStatement, second BuildStatement) string {
 	if first.Mnemonic != second.Mnemonic {
-		return false
+		return "Mnemonic"
 	}
 	if first.Command != second.Command {
-		return false
+		return "Command"
 	}
 	// Ordering is significant for environment variables.
 	if !reflect.DeepEqual(first.Env, second.Env) {
-		return false
+		return "Env"
 	}
 	// Ordering is irrelevant for input and output paths, so compare sets.
-	if !reflect.DeepEqual(stringSet(first.InputPaths), stringSet(second.InputPaths)) {
-		return false
+	if !reflect.DeepEqual(sortedStrings(first.InputPaths), sortedStrings(second.InputPaths)) {
+		return "InputPaths"
 	}
-	if !reflect.DeepEqual(stringSet(first.OutputPaths), stringSet(second.OutputPaths)) {
-		return false
+	if !reflect.DeepEqual(sortedStrings(first.OutputPaths), sortedStrings(second.OutputPaths)) {
+		return "OutputPaths"
 	}
-	if !reflect.DeepEqual(stringSet(first.SymlinkPaths), stringSet(second.SymlinkPaths)) {
-		return false
+	if !reflect.DeepEqual(sortedStrings(first.SymlinkPaths), sortedStrings(second.SymlinkPaths)) {
+		return "SymlinkPaths"
 	}
 	if first.Depfile != second.Depfile {
-		return false
+		return "Depfile"
 	}
-	return true
+	return ""
 }
 
-func stringSet(stringSlice []string) map[string]struct{} {
-	stringMap := make(map[string]struct{})
-	for _, s := range stringSlice {
-		stringMap[s] = struct{}{}
-	}
-	return stringMap
+func sortedStrings(stringSlice []string) []string {
+	sorted := make([]string, len(stringSlice))
+	copy(sorted, stringSlice)
+	sort.Strings(sorted)
+	return sorted
 }
