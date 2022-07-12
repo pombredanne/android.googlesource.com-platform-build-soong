@@ -15,6 +15,8 @@
 package sdk
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
@@ -219,9 +221,19 @@ func (s *sdk) collectMembers(ctx android.ModuleContext) {
 				exportedComponentsInfo = ctx.OtherModuleProvider(child, android.ExportedComponentsInfoProvider).(android.ExportedComponentsInfo)
 			}
 
+			var container android.SdkAware
+			if parent != ctx.Module() {
+				container = parent.(android.SdkAware)
+			}
+
 			export := memberTag.ExportMember()
 			s.memberVariantDeps = append(s.memberVariantDeps, sdkMemberVariantDep{
-				s, memberType, child.(android.SdkAware), export, exportedComponentsInfo,
+				sdkVariant:             s,
+				memberType:             memberType,
+				variant:                child.(android.SdkAware),
+				container:              container,
+				export:                 export,
+				exportedComponentsInfo: exportedComponentsInfo,
 			})
 
 			// Recurse down into the member's dependencies as it may have dependencies that need to be
@@ -242,7 +254,7 @@ func (s *sdk) collectMembers(ctx android.ModuleContext) {
 // Finally, the member type slices are concatenated together to form a single slice. The order in
 // which they are concatenated is the order in which the member types were registered in the
 // android.SdkMemberTypesRegistry.
-func (s *sdk) groupMemberVariantsByMemberThenType(ctx android.ModuleContext, memberVariantDeps []sdkMemberVariantDep) []*sdkMember {
+func (s *sdk) groupMemberVariantsByMemberThenType(ctx android.ModuleContext, targetBuildRelease *buildRelease, memberVariantDeps []sdkMemberVariantDep) []*sdkMember {
 	byType := make(map[android.SdkMemberType][]*sdkMember)
 	byName := make(map[string]*sdkMember)
 
@@ -256,20 +268,52 @@ func (s *sdk) groupMemberVariantsByMemberThenType(ctx android.ModuleContext, mem
 			member = &sdkMember{memberType: memberType, name: name}
 			byName[name] = member
 			byType[memberType] = append(byType[memberType], member)
+		} else if member.memberType != memberType {
+			// validate whether this is the same member type or and overriding member type
+			if memberType.Overrides(member.memberType) {
+				member.memberType = memberType
+			} else if !member.memberType.Overrides(memberType) {
+				ctx.ModuleErrorf("Incompatible member types %q %q", member.memberType, memberType)
+			}
 		}
 
 		// Only append new variants to the list. This is needed because a member can be both
 		// exported by the sdk and also be a transitive sdk member.
 		member.variants = appendUniqueVariants(member.variants, variant)
 	}
-
 	var members []*sdkMember
 	for _, memberListProperty := range s.memberTypeListProperties() {
-		membersOfType := byType[memberListProperty.memberType]
+		memberType := memberListProperty.memberType
+
+		if !isMemberTypeSupportedByTargetBuildRelease(memberType, targetBuildRelease) {
+			continue
+		}
+
+		membersOfType := byType[memberType]
 		members = append(members, membersOfType...)
 	}
 
 	return members
+}
+
+// isMemberTypeSupportedByTargetBuildRelease returns true if the member type is supported by the
+// target build release.
+func isMemberTypeSupportedByTargetBuildRelease(memberType android.SdkMemberType, targetBuildRelease *buildRelease) bool {
+	supportedByTargetBuildRelease := true
+	supportedBuildReleases := memberType.SupportedBuildReleases()
+	if supportedBuildReleases == "" {
+		supportedBuildReleases = "S+"
+	}
+
+	set, err := parseBuildReleaseSet(supportedBuildReleases)
+	if err != nil {
+		panic(fmt.Errorf("member type %s has invalid supported build releases %q: %s",
+			memberType.SdkPropertyName(), supportedBuildReleases, err))
+	}
+	if !set.contains(targetBuildRelease) {
+		supportedByTargetBuildRelease = false
+	}
+	return supportedByTargetBuildRelease
 }
 
 func appendUniqueVariants(variants []android.SdkAware, newVariant android.SdkAware) []android.SdkAware {
@@ -311,7 +355,7 @@ func versionedSdkMemberName(ctx android.ModuleContext, memberName string, versio
 
 // buildSnapshot is the main function in this source file. It creates rules to copy
 // the contents (header files, stub libraries, etc) into the zip file.
-func (s *sdk) buildSnapshot(ctx android.ModuleContext, sdkVariants []*sdk) android.OutputPath {
+func (s *sdk) buildSnapshot(ctx android.ModuleContext, sdkVariants []*sdk) {
 
 	// Aggregate all the sdkMemberVariantDep instances from all the sdk variants.
 	hasLicenses := false
@@ -370,9 +414,9 @@ func (s *sdk) buildSnapshot(ctx android.ModuleContext, sdkVariants []*sdk) andro
 	// Unversioned modules are not required in that case because the numbered version will be a
 	// finalized version of the snapshot that is intended to be kept separate from the
 	generateUnversioned := version == soongSdkSnapshotVersionUnversioned || version == soongSdkSnapshotVersionCurrent
-	snapshotZipFileSuffix := ""
+	snapshotFileSuffix := ""
 	if generateVersioned {
-		snapshotZipFileSuffix = "-" + version
+		snapshotFileSuffix = "-" + version
 	}
 
 	currentBuildRelease := latestBuildRelease()
@@ -416,7 +460,7 @@ be unnecessary as every module in the sdk already has its own licenses property.
 
 	// Group the variants for each member module together and then group the members of each member
 	// type together.
-	members := s.groupMemberVariantsByMemberThenType(ctx, memberVariantDeps)
+	members := s.groupMemberVariantsByMemberThenType(ctx, targetBuildRelease, memberVariantDeps)
 
 	// Create the prebuilt modules for each of the member modules.
 	traits := s.gatherTraits()
@@ -489,7 +533,7 @@ be unnecessary as every module in the sdk already has its own licenses property.
 	filesToZip := builder.filesToZip
 
 	// zip them all
-	zipPath := fmt.Sprintf("%s%s.zip", ctx.ModuleName(), snapshotZipFileSuffix)
+	zipPath := fmt.Sprintf("%s%s.zip", ctx.ModuleName(), snapshotFileSuffix)
 	outputZipFile := android.PathForModuleOut(ctx, zipPath).OutputPath
 	outputDesc := "Building snapshot for " + ctx.ModuleName()
 
@@ -502,7 +546,7 @@ be unnecessary as every module in the sdk already has its own licenses property.
 		zipFile = outputZipFile
 		desc = outputDesc
 	} else {
-		intermediatePath := fmt.Sprintf("%s%s.unmerged.zip", ctx.ModuleName(), snapshotZipFileSuffix)
+		intermediatePath := fmt.Sprintf("%s%s.unmerged.zip", ctx.ModuleName(), snapshotFileSuffix)
 		zipFile = android.PathForModuleOut(ctx, intermediatePath).OutputPath
 		desc = "Building intermediate snapshot for " + ctx.ModuleName()
 	}
@@ -527,7 +571,125 @@ be unnecessary as every module in the sdk already has its own licenses property.
 		})
 	}
 
-	return outputZipFile
+	modules := s.generateInfoData(ctx, memberVariantDeps)
+
+	// Output the modules information as pretty printed JSON.
+	info := newGeneratedFile(ctx, fmt.Sprintf("%s%s.info", ctx.ModuleName(), snapshotFileSuffix))
+	output, err := json.MarshalIndent(modules, "", "  ")
+	if err != nil {
+		ctx.ModuleErrorf("error generating %q: %s", info, err)
+	}
+	builder.infoContents = string(output)
+	info.generatedContents.UnindentedPrintf("%s", output)
+	info.build(pctx, ctx, nil)
+	infoPath := info.path
+	installedInfo := ctx.InstallFile(android.PathForMainlineSdksInstall(ctx), infoPath.Base(), infoPath)
+	s.infoFile = android.OptionalPathForPath(installedInfo)
+
+	// Install the zip, making sure that the info file has been installed as well.
+	installedZip := ctx.InstallFile(android.PathForMainlineSdksInstall(ctx), outputZipFile.Base(), outputZipFile, installedInfo)
+	s.snapshotFile = android.OptionalPathForPath(installedZip)
+}
+
+type moduleInfo struct {
+	// The type of the module, e.g. java_sdk_library
+	moduleType string
+	// The name of the module.
+	name string
+	// A list of additional dependencies of the module.
+	deps []string
+	// Additional member specific properties.
+	// These will be added into the generated JSON alongside the above properties.
+	memberSpecific map[string]interface{}
+}
+
+func (m *moduleInfo) MarshalJSON() ([]byte, error) {
+	buffer := bytes.Buffer{}
+
+	separator := ""
+	writeObjectPair := func(key string, value interface{}) {
+		buffer.WriteString(fmt.Sprintf("%s%q: ", separator, key))
+		b, err := json.Marshal(value)
+		if err != nil {
+			panic(err)
+		}
+		buffer.Write(b)
+		separator = ","
+	}
+
+	buffer.WriteString("{")
+	writeObjectPair("@type", m.moduleType)
+	writeObjectPair("@name", m.name)
+	if m.deps != nil {
+		writeObjectPair("@deps", m.deps)
+	}
+	for _, k := range android.SortedStringKeys(m.memberSpecific) {
+		v := m.memberSpecific[k]
+		writeObjectPair(k, v)
+	}
+	buffer.WriteString("}")
+	return buffer.Bytes(), nil
+}
+
+var _ json.Marshaler = (*moduleInfo)(nil)
+
+// generateInfoData creates a list of moduleInfo structures that will be marshalled into JSON.
+func (s *sdk) generateInfoData(ctx android.ModuleContext, memberVariantDeps []sdkMemberVariantDep) interface{} {
+	modules := []*moduleInfo{}
+	sdkInfo := moduleInfo{
+		moduleType:     "sdk",
+		name:           ctx.ModuleName(),
+		memberSpecific: map[string]interface{}{},
+	}
+	modules = append(modules, &sdkInfo)
+
+	name2Info := map[string]*moduleInfo{}
+	getModuleInfo := func(module android.Module) *moduleInfo {
+		name := module.Name()
+		info := name2Info[name]
+		if info == nil {
+			moduleType := ctx.OtherModuleType(module)
+			// Remove any suffix added when creating modules dynamically.
+			moduleType = strings.Split(moduleType, "__")[0]
+			info = &moduleInfo{
+				moduleType: moduleType,
+				name:       name,
+			}
+
+			additionalSdkInfo := ctx.OtherModuleProvider(module, android.AdditionalSdkInfoProvider).(android.AdditionalSdkInfo)
+			info.memberSpecific = additionalSdkInfo.Properties
+
+			name2Info[name] = info
+		}
+		return info
+	}
+
+	for _, memberVariantDep := range memberVariantDeps {
+		propertyName := memberVariantDep.memberType.SdkPropertyName()
+		var list []string
+		if v, ok := sdkInfo.memberSpecific[propertyName]; ok {
+			list = v.([]string)
+		}
+
+		memberName := memberVariantDep.variant.Name()
+		list = append(list, memberName)
+		sdkInfo.memberSpecific[propertyName] = android.SortedUniqueStrings(list)
+
+		if memberVariantDep.container != nil {
+			containerInfo := getModuleInfo(memberVariantDep.container)
+			containerInfo.deps = android.SortedUniqueStrings(append(containerInfo.deps, memberName))
+		}
+
+		// Make sure that the module info is created for each module.
+		getModuleInfo(memberVariantDep.variant)
+	}
+
+	for _, memberName := range android.SortedStringKeys(name2Info) {
+		info := name2Info[memberName]
+		modules = append(modules, info)
+	}
+
+	return modules
 }
 
 // filterOutComponents removes any item from the deps list that is a component of another item in
@@ -795,6 +957,9 @@ func (s *sdk) addSnapshotPropertiesToPropertySet(builder *snapshotBuilder, prope
 		if memberListProperty.getter == nil {
 			continue
 		}
+		if !isMemberTypeSupportedByTargetBuildRelease(memberListProperty.memberType, builder.targetBuildRelease) {
+			continue
+		}
 		names := memberListProperty.getter(dynamicMemberTypeListProperties)
 		if len(names) > 0 {
 			propertySet.AddProperty(memberListProperty.propertyName(), builder.versionedSdkMemberNames(names, false))
@@ -1033,6 +1198,10 @@ func (s *sdk) GetAndroidBpContentsForTests() string {
 	return contents.content.String()
 }
 
+func (s *sdk) GetInfoContentsForTests() string {
+	return s.builderForTests.infoContents
+}
+
 func (s *sdk) GetUnversionedAndroidBpContentsForTests() string {
 	contents := &generatedContents{}
 	generateFilteredBpContents(contents, s.builderForTests.bpFile, func(module *bpModule) bool {
@@ -1087,6 +1256,9 @@ type snapshotBuilder struct {
 
 	// The target build release for which the snapshot is to be generated.
 	targetBuildRelease *buildRelease
+
+	// The contents of the .info file that describes the sdk contents.
+	infoContents string
 }
 
 func (s *snapshotBuilder) CopyToSnapshot(src android.Path, dest string) {
@@ -1321,6 +1493,11 @@ type sdkMemberVariantDep struct {
 
 	// The variant that is added to the sdk.
 	variant android.SdkAware
+
+	// The optional container of this member, i.e. the module that is depended upon by the sdk
+	// (possibly transitively) and whose dependency on this module is why it was added to the sdk.
+	// Is nil if this a direct dependency of the sdk.
+	container android.SdkAware
 
 	// True if the member should be exported, i.e. accessible, from outside the sdk.
 	export bool
@@ -1641,7 +1818,9 @@ func newArchSpecificInfo(ctx android.SdkMemberContext, archId archId, osType and
 	// added.
 	archInfo.Properties = variantPropertiesFactory()
 
-	if len(archVariants) == 1 {
+	// if there are multiple supported link variants, we want to nest based on linkage even if there
+	// is only one variant, otherwise, if there is only one variant we can populate based on the arch
+	if len(archVariants) == 1 && len(ctx.MemberType().SupportedLinkages()) <= 1 {
 		archInfo.Properties.PopulateFromVariant(ctx, archVariants[0])
 	} else {
 		// Group the variants by image type.
@@ -1768,11 +1947,13 @@ func newImageVariantSpecificInfo(ctx android.SdkMemberContext, imageVariant stri
 	// Create the properties into which the image variant specific properties will be added.
 	imageInfo.Properties = variantPropertiesFactory()
 
-	if len(imageVariants) == 1 {
+	// if there are multiple supported link variants, we want to nest even if there is only one
+	// variant, otherwise, if there is only one variant we can populate based on the image
+	if len(imageVariants) == 1 && len(ctx.MemberType().SupportedLinkages()) <= 1 {
 		imageInfo.Properties.PopulateFromVariant(ctx, imageVariants[0])
 	} else {
 		// There is more than one variant for this image variant which must be differentiated by link
-		// type.
+		// type. Or there are multiple supported linkages and we need to nest based on link type.
 		for _, linkVariant := range imageVariants {
 			linkType := getLinkType(linkVariant)
 			if linkType == "" {
@@ -1816,8 +1997,20 @@ func (imageInfo *imageVariantSpecificInfo) addToPropertySet(ctx *memberContext, 
 
 	addSdkMemberPropertiesToSet(ctx, imageInfo.Properties, propertySet)
 
+	usedLinkages := make(map[string]bool, len(imageInfo.linkInfos))
 	for _, linkInfo := range imageInfo.linkInfos {
+		usedLinkages[linkInfo.linkType] = true
 		linkInfo.addToPropertySet(ctx, propertySet)
+	}
+
+	// If not all supported linkages had existing variants, we need to disable the unsupported variant
+	if len(imageInfo.linkInfos) < len(ctx.MemberType().SupportedLinkages()) {
+		for _, l := range ctx.MemberType().SupportedLinkages() {
+			if _, ok := usedLinkages[l]; !ok {
+				otherLinkagePropertySet := propertySet.AddPropertySet(l)
+				otherLinkagePropertySet.AddProperty("enabled", false)
+			}
+		}
 	}
 
 	// If this is for a non-core image variant then make sure that the property set does not contain
