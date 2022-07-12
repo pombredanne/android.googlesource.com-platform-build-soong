@@ -82,11 +82,21 @@ var (
 		Description: "prepare ${out}",
 	}, "provideNativeLibs", "requireNativeLibs", "opt")
 
+	stripCommentsApexManifestRule = pctx.StaticRule("stripCommentsApexManifestRule", blueprint.RuleParams{
+		Command:     `sed '/^\s*\/\//d' $in > $out`,
+		Description: "strip lines starting with // ${in}=>${out}",
+	})
+
 	stripApexManifestRule = pctx.StaticRule("stripApexManifestRule", blueprint.RuleParams{
 		Command:     `rm -f $out && ${conv_apex_manifest} strip $in -o $out`,
 		CommandDeps: []string{"${conv_apex_manifest}"},
 		Description: "strip ${in}=>${out}",
 	})
+
+	setVersionApexManifestRule = pctx.StaticRule("setVersionApexManifestRule", blueprint.RuleParams{
+		Command:     `sed 's/\"version\":\s*0\([^0-9]*\)$$/\"version\":\ ${default_version}\1/' $in > $out`,
+		Description: "Replace 'version: 0' with the correct version // ${in}=>${out}",
+	}, "default_version")
 
 	pbApexManifestRule = pctx.StaticRule("pbApexManifestRule", blueprint.RuleParams{
 		Command:     `rm -f $out && ${conv_apex_manifest} proto $in -o $out`,
@@ -107,6 +117,7 @@ var (
 			`--canned_fs_config ${canned_fs_config} ` +
 			`--include_build_info ` +
 			`--payload_type image ` +
+			`--apex_version ${apex_version} ` +
 			`--key ${key} ${opt_flags} ${image_dir} ${out} `,
 		CommandDeps: []string{"${apexer}", "${avbtool}", "${e2fsdroid}", "${merge_zips}",
 			"${mke2fs}", "${resize2fs}", "${sefcontext_compile}", "${make_f2fs}", "${sload_f2fs}", "${make_erofs}",
@@ -114,7 +125,7 @@ var (
 		Rspfile:        "${out}.copy_commands",
 		RspfileContent: "${copy_commands}",
 		Description:    "APEX ${image_dir} => ${out}",
-	}, "tool_path", "image_dir", "copy_commands", "file_contexts", "canned_fs_config", "key", "opt_flags", "manifest", "payload_fs_type")
+	}, "tool_path", "image_dir", "copy_commands", "file_contexts", "canned_fs_config", "key", "opt_flags", "manifest", "payload_fs_type", "apex_version")
 
 	zipApexRule = pctx.StaticRule("zipApexRule", blueprint.RuleParams{
 		Command: `rm -rf ${image_dir} && mkdir -p ${image_dir} && ` +
@@ -122,12 +133,13 @@ var (
 			`APEXER_TOOL_PATH=${tool_path} ` +
 			`${apexer} --force --manifest ${manifest} ` +
 			`--payload_type zip ` +
+			`--apex_version ${apex_version} ` +
 			`${image_dir} ${out} `,
 		CommandDeps:    []string{"${apexer}", "${merge_zips}", "${soong_zip}", "${zipalign}", "${aapt2}"},
 		Rspfile:        "${out}.copy_commands",
 		RspfileContent: "${copy_commands}",
 		Description:    "ZipAPEX ${image_dir} => ${out}",
-	}, "tool_path", "image_dir", "copy_commands", "manifest")
+	}, "tool_path", "image_dir", "copy_commands", "manifest", "apex_version")
 
 	apexProtoConvertRule = pctx.AndroidStaticRule("apexProtoConvertRule",
 		blueprint.RuleParams{
@@ -205,10 +217,27 @@ func (a *apexBundle) buildManifest(ctx android.ModuleContext, provideNativeLibs,
 		optCommands = append(optCommands, "-a jniLibs "+strings.Join(jniLibs, " "))
 	}
 
+	manifestJsonCommentsStripped := android.PathForModuleOut(ctx, "apex_manifest_comments_stripped.json")
+	ctx.Build(pctx, android.BuildParams{
+		Rule:   stripCommentsApexManifestRule,
+		Input:  src,
+		Output: manifestJsonCommentsStripped,
+	})
+
+	manifestJsonVersionChanged := android.PathForModuleOut(ctx, "apex_manifest_version_changed.json")
+	ctx.Build(pctx, android.BuildParams{
+		Rule:   setVersionApexManifestRule,
+		Input:  manifestJsonCommentsStripped,
+		Output: manifestJsonVersionChanged,
+		Args: map[string]string{
+			"default_version": defaultManifestVersion,
+		},
+	})
+
 	manifestJsonFullOut := android.PathForModuleOut(ctx, "apex_manifest_full.json")
 	ctx.Build(pctx, android.BuildParams{
 		Rule:   apexManifestRule,
-		Input:  src,
+		Input:  manifestJsonVersionChanged,
 		Output: manifestJsonFullOut,
 		Args: map[string]string{
 			"provideNativeLibs": strings.Join(provideNativeLibs, " "),
@@ -618,7 +647,12 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 
 		// Create a NOTICE file, and embed it as an asset file in the APEX.
 		a.htmlGzNotice = android.PathForModuleOut(ctx, "NOTICE.html.gz")
-		android.BuildNoticeHtmlOutputFromLicenseMetadata(ctx, a.htmlGzNotice)
+		android.BuildNoticeHtmlOutputFromLicenseMetadata(
+			ctx, a.htmlGzNotice, "", "",
+			[]string{
+				android.PathForModuleInstall(ctx).String() + "/",
+				android.PathForModuleInPartitionInstall(ctx, "apex").String() + "/",
+			})
 		noticeAssetPath := android.PathForModuleOut(ctx, "NOTICE", "NOTICE.html.gz")
 		builder := android.NewRuleBuilder(pctx, ctx)
 		builder.Command().Text("cp").
@@ -665,6 +699,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 				"file_contexts":    fileContexts.String(),
 				"canned_fs_config": cannedFsConfig.String(),
 				"key":              a.privateKeyFile.String(),
+				"apex_version":     defaultManifestVersion,
 				"opt_flags":        strings.Join(optFlags, " "),
 			},
 		})
@@ -761,6 +796,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 				"image_dir":     imageDir.String(),
 				"copy_commands": strings.Join(copyCommands, " && "),
 				"manifest":      a.manifestPbOut.String(),
+				"apex_version":  defaultManifestVersion,
 			},
 		})
 	}
