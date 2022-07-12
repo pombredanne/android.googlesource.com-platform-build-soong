@@ -606,30 +606,34 @@ type dependencyTag struct {
 	sourceOnly bool
 }
 
-func (d dependencyTag) ReplaceSourceWithPrebuilt() bool {
+func (d *dependencyTag) String() string {
+	return fmt.Sprintf("apex.dependencyTag{%q}", d.name)
+}
+
+func (d *dependencyTag) ReplaceSourceWithPrebuilt() bool {
 	return !d.sourceOnly
 }
 
 var _ android.ReplaceSourceWithPrebuilt = &dependencyTag{}
 
 var (
-	androidAppTag   = dependencyTag{name: "androidApp", payload: true}
-	bpfTag          = dependencyTag{name: "bpf", payload: true}
-	certificateTag  = dependencyTag{name: "certificate"}
-	executableTag   = dependencyTag{name: "executable", payload: true}
-	fsTag           = dependencyTag{name: "filesystem", payload: true}
-	bcpfTag         = dependencyTag{name: "bootclasspathFragment", payload: true, sourceOnly: true}
-	sscpfTag        = dependencyTag{name: "systemserverclasspathFragment", payload: true, sourceOnly: true}
-	compatConfigTag = dependencyTag{name: "compatConfig", payload: true, sourceOnly: true}
-	javaLibTag      = dependencyTag{name: "javaLib", payload: true}
-	jniLibTag       = dependencyTag{name: "jniLib", payload: true}
-	keyTag          = dependencyTag{name: "key"}
-	prebuiltTag     = dependencyTag{name: "prebuilt", payload: true}
-	rroTag          = dependencyTag{name: "rro", payload: true}
-	sharedLibTag    = dependencyTag{name: "sharedLib", payload: true}
-	testForTag      = dependencyTag{name: "test for"}
-	testTag         = dependencyTag{name: "test", payload: true}
-	shBinaryTag     = dependencyTag{name: "shBinary", payload: true}
+	androidAppTag   = &dependencyTag{name: "androidApp", payload: true}
+	bpfTag          = &dependencyTag{name: "bpf", payload: true}
+	certificateTag  = &dependencyTag{name: "certificate"}
+	executableTag   = &dependencyTag{name: "executable", payload: true}
+	fsTag           = &dependencyTag{name: "filesystem", payload: true}
+	bcpfTag         = &dependencyTag{name: "bootclasspathFragment", payload: true, sourceOnly: true}
+	sscpfTag        = &dependencyTag{name: "systemserverclasspathFragment", payload: true, sourceOnly: true}
+	compatConfigTag = &dependencyTag{name: "compatConfig", payload: true, sourceOnly: true}
+	javaLibTag      = &dependencyTag{name: "javaLib", payload: true}
+	jniLibTag       = &dependencyTag{name: "jniLib", payload: true}
+	keyTag          = &dependencyTag{name: "key"}
+	prebuiltTag     = &dependencyTag{name: "prebuilt", payload: true}
+	rroTag          = &dependencyTag{name: "rro", payload: true}
+	sharedLibTag    = &dependencyTag{name: "sharedLib", payload: true}
+	testForTag      = &dependencyTag{name: "test for"}
+	testTag         = &dependencyTag{name: "test", payload: true}
+	shBinaryTag     = &dependencyTag{name: "shBinary", payload: true}
 )
 
 // TODO(jiyong): shorten this function signature
@@ -1735,7 +1739,7 @@ func (a *apexBundle) WalkPayloadDeps(ctx android.ModuleContext, do android.Paylo
 		if _, ok := depTag.(android.ExcludeFromApexContentsTag); ok {
 			return false
 		}
-		if dt, ok := depTag.(dependencyTag); ok && !dt.payload {
+		if dt, ok := depTag.(*dependencyTag); ok && !dt.payload {
 			return false
 		}
 
@@ -2771,6 +2775,36 @@ func makeApexAvailableBaseline() map[string][]string {
 	m["com.android.appsearch"] = []string{
 		"icing-java-proto-lite",
 		"libprotobuf-java-lite",
+	}
+	//
+	// Module separator
+	//
+	m["com.android.btservices"] = []string{
+		"bluetooth-protos-lite",
+		"internal_include_headers",
+		"libaudio-a2dp-hw-utils",
+		"libaudio-hearing-aid-hw-utils",
+		"libbluetooth",
+		"libbluetooth-types",
+		"libbluetooth-types-header",
+		"libbluetooth_gd",
+		"libbluetooth_headers",
+		"libbluetooth_jni",
+		"libbt-audio-hal-interface",
+		"libbt-bta",
+		"libbt-common",
+		"libbt-hci",
+		"libbt-platform-protos-lite",
+		"libbt-protos-lite",
+		"libbt-sbc-decoder",
+		"libbt-sbc-encoder",
+		"libbt-stack",
+		"libbt-utils",
+		"libbtcore",
+		"libbtdevice",
+		"libbte",
+		"libbtif",
+		"libchrome",
 	}
 	//
 	// Module separator
