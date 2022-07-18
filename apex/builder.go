@@ -76,11 +76,12 @@ var (
 		Command: `rm -f $out && ${jsonmodify} $in ` +
 			`-a provideNativeLibs ${provideNativeLibs} ` +
 			`-a requireNativeLibs ${requireNativeLibs} ` +
+			`-se version 0 ${default_version} ` +
 			`${opt} ` +
 			`-o $out`,
 		CommandDeps: []string{"${jsonmodify}"},
 		Description: "prepare ${out}",
-	}, "provideNativeLibs", "requireNativeLibs", "opt")
+	}, "provideNativeLibs", "requireNativeLibs", "default_version", "opt")
 
 	stripApexManifestRule = pctx.StaticRule("stripApexManifestRule", blueprint.RuleParams{
 		Command:     `rm -f $out && ${conv_apex_manifest} strip $in -o $out`,
@@ -213,6 +214,7 @@ func (a *apexBundle) buildManifest(ctx android.ModuleContext, provideNativeLibs,
 		Args: map[string]string{
 			"provideNativeLibs": strings.Join(provideNativeLibs, " "),
 			"requireNativeLibs": strings.Join(requireNativeLibs, " "),
+			"default_version":   defaultManifestVersion,
 			"opt":               strings.Join(optCommands, " "),
 		},
 	})
