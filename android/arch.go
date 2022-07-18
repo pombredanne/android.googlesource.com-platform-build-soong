@@ -307,7 +307,7 @@ var (
 	// Linux is the OS for the Linux kernel plus the glibc runtime.
 	Linux = newOsType("linux_glibc", Host, false, X86, X86_64)
 	// LinuxMusl is the OS for the Linux kernel plus the musl runtime.
-	LinuxMusl = newOsType("linux_musl", Host, false, X86, X86_64)
+	LinuxMusl = newOsType("linux_musl", Host, false, X86, X86_64, Arm64, Arm)
 	// Darwin is the OS for MacOS/Darwin host machines.
 	Darwin = newOsType("darwin", Host, false, Arm64, X86_64)
 	// LinuxBionic is the OS for the Linux kernel plus the Bionic libc runtime, but without the
@@ -655,7 +655,8 @@ func archMutator(bpctx blueprint.BottomUpMutatorContext) {
 	prefer32 := os == Windows
 
 	// Determine the multilib selection for this module.
-	multilib, extraMultilib := decodeMultilib(base, os)
+	ignorePrefer32OnDevice := mctx.Config().IgnorePrefer32OnDevice()
+	multilib, extraMultilib := decodeMultilib(base, os, ignorePrefer32OnDevice)
 
 	// Convert the multilib selection into a list of Targets.
 	targets, err := decodeMultilibTargets(multilib, osTargets, prefer32)
@@ -730,7 +731,7 @@ func addTargetProperties(m Module, target Target, multiTargets []Target, primary
 // multilib from the factory's call to InitAndroidArchModule if none was set.  For modules that
 // called InitAndroidMultiTargetsArchModule it always returns "common" for multilib, and returns
 // the actual multilib in extraMultilib.
-func decodeMultilib(base *ModuleBase, os OsType) (multilib, extraMultilib string) {
+func decodeMultilib(base *ModuleBase, os OsType, ignorePrefer32OnDevice bool) (multilib, extraMultilib string) {
 	// First check the "android.compile_multilib" or "host.compile_multilib" properties.
 	switch os.Class {
 	case Device:
@@ -747,6 +748,13 @@ func decodeMultilib(base *ModuleBase, os OsType) (multilib, extraMultilib string
 	// If that wasn't set, use the default multilib set by the factory.
 	if multilib == "" {
 		multilib = base.commonProperties.Default_multilib
+	}
+
+	// If a device is configured with multiple targets, this option
+	// force all device targets that prefer32 to be compiled only as
+	// the first target.
+	if ignorePrefer32OnDevice && os.Class == Device && (multilib == "prefer32" || multilib == "first_prefer32") {
+		multilib = "first"
 	}
 
 	if base.commonProperties.UseTargetVariants {
@@ -1825,7 +1833,9 @@ func getCommonTargets(targets []Target) []Target {
 	for _, t := range targets {
 		if _, found := set[t.Os.String()]; !found {
 			set[t.Os.String()] = true
-			ret = append(ret, commonTargetMap[t.Os.String()])
+			common := commonTargetMap[t.Os.String()]
+			common.HostCross = t.HostCross
+			ret = append(ret, common)
 		}
 	}
 

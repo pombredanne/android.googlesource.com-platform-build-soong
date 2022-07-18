@@ -117,6 +117,13 @@ var (
 
 	commonGlobalConlyflags = []string{}
 
+	commonGlobalAsflags = []string{
+		"-D__ASSEMBLY__",
+		// TODO(b/235105792): override global -fdebug-default-version=5, it is causing $TMPDIR to
+		// end up in the dwarf data for crtend_so.S.
+		"-fdebug-default-version=4",
+	}
+
 	deviceGlobalCflags = []string{
 		"-ffunction-sections",
 		"-fdata-sections",
@@ -273,6 +280,11 @@ var (
 		"-Wno-string-concatenation",
 	}
 
+	llvmNextExtraCommonGlobalCflags = []string{
+		"-Wno-unqualified-std-cast-call",
+		"-Wno-deprecated-non-prototype",
+	}
+
 	IllegalFlags = []string{
 		"-w",
 	}
@@ -313,6 +325,7 @@ func init() {
 	}
 
 	exportedVars.ExportStringListStaticVariable("CommonGlobalConlyflags", commonGlobalConlyflags)
+	exportedVars.ExportStringListStaticVariable("CommonGlobalAsflags", commonGlobalAsflags)
 	exportedVars.ExportStringListStaticVariable("DeviceGlobalCppflags", deviceGlobalCppflags)
 	exportedVars.ExportStringListStaticVariable("DeviceGlobalLdflags", deviceGlobalLdflags)
 	exportedVars.ExportStringListStaticVariable("DeviceGlobalLldflags", deviceGlobalLldflags)
@@ -353,6 +366,11 @@ func init() {
 		if ctx.Config().IsEnvTrue("USE_CCACHE") {
 			flags = append(flags, "-Wno-unused-command-line-argument")
 		}
+
+		if ctx.Config().IsEnvTrue("LLVM_NEXT") {
+			flags = append(flags, llvmNextExtraCommonGlobalCflags...)
+		}
+
 		return strings.Join(flags, " ")
 	})
 
