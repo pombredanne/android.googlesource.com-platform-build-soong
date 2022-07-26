@@ -76,16 +76,12 @@ var (
 		Command: `rm -f $out && ${jsonmodify} $in ` +
 			`-a provideNativeLibs ${provideNativeLibs} ` +
 			`-a requireNativeLibs ${requireNativeLibs} ` +
+			`-se version 0 ${default_version} ` +
 			`${opt} ` +
 			`-o $out`,
 		CommandDeps: []string{"${jsonmodify}"},
 		Description: "prepare ${out}",
-	}, "provideNativeLibs", "requireNativeLibs", "opt")
-
-	stripCommentsApexManifestRule = pctx.StaticRule("stripCommentsApexManifestRule", blueprint.RuleParams{
-		Command:     `sed '/^\s*\/\//d' $in > $out`,
-		Description: "strip lines starting with // ${in}=>${out}",
-	})
+	}, "provideNativeLibs", "requireNativeLibs", "default_version", "opt")
 
 	stripApexManifestRule = pctx.StaticRule("stripApexManifestRule", blueprint.RuleParams{
 		Command:     `rm -f $out && ${conv_apex_manifest} strip $in -o $out`,
@@ -210,21 +206,15 @@ func (a *apexBundle) buildManifest(ctx android.ModuleContext, provideNativeLibs,
 		optCommands = append(optCommands, "-a jniLibs "+strings.Join(jniLibs, " "))
 	}
 
-	manifestJsonCommentsStripped := android.PathForModuleOut(ctx, "apex_manifest_comments_stripped.json")
-	ctx.Build(pctx, android.BuildParams{
-		Rule:   stripCommentsApexManifestRule,
-		Input:  src,
-		Output: manifestJsonCommentsStripped,
-	})
-
 	manifestJsonFullOut := android.PathForModuleOut(ctx, "apex_manifest_full.json")
 	ctx.Build(pctx, android.BuildParams{
 		Rule:   apexManifestRule,
-		Input:  manifestJsonCommentsStripped,
+		Input:  src,
 		Output: manifestJsonFullOut,
 		Args: map[string]string{
 			"provideNativeLibs": strings.Join(provideNativeLibs, " "),
 			"requireNativeLibs": strings.Join(requireNativeLibs, " "),
+			"default_version":   defaultManifestVersion,
 			"opt":               strings.Join(optCommands, " "),
 		},
 	})
@@ -666,8 +656,6 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			implicitInputs = append(implicitInputs, a.manifestJsonOut)
 			optFlags = append(optFlags, "--manifest_json "+a.manifestJsonOut.String())
 		}
-
-		optFlags = append(optFlags, "--apex_version "+defaultManifestVersion)
 
 		optFlags = append(optFlags, "--payload_fs_type "+a.payloadFsType.string())
 
