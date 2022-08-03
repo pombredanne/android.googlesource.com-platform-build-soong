@@ -214,7 +214,7 @@ func (a *apexBundle) buildManifest(ctx android.ModuleContext, provideNativeLibs,
 		Args: map[string]string{
 			"provideNativeLibs": strings.Join(provideNativeLibs, " "),
 			"requireNativeLibs": strings.Join(requireNativeLibs, " "),
-			"default_version":   defaultManifestVersion,
+			"default_version":   android.DefaultUpdatableModuleVersion,
 			"opt":               strings.Join(optCommands, " "),
 		},
 	})
@@ -549,8 +549,6 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 	outHostBinDir := ctx.Config().HostToolPath(ctx, "").String()
 	prebuiltSdkToolsBinDir := filepath.Join("prebuilts", "sdk", "tools", runtime.GOOS, "bin")
 
-	// Figure out if we need to compress the apex.
-	compressionEnabled := ctx.Config().CompressedApex() && proptools.BoolDefault(a.overridableProperties.Compressible, false) && !a.testApex && !ctx.Config().UnbundledBuildApps()
 	if apexType == imageApex {
 
 		////////////////////////////////////////////////////////////////////////////////////
@@ -635,10 +633,15 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		implicitInputs = append(implicitInputs, noticeAssetPath)
 		optFlags = append(optFlags, "--assets_dir "+filepath.Dir(noticeAssetPath.String()))
 
-		if (moduleMinSdkVersion.GreaterThan(android.SdkVersion_Android10) && !a.shouldGenerateHashtree()) && !compressionEnabled {
-			// Apexes which are supposed to be installed in builtin dirs(/system, etc)
-			// don't need hashtree for activation. Therefore, by removing hashtree from
-			// apex bundle (filesystem image in it, to be specific), we can save storage.
+		// Apexes which are supposed to be installed in builtin dirs(/system, etc)
+		// don't need hashtree for activation. Therefore, by removing hashtree from
+		// apex bundle (filesystem image in it, to be specific), we can save storage.
+		needHashTree := moduleMinSdkVersion.LessThanOrEqualTo(android.SdkVersion_Android10) ||
+			a.shouldGenerateHashtree()
+		if ctx.Config().ApexCompressionEnabled() && a.isCompressable() {
+			needHashTree = true
+		}
+		if !needHashTree {
 			optFlags = append(optFlags, "--no_hashtree")
 		}
 
@@ -806,6 +809,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		return
 	}
 
+	installSuffix := suffix
 	a.setCompression(ctx)
 	if a.isCompressed {
 		unsignedCompressedOutputFile := android.PathForModuleOut(ctx, a.Name()+imageCapexSuffix+".unsigned")
@@ -835,6 +839,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			Args:        args,
 		})
 		a.outputFile = signedCompressedOutputFile
+		installSuffix = imageCapexSuffix
 	}
 
 	if !a.installable() {
@@ -842,7 +847,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 	}
 
 	// Install to $OUT/soong/{target,host}/.../apex.
-	a.installedFile = ctx.InstallFile(a.installDir, a.Name()+a.installSuffix(), a.outputFile,
+	a.installedFile = ctx.InstallFile(a.installDir, a.Name()+installSuffix, a.outputFile,
 		a.compatSymlinks.Paths()...)
 
 	// installed-files.txt is dist'ed

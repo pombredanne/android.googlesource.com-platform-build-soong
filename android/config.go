@@ -761,6 +761,10 @@ func (c *config) PlatformSdkVersion() ApiLevel {
 	return uncheckedFinalApiLevel(*c.productVariables.Platform_sdk_version)
 }
 
+func (c *config) PlatformSdkFinal() bool {
+	return Bool(c.productVariables.Platform_sdk_final)
+}
+
 func (c *config) PlatformSdkCodename() string {
 	return String(c.productVariables.Platform_sdk_codename)
 }
@@ -1446,8 +1450,8 @@ func (c *config) ForceApexSymlinkOptimization() bool {
 	return Bool(c.productVariables.ForceApexSymlinkOptimization)
 }
 
-func (c *config) CompressedApex() bool {
-	return Bool(c.productVariables.CompressedApex)
+func (c *config) ApexCompressionEnabled() bool {
+	return Bool(c.productVariables.CompressedApex) && !c.UnbundledBuildApps()
 }
 
 func (c *config) EnforceSystemCertificate() bool {

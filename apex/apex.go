@@ -1857,7 +1857,11 @@ func (a *apexBundle) ProcessBazelQueryResponse(ctx android.ModuleContext) {
 		a.nativeApisBackedByModuleFile = android.ModuleOutPath(android.PathForBazelOut(ctx, a.Name()+"_backing.txt"))
 		// b/239084755
 		a.javaApisUsedByModuleFile = android.ModuleOutPath(android.PathForBazelOut(ctx, a.Name()+"_using.xml"))
-		a.installedFile = ctx.InstallFile(a.installDir, a.Name()+a.installSuffix(), a.outputFile,
+		installSuffix := imageApexSuffix
+		if a.isCompressed {
+			installSuffix = imageCapexSuffix
+		}
+		a.installedFile = ctx.InstallFile(a.installDir, a.Name()+installSuffix, a.outputFile,
 			a.compatSymlinks.Paths()...)
 	default:
 		panic(fmt.Errorf("unexpected apex_type for the ProcessBazelQuery: %v", a.properties.ApexType))
@@ -1878,18 +1882,13 @@ func (a *apexBundle) ProcessBazelQueryResponse(ctx android.ModuleContext) {
 }
 
 func (a *apexBundle) setCompression(ctx android.ModuleContext) {
-	a.isCompressed = (a.properties.ApexType == imageApex) &&
-		((ctx.Config().CompressedApex() &&
-			proptools.BoolDefault(a.overridableProperties.Compressible, false) &&
-			!a.testApex && !ctx.Config().UnbundledBuildApps()) ||
-			a.testOnlyShouldForceCompression())
-}
-
-func (a apexBundle) installSuffix() string {
-	if a.isCompressed {
-		return imageCapexSuffix
+	if a.properties.ApexType != imageApex {
+		a.isCompressed = false
+	} else if a.testOnlyShouldForceCompression() {
+		a.isCompressed = true
+	} else {
+		a.isCompressed = ctx.Config().ApexCompressionEnabled() && a.isCompressable()
 	}
-	return imageApexSuffix
 }
 
 func (a *apexBundle) setSystemLibLink(ctx android.ModuleContext) {
@@ -1964,6 +1963,10 @@ func (a *apexBundle) setApexTypeAndSuffix(ctx android.ModuleContext) {
 			a.suffix = flattenedSuffix
 		}
 	}
+}
+
+func (a apexBundle) isCompressable() bool {
+	return proptools.BoolDefault(a.overridableProperties.Compressible, false) && !a.testApex
 }
 
 func (a *apexBundle) commonBuildActions(ctx android.ModuleContext) bool {

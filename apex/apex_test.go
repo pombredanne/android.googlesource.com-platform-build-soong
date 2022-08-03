@@ -443,7 +443,6 @@ func TestBasicApex(t *testing.T) {
 			srcs: ["mylib.cpp"],
 			system_shared_libs: [],
 			stl: "none",
-			notice: "custom_notice",
 			static_libs: ["libstatic"],
 			// TODO: remove //apex_available:platform
 			apex_available: [
@@ -467,7 +466,6 @@ func TestBasicApex(t *testing.T) {
 			srcs: ["mylib.cpp"],
 			system_shared_libs: [],
 			stl: "none",
-			notice: "custom_notice_for_static_lib",
 			// TODO: remove //apex_available:platform
 			apex_available: [
 				"//apex_available:platform",
@@ -619,7 +617,7 @@ func TestDefaults(t *testing.T) {
 			java_libs: ["myjar"],
 			apps: ["AppFoo"],
 			rros: ["rro"],
-			bpfs: ["bpf", "netd_test"],
+			bpfs: ["bpf", "netdTest"],
 			updatable: false,
 		}
 
@@ -673,8 +671,8 @@ func TestDefaults(t *testing.T) {
 		}
 
 		bpf {
-			name: "netd_test",
-			srcs: ["netd_test.c"],
+			name: "netdTest",
+			srcs: ["netdTest.c"],
 			sub_dir: "netd",
 		}
 
@@ -687,7 +685,7 @@ func TestDefaults(t *testing.T) {
 		"overlay/blue/rro.apk",
 		"etc/bpf/bpf.o",
 		"etc/bpf/bpf2.o",
-		"etc/bpf/netd/netd_test.o",
+		"etc/bpf/netd/netdTest.o",
 	})
 }
 
@@ -6153,7 +6151,7 @@ func TestOverrideApex(t *testing.T) {
 			name: "override_myapex",
 			base: "myapex",
 			apps: ["override_app"],
-			bpfs: ["override_bpf"],
+			bpfs: ["overrideBpf"],
 			prebuilts: ["override_myetc"],
 			bootclasspath_fragments: ["override_bootclasspath_fragment"],
 			systemserverclasspath_fragments: ["override_systemserverclasspath_fragment"],
@@ -6203,8 +6201,8 @@ func TestOverrideApex(t *testing.T) {
 		}
 
 		bpf {
-			name: "override_bpf",
-			srcs: ["override_bpf.c"],
+			name: "overrideBpf",
+			srcs: ["overrideBpf.c"],
 		}
 
 		prebuilt_etc {
@@ -6307,7 +6305,7 @@ func TestOverrideApex(t *testing.T) {
 	ensureContains(t, copyCmds, "image.apex/app/override_app@TEST.BUILD_ID/override_app.apk")
 
 	ensureNotContains(t, copyCmds, "image.apex/etc/bpf/bpf.o")
-	ensureContains(t, copyCmds, "image.apex/etc/bpf/override_bpf.o")
+	ensureContains(t, copyCmds, "image.apex/etc/bpf/overrideBpf.o")
 
 	ensureNotContains(t, copyCmds, "image.apex/etc/myetc")
 	ensureContains(t, copyCmds, "image.apex/etc/override_myetc")
@@ -6341,7 +6339,7 @@ func TestOverrideApex(t *testing.T) {
 	data.Custom(&builder, name, "TARGET_", "", data)
 	androidMk := builder.String()
 	ensureContains(t, androidMk, "LOCAL_MODULE := override_app.override_myapex")
-	ensureContains(t, androidMk, "LOCAL_MODULE := override_bpf.o.override_myapex")
+	ensureContains(t, androidMk, "LOCAL_MODULE := overrideBpf.o.override_myapex")
 	ensureContains(t, androidMk, "LOCAL_MODULE := apex_manifest.pb.override_myapex")
 	ensureContains(t, androidMk, "LOCAL_MODULE := override_bcplib.override_myapex")
 	ensureContains(t, androidMk, "LOCAL_MODULE := override_systemserverlib.override_myapex")
