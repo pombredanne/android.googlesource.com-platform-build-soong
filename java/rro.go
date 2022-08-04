@@ -142,7 +142,7 @@ func (r *RuntimeResourceOverlay) GenerateAndroidBuildActions(ctx android.ModuleC
 	r.aapt.buildActions(ctx, r, nil, nil, aaptLinkFlags...)
 
 	// Sign the built package
-	_, certificates := collectAppDeps(ctx, r, false, false)
+	_, _, certificates := collectAppDeps(ctx, r, false, false)
 	certificates = processMainCert(r.ModuleBase, String(r.properties.Certificate), certificates, ctx)
 	signed := android.PathForModuleOut(ctx, "signed", r.Name()+".apk")
 	var lineageFile android.Path
@@ -171,6 +171,10 @@ func (r *RuntimeResourceOverlay) MinSdkVersion(ctx android.EarlyModuleContext) a
 		return android.SdkSpecFrom(ctx, *r.properties.Min_sdk_version)
 	}
 	return r.SdkVersion(ctx)
+}
+
+func (r *RuntimeResourceOverlay) ReplaceMaxSdkVersionPlaceholder(ctx android.EarlyModuleContext) android.SdkSpec {
+	return android.SdkSpecFrom(ctx, "")
 }
 
 func (r *RuntimeResourceOverlay) TargetSdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {

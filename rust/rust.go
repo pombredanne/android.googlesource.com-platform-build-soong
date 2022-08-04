@@ -33,13 +33,6 @@ import (
 var pctx = android.NewPackageContext("android/soong/rust")
 
 func init() {
-	// Only allow rust modules to be defined for certain projects
-
-	android.AddNeverAllowRules(
-		android.NeverAllow().
-			NotIn(append(config.RustAllowedPaths, config.DownstreamRustAllowedPaths...)...).
-			ModuleType(config.RustModuleTypes...))
-
 	android.RegisterModuleType("rust_defaults", defaultsFactory)
 	android.PreDepsMutators(func(ctx android.RegisterMutatorsContext) {
 		ctx.BottomUp("rust_libraries", LibraryMutator).Parallel()
@@ -693,6 +686,19 @@ func (mod *Module) CoverageFiles() android.Paths {
 		return android.Paths{}
 	}
 	panic(fmt.Errorf("CoverageFiles called on non-library module: %q", mod.BaseModuleName()))
+}
+
+// Rust does not produce gcno files, and therefore does not produce a coverage archive.
+func (mod *Module) CoverageOutputFile() android.OptionalPath {
+	return android.OptionalPath{}
+}
+
+func (mod *Module) IsNdk(config android.Config) bool {
+	return false
+}
+
+func (mod *Module) IsStubs() bool {
+	return false
 }
 
 func (mod *Module) installable(apexInfo android.ApexInfo) bool {

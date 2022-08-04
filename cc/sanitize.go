@@ -430,7 +430,7 @@ func (sanitize *sanitize) begin(ctx BaseModuleContext) {
 	}
 
 	// Enable Memtag for all components in the include paths (for Aarch64 only)
-	if ctx.Arch().ArchType == android.Arm64 {
+	if ctx.Arch().ArchType == android.Arm64 && ctx.toolchain().Bionic() {
 		if ctx.Config().MemtagHeapSyncEnabledForPath(ctx.ModuleDir()) {
 			if s.Memtag_heap == nil {
 				s.Memtag_heap = proptools.BoolPtr(true)
@@ -460,17 +460,17 @@ func (sanitize *sanitize) begin(ctx BaseModuleContext) {
 	}
 
 	// HWASan requires AArch64 hardware feature (top-byte-ignore).
-	if ctx.Arch().ArchType != android.Arm64 {
+	if ctx.Arch().ArchType != android.Arm64 || !ctx.toolchain().Bionic() {
 		s.Hwaddress = nil
 	}
 
 	// SCS is only implemented on AArch64.
-	if ctx.Arch().ArchType != android.Arm64 {
+	if ctx.Arch().ArchType != android.Arm64 || !ctx.toolchain().Bionic() {
 		s.Scs = nil
 	}
 
 	// Memtag_heap is only implemented on AArch64.
-	if ctx.Arch().ArchType != android.Arm64 {
+	if ctx.Arch().ArchType != android.Arm64 || !ctx.toolchain().Bionic() {
 		s.Memtag_heap = nil
 	}
 
@@ -710,8 +710,13 @@ func (sanitize *sanitize) flags(ctx ModuleContext, flags Flags) Flags {
 			// Host sanitizers only link symbols in the final executable, so
 			// there will always be undefined symbols in intermediate libraries.
 			_, flags.Global.LdFlags = removeFromList("-Wl,--no-undefined", flags.Global.LdFlags)
+		}
 
-			// non-Bionic toolchain prebuilts are missing UBSan's vptr and function san
+		if !ctx.toolchain().Bionic() {
+			// non-Bionic toolchain prebuilts are missing UBSan's vptr and function san.
+			// Musl toolchain prebuilts have vptr and function sanitizers, but enabling them
+			// implicitly enables RTTI which causes RTTI mismatch issues with dependencies.
+
 			flags.Local.CFlags = append(flags.Local.CFlags, "-fno-sanitize=vptr,function")
 		}
 

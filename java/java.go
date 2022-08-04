@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"android/soong/bazel"
+	"android/soong/bazel/cquery"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
@@ -118,6 +119,16 @@ var (
 		copyEverythingToSnapshot,
 	}
 
+	snapshotRequiresImplementationJar = func(ctx android.SdkMemberContext) bool {
+		// In the S build the build will break if updatable-media does not provide a full implementation
+		// jar. That issue was fixed in Tiramisu by b/229932396.
+		if ctx.IsTargetBuildBeforeTiramisu() && ctx.Name() == "updatable-media" {
+			return true
+		}
+
+		return false
+	}
+
 	// Supports adding java boot libraries to module_exports and sdk.
 	//
 	// The build has some implicit dependencies (via the boot jars configuration) on a number of
@@ -135,13 +146,21 @@ var (
 			SupportsSdk:  true,
 		},
 		func(ctx android.SdkMemberContext, j *Library) android.Path {
+			if snapshotRequiresImplementationJar(ctx) {
+				return exportImplementationClassesJar(ctx, j)
+			}
+
 			// Java boot libs are only provided in the SDK to provide access to their dex implementation
 			// jar for use by dexpreopting and boot jars package check. They do not need to provide an
 			// actual implementation jar but the java_import will need a file that exists so just copy an
 			// empty file. Any attempt to use that file as a jar will cause a build error.
 			return ctx.SnapshotBuilder().EmptyFile()
 		},
-		func(osPrefix, name string) string {
+		func(ctx android.SdkMemberContext, osPrefix, name string) string {
+			if snapshotRequiresImplementationJar(ctx) {
+				return sdkSnapshotFilePathForJar(ctx, osPrefix, name)
+			}
+
 			// Create a special name for the implementation jar to try and provide some useful information
 			// to a developer that attempts to compile against this.
 			// TODO(b/175714559): Provide a proper error message in Soong not ninja.
@@ -164,6 +183,9 @@ var (
 		android.SdkMemberTypeBase{
 			PropertyName: "java_systemserver_libs",
 			SupportsSdk:  true,
+
+			// This was only added in Tiramisu.
+			SupportedBuildReleaseSpecification: "Tiramisu+",
 		},
 		func(ctx android.SdkMemberContext, j *Library) android.Path {
 			// Java systemserver libs are only provided in the SDK to provide access to their dex
@@ -172,7 +194,7 @@ var (
 			// file. Any attempt to use that file as a jar will cause a build error.
 			return ctx.SnapshotBuilder().EmptyFile()
 		},
-		func(osPrefix, name string) string {
+		func(_ android.SdkMemberContext, osPrefix, name string) string {
 			// Create a special name for the implementation jar to try and provide some useful information
 			// to a developer that attempts to compile against this.
 			// TODO(b/175714559): Provide a proper error message in Soong not ninja.
@@ -510,6 +532,20 @@ func (v javaVersion) String() string {
 	}
 }
 
+func (v javaVersion) StringForKotlinc() string {
+	// $ ./external/kotlinc/bin/kotlinc -jvm-target foo
+	// error: unknown JVM target version: foo
+	// Supported versions: 1.6, 1.8, 9, 10, 11, 12, 13, 14, 15, 16, 17
+	switch v {
+	case JAVA_VERSION_7:
+		return "1.6"
+	case JAVA_VERSION_9:
+		return "9"
+	default:
+		return v.String()
+	}
+}
+
 // Returns true if javac targeting this version uses system modules instead of a bootclasspath.
 func (v javaVersion) usesJavaModules() bool {
 	return v >= 9
@@ -655,7 +691,7 @@ const (
 )
 
 // path to the jar file of a java library. Relative to <sdk_root>/<api_dir>
-func sdkSnapshotFilePathForJar(osPrefix, name string) string {
+func sdkSnapshotFilePathForJar(_ android.SdkMemberContext, osPrefix, name string) string {
 	return sdkSnapshotFilePathForMember(osPrefix, name, jarFileSuffix)
 }
 
@@ -672,7 +708,7 @@ type librarySdkMemberType struct {
 
 	// Function to compute the snapshot relative path to which the named library's
 	// jar should be copied.
-	snapshotPathGetter func(osPrefix, name string) string
+	snapshotPathGetter func(ctx android.SdkMemberContext, osPrefix, name string) string
 
 	// True if only the jar should be copied to the snapshot, false if the jar plus any additional
 	// files like aidl files should also be copied.
@@ -730,7 +766,7 @@ func (p *librarySdkMemberProperties) AddToPropertySet(ctx android.SdkMemberConte
 	exportedJar := p.JarToExport
 	if exportedJar != nil {
 		// Delegate the creation of the snapshot relative path to the member type.
-		snapshotRelativeJavaLibPath := memberType.snapshotPathGetter(p.OsPrefix(), ctx.Name())
+		snapshotRelativeJavaLibPath := memberType.snapshotPathGetter(ctx, p.OsPrefix(), ctx.Name())
 
 		// Copy the exported jar to the snapshot.
 		builder.CopyToSnapshot(exportedJar, snapshotRelativeJavaLibPath)
@@ -1196,7 +1232,7 @@ func (p *testSdkMemberProperties) AddToPropertySet(ctx android.SdkMemberContext,
 
 	exportedJar := p.JarToExport
 	if exportedJar != nil {
-		snapshotRelativeJavaLibPath := sdkSnapshotFilePathForJar(p.OsPrefix(), ctx.Name())
+		snapshotRelativeJavaLibPath := sdkSnapshotFilePathForJar(ctx, p.OsPrefix(), ctx.Name())
 		builder.CopyToSnapshot(exportedJar, snapshotRelativeJavaLibPath)
 
 		propertySet.AddProperty("jars", []string{snapshotRelativeJavaLibPath})
@@ -1442,6 +1478,10 @@ type ImportProperties struct {
 	// specified.
 	Min_sdk_version *string
 
+	// The max sdk version placeholder used to replace maxSdkVersion attributes on permission
+	// and uses-permission tags in manifest_fixer.
+	Replace_max_sdk_version_placeholder *string
+
 	Installable *bool
 
 	// If not empty, classes are restricted to the specified packages and their sub-packages.
@@ -1521,6 +1561,13 @@ func (j *Import) MinSdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
 	return j.SdkVersion(ctx)
 }
 
+func (j *Import) ReplaceMaxSdkVersionPlaceholder(ctx android.EarlyModuleContext) android.SdkSpec {
+	if j.properties.Replace_max_sdk_version_placeholder != nil {
+		return android.SdkSpecFrom(ctx, *j.properties.Replace_max_sdk_version_placeholder)
+	}
+	return android.SdkSpecFrom(ctx, "")
+}
+
 func (j *Import) TargetSdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
 	return j.SdkVersion(ctx)
 }
@@ -1564,7 +1611,8 @@ func (j *Import) DepsMutator(ctx android.BottomUpMutatorContext) {
 	}
 }
 
-func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+func (j *Import) commonBuildActions(ctx android.ModuleContext) {
+	//TODO(b/231322772) these should come from Bazel once available
 	j.sdkVersion = j.SdkVersion(ctx)
 	j.minSdkVersion = j.MinSdkVersion(ctx)
 
@@ -1575,6 +1623,10 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	if ctx.Windows() {
 		j.HideFromMake()
 	}
+}
+
+func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+	j.commonBuildActions(ctx)
 
 	jars := android.PathsForModuleSrc(ctx, j.properties.Jars)
 
@@ -1616,19 +1668,7 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		addCLCFromDep(ctx, module, j.classLoaderContexts)
 	})
 
-	if Bool(j.properties.Installable) {
-		var installDir android.InstallPath
-		if ctx.InstallInTestcases() {
-			var archDir string
-			if !ctx.Host() {
-				archDir = ctx.DeviceConfig().DeviceArch()
-			}
-			installDir = android.PathForModuleInstall(ctx, ctx.ModuleName(), archDir)
-		} else {
-			installDir = android.PathForModuleInstall(ctx, "framework")
-		}
-		ctx.InstallFile(installDir, jarName, outputFile)
-	}
+	j.maybeInstall(ctx, jarName, outputFile)
 
 	j.exportAidlIncludeDirs = android.PathsForModuleSrc(ctx, j.properties.Aidl.Export_include_dirs)
 
@@ -1700,6 +1740,24 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		ImplementationJars:             android.PathsIfNonNil(j.combinedClasspathFile),
 		AidlIncludeDirs:                j.exportAidlIncludeDirs,
 	})
+}
+
+func (j *Import) maybeInstall(ctx android.ModuleContext, jarName string, outputFile android.Path) {
+	if !Bool(j.properties.Installable) {
+		return
+	}
+
+	var installDir android.InstallPath
+	if ctx.InstallInTestcases() {
+		var archDir string
+		if !ctx.Host() {
+			archDir = ctx.DeviceConfig().DeviceArch()
+		}
+		installDir = android.PathForModuleInstall(ctx, ctx.ModuleName(), archDir)
+	} else {
+		installDir = android.PathForModuleInstall(ctx, "framework")
+	}
+	ctx.InstallFile(installDir, jarName, outputFile)
 }
 
 func (j *Import) OutputFiles(tag string) (android.Paths, error) {
@@ -2000,9 +2058,7 @@ func DexImportFactory() android.Module {
 	return module
 }
 
-//
 // Defaults
-//
 type Defaults struct {
 	android.ModuleBase
 	android.DefaultsModuleBase
@@ -2017,29 +2073,29 @@ type Defaults struct {
 //
 // Example:
 //
-//     java_defaults {
-//         name: "example_defaults",
-//         srcs: ["common/**/*.java"],
-//         javacflags: ["-Xlint:all"],
-//         aaptflags: ["--auto-add-overlay"],
-//     }
+//	java_defaults {
+//	    name: "example_defaults",
+//	    srcs: ["common/**/*.java"],
+//	    javacflags: ["-Xlint:all"],
+//	    aaptflags: ["--auto-add-overlay"],
+//	}
 //
-//     java_library {
-//         name: "example",
-//         defaults: ["example_defaults"],
-//         srcs: ["example/**/*.java"],
-//     }
+//	java_library {
+//	    name: "example",
+//	    defaults: ["example_defaults"],
+//	    srcs: ["example/**/*.java"],
+//	}
 //
 // is functionally identical to:
 //
-//     java_library {
-//         name: "example",
-//         srcs: [
-//             "common/**/*.java",
-//             "example/**/*.java",
-//         ],
-//         javacflags: ["-Xlint:all"],
-//     }
+//	java_library {
+//	    name: "example",
+//	    srcs: [
+//	        "common/**/*.java",
+//	        "example/**/*.java",
+//	    ],
+//	    javacflags: ["-Xlint:all"],
+//	}
 func DefaultsFactory() android.Module {
 	module := &Defaults{}
 
@@ -2437,5 +2493,54 @@ func (i *Import) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 	props := bazel.BazelTargetModuleProperties{Rule_class: "java_import"}
 
 	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: android.RemoveOptionalPrebuiltPrefix(i.Name())}, attrs)
+}
 
+var _ android.MixedBuildBuildable = (*Import)(nil)
+
+func (i *Import) getBazelModuleLabel(ctx android.BaseModuleContext) string {
+	return android.RemoveOptionalPrebuiltPrefixFromBazelLabel(i.GetBazelLabel(ctx, i))
+}
+
+func (i *Import) ProcessBazelQueryResponse(ctx android.ModuleContext) {
+	i.commonBuildActions(ctx)
+
+	bazelCtx := ctx.Config().BazelContext
+	filePaths, err := bazelCtx.GetOutputFiles(i.getBazelModuleLabel(ctx), android.GetConfigKey(ctx))
+	if err != nil {
+		ctx.ModuleErrorf(err.Error())
+		return
+	}
+
+	bazelJars := android.Paths{}
+	for _, bazelOutputFile := range filePaths {
+		bazelJars = append(bazelJars, android.PathForBazelOut(ctx, bazelOutputFile))
+	}
+
+	jarName := android.RemoveOptionalPrebuiltPrefix(i.Name()) + ".jar"
+	outputFile := android.PathForModuleOut(ctx, "bazelCombined", jarName)
+	TransformJarsToJar(ctx, outputFile, "combine prebuilt jars", bazelJars,
+		android.OptionalPath{}, // manifest
+		false,                  // stripDirEntries
+		[]string{},             // filesToStrip
+		[]string{},             // dirsToStrip
+	)
+	i.combinedClasspathFile = outputFile
+
+	ctx.SetProvider(JavaInfoProvider, JavaInfo{
+		HeaderJars:                     android.PathsIfNonNil(i.combinedClasspathFile),
+		ImplementationAndResourcesJars: android.PathsIfNonNil(i.combinedClasspathFile),
+		ImplementationJars:             android.PathsIfNonNil(i.combinedClasspathFile),
+		//TODO(b/240308299) include AIDL information from Bazel
+	})
+
+	i.maybeInstall(ctx, jarName, outputFile)
+}
+
+func (i *Import) QueueBazelCall(ctx android.BaseModuleContext) {
+	bazelCtx := ctx.Config().BazelContext
+	bazelCtx.QueueBazelRequest(i.getBazelModuleLabel(ctx), cquery.GetOutputFiles, android.GetConfigKey(ctx))
+}
+
+func (i *Import) IsMixedBuildSupported(ctx android.BaseModuleContext) bool {
+	return true
 }

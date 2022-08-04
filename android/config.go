@@ -761,6 +761,10 @@ func (c *config) PlatformSdkVersion() ApiLevel {
 	return uncheckedFinalApiLevel(*c.productVariables.Platform_sdk_version)
 }
 
+func (c *config) PlatformSdkFinal() bool {
+	return Bool(c.productVariables.Platform_sdk_final)
+}
+
 func (c *config) PlatformSdkCodename() string {
 	return String(c.productVariables.Platform_sdk_codename)
 }
@@ -1446,8 +1450,8 @@ func (c *config) ForceApexSymlinkOptimization() bool {
 	return Bool(c.productVariables.ForceApexSymlinkOptimization)
 }
 
-func (c *config) CompressedApex() bool {
-	return Bool(c.productVariables.CompressedApex)
+func (c *config) ApexCompressionEnabled() bool {
+	return Bool(c.productVariables.CompressedApex) && !c.UnbundledBuildApps()
 }
 
 func (c *config) EnforceSystemCertificate() bool {
@@ -1697,6 +1701,10 @@ func (c *deviceConfig) BuildBrokenInputDir(name string) bool {
 	return InList(name, c.config.productVariables.BuildBrokenInputDirModules)
 }
 
+func (c *deviceConfig) BuildBrokenDepfile() bool {
+	return Bool(c.config.productVariables.BuildBrokenDepfile)
+}
+
 func (c *deviceConfig) RequiresInsecureExecmemForSwiftshader() bool {
 	return c.config.productVariables.RequiresInsecureExecmemForSwiftshader
 }
@@ -1719,6 +1727,10 @@ func (c *deviceConfig) SepolicyFreezeTestExtraPrebuiltDirs() []string {
 
 func (c *deviceConfig) GenerateAidlNdkPlatformBackend() bool {
 	return c.config.productVariables.GenerateAidlNdkPlatformBackend
+}
+
+func (c *config) IgnorePrefer32OnDevice() bool {
+	return c.productVariables.IgnorePrefer32OnDevice
 }
 
 // The ConfiguredJarList struct provides methods for handling a list of (apex, jar) pairs.
