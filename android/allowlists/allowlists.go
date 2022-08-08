@@ -132,6 +132,7 @@ var (
 		"external/libevent":                                      Bp2BuildDefaultTrueRecursively,
 		"external/libgav1":                                       Bp2BuildDefaultTrueRecursively,
 		"external/libhevc":                                       Bp2BuildDefaultTrueRecursively,
+		"external/libjpeg-turbo":                                 Bp2BuildDefaultTrueRecursively,
 		"external/libmpeg2":                                      Bp2BuildDefaultTrueRecursively,
 		"external/libpng":                                        Bp2BuildDefaultTrueRecursively,
 		"external/lz4/lib":                                       Bp2BuildDefaultTrue,
@@ -145,6 +146,7 @@ var (
 		"external/scudo":                                         Bp2BuildDefaultTrueRecursively,
 		"external/selinux/libselinux":                            Bp2BuildDefaultTrueRecursively,
 		"external/selinux/libsepol":                              Bp2BuildDefaultTrueRecursively,
+		"external/toybox":                                        Bp2BuildDefaultTrueRecursively,
 		"external/zlib":                                          Bp2BuildDefaultTrueRecursively,
 		"external/zopfli":                                        Bp2BuildDefaultTrueRecursively,
 		"external/zstd":                                          Bp2BuildDefaultTrueRecursively,
@@ -217,6 +219,7 @@ var (
 		"system/unwinding/libunwindstack":                        Bp2BuildDefaultTrueRecursively,
 		"tools/apksig":                                           Bp2BuildDefaultTrue,
 		"tools/platform-compat/java/android/compat":              Bp2BuildDefaultTrueRecursively,
+		"tools/tradefederation/prebuilts/filegroups":             Bp2BuildDefaultTrueRecursively,
 	}
 
 	Bp2buildKeepExistingBuildFile = map[string]bool{
@@ -262,6 +265,7 @@ var (
 		"prebuilts/gcc":/* recursive = */ true,
 		"prebuilts/build-tools":/* recursive = */ true,
 		"prebuilts/jdk/jdk11":/* recursive = */ false,
+		"prebuilts/misc":/* recursive = */ false, // not recursive because we need bp2build converted build files in prebuilts/misc/common/asm
 		"prebuilts/sdk":/* recursive = */ false,
 		"prebuilts/sdk/current/extras/app-toolkit":/* recursive = */ false,
 		"prebuilts/sdk/current/support":/* recursive = */ false,
@@ -332,6 +336,13 @@ var (
 		"server_configurable_flags",
 		"tensorflow_headers",
 
+		// fastboot
+		"bootimg_headers",
+		"fastboot",
+		"libfastboot",
+		"liblp",
+		"libstorage_literals_headers",
+
 		//external/avb
 		"avbtool",
 		"libavb",
@@ -377,15 +388,16 @@ var (
 		"gen-kotlin-build-file.py",                  // TODO(b/198619163) module has same name as source
 		"libgtest_ndk_c++", "libgtest_main_ndk_c++", // TODO(b/201816222): Requires sdk_version support.
 		"linkerconfig", "mdnsd", // TODO(b/202876379): has arch-variant static_executable
-		"linker",            // TODO(b/228316882): cc_binary uses link_crt
-		"libdebuggerd",      // TODO(b/228314770): support product variable-specific header_libs
-		"versioner",         // TODO(b/228313961):  depends on prebuilt shared library libclang-cpp_host as a shared library, which does not supply expected providers for a shared library
-		"libspeexresampler", // TODO(b/231995978): Filter out unknown cflags
-		"libjpeg", "libvpx", // TODO(b/233948256): Convert .asm files
+		"linker",                 // TODO(b/228316882): cc_binary uses link_crt
+		"libdebuggerd",           // TODO(b/228314770): support product variable-specific header_libs
+		"versioner",              // TODO(b/228313961):  depends on prebuilt shared library libclang-cpp_host as a shared library, which does not supply expected providers for a shared library
+		"libspeexresampler",      // TODO(b/231995978): Filter out unknown cflags
+		"libvpx",                 // TODO(b/240756936): Arm neon variant not supported
 		"art_libartbase_headers", // TODO(b/236268577): Header libraries do not support export_shared_libs_headers
 		"apexer_test",            // Requires aapt2
 		"apexer_test_host_tools",
 		"host_apex_verifier",
+		"tjbench", // TODO(b/240563612): Stem property
 
 		// java bugs
 		"libbase_ndk", // TODO(b/186826477): fails to link libctscamera2_jni for device (required for CtsCameraTestCases)
@@ -481,6 +493,9 @@ var (
 		// b/215723302; awaiting tz{data,_version} to then rename targets conflicting with srcs
 		"tzdata",
 		"tz_version",
+
+		// '//bionic/libc:libc_bp2build_cc_library_static' is duplicated in the 'deps' attribute of rule
+		"toybox-static",
 	}
 
 	Bp2buildCcLibraryStaticOnlyList = []string{}
@@ -526,5 +541,20 @@ var (
 		"simpleperf_ndk",
 		"toybox-static",
 		"zlib_bench",
+
+		// java_import[_host] issues
+		// tradefed prebuilts depend on libprotobuf
+		"prebuilt_tradefed",
+		"prebuilt_tradefed-test-framework",
+		// handcrafted BUILD.bazel files in //prebuilts/...
+		"prebuilt_r8lib-prebuilt",
+		"prebuilt_sdk-core-lambda-stubs",
+		"prebuilt_android-support-collections-nodeps",
+		"prebuilt_android-arch-core-common-nodeps",
+		"prebuilt_android-arch-lifecycle-common-java8-nodeps",
+		"prebuilt_android-arch-lifecycle-common-nodeps",
+		"prebuilt_android-support-annotations-nodeps",
+		"prebuilt_android-arch-paging-common-nodeps",
+		"prebuilt_android-arch-room-common-nodeps",
 	}
 )
