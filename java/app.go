@@ -417,6 +417,9 @@ func (a *AndroidApp) aaptBuildActions(ctx android.ModuleContext) {
 
 	a.aapt.splitNames = a.appProperties.Package_splits
 	a.aapt.LoggingParent = String(a.overridableAppProperties.Logging_parent)
+	if a.Updatable() {
+		a.aapt.defaultManifestVersion = android.DefaultUpdatableModuleVersion
+	}
 	a.aapt.buildActions(ctx, android.SdkContext(a), a.classLoaderContexts,
 		a.usesLibraryProperties.Exclude_uses_libs, aaptLinkFlags...)
 
@@ -957,6 +960,18 @@ type AndroidTest struct {
 
 func (a *AndroidTest) InstallInTestcases() bool {
 	return true
+}
+
+type androidTestApp interface {
+	includedInTestSuite(searchPrefix string) bool
+}
+
+func (a *AndroidTest) includedInTestSuite(searchPrefix string) bool {
+	return android.PrefixInList(a.testProperties.Test_suites, searchPrefix)
+}
+
+func (a *AndroidTestHelperApp) includedInTestSuite(searchPrefix string) bool {
+	return android.PrefixInList(a.appTestHelperAppProperties.Test_suites, searchPrefix)
 }
 
 func (a *AndroidTest) GenerateAndroidBuildActions(ctx android.ModuleContext) {
