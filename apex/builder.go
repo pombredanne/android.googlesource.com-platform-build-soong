@@ -76,11 +76,12 @@ var (
 		Command: `rm -f $out && ${jsonmodify} $in ` +
 			`-a provideNativeLibs ${provideNativeLibs} ` +
 			`-a requireNativeLibs ${requireNativeLibs} ` +
+			`-se version 0 ${default_version} ` +
 			`${opt} ` +
 			`-o $out`,
 		CommandDeps: []string{"${jsonmodify}"},
 		Description: "prepare ${out}",
-	}, "provideNativeLibs", "requireNativeLibs", "opt")
+	}, "provideNativeLibs", "requireNativeLibs", "default_version", "opt")
 
 	stripApexManifestRule = pctx.StaticRule("stripApexManifestRule", blueprint.RuleParams{
 		Command:     `rm -f $out && ${conv_apex_manifest} strip $in -o $out`,
@@ -213,6 +214,7 @@ func (a *apexBundle) buildManifest(ctx android.ModuleContext, provideNativeLibs,
 		Args: map[string]string{
 			"provideNativeLibs": strings.Join(provideNativeLibs, " "),
 			"requireNativeLibs": strings.Join(requireNativeLibs, " "),
+			"default_version":   defaultManifestVersion,
 			"opt":               strings.Join(optCommands, " "),
 		},
 	})
@@ -618,7 +620,12 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 
 		// Create a NOTICE file, and embed it as an asset file in the APEX.
 		a.htmlGzNotice = android.PathForModuleOut(ctx, "NOTICE.html.gz")
-		android.BuildNoticeHtmlOutputFromLicenseMetadata(ctx, a.htmlGzNotice)
+		android.BuildNoticeHtmlOutputFromLicenseMetadata(
+			ctx, a.htmlGzNotice, "", "",
+			[]string{
+				android.PathForModuleInstall(ctx).String() + "/",
+				android.PathForModuleInPartitionInstall(ctx, "apex").String() + "/",
+			})
 		noticeAssetPath := android.PathForModuleOut(ctx, "NOTICE", "NOTICE.html.gz")
 		builder := android.NewRuleBuilder(pctx, ctx)
 		builder.Command().Text("cp").

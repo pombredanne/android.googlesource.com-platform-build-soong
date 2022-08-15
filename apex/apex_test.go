@@ -5931,7 +5931,7 @@ func TestApexAvailable_DirectDep(t *testing.T) {
 func TestApexAvailable_IndirectDep(t *testing.T) {
 	// libbbaz is an indirect dep
 	testApexError(t, `requires "libbaz" that doesn't list the APEX under 'apex_available'.\n\nDependency path:
-.*via tag apex\.dependencyTag.*name:sharedLib.*
+.*via tag apex\.dependencyTag\{"sharedLib"\}
 .*-> libfoo.*link:shared.*
 .*via tag cc\.libraryDependencyTag.*Kind:sharedLibraryDependency.*
 .*-> libbar.*link:shared.*
@@ -6227,6 +6227,9 @@ func TestOverrideApex(t *testing.T) {
 			name: "mybootclasspath_fragment",
 			contents: ["bcplib"],
 			apex_available: ["myapex"],
+			hidden_api: {
+				split_packages: ["*"],
+			},
 		}
 
 		java_library {
@@ -6241,6 +6244,9 @@ func TestOverrideApex(t *testing.T) {
 			name: "override_bootclasspath_fragment",
 			contents: ["override_bcplib"],
 			apex_available: ["myapex"],
+			hidden_api: {
+				split_packages: ["*"],
+			},
 		}
 
 		java_library {
@@ -7294,6 +7300,9 @@ func testNoUpdatableJarsInBootImage(t *testing.T, errmsg string, preparer androi
 			apex_available: [
 				"some-non-updatable-apex",
 			],
+			hidden_api: {
+				split_packages: ["*"],
+			},
 		}
 
 		java_library {
@@ -7352,6 +7361,9 @@ func testNoUpdatableJarsInBootImage(t *testing.T, errmsg string, preparer androi
 			apex_available: [
 				"com.android.art.debug",
 			],
+			hidden_api: {
+				split_packages: ["*"],
+			},
 		}
 
 		apex_key {
@@ -7428,7 +7440,7 @@ func testDexpreoptWithApexes(t *testing.T, bp, errmsg string, preparer android.F
 	return result.TestContext
 }
 
-func TestDuplicateDeapexeresFromPrebuiltApexes(t *testing.T) {
+func TestDuplicateDeapexersFromPrebuiltApexes(t *testing.T) {
 	preparers := android.GroupFixturePreparers(
 		java.PrepareForTestWithJavaDefaultModules,
 		PrepareForTestWithApexBuildComponents,
@@ -7492,6 +7504,107 @@ func TestDuplicateDeapexeresFromPrebuiltApexes(t *testing.T) {
 					jars: ["libbar.jar"],
 				},
 				apex_available: ["com.android.myapex"],
+			}
+		`)
+	})
+}
+
+func TestDuplicateButEquivalentDeapexersFromPrebuiltApexes(t *testing.T) {
+	preparers := android.GroupFixturePreparers(
+		java.PrepareForTestWithJavaDefaultModules,
+		PrepareForTestWithApexBuildComponents,
+	)
+
+	bpBase := `
+		apex_set {
+			name: "com.android.myapex",
+			installable: true,
+			exported_bootclasspath_fragments: ["my-bootclasspath-fragment"],
+			set: "myapex.apks",
+		}
+
+		apex_set {
+			name: "com.android.myapex_compressed",
+			apex_name: "com.android.myapex",
+			installable: true,
+			exported_bootclasspath_fragments: ["my-bootclasspath-fragment"],
+			set: "myapex_compressed.apks",
+		}
+
+		prebuilt_bootclasspath_fragment {
+			name: "my-bootclasspath-fragment",
+			apex_available: [
+				"com.android.myapex",
+				"com.android.myapex_compressed",
+			],
+			hidden_api: {
+				annotation_flags: "annotation-flags.csv",
+				metadata: "metadata.csv",
+				index: "index.csv",
+				signature_patterns: "signature_patterns.csv",
+			},
+			%s
+		}
+	`
+
+	t.Run("java_import", func(t *testing.T) {
+		result := preparers.RunTestWithBp(t,
+			fmt.Sprintf(bpBase, `contents: ["libfoo"]`)+`
+			java_import {
+				name: "libfoo",
+				jars: ["libfoo.jar"],
+				apex_available: [
+					"com.android.myapex",
+					"com.android.myapex_compressed",
+				],
+			}
+		`)
+
+		module := result.Module("libfoo", "android_common_com.android.myapex")
+		usesLibraryDep := module.(java.UsesLibraryDependency)
+		android.AssertPathRelativeToTopEquals(t, "dex jar path",
+			"out/soong/.intermediates/com.android.myapex.deapexer/android_common/deapexer/javalib/libfoo.jar",
+			usesLibraryDep.DexJarBuildPath().Path())
+	})
+
+	t.Run("java_sdk_library_import", func(t *testing.T) {
+		result := preparers.RunTestWithBp(t,
+			fmt.Sprintf(bpBase, `contents: ["libfoo"]`)+`
+			java_sdk_library_import {
+				name: "libfoo",
+				public: {
+					jars: ["libbar.jar"],
+				},
+				apex_available: [
+					"com.android.myapex",
+					"com.android.myapex_compressed",
+				],
+				compile_dex: true,
+			}
+		`)
+
+		module := result.Module("libfoo", "android_common_com.android.myapex")
+		usesLibraryDep := module.(java.UsesLibraryDependency)
+		android.AssertPathRelativeToTopEquals(t, "dex jar path",
+			"out/soong/.intermediates/com.android.myapex.deapexer/android_common/deapexer/javalib/libfoo.jar",
+			usesLibraryDep.DexJarBuildPath().Path())
+	})
+
+	t.Run("prebuilt_bootclasspath_fragment", func(t *testing.T) {
+		_ = preparers.RunTestWithBp(t, fmt.Sprintf(bpBase, `
+			image_name: "art",
+			contents: ["libfoo"],
+		`)+`
+			java_sdk_library_import {
+				name: "libfoo",
+				public: {
+					jars: ["libbar.jar"],
+				},
+				apex_available: [
+					"com.android.myapex",
+					"com.android.myapex_compressed",
+				],
+				compile_dex: true,
 			}
 		`)
 	})
@@ -8695,6 +8808,9 @@ func TestApexJavaCoverage(t *testing.T) {
 			name: "mybootclasspathfragment",
 			contents: ["mybootclasspathlib"],
 			apex_available: ["myapex"],
+			hidden_api: {
+				split_packages: ["*"],
+			},
 		}
 
 		java_library {
@@ -9015,6 +9131,9 @@ func TestSdkLibraryCanHaveHigherMinSdkVersion(t *testing.T) {
 				name: "mybootclasspathfragment",
 				contents: ["mybootclasspathlib"],
 				apex_available: ["myapex"],
+				hidden_api: {
+					split_packages: ["*"],
+				},
 			}
 
 			java_sdk_library {
@@ -9115,6 +9234,9 @@ func TestSdkLibraryCanHaveHigherMinSdkVersion(t *testing.T) {
 					name: "mybootclasspathfragment",
 					contents: ["mybootclasspathlib"],
 					apex_available: ["myapex"],
+					hidden_api: {
+						split_packages: ["*"],
+					},
 				}
 
 				java_sdk_library {
@@ -9334,6 +9456,9 @@ func TestApexStrictUpdtabilityLintBcpFragmentDeps(t *testing.T) {
 			name: "mybootclasspathfragment",
 			contents: ["myjavalib"],
 			apex_available: ["myapex"],
+			hidden_api: {
+				split_packages: ["*"],
+			},
 		}
 		java_library {
 			name: "myjavalib",
