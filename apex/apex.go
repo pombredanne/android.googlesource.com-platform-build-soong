@@ -19,6 +19,7 @@ package apex
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -603,32 +604,49 @@ type dependencyTag struct {
 	// replacement. This is needed because some prebuilt modules do not provide all the information
 	// needed by the apex.
 	sourceOnly bool
+
+	// If not-nil and an APEX is a member of an SDK then dependencies of that APEX with this tag will
+	// also be added as exported members of that SDK.
+	memberType android.SdkMemberType
 }
 
-func (d dependencyTag) ReplaceSourceWithPrebuilt() bool {
+func (d *dependencyTag) SdkMemberType(_ android.Module) android.SdkMemberType {
+	return d.memberType
+}
+
+func (d *dependencyTag) ExportMember() bool {
+	return true
+}
+
+func (d *dependencyTag) String() string {
+	return fmt.Sprintf("apex.dependencyTag{%q}", d.name)
+}
+
+func (d *dependencyTag) ReplaceSourceWithPrebuilt() bool {
 	return !d.sourceOnly
 }
 
 var _ android.ReplaceSourceWithPrebuilt = &dependencyTag{}
+var _ android.SdkMemberDependencyTag = &dependencyTag{}
 
 var (
-	androidAppTag   = dependencyTag{name: "androidApp", payload: true}
-	bpfTag          = dependencyTag{name: "bpf", payload: true}
-	certificateTag  = dependencyTag{name: "certificate"}
-	executableTag   = dependencyTag{name: "executable", payload: true}
-	fsTag           = dependencyTag{name: "filesystem", payload: true}
-	bcpfTag         = dependencyTag{name: "bootclasspathFragment", payload: true, sourceOnly: true}
-	sscpfTag        = dependencyTag{name: "systemserverclasspathFragment", payload: true, sourceOnly: true}
-	compatConfigTag = dependencyTag{name: "compatConfig", payload: true, sourceOnly: true}
-	javaLibTag      = dependencyTag{name: "javaLib", payload: true}
-	jniLibTag       = dependencyTag{name: "jniLib", payload: true}
-	keyTag          = dependencyTag{name: "key"}
-	prebuiltTag     = dependencyTag{name: "prebuilt", payload: true}
-	rroTag          = dependencyTag{name: "rro", payload: true}
-	sharedLibTag    = dependencyTag{name: "sharedLib", payload: true}
-	testForTag      = dependencyTag{name: "test for"}
-	testTag         = dependencyTag{name: "test", payload: true}
-	shBinaryTag     = dependencyTag{name: "shBinary", payload: true}
+	androidAppTag   = &dependencyTag{name: "androidApp", payload: true}
+	bpfTag          = &dependencyTag{name: "bpf", payload: true}
+	certificateTag  = &dependencyTag{name: "certificate"}
+	executableTag   = &dependencyTag{name: "executable", payload: true}
+	fsTag           = &dependencyTag{name: "filesystem", payload: true}
+	bcpfTag         = &dependencyTag{name: "bootclasspathFragment", payload: true, sourceOnly: true, memberType: java.BootclasspathFragmentSdkMemberType}
+	sscpfTag        = &dependencyTag{name: "systemserverclasspathFragment", payload: true, sourceOnly: true, memberType: java.SystemServerClasspathFragmentSdkMemberType}
+	compatConfigTag = &dependencyTag{name: "compatConfig", payload: true, sourceOnly: true, memberType: java.CompatConfigSdkMemberType}
+	javaLibTag      = &dependencyTag{name: "javaLib", payload: true}
+	jniLibTag       = &dependencyTag{name: "jniLib", payload: true}
+	keyTag          = &dependencyTag{name: "key"}
+	prebuiltTag     = &dependencyTag{name: "prebuilt", payload: true}
+	rroTag          = &dependencyTag{name: "rro", payload: true}
+	sharedLibTag    = &dependencyTag{name: "sharedLib", payload: true}
+	testForTag      = &dependencyTag{name: "test for"}
+	testTag         = &dependencyTag{name: "test", payload: true}
+	shBinaryTag     = &dependencyTag{name: "shBinary", payload: true}
 )
 
 // TODO(jiyong): shorten this function signature
@@ -1653,7 +1671,20 @@ type androidApp interface {
 var _ androidApp = (*java.AndroidApp)(nil)
 var _ androidApp = (*java.AndroidAppImport)(nil)
 
-const APEX_VERSION_PLACEHOLDER = "__APEX_VERSION_PLACEHOLDER__"
+func sanitizedBuildIdForPath(ctx android.BaseModuleContext) string {
+	buildId := ctx.Config().BuildId()
+
+	// The build ID is used as a suffix for a filename, so ensure that
+	// the set of characters being used are sanitized.
+	// - any word character: [a-zA-Z0-9_]
+	// - dots: .
+	// - dashes: -
+	validRegex := regexp.MustCompile(`^[\w\.\-\_]+$`)
+	if !validRegex.MatchString(buildId) {
+		ctx.ModuleErrorf("Unable to use build id %s as filename suffix, valid characters are [a-z A-Z 0-9 _ . -].", buildId)
+	}
+	return buildId
+}
 
 func apexFileForAndroidApp(ctx android.BaseModuleContext, aapp androidApp) apexFile {
 	appDir := "app"
@@ -1664,7 +1695,7 @@ func apexFileForAndroidApp(ctx android.BaseModuleContext, aapp androidApp) apexF
 	// TODO(b/224589412, b/226559955): Ensure that the subdirname is suffixed
 	// so that PackageManager correctly invalidates the existing installed apk
 	// in favour of the new APK-in-APEX.  See bugs for more information.
-	dirInApex := filepath.Join(appDir, aapp.InstallApkName()+"@"+APEX_VERSION_PLACEHOLDER)
+	dirInApex := filepath.Join(appDir, aapp.InstallApkName()+"@"+sanitizedBuildIdForPath(ctx))
 	fileToCopy := aapp.OutputFile()
 
 	af := newApexFile(ctx, fileToCopy, aapp.BaseModuleName(), dirInApex, app, aapp)
@@ -1721,7 +1752,7 @@ func (a *apexBundle) WalkPayloadDeps(ctx android.ModuleContext, do android.Paylo
 		if _, ok := depTag.(android.ExcludeFromApexContentsTag); ok {
 			return false
 		}
-		if dt, ok := depTag.(dependencyTag); ok && !dt.payload {
+		if dt, ok := depTag.(*dependencyTag); ok && !dt.payload {
 			return false
 		}
 
@@ -1903,7 +1934,7 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 					// suffixed so that PackageManager correctly invalidates the
 					// existing installed apk in favour of the new APK-in-APEX.
 					// See bugs for more information.
-					appDirName := filepath.Join(appDir, ap.BaseModuleName()+"@"+APEX_VERSION_PLACEHOLDER)
+					appDirName := filepath.Join(appDir, ap.BaseModuleName()+"@"+sanitizedBuildIdForPath(ctx))
 					af := newApexFile(ctx, ap.OutputFile(), ap.BaseModuleName(), appDirName, appSet, ap)
 					af.certificate = java.PresignedCertificate
 					filesInfo = append(filesInfo, af)
@@ -2757,6 +2788,36 @@ func makeApexAvailableBaseline() map[string][]string {
 	m["com.android.appsearch"] = []string{
 		"icing-java-proto-lite",
 		"libprotobuf-java-lite",
+	}
+	//
+	// Module separator
+	//
+	m["com.android.btservices"] = []string{
+		"bluetooth-protos-lite",
+		"internal_include_headers",
+		"libaudio-a2dp-hw-utils",
+		"libaudio-hearing-aid-hw-utils",
+		"libbluetooth",
+		"libbluetooth-types",
+		"libbluetooth-types-header",
+		"libbluetooth_gd",
+		"libbluetooth_headers",
+		"libbluetooth_jni",
+		"libbt-audio-hal-interface",
+		"libbt-bta",
+		"libbt-common",
+		"libbt-hci",
+		"libbt-platform-protos-lite",
+		"libbt-protos-lite",
+		"libbt-sbc-decoder",
+		"libbt-sbc-encoder",
+		"libbt-stack",
+		"libbt-utils",
+		"libbtcore",
+		"libbtdevice",
+		"libbte",
+		"libbtif",
+		"libchrome",
 	}
 	//
 	// Module separator
