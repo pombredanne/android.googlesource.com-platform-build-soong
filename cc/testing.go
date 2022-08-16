@@ -20,6 +20,7 @@ import (
 
 	"android/soong/android"
 	"android/soong/genrule"
+	"android/soong/multitree"
 	"android/soong/snapshot"
 )
 
@@ -30,6 +31,8 @@ func RegisterRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
 	RegisterLibraryBuildComponents(ctx)
 	RegisterLibraryHeadersBuildComponents(ctx)
 	RegisterLibraryStubBuildComponents(ctx)
+
+	multitree.RegisterApiImportsModule(ctx)
 
 	ctx.RegisterModuleType("cc_benchmark", BenchmarkFactory)
 	ctx.RegisterModuleType("cc_object", ObjectFactory)
@@ -194,7 +197,6 @@ func commonDefaultModules() string {
 			native_coverage: false,
 			system_shared_libs: [],
 			stl: "none",
-			notice: "custom_notice",
 		}
 		cc_library {
 			name: "libprofile-clang-extras",
@@ -205,7 +207,6 @@ func commonDefaultModules() string {
 			native_coverage: false,
 			system_shared_libs: [],
 			stl: "none",
-			notice: "custom_notice",
 		}
 		cc_library {
 			name: "libprofile-extras_ndk",
@@ -214,7 +215,6 @@ func commonDefaultModules() string {
 			native_coverage: false,
 			system_shared_libs: [],
 			stl: "none",
-			notice: "custom_notice",
 			sdk_version: "current",
 		}
 		cc_library {
@@ -224,7 +224,6 @@ func commonDefaultModules() string {
 			native_coverage: false,
 			system_shared_libs: [],
 			stl: "none",
-			notice: "custom_notice",
 			sdk_version: "current",
 		}
 
@@ -534,7 +533,7 @@ var PrepareForTestWithCcBuildComponents = android.GroupFixturePreparers(
 	android.PrepareForTestWithAndroidBuildComponents,
 	android.FixtureRegisterWithContext(RegisterRequiredBuildComponentsForTest),
 	android.FixtureRegisterWithContext(func(ctx android.RegistrationContext) {
-		ctx.RegisterModuleType("cc_fuzz", FuzzFactory)
+		ctx.RegisterModuleType("cc_fuzz", LibFuzzFactory)
 		ctx.RegisterModuleType("cc_test", TestFactory)
 		ctx.RegisterModuleType("cc_test_library", TestLibraryFactory)
 		ctx.RegisterModuleType("vndk_prebuilt_shared", VndkPrebuiltSharedFactory)
@@ -648,7 +647,7 @@ func TestConfig(buildDir string, os android.OsType, env map[string]string,
 func CreateTestContext(config android.Config) *android.TestContext {
 	ctx := android.NewTestArchContext(config)
 	genrule.RegisterGenruleBuildComponents(ctx)
-	ctx.RegisterModuleType("cc_fuzz", FuzzFactory)
+	ctx.RegisterModuleType("cc_fuzz", LibFuzzFactory)
 	ctx.RegisterModuleType("cc_test", TestFactory)
 	ctx.RegisterModuleType("cc_test_library", TestLibraryFactory)
 	ctx.RegisterModuleType("filegroup", android.FileGroupFactory)

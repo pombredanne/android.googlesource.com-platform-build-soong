@@ -249,7 +249,8 @@ type productVariables struct {
 	AAPTPreferredConfig *string  `json:",omitempty"`
 	AAPTPrebuiltDPI     []string `json:",omitempty"`
 
-	DefaultAppCertificate *string `json:",omitempty"`
+	DefaultAppCertificate           *string `json:",omitempty"`
+	MainlineSepolicyDevCertificates *string `json:",omitempty"`
 
 	AppsDefaultVersionName *string `json:",omitempty"`
 
@@ -447,6 +448,8 @@ type productVariables struct {
 	SepolicyFreezeTestExtraPrebuiltDirs []string `json:",omitempty"`
 
 	GenerateAidlNdkPlatformBackend bool `json:",omitempty"`
+
+	IgnorePrefer32OnDevice bool `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {

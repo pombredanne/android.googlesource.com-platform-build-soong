@@ -31,6 +31,7 @@ import (
 	"android/soong/cc/config"
 	"android/soong/fuzz"
 	"android/soong/genrule"
+	"android/soong/multitree"
 	"android/soong/snapshot"
 )
 
@@ -60,6 +61,8 @@ func RegisterCCBuildComponents(ctx android.RegistrationContext) {
 
 		ctx.TopDown("sanitize_runtime_deps", sanitizerRuntimeDepsMutator).Parallel()
 		ctx.BottomUp("sanitize_runtime", sanitizerRuntimeMutator).Parallel()
+
+		ctx.TopDown("fuzz_deps", fuzzMutatorDeps)
 
 		ctx.BottomUp("coverage", coverageMutator).Parallel()
 
@@ -838,6 +841,7 @@ type Module struct {
 	stl      *stl
 	sanitize *sanitize
 	coverage *coverage
+	fuzzer   *fuzzer
 	sabi     *sabi
 	vndkdep  *vndkdep
 	lto      *lto
@@ -1162,6 +1166,9 @@ func (c *Module) Init() android.Module {
 	}
 	if c.coverage != nil {
 		c.AddProperties(c.coverage.props()...)
+	}
+	if c.fuzzer != nil {
+		c.AddProperties(c.fuzzer.props()...)
 	}
 	if c.sabi != nil {
 		c.AddProperties(c.sabi.props()...)
@@ -1680,6 +1687,7 @@ func newModule(hod android.HostOrDeviceSupported, multilib android.Multilib) *Mo
 	module.stl = &stl{}
 	module.sanitize = &sanitize{}
 	module.coverage = &coverage{}
+	module.fuzzer = &fuzzer{}
 	module.sabi = &sabi{}
 	module.vndkdep = &vndkdep{}
 	module.lto = &lto{}
@@ -1900,6 +1908,9 @@ func (c *Module) GenerateAndroidBuildActions(actx android.ModuleContext) {
 	}
 	if c.coverage != nil {
 		flags, deps = c.coverage.flags(ctx, flags, deps)
+	}
+	if c.fuzzer != nil {
+		flags = c.fuzzer.flags(ctx, flags)
 	}
 	if c.lto != nil {
 		flags = c.lto.flags(ctx, flags)
@@ -2173,6 +2184,24 @@ func AddSharedLibDependenciesWithVersions(ctx android.BottomUpMutatorContext, mo
 	}
 }
 
+func GetApiImports(c LinkableInterface, actx android.BottomUpMutatorContext) multitree.ApiImportInfo {
+	apiImportInfo := multitree.ApiImportInfo{}
+
+	if c.Device() {
+		var apiImportModule []blueprint.Module
+		if actx.OtherModuleExists("api_imports") {
+			apiImportModule = actx.AddDependency(c, nil, "api_imports")
+			if len(apiImportModule) > 0 && apiImportModule[0] != nil {
+				apiInfo := actx.OtherModuleProvider(apiImportModule[0], multitree.ApiImportsProvider).(multitree.ApiImportInfo)
+				apiImportInfo = apiInfo
+				actx.SetProvider(multitree.ApiImportsProvider, apiInfo)
+			}
+		}
+	}
+
+	return apiImportInfo
+}
+
 func GetSnapshot(c LinkableInterface, snapshotInfo **SnapshotInfo, actx android.BottomUpMutatorContext) SnapshotInfo {
 	// Only device modules with BOARD_VNDK_VERSION uses snapshot.  Others use the zero value of
 	// SnapshotInfo, which provides no mappings.
@@ -2198,8 +2227,8 @@ func GetSnapshot(c LinkableInterface, snapshotInfo **SnapshotInfo, actx android.
 	return **snapshotInfo
 }
 
-func RewriteSnapshotLib(lib string, snapshotMap map[string]string) string {
-	if snapshot, ok := snapshotMap[lib]; ok {
+func GetReplaceModuleName(lib string, replaceMap map[string]string) string {
+	if snapshot, ok := replaceMap[lib]; ok {
 		return snapshot
 	}
 
@@ -2210,13 +2239,18 @@ func RewriteSnapshotLib(lib string, snapshotMap map[string]string) string {
 // of names:
 //
 // 1. Name of an NDK library that refers to a prebuilt module.
-//    For each of these, it adds the name of the prebuilt module (which will be in
-//    prebuilts/ndk) to the list of nonvariant libs.
+//
+//	For each of these, it adds the name of the prebuilt module (which will be in
+//	prebuilts/ndk) to the list of nonvariant libs.
+//
 // 2. Name of an NDK library that refers to an ndk_library module.
-//    For each of these, it adds the name of the ndk_library module to the list of
-//    variant libs.
+//
+//	For each of these, it adds the name of the ndk_library module to the list of
+//	variant libs.
+//
 // 3. Anything else (so anything that isn't an NDK library).
-//    It adds these to the nonvariantLibs list.
+//
+//	It adds these to the nonvariantLibs list.
 //
 // The caller can then know to add the variantLibs dependencies differently from the
 // nonvariantLibs
@@ -2228,17 +2262,36 @@ func RewriteLibs(c LinkableInterface, snapshotInfo **SnapshotInfo, actx android.
 		// strip #version suffix out
 		name, _ := StubsLibNameAndVersion(entry)
 		if c.InRecovery() {
-			nonvariantLibs = append(nonvariantLibs, RewriteSnapshotLib(entry, GetSnapshot(c, snapshotInfo, actx).SharedLibs))
+			nonvariantLibs = append(nonvariantLibs, GetReplaceModuleName(entry, GetSnapshot(c, snapshotInfo, actx).SharedLibs))
 		} else if c.UseSdk() && inList(name, *getNDKKnownLibs(config)) {
 			variantLibs = append(variantLibs, name+ndkLibrarySuffix)
 		} else if c.UseVndk() {
-			nonvariantLibs = append(nonvariantLibs, RewriteSnapshotLib(entry, GetSnapshot(c, snapshotInfo, actx).SharedLibs))
+			nonvariantLibs = append(nonvariantLibs, GetReplaceModuleName(entry, GetSnapshot(c, snapshotInfo, actx).SharedLibs))
 		} else {
 			// put name#version back
 			nonvariantLibs = append(nonvariantLibs, entry)
 		}
 	}
 	return nonvariantLibs, variantLibs
+}
+
+func updateDepsWithApiImports(deps Deps, apiImports multitree.ApiImportInfo) Deps {
+	for idx, lib := range deps.SharedLibs {
+		deps.SharedLibs[idx] = GetReplaceModuleName(lib, apiImports.SharedLibs)
+	}
+
+	for idx, lib := range deps.LateSharedLibs {
+		deps.LateSharedLibs[idx] = GetReplaceModuleName(lib, apiImports.SharedLibs)
+	}
+
+	for idx, lib := range deps.RuntimeLibs {
+		deps.RuntimeLibs[idx] = GetReplaceModuleName(lib, apiImports.SharedLibs)
+	}
+
+	for idx, lib := range deps.HeaderLibs {
+		deps.HeaderLibs[idx] = GetReplaceModuleName(lib, apiImports.HeaderLibs)
+	}
+	return deps
 }
 
 func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
@@ -2256,6 +2309,9 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 
 	deps := c.deps(ctx)
 
+	apiImportInfo := GetApiImports(c, actx)
+	deps = updateDepsWithApiImports(deps, apiImportInfo)
+
 	c.Properties.AndroidMkSystemSharedLibs = deps.SystemSharedLibs
 
 	var snapshotInfo *SnapshotInfo
@@ -2268,7 +2324,7 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 		deps.ReexportSharedLibHeaders, _ = RewriteLibs(c, &snapshotInfo, actx, ctx.Config(), deps.ReexportSharedLibHeaders)
 
 		for idx, lib := range deps.RuntimeLibs {
-			deps.RuntimeLibs[idx] = RewriteSnapshotLib(lib, GetSnapshot(c, &snapshotInfo, actx).SharedLibs)
+			deps.RuntimeLibs[idx] = GetReplaceModuleName(lib, GetSnapshot(c, &snapshotInfo, actx).SharedLibs)
 		}
 	}
 
@@ -2278,7 +2334,7 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 			depTag.reexportFlags = true
 		}
 
-		lib = RewriteSnapshotLib(lib, GetSnapshot(c, &snapshotInfo, actx).HeaderLibs)
+		lib = GetReplaceModuleName(lib, GetSnapshot(c, &snapshotInfo, actx).HeaderLibs)
 
 		if c.IsStubs() {
 			actx.AddFarVariationDependencies(append(ctx.Target().Variations(), c.ImageVariation()),
@@ -2291,10 +2347,20 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 	if c.isNDKStubLibrary() {
 		// NDK stubs depend on their implementation because the ABI dumps are
 		// generated from the implementation library.
-		actx.AddFarVariationDependencies(append(ctx.Target().Variations(),
-			c.ImageVariation(),
-			blueprint.Variation{Mutator: "link", Variation: "shared"},
-		), stubImplementation, c.BaseModuleName())
+		apiImportName := c.BaseModuleName() + multitree.GetApiImportSuffix()
+
+		// If original library exists as imported API, set dependency on the imported library
+		if actx.OtherModuleExists(apiImportName) {
+			actx.AddFarVariationDependencies(append(ctx.Target().Variations(),
+				c.ImageVariation(),
+				blueprint.Variation{Mutator: "link", Variation: "shared"},
+			), stubImplementation, apiImportName)
+		} else {
+			actx.AddFarVariationDependencies(append(ctx.Target().Variations(),
+				c.ImageVariation(),
+				blueprint.Variation{Mutator: "link", Variation: "shared"},
+			), stubImplementation, c.BaseModuleName())
+		}
 	}
 
 	// sysprop_library has to support both C++ and Java. So sysprop_library internally creates one
@@ -2310,7 +2376,7 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 			lib = impl
 		}
 
-		lib = RewriteSnapshotLib(lib, GetSnapshot(c, &snapshotInfo, actx).StaticLibs)
+		lib = GetReplaceModuleName(lib, GetSnapshot(c, &snapshotInfo, actx).StaticLibs)
 
 		actx.AddVariationDependencies([]blueprint.Variation{
 			{Mutator: "link", Variation: "static"},
@@ -2330,7 +2396,7 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 			lib = impl
 		}
 
-		lib = RewriteSnapshotLib(lib, GetSnapshot(c, &snapshotInfo, actx).StaticLibs)
+		lib = GetReplaceModuleName(lib, GetSnapshot(c, &snapshotInfo, actx).StaticLibs)
 
 		actx.AddVariationDependencies([]blueprint.Variation{
 			{Mutator: "link", Variation: "static"},
@@ -2344,7 +2410,7 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 		depTag := libraryDependencyTag{Kind: staticLibraryDependency, staticUnwinder: true}
 		actx.AddVariationDependencies([]blueprint.Variation{
 			{Mutator: "link", Variation: "static"},
-		}, depTag, RewriteSnapshotLib(staticUnwinder(actx), GetSnapshot(c, &snapshotInfo, actx).StaticLibs))
+		}, depTag, GetReplaceModuleName(staticUnwinder(actx), GetSnapshot(c, &snapshotInfo, actx).StaticLibs))
 	}
 
 	// shared lib names without the #version suffix
@@ -2376,14 +2442,14 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 		depTag := libraryDependencyTag{Kind: staticLibraryDependency, Order: lateLibraryDependency}
 		actx.AddVariationDependencies([]blueprint.Variation{
 			{Mutator: "link", Variation: "static"},
-		}, depTag, RewriteSnapshotLib(lib, GetSnapshot(c, &snapshotInfo, actx).StaticLibs))
+		}, depTag, GetReplaceModuleName(lib, GetSnapshot(c, &snapshotInfo, actx).StaticLibs))
 	}
 
 	for _, lib := range deps.UnexportedStaticLibs {
 		depTag := libraryDependencyTag{Kind: staticLibraryDependency, Order: lateLibraryDependency, unexportedSymbols: true}
 		actx.AddVariationDependencies([]blueprint.Variation{
 			{Mutator: "link", Variation: "static"},
-		}, depTag, RewriteSnapshotLib(lib, GetSnapshot(c, &snapshotInfo, actx).StaticLibs))
+		}, depTag, GetReplaceModuleName(lib, GetSnapshot(c, &snapshotInfo, actx).StaticLibs))
 	}
 
 	for _, lib := range deps.LateSharedLibs {
@@ -2424,11 +2490,11 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 	actx.AddVariationDependencies(crtVariations, objDepTag, deps.ObjFiles...)
 	for _, crt := range deps.CrtBegin {
 		actx.AddVariationDependencies(crtVariations, CrtBeginDepTag,
-			RewriteSnapshotLib(crt, GetSnapshot(c, &snapshotInfo, actx).Objects))
+			GetReplaceModuleName(crt, GetSnapshot(c, &snapshotInfo, actx).Objects))
 	}
 	for _, crt := range deps.CrtEnd {
 		actx.AddVariationDependencies(crtVariations, CrtEndDepTag,
-			RewriteSnapshotLib(crt, GetSnapshot(c, &snapshotInfo, actx).Objects))
+			GetReplaceModuleName(crt, GetSnapshot(c, &snapshotInfo, actx).Objects))
 	}
 	if deps.DynamicLinker != "" {
 		actx.AddDependency(c, dynamicLinkerDepTag, deps.DynamicLinker)
@@ -2453,7 +2519,7 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 			actx.AddVariationDependencies([]blueprint.Variation{
 				c.ImageVariation(),
 				{Mutator: "link", Variation: "shared"},
-			}, vndkExtDepTag, RewriteSnapshotLib(vndkdep.getVndkExtendsModuleName(), GetSnapshot(c, &snapshotInfo, actx).SharedLibs))
+			}, vndkExtDepTag, GetReplaceModuleName(vndkdep.getVndkExtendsModuleName(), GetSnapshot(c, &snapshotInfo, actx).SharedLibs))
 		}
 	}
 }
@@ -3175,6 +3241,11 @@ func MakeLibName(ctx android.ModuleContext, c LinkableInterface, ccDep LinkableI
 
 			return baseName + snapshotPrebuilt.SnapshotAndroidMkSuffix()
 		}
+
+		// Remove API import suffix if exists
+		if _, ok := ccDepModule.linker.(*apiLibraryDecorator); ok {
+			libName = strings.TrimSuffix(libName, multitree.GetApiImportSuffix())
+		}
 	}
 
 	if ctx.DeviceConfig().VndkUseCoreVariant() && ccDep.IsVndk() && !ccDep.MustUseVendorVariant() &&
@@ -3510,6 +3581,10 @@ func (c *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
 	if _, ok := c.linker.(prebuiltLinkerInterface); ok {
 		return nil
 	}
+	if _, ok := c.linker.(*apiLibraryDecorator); ok {
+		return nil
+	}
+
 	minSdkVersion := c.MinSdkVersion()
 	if minSdkVersion == "apex_inherit" {
 		return nil
@@ -3627,9 +3702,7 @@ func (c *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 	}
 }
 
-//
 // Defaults
-//
 type Defaults struct {
 	android.ModuleBase
 	android.DefaultsModuleBase

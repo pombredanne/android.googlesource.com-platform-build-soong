@@ -312,14 +312,6 @@ func bootstrapBlueprint(ctx Context, config Config) {
 		fmt.Sprintf("generating Soong docs at %s", config.SoongDocsHtml()),
 	)
 
-	globFiles := []string{
-		config.NamedGlobFile(soongBuildTag),
-		config.NamedGlobFile(bp2buildTag),
-		config.NamedGlobFile(jsonModuleGraphTag),
-		config.NamedGlobFile(queryviewTag),
-		config.NamedGlobFile(soongDocsTag),
-	}
-
 	// The glob .ninja files are subninja'd. However, they are generated during
 	// the build itself so we write an empty file if the file does not exist yet
 	// so that the subninja doesn't fail on clean builds
@@ -342,7 +334,7 @@ func bootstrapBlueprint(ctx Context, config Config) {
 		runGoTests:  !config.skipSoongTests,
 		// If we want to debug soong_build, we need to compile it for debugging
 		debugCompilation: os.Getenv("SOONG_DELVE") != "",
-		subninjas:        globFiles,
+		subninjas:        bootstrapGlobFileList(config),
 		primaryBuilderInvocations: []bootstrap.PrimaryBuilderInvocation{
 			mainSoongBuildInvocation,
 			bp2buildInvocation,
@@ -544,7 +536,7 @@ func loadSoongBuildMetrics(ctx Context, config Config) *soong_metrics_proto.Soon
 	buf, err := os.ReadFile(soongBuildMetricsFile)
 	if errors.Is(err, fs.ErrNotExist) {
 		// Soong may not have run during this invocation
-          ctx.Verbosef("Failed to read metrics file, %s: %s", soongBuildMetricsFile, err)
+		ctx.Verbosef("Failed to read metrics file, %s: %s", soongBuildMetricsFile, err)
 		return nil
 	} else if err != nil {
 		ctx.Fatalf("Failed to load %s: %s", soongBuildMetricsFile, err)

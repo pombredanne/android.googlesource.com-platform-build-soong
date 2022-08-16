@@ -417,6 +417,9 @@ func (a *AndroidApp) aaptBuildActions(ctx android.ModuleContext) {
 
 	a.aapt.splitNames = a.appProperties.Package_splits
 	a.aapt.LoggingParent = String(a.overridableAppProperties.Logging_parent)
+	if a.Updatable() {
+		a.aapt.defaultManifestVersion = android.DefaultUpdatableModuleVersion
+	}
 	a.aapt.buildActions(ctx, android.SdkContext(a), a.classLoaderContexts,
 		a.usesLibraryProperties.Exclude_uses_libs, aaptLinkFlags...)
 
@@ -472,14 +475,14 @@ func (a *AndroidApp) dexBuildActions(ctx android.ModuleContext) android.Path {
 	return a.dexJarFile.PathOrNil()
 }
 
-func (a *AndroidApp) jniBuildActions(jniLibs []jniLib, ctx android.ModuleContext) android.WritablePath {
+func (a *AndroidApp) jniBuildActions(jniLibs []jniLib, prebuiltJniPackages android.Paths, ctx android.ModuleContext) android.WritablePath {
 	var jniJarFile android.WritablePath
-	if len(jniLibs) > 0 {
+	if len(jniLibs) > 0 || len(prebuiltJniPackages) > 0 {
 		a.jniLibs = jniLibs
 		if a.shouldEmbedJnis(ctx) {
 			jniJarFile = android.PathForModuleOut(ctx, "jnilibs.zip")
 			a.installPathForJNISymbols = a.installPath(ctx)
-			TransformJniLibsToJar(ctx, jniJarFile, jniLibs, a.useEmbeddedNativeLibs(ctx))
+			TransformJniLibsToJar(ctx, jniJarFile, jniLibs, prebuiltJniPackages, a.useEmbeddedNativeLibs(ctx))
 			for _, jni := range jniLibs {
 				if jni.coverageFile.Valid() {
 					// Only collect coverage for the first target arch if this is a multilib target.
@@ -623,8 +626,8 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 
 	dexJarFile := a.dexBuildActions(ctx)
 
-	jniLibs, certificateDeps := collectAppDeps(ctx, a, a.shouldEmbedJnis(ctx), !Bool(a.appProperties.Jni_uses_platform_apis))
-	jniJarFile := a.jniBuildActions(jniLibs, ctx)
+	jniLibs, prebuiltJniPackages, certificateDeps := collectAppDeps(ctx, a, a.shouldEmbedJnis(ctx), !Bool(a.appProperties.Jni_uses_platform_apis))
+	jniJarFile := a.jniBuildActions(jniLibs, prebuiltJniPackages, ctx)
 
 	if ctx.Failed() {
 		return
@@ -724,9 +727,10 @@ type appDepsInterface interface {
 
 func collectAppDeps(ctx android.ModuleContext, app appDepsInterface,
 	shouldCollectRecursiveNativeDeps bool,
-	checkNativeSdkVersion bool) ([]jniLib, []Certificate) {
+	checkNativeSdkVersion bool) ([]jniLib, android.Paths, []Certificate) {
 
 	var jniLibs []jniLib
+	var prebuiltJniPackages android.Paths
 	var certificates []Certificate
 	seenModulePaths := make(map[string]bool)
 
@@ -775,6 +779,10 @@ func collectAppDeps(ctx android.ModuleContext, app appDepsInterface,
 			return shouldCollectRecursiveNativeDeps
 		}
 
+		if info, ok := ctx.OtherModuleProvider(module, JniPackageProvider).(JniPackageInfo); ok {
+			prebuiltJniPackages = append(prebuiltJniPackages, info.JniPackages...)
+		}
+
 		if tag == certificateTag {
 			if dep, ok := module.(*AndroidAppCertificate); ok {
 				certificates = append(certificates, dep.Certificate)
@@ -786,7 +794,7 @@ func collectAppDeps(ctx android.ModuleContext, app appDepsInterface,
 		return false
 	})
 
-	return jniLibs, certificates
+	return jniLibs, prebuiltJniPackages, certificates
 }
 
 func (a *AndroidApp) WalkPayloadDeps(ctx android.ModuleContext, do android.PayloadDepsCallback) {
@@ -952,6 +960,18 @@ type AndroidTest struct {
 
 func (a *AndroidTest) InstallInTestcases() bool {
 	return true
+}
+
+type androidTestApp interface {
+	includedInTestSuite(searchPrefix string) bool
+}
+
+func (a *AndroidTest) includedInTestSuite(searchPrefix string) bool {
+	return android.PrefixInList(a.testProperties.Test_suites, searchPrefix)
+}
+
+func (a *AndroidTestHelperApp) includedInTestSuite(searchPrefix string) bool {
+	return android.PrefixInList(a.appTestHelperAppProperties.Test_suites, searchPrefix)
 }
 
 func (a *AndroidTest) GenerateAndroidBuildActions(ctx android.ModuleContext) {
@@ -1357,7 +1377,7 @@ func (u *usesLibrary) verifyUsesLibraries(ctx android.ModuleContext, inputFile a
 		Flag("--enforce-uses-libraries").
 		Input(inputFile).
 		FlagWithOutput("--enforce-uses-libraries-status ", statusFile).
-		FlagWithInput("--aapt ", ctx.Config().HostToolPath(ctx, "aapt"))
+		FlagWithInput("--aapt ", ctx.Config().HostToolPath(ctx, "aapt2"))
 
 	if outputFile != nil {
 		cmd.FlagWithOutput("-o ", outputFile)
@@ -1424,10 +1444,9 @@ func androidAppCertificateBp2Build(ctx android.TopDownMutatorContext, module *An
 
 type bazelAndroidAppAttributes struct {
 	*javaCommonAttributes
+	*bazelAapt
 	Deps             bazel.LabelListAttribute
-	Manifest         bazel.Label
 	Custom_package   *string
-	Resource_files   bazel.LabelListAttribute
 	Certificate      *bazel.Label
 	Certificate_name *string
 }
@@ -1437,23 +1456,9 @@ func (a *AndroidApp) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 	commonAttrs, depLabels := a.convertLibraryAttrsBp2Build(ctx)
 
 	deps := depLabels.Deps
-	if !commonAttrs.Srcs.IsEmpty() {
-		deps.Append(depLabels.StaticDeps) // we should only append these if there are sources to use them
-	} else if !deps.IsEmpty() || !depLabels.StaticDeps.IsEmpty() {
-		ctx.ModuleErrorf("android_app has dynamic or static dependencies but no sources." +
-			" Bazel does not allow direct dependencies without sources nor exported" +
-			" dependencies on android_binary rule.")
-	}
+	deps.Append(depLabels.StaticDeps)
 
-	manifest := proptools.StringDefault(a.aaptProperties.Manifest, "AndroidManifest.xml")
-
-	resourceFiles := bazel.LabelList{
-		Includes: []bazel.Label{},
-	}
-	for _, dir := range android.PathsWithOptionalDefaultForModuleSrc(ctx, a.aaptProperties.Resource_dirs, "res") {
-		files := android.RootToModuleRelativePaths(ctx, androidResourceGlob(ctx, dir))
-		resourceFiles.Includes = append(resourceFiles.Includes, files...)
-	}
+	aapt := a.convertAaptAttrsWithBp2Build(ctx)
 
 	var certificate *bazel.Label
 	certificateNamePtr := a.overridableAppProperties.Certificate
@@ -1464,14 +1469,12 @@ func (a *AndroidApp) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 		certificate = &c
 		certificateNamePtr = nil
 	}
-
 	attrs := &bazelAndroidAppAttributes{
 		commonAttrs,
+		aapt,
 		deps,
-		android.BazelLabelForModuleSrcSingle(ctx, manifest),
 		// TODO(b/209576404): handle package name override by product variable PRODUCT_MANIFEST_PACKAGE_NAME_OVERRIDES
 		a.overridableAppProperties.Package_name,
-		bazel.MakeLabelListAttribute(resourceFiles),
 		certificate,
 		certificateNamePtr,
 	}
@@ -1480,7 +1483,6 @@ func (a *AndroidApp) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 		Rule_class:        "android_binary",
 		Bzl_load_location: "//build/bazel/rules/android:android_binary.bzl",
 	}
-
 	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: a.Name()}, attrs)
 
 }

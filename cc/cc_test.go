@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -3340,6 +3341,127 @@ func TestErrorsIfAModuleDependsOnDisabled(t *testing.T) {
 			stl: "none",
 		}
 	`)
+}
+
+func VerifyAFLFuzzTargetVariant(t *testing.T, variant string) {
+	bp := `
+		cc_fuzz {
+			name: "test_afl_fuzz_target",
+			srcs: ["foo.c"],
+			host_supported: true,
+			static_libs: [
+				"afl_fuzz_static_lib",
+			],
+			shared_libs: [
+				"afl_fuzz_shared_lib",
+			],
+			fuzzing_frameworks: {
+				afl: true,
+				libfuzzer: false,
+			},
+		}
+		cc_library {
+			name: "afl_fuzz_static_lib",
+			host_supported: true,
+			srcs: ["static_file.c"],
+		}
+		cc_library {
+			name: "libfuzzer_only_static_lib",
+			host_supported: true,
+			srcs: ["static_file.c"],
+		}
+		cc_library {
+			name: "afl_fuzz_shared_lib",
+			host_supported: true,
+			srcs: ["shared_file.c"],
+			static_libs: [
+				"second_static_lib",
+			],
+		}
+		cc_library_headers {
+			name: "libafl_headers",
+			vendor_available: true,
+			host_supported: true,
+			export_include_dirs: [
+				"include",
+				"instrumentation",
+			],
+		}
+		cc_object {
+			name: "afl-compiler-rt",
+			vendor_available: true,
+			host_supported: true,
+			cflags: [
+				"-fPIC",
+			],
+			srcs: [
+				"instrumentation/afl-compiler-rt.o.c",
+			],
+		}
+		cc_library {
+			name: "second_static_lib",
+			host_supported: true,
+			srcs: ["second_file.c"],
+		}
+		cc_object {
+			name: "aflpp_driver",
+			host_supported: true,
+			srcs: [
+				"aflpp_driver.c",
+			],
+		}`
+
+	testEnv := map[string]string{
+		"FUZZ_FRAMEWORK": "AFL",
+	}
+
+	ctx := android.GroupFixturePreparers(prepareForCcTest, android.FixtureMergeEnv(testEnv)).RunTestWithBp(t, bp)
+
+	checkPcGuardFlag := func(
+		modName string, variantName string, shouldHave bool) {
+		cc := ctx.ModuleForTests(modName, variantName).Rule("cc")
+
+		cFlags, ok := cc.Args["cFlags"]
+		if !ok {
+			t.Errorf("Could not find cFlags for module %s and variant %s",
+				modName, variantName)
+		}
+
+		if strings.Contains(
+			cFlags, "-fsanitize-coverage=trace-pc-guard") != shouldHave {
+			t.Errorf("Flag was found: %t. Expected to find flag:  %t. "+
+				"Test failed for module %s and variant %s",
+				!shouldHave, shouldHave, modName, variantName)
+		}
+	}
+
+	moduleName := "test_afl_fuzz_target"
+	checkPcGuardFlag(moduleName, variant+"_fuzzer", true)
+
+	moduleName = "afl_fuzz_static_lib"
+	checkPcGuardFlag(moduleName, variant+"_static", false)
+	checkPcGuardFlag(moduleName, variant+"_static_fuzzer", true)
+
+	moduleName = "second_static_lib"
+	checkPcGuardFlag(moduleName, variant+"_static", false)
+	checkPcGuardFlag(moduleName, variant+"_static_fuzzer", true)
+
+	ctx.ModuleForTests("afl_fuzz_shared_lib",
+		"android_arm64_armv8-a_shared").Rule("cc")
+	ctx.ModuleForTests("afl_fuzz_shared_lib",
+		"android_arm64_armv8-a_shared_fuzzer").Rule("cc")
+}
+
+func TestAFLFuzzTargetForDevice(t *testing.T) {
+	VerifyAFLFuzzTargetVariant(t, "android_arm64_armv8-a")
+}
+
+func TestAFLFuzzTargetForLinuxHost(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires linux")
+	}
+
+	VerifyAFLFuzzTargetVariant(t, "linux_glibc_x86_64")
 }
 
 // Simple smoke test for the cc_fuzz target that ensures the rule compiles

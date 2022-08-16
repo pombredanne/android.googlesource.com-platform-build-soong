@@ -400,7 +400,7 @@ func libraryBp2Build(ctx android.TopDownMutatorContext, m *Module) {
 			if props, ok := props.(*LibraryProperties); ok {
 				if props.Inject_bssl_hash != nil {
 					// This is an edge case applies only to libcrypto
-					if m.Name() == "libcrypto" {
+					if m.Name() == "libcrypto" || m.Name() == "libcrypto_for_testing" {
 						sharedTargetAttrs.Inject_bssl_hash.SetSelectValue(axis, config, props.Inject_bssl_hash)
 					} else {
 						ctx.PropertyErrorf("inject_bssl_hash", "only applies to libcrypto")
@@ -613,6 +613,9 @@ type libraryDecorator struct {
 	// Source Abi Diff
 	sAbiDiff android.OptionalPath
 
+	// Source Abi Diff against previous SDK version
+	prevSAbiDiff android.OptionalPath
+
 	// Location of the static library in the sysroot. Empty if the library is
 	// not included in the NDK.
 	ndkSysrootPath android.Path
@@ -771,6 +774,12 @@ func GlobHeadersForSnapshot(ctx android.ModuleContext, paths android.Paths) andr
 		if strings.HasPrefix(dir, android.PathForOutput(ctx).String()) {
 			continue
 		}
+
+		// Filter out the generated headers from bazel.
+		if strings.HasPrefix(dir, android.PathForBazelOut(ctx, "bazel-out").String()) {
+			continue
+		}
+
 		// libeigen wrongly exports the root directory "external/eigen". But only two
 		// subdirectories "Eigen" and "unsupported" contain exported header files. Even worse
 		// some of them have no extension. So we need special treatment for libeigen in order
@@ -1032,9 +1041,19 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 			ctx.PropertyErrorf("symbol_file", "%q doesn't have .map.txt suffix", symbolFile)
 			return Objects{}
 		}
+		// b/239274367 --apex and --systemapi filters symbols tagged with # apex and #
+		// systemapi, respectively. The former is for symbols defined in platform libraries
+		// and the latter is for symbols defined in APEXes.
+		var flag string
+		if ctx.Module().(android.ApexModule).NotInPlatform() {
+			flag = "--apex"
+		} else {
+			// TODO(b/239274367) drop --apex when #apex is replaced with #systemapi
+			// in the map.txt files of platform libraries
+			flag = "--systemapi --apex"
+		}
 		nativeAbiResult := parseNativeAbiDefinition(ctx, symbolFile,
-			android.ApiLevelOrPanic(ctx, library.MutatedProperties.StubsVersion),
-			"--apex")
+			android.ApiLevelOrPanic(ctx, library.MutatedProperties.StubsVersion), flag)
 		objs := compileStubLibrary(ctx, flags, nativeAbiResult.stubSrc)
 		library.versionScriptPath = android.OptionalPathForPath(
 			nativeAbiResult.versionScript)
@@ -1584,10 +1603,10 @@ func (library *libraryDecorator) coverageOutputFilePath() android.OptionalPath {
 func getRefAbiDumpFile(ctx ModuleContext, vndkVersion, fileName string) android.Path {
 	// The logic must be consistent with classifySourceAbiDump.
 	isNdk := ctx.isNdk(ctx.Config())
-	isLlndkOrVndk := ctx.IsLlndkPublic() || (ctx.useVndk() && ctx.isVndk())
+	isVndk := ctx.useVndk() && ctx.isVndk()
 
-	refAbiDumpTextFile := android.PathForVndkRefAbiDump(ctx, vndkVersion, fileName, isNdk, isLlndkOrVndk, false)
-	refAbiDumpGzipFile := android.PathForVndkRefAbiDump(ctx, vndkVersion, fileName, isNdk, isLlndkOrVndk, true)
+	refAbiDumpTextFile := android.PathForVndkRefAbiDump(ctx, vndkVersion, fileName, isNdk, isVndk, false)
+	refAbiDumpGzipFile := android.PathForVndkRefAbiDump(ctx, vndkVersion, fileName, isNdk, isVndk, true)
 
 	if refAbiDumpTextFile.Valid() {
 		if refAbiDumpGzipFile.Valid() {
@@ -1604,16 +1623,51 @@ func getRefAbiDumpFile(ctx ModuleContext, vndkVersion, fileName string) android.
 	return nil
 }
 
+func prevDumpRefVersion(ctx ModuleContext) string {
+	sdkVersionInt := ctx.Config().PlatformSdkVersion().FinalInt()
+	sdkVersionStr := ctx.Config().PlatformSdkVersion().String()
+
+	if ctx.Config().PlatformSdkFinal() {
+		return strconv.Itoa(sdkVersionInt - 1)
+	} else {
+		var dirName string
+
+		isNdk := ctx.isNdk(ctx.Config())
+		if isNdk {
+			dirName = "ndk"
+		} else {
+			dirName = "platform"
+		}
+
+		// The platform SDK version can be upgraded before finalization while the corresponding abi dumps hasn't
+		// been generated. Thus the Cross-Version Check chooses PLATFORM_SDK_VERION - 1 as previous version.
+		// This situation could be identified by checking the existence of the PLATFORM_SDK_VERION dump directory.
+		refDumpDir := android.ExistentPathForSource(ctx, "prebuilts", "abi-dumps", dirName, sdkVersionStr)
+		if refDumpDir.Valid() {
+			return sdkVersionStr
+		} else {
+			return strconv.Itoa(sdkVersionInt - 1)
+		}
+	}
+}
+
 func (library *libraryDecorator) linkSAbiDumpFiles(ctx ModuleContext, objs Objects, fileName string, soFile android.Path) {
 	if library.sabi.shouldCreateSourceAbiDump() {
-		var vndkVersion string
+		var version string
+		var prevVersion string
 
 		if ctx.useVndk() {
 			// For modules linking against vndk, follow its vndk version
-			vndkVersion = ctx.Module().(*Module).VndkVersion()
+			version = ctx.Module().(*Module).VndkVersion()
 		} else {
-			// Regard the other modules as PLATFORM_VNDK_VERSION
-			vndkVersion = ctx.DeviceConfig().PlatformVndkVersion()
+			// After sdk finalizatoin, the ABI of the latest API level must be consistent with the source code
+			// so the chosen reference dump is the PLATFORM_SDK_VERSION.
+			if ctx.Config().PlatformSdkFinal() {
+				version = ctx.Config().PlatformSdkVersion().String()
+			} else {
+				version = "current"
+			}
+			prevVersion = prevDumpRefVersion(ctx)
 		}
 
 		exportIncludeDirs := library.flagExporter.exportedIncludes(ctx)
@@ -1632,13 +1686,24 @@ func (library *libraryDecorator) linkSAbiDumpFiles(ctx ModuleContext, objs Objec
 
 		addLsdumpPath(classifySourceAbiDump(ctx) + ":" + library.sAbiOutputFile.String())
 
-		refAbiDumpFile := getRefAbiDumpFile(ctx, vndkVersion, fileName)
+		if prevVersion != "" {
+			prevRefAbiDumpFile := getRefAbiDumpFile(ctx, prevVersion, fileName)
+			if prevRefAbiDumpFile != nil {
+				library.prevSAbiDiff = sourceAbiDiff(ctx, library.sAbiOutputFile.Path(),
+					prevRefAbiDumpFile, fileName, prevVersion, exportedHeaderFlags,
+					library.Properties.Header_abi_checker.Diff_flags,
+					Bool(library.Properties.Header_abi_checker.Check_all_apis),
+					ctx.IsLlndk(), ctx.isNdk(ctx.Config()), ctx.IsVndkExt(), true)
+			}
+		}
+
+		refAbiDumpFile := getRefAbiDumpFile(ctx, version, fileName)
 		if refAbiDumpFile != nil {
 			library.sAbiDiff = sourceAbiDiff(ctx, library.sAbiOutputFile.Path(),
-				refAbiDumpFile, fileName, exportedHeaderFlags,
+				refAbiDumpFile, fileName, "", exportedHeaderFlags,
 				library.Properties.Header_abi_checker.Diff_flags,
 				Bool(library.Properties.Header_abi_checker.Check_all_apis),
-				ctx.IsLlndk(), ctx.isNdk(ctx.Config()), ctx.IsVndkExt())
+				ctx.IsLlndk(), ctx.isNdk(ctx.Config()), ctx.IsVndkExt(), false)
 		}
 	}
 }

@@ -27,7 +27,8 @@ type bazelFilepath struct {
 }
 
 func TestCreateBazelFiles_QueryView_AddsTopLevelFiles(t *testing.T) {
-	files := CreateBazelFiles(map[string]RuleShim{}, map[string]BazelTargets{}, QueryView)
+	files := CreateBazelFiles(android.NullConfig("out", "out/soong"),
+		map[string]RuleShim{}, map[string]BazelTargets{}, QueryView)
 	expectedFilePaths := []bazelFilepath{
 		{
 			dir:      "",
@@ -100,6 +101,14 @@ func TestCreateBazelFiles_Bp2Build_CreatesDefaultFiles(t *testing.T) {
 		},
 		{
 			dir:      "java_toolchain",
+			basename: "constants.bzl",
+		},
+		{
+			dir:      "apex_toolchain",
+			basename: GeneratedBuildFileName,
+		},
+		{
+			dir:      "apex_toolchain",
 			basename: "constants.bzl",
 		},
 		{

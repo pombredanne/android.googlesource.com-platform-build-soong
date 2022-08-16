@@ -10,6 +10,8 @@ import (
 	cc_config "android/soong/cc/config"
 	java_config "android/soong/java/config"
 
+	"android/soong/apex"
+
 	"github.com/google/blueprint/proptools"
 )
 
@@ -27,6 +29,9 @@ func CreateSoongInjectionFiles(cfg android.Config, metrics CodegenMetrics) []Baz
 
 	files = append(files, newFile("java_toolchain", GeneratedBuildFileName, "")) // Creates a //java_toolchain package.
 	files = append(files, newFile("java_toolchain", "constants.bzl", java_config.BazelJavaToolchainVars(cfg)))
+
+	files = append(files, newFile("apex_toolchain", GeneratedBuildFileName, "")) // Creates a //apex_toolchain package.
+	files = append(files, newFile("apex_toolchain", "constants.bzl", apex.BazelApexToolchainVars()))
 
 	files = append(files, newFile("metrics", "converted_modules.txt", strings.Join(metrics.convertedModules, "\n")))
 
@@ -50,6 +55,7 @@ func convertedModules(convertedModules []string) string {
 }
 
 func CreateBazelFiles(
+	cfg android.Config,
 	ruleShims map[string]RuleShim,
 	buildToTargets map[string]BazelTargets,
 	mode CodegenMode) []BazelFile {
@@ -74,16 +80,19 @@ func CreateBazelFiles(
 		files = append(files, newFile(bazelRulesSubDir, "soong_module.bzl", generateSoongModuleBzl(ruleShims)))
 	}
 
-	files = append(files, createBuildFiles(buildToTargets, mode)...)
+	files = append(files, createBuildFiles(cfg, buildToTargets, mode)...)
 
 	return files
 }
 
-func createBuildFiles(buildToTargets map[string]BazelTargets, mode CodegenMode) []BazelFile {
+func createBuildFiles(cfg android.Config, buildToTargets map[string]BazelTargets, mode CodegenMode) []BazelFile {
 	files := make([]BazelFile, 0, len(buildToTargets))
+	warnNotWriting := cfg.IsEnvTrue("BP2BUILD_VERBOSE")
 	for _, dir := range android.SortedStringKeys(buildToTargets) {
 		if mode == Bp2Build && android.ShouldKeepExistingBuildFileForDir(dir) {
-			fmt.Printf("[bp2build] Not writing generated BUILD file for dir: '%s'\n", dir)
+			if warnNotWriting {
+				fmt.Printf("[bp2build] Not writing generated BUILD file for dir: '%s'\n", dir)
+			}
 			continue
 		}
 		targets := buildToTargets[dir]
