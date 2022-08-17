@@ -154,6 +154,7 @@ var (
 		"external/zstd":                          Bp2BuildDefaultTrueRecursively,
 
 		"frameworks/av/media/codecs":                         Bp2BuildDefaultTrueRecursively,
+		"frameworks/av/media/liberror":                       Bp2BuildDefaultTrueRecursively,
 		"frameworks/av/services/minijail":                    Bp2BuildDefaultTrueRecursively,
 		"frameworks/base/media/tests/MediaDump":              Bp2BuildDefaultTrue,
 		"frameworks/base/startop/apps/test":                  Bp2BuildDefaultTrue,
@@ -183,9 +184,9 @@ var (
 		"packages/modules/adb/pairing_connection":          Bp2BuildDefaultTrueRecursively,
 		"packages/modules/adb/proto":                       Bp2BuildDefaultTrueRecursively,
 		"packages/modules/adb/tls":                         Bp2BuildDefaultTrueRecursively,
-		"packages/providers/MediaProvider/tools/dialogs":   Bp2BuildDefaultTrue,
+		"packages/providers/MediaProvider/tools/dialogs":   Bp2BuildDefaultFalse, // TODO(b/242834374)
 		"packages/screensavers/Basic":                      Bp2BuildDefaultTrue,
-		"packages/services/Car/tests/SampleRearViewCamera": Bp2BuildDefaultTrue,
+		"packages/services/Car/tests/SampleRearViewCamera": Bp2BuildDefaultFalse, // TODO(b/242834321)
 
 		"prebuilts/clang/host/linux-x86":           Bp2BuildDefaultTrueRecursively,
 		"prebuilts/runtime/mainline/platform/sdk":  Bp2BuildDefaultTrueRecursively,
@@ -215,6 +216,10 @@ var (
 		"system/libartpalette":                                   Bp2BuildDefaultTrueRecursively,
 		"system/libbase":                                         Bp2BuildDefaultTrueRecursively,
 		"system/libfmq":                                          Bp2BuildDefaultTrue,
+		"system/libhidl/transport/base/1.0":                      Bp2BuildDefaultTrue,
+		"system/libhidl/transport/manager/1.0":                   Bp2BuildDefaultTrue,
+		"system/libhidl/transport/manager/1.1":                   Bp2BuildDefaultTrue,
+		"system/libhidl/transport/manager/1.2":                   Bp2BuildDefaultTrue,
 		"system/libhwbinder":                                     Bp2BuildDefaultTrueRecursively,
 		"system/libprocinfo":                                     Bp2BuildDefaultTrue,
 		"system/libziparchive":                                   Bp2BuildDefaultTrueRecursively,
@@ -258,6 +263,7 @@ var (
 		// build/make/tools/signapk BUILD file is generated, so build/make/tools is not recursive.
 		"build/make/tools":/* recursive = */ false,
 		"build/pesto":/* recursive = */ true,
+		"build/soong/ui/metrics/bp2build_progress_metrics_proto":/* recursive = */ true,
 
 		// external/bazelbuild-rules_android/... is needed by mixed builds, otherwise mixed builds analysis fails
 		// e.g. ERROR: Analysis of target '@soong_injection//mixed_builds:buildroot' failed
@@ -382,6 +388,10 @@ var (
 		"car-ui-androidx-core-common-nodeps",
 		"car-ui-androidx-lifecycle-common-nodeps",
 		"car-ui-androidx-constraintlayout-solver-nodeps",
+
+		//system/libhidl
+		// needed by cc_hidl_library
+		"libhidlbase",
 	}
 
 	Bp2buildModuleTypeAlwaysConvertList = []string{
