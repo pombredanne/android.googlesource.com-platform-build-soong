@@ -319,6 +319,7 @@ func libraryBp2Build(ctx android.TopDownMutatorContext, m *Module) {
 		Implementation_whole_archive_deps: linkerAttrs.implementationWholeArchiveDeps,
 		Whole_archive_deps:                *linkerAttrs.wholeArchiveDeps.Clone().Append(staticAttrs.Whole_archive_deps),
 		System_dynamic_deps:               *linkerAttrs.systemDynamicDeps.Clone().Append(staticAttrs.System_dynamic_deps),
+		Runtime_deps:                      linkerAttrs.runtimeDeps,
 		sdkAttributes:                     bp2BuildParseSdkAttributes(m),
 	}
 
@@ -335,6 +336,7 @@ func libraryBp2Build(ctx android.TopDownMutatorContext, m *Module) {
 		Implementation_dynamic_deps: *linkerAttrs.implementationDynamicDeps.Clone().Append(sharedAttrs.Implementation_dynamic_deps),
 		Whole_archive_deps:          *linkerAttrs.wholeArchiveDeps.Clone().Append(sharedAttrs.Whole_archive_deps),
 		System_dynamic_deps:         *linkerAttrs.systemDynamicDeps.Clone().Append(sharedAttrs.System_dynamic_deps),
+		Runtime_deps:                linkerAttrs.runtimeDeps,
 		sdkAttributes:               bp2BuildParseSdkAttributes(m),
 	}
 
@@ -1048,9 +1050,7 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 		if ctx.Module().(android.ApexModule).NotInPlatform() {
 			flag = "--apex"
 		} else {
-			// TODO(b/239274367) drop --apex when #apex is replaced with #systemapi
-			// in the map.txt files of platform libraries
-			flag = "--systemapi --apex"
+			flag = "--systemapi"
 		}
 		nativeAbiResult := parseNativeAbiDefinition(ctx, symbolFile,
 			android.ApiLevelOrPanic(ctx, library.MutatedProperties.StubsVersion), flag)
@@ -2552,6 +2552,7 @@ func sharedOrStaticLibraryBp2Build(ctx android.TopDownMutatorContext, module *Mo
 		Implementation_whole_archive_deps: linkerAttrs.implementationWholeArchiveDeps,
 		System_dynamic_deps:               linkerAttrs.systemDynamicDeps,
 		sdkAttributes:                     bp2BuildParseSdkAttributes(module),
+		Runtime_deps:                      linkerAttrs.runtimeDeps,
 	}
 
 	var attrs interface{}
