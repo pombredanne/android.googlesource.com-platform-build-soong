@@ -263,6 +263,9 @@ type DeviceProperties struct {
 	// Only for libraries created by a sysprop_library module, SyspropPublicStub is the name of the
 	// public stubs library.
 	SyspropPublicStub string `blueprint:"mutated"`
+
+	HiddenAPIPackageProperties
+	HiddenAPIFlagFileProperties
 }
 
 // Device properties that can be overridden by overriding module (e.g. override_android_app)
@@ -561,6 +564,20 @@ func (j *Module) addHostAndDeviceProperties() {
 		&j.dexpreoptProperties,
 		&j.linter.properties,
 	)
+}
+
+// provideHiddenAPIPropertyInfo populates a HiddenAPIPropertyInfo from hidden API properties and
+// makes it available through the hiddenAPIPropertyInfoProvider.
+func (j *Module) provideHiddenAPIPropertyInfo(ctx android.ModuleContext) {
+	hiddenAPIInfo := newHiddenAPIPropertyInfo()
+
+	// Populate with flag file paths from the properties.
+	hiddenAPIInfo.extractFlagFilesFromProperties(ctx, &j.deviceProperties.HiddenAPIFlagFileProperties)
+
+	// Populate with package rules from the properties.
+	hiddenAPIInfo.extractPackageRulesFromProperties(&j.deviceProperties.HiddenAPIPackageProperties)
+
+	ctx.SetProvider(hiddenAPIPropertyInfoProvider, hiddenAPIInfo)
 }
 
 func (j *Module) OutputFiles(tag string) (android.Paths, error) {
@@ -1419,17 +1436,18 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	j.implementationAndResourcesJar = implementationAndResourcesJar
 
 	// Enable dex compilation for the APEX variants, unless it is disabled explicitly
+	compileDex := j.dexProperties.Compile_dex
 	apexInfo := ctx.Provider(android.ApexInfoProvider).(android.ApexInfo)
 	if j.DirectlyInAnyApex() && !apexInfo.IsForPlatform() {
-		if j.dexProperties.Compile_dex == nil {
-			j.dexProperties.Compile_dex = proptools.BoolPtr(true)
+		if compileDex == nil {
+			compileDex = proptools.BoolPtr(true)
 		}
 		if j.deviceProperties.Hostdex == nil {
 			j.deviceProperties.Hostdex = proptools.BoolPtr(true)
 		}
 	}
 
-	if ctx.Device() && (Bool(j.properties.Installable) || Bool(j.dexProperties.Compile_dex)) {
+	if ctx.Device() && (Bool(j.properties.Installable) || Bool(compileDex)) {
 		if j.hasCode(ctx) {
 			if j.shouldInstrumentStatic(ctx) {
 				j.dexer.extraProguardFlagFiles = append(j.dexer.extraProguardFlagFiles,
