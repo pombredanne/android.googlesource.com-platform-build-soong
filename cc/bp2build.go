@@ -52,6 +52,7 @@ type staticOrSharedAttributes struct {
 	Implementation_dynamic_deps       bazel.LabelListAttribute
 	Whole_archive_deps                bazel.LabelListAttribute
 	Implementation_whole_archive_deps bazel.LabelListAttribute
+	Runtime_deps                      bazel.LabelListAttribute
 
 	System_dynamic_deps bazel.LabelListAttribute
 
@@ -710,6 +711,7 @@ type linkerAttributes struct {
 	implementationDeps               bazel.LabelListAttribute
 	dynamicDeps                      bazel.LabelListAttribute
 	implementationDynamicDeps        bazel.LabelListAttribute
+	runtimeDeps                      bazel.LabelListAttribute
 	wholeArchiveDeps                 bazel.LabelListAttribute
 	implementationWholeArchiveDeps   bazel.LabelListAttribute
 	systemDynamicDeps                bazel.LabelListAttribute
@@ -824,6 +826,11 @@ func (la *linkerAttributes) bp2buildForAxisAndConfig(ctx android.BazelConversion
 
 	if axisFeatures != nil {
 		la.features.SetSelectValue(axis, config, axisFeatures)
+	}
+
+	runtimeDeps := android.BazelLabelForModuleDepsExcludes(ctx, props.Runtime_libs, props.Exclude_runtime_libs)
+	if !runtimeDeps.IsEmpty() {
+		la.runtimeDeps.SetSelectValue(axis, config, runtimeDeps)
 	}
 }
 
@@ -976,7 +983,7 @@ func bp2BuildParseExportedIncludes(ctx android.BazelConversionPathContext, modul
 
 func bazelLabelForStaticModule(ctx android.BazelConversionPathContext, m blueprint.Module) string {
 	label := android.BazelModuleLabel(ctx, m)
-	if ccModule, ok := m.(*Module); ok && ccModule.typ() == fullLibrary && !android.GenerateCcLibraryStaticOnly(m.Name()) {
+	if ccModule, ok := m.(*Module); ok && ccModule.typ() == fullLibrary && !android.GetBp2BuildAllowList().GenerateCcLibraryStaticOnly(m.Name()) {
 		label += "_bp2build_cc_library_static"
 	}
 	return label

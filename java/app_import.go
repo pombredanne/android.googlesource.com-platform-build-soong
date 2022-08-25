@@ -80,6 +80,9 @@ type AndroidAppImportProperties struct {
 	// Name of the signing certificate lineage file or filegroup module.
 	Lineage *string `android:"path"`
 
+	// For overriding the --rotation-min-sdk-version property of apksig
+	RotationMinSdkVersion *string
+
 	// Sign with the default system dev certificate. Must be used judiciously. Most imported apps
 	// need to either specify a specific certificate or be presigned.
 	Default_dev_cert *bool
@@ -333,7 +336,10 @@ func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext
 		if lineage := String(a.properties.Lineage); lineage != "" {
 			lineageFile = android.PathForModuleSrc(ctx, lineage)
 		}
-		SignAppPackage(ctx, signed, jnisUncompressed, certificates, nil, lineageFile)
+
+		rotationMinSdkVersion := String(a.properties.RotationMinSdkVersion)
+
+		SignAppPackage(ctx, signed, jnisUncompressed, certificates, nil, lineageFile, rotationMinSdkVersion)
 		a.outputFile = signed
 	} else {
 		alignedApk := android.PathForModuleOut(ctx, "zip-aligned", apkFilename)
@@ -455,19 +461,19 @@ func createVariantGroupType(variants []string, variantGroupName string) reflect.
 // android_app_import imports a prebuilt apk with additional processing specified in the module.
 // DPI-specific apk source files can be specified using dpi_variants. Example:
 //
-//     android_app_import {
-//         name: "example_import",
-//         apk: "prebuilts/example.apk",
-//         dpi_variants: {
-//             mdpi: {
-//                 apk: "prebuilts/example_mdpi.apk",
-//             },
-//             xhdpi: {
-//                 apk: "prebuilts/example_xhdpi.apk",
-//             },
-//         },
-//         presigned: true,
-//     }
+//	android_app_import {
+//	    name: "example_import",
+//	    apk: "prebuilts/example.apk",
+//	    dpi_variants: {
+//	        mdpi: {
+//	            apk: "prebuilts/example_mdpi.apk",
+//	        },
+//	        xhdpi: {
+//	            apk: "prebuilts/example_xhdpi.apk",
+//	        },
+//	    },
+//	    presigned: true,
+//	}
 func AndroidAppImportFactory() android.Module {
 	module := &AndroidAppImport{}
 	module.AddProperties(&module.properties)

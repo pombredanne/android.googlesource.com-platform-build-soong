@@ -629,6 +629,9 @@ func setUncompressDex(ctx android.ModuleContext, dexpreopter *dexpreopter, dexer
 }
 
 func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+
+	j.provideHiddenAPIPropertyInfo(ctx)
+
 	j.sdkVersion = j.SdkVersion(ctx)
 	j.minSdkVersion = j.MinSdkVersion(ctx)
 	j.maxSdkVersion = j.MaxSdkVersion(ctx)
@@ -852,11 +855,10 @@ func LibraryHostFactory() android.Module {
 
 // Test option struct.
 type TestOptions struct {
+	android.CommonTestOptions
+
 	// a list of extra test configuration files that should be installed with the module.
 	Extra_test_configs []string `android:"path,arch_variant"`
-
-	// If the test is a hostside(no device required) unittest that shall be run during presubmit check.
-	Unit_test *bool
 }
 
 type testProperties struct {
@@ -1262,7 +1264,7 @@ func TestFactory() android.Module {
 
 	module.Module.properties.Installable = proptools.BoolPtr(true)
 	module.Module.dexpreopter.isTest = true
-	module.Module.linter.test = true
+	module.Module.linter.properties.Lint.Test = proptools.BoolPtr(true)
 
 	android.InitSdkAwareModule(module)
 	InitJavaModule(module, android.HostAndDeviceSupported)
@@ -1278,7 +1280,7 @@ func TestHelperLibraryFactory() android.Module {
 
 	module.Module.properties.Installable = proptools.BoolPtr(true)
 	module.Module.dexpreopter.isTest = true
-	module.Module.linter.test = true
+	module.Module.linter.properties.Lint.Test = proptools.BoolPtr(true)
 
 	InitJavaModule(module, android.HostAndDeviceSupported)
 	return module
@@ -2333,12 +2335,12 @@ func (m *Library) convertLibraryAttrsBp2Build(ctx android.TopDownMutatorContext)
 
 	var deps bazel.LabelList
 	if m.properties.Libs != nil {
-		deps.Append(android.BazelLabelForModuleDeps(ctx, m.properties.Libs))
+		deps.Append(android.BazelLabelForModuleDeps(ctx, android.LastUniqueStrings(android.CopyOf(m.properties.Libs))))
 	}
 
 	var staticDeps bazel.LabelList
 	if m.properties.Static_libs != nil {
-		staticDeps.Append(android.BazelLabelForModuleDeps(ctx, m.properties.Static_libs))
+		staticDeps.Append(android.BazelLabelForModuleDeps(ctx, android.LastUniqueStrings(android.CopyOf(m.properties.Static_libs))))
 	}
 
 	protoDepLabel := bp2buildProto(ctx, &m.Module, srcPartitions[protoSrcPartition])

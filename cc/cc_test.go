@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -3342,9 +3343,9 @@ func TestErrorsIfAModuleDependsOnDisabled(t *testing.T) {
 	`)
 }
 
-func TestAFLFuzzTarget(t *testing.T) {
-	ctx := testCc(t, `
-		cc_afl_fuzz {
+func VerifyAFLFuzzTargetVariant(t *testing.T, variant string) {
+	bp := `
+		cc_fuzz {
 			name: "test_afl_fuzz_target",
 			srcs: ["foo.c"],
 			host_supported: true,
@@ -3354,17 +3355,10 @@ func TestAFLFuzzTarget(t *testing.T) {
 			shared_libs: [
 				"afl_fuzz_shared_lib",
 			],
-		}
-		cc_fuzz {
-			name: "test_fuzz_target",
-			srcs: ["foo.c"],
-			static_libs: [
-				"afl_fuzz_static_lib",
-				"libfuzzer_only_static_lib",
-			],
-			shared_libs: [
-				"afl_fuzz_shared_lib",
-			],
+			fuzzing_frameworks: {
+				afl: true,
+				libfuzzer: false,
+			},
 		}
 		cc_library {
 			name: "afl_fuzz_static_lib",
@@ -3409,12 +3403,19 @@ func TestAFLFuzzTarget(t *testing.T) {
 			host_supported: true,
 			srcs: ["second_file.c"],
 		}
-		filegroup {
+		cc_object {
 			name: "aflpp_driver",
+			host_supported: true,
 			srcs: [
 				"aflpp_driver.c",
 			],
-		}`)
+		}`
+
+	testEnv := map[string]string{
+		"FUZZ_FRAMEWORK": "AFL",
+	}
+
+	ctx := android.GroupFixturePreparers(prepareForCcTest, android.FixtureMergeEnv(testEnv)).RunTestWithBp(t, bp)
 
 	checkPcGuardFlag := func(
 		modName string, variantName string, shouldHave bool) {
@@ -3434,31 +3435,33 @@ func TestAFLFuzzTarget(t *testing.T) {
 		}
 	}
 
-	for _, vnt := range ctx.ModuleVariantsForTests("libfuzzer_only_static_lib") {
-		if strings.Contains(vnt, "fuzzer_afl") {
-			t.Errorf("libfuzzer_only_static_lib has afl variant and should not")
-		}
-	}
-
 	moduleName := "test_afl_fuzz_target"
-	variantName := "android_arm64_armv8-a_fuzzer_afl"
-	checkPcGuardFlag(moduleName, variantName, true)
+	checkPcGuardFlag(moduleName, variant+"_fuzzer", true)
 
 	moduleName = "afl_fuzz_static_lib"
-	variantName = "android_arm64_armv8-a_static"
-	checkPcGuardFlag(moduleName, variantName, false)
-	checkPcGuardFlag(moduleName, variantName+"_fuzzer", false)
-	checkPcGuardFlag(moduleName, variantName+"_fuzzer_afl", true)
+	checkPcGuardFlag(moduleName, variant+"_static", false)
+	checkPcGuardFlag(moduleName, variant+"_static_fuzzer", true)
 
 	moduleName = "second_static_lib"
-	checkPcGuardFlag(moduleName, variantName, false)
-	checkPcGuardFlag(moduleName, variantName+"_fuzzer", false)
-	checkPcGuardFlag(moduleName, variantName+"_fuzzer_afl", true)
+	checkPcGuardFlag(moduleName, variant+"_static", false)
+	checkPcGuardFlag(moduleName, variant+"_static_fuzzer", true)
 
 	ctx.ModuleForTests("afl_fuzz_shared_lib",
 		"android_arm64_armv8-a_shared").Rule("cc")
 	ctx.ModuleForTests("afl_fuzz_shared_lib",
-		"android_arm64_armv8-a_shared_fuzzer_afl").Rule("cc")
+		"android_arm64_armv8-a_shared_fuzzer").Rule("cc")
+}
+
+func TestAFLFuzzTargetForDevice(t *testing.T) {
+	VerifyAFLFuzzTargetVariant(t, "android_arm64_armv8-a")
+}
+
+func TestAFLFuzzTargetForLinuxHost(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires linux")
+	}
+
+	VerifyAFLFuzzTargetVariant(t, "linux_glibc_x86_64")
 }
 
 // Simple smoke test for the cc_fuzz target that ensures the rule compiles
@@ -4142,7 +4145,7 @@ func TestIncludeDirectoryOrdering(t *testing.T) {
 		"${config.ArmArmv7ANeonCflags}",
 		"${config.ArmGenericCflags}",
 		"-target",
-		"armv7a-linux-androideabi20",
+		"armv7a-linux-androideabi21",
 	}
 
 	expectedIncludes := []string{
@@ -4173,7 +4176,6 @@ func TestIncludeDirectoryOrdering(t *testing.T) {
 		"external/foo/lib32",
 		"external/foo/libandroid_arm",
 		"defaults/cc/common/ndk_libc++_shared",
-		"defaults/cc/common/ndk_libandroid_support",
 	}
 
 	conly := []string{"-fPIC", "${config.CommonGlobalConlyflags}"}
@@ -4266,20 +4268,20 @@ func TestIncludeDirectoryOrdering(t *testing.T) {
 				},
 			},
 			stl: "libc++",
-			sdk_version: "20",
+			sdk_version: "minimum",
 		}
 
 		cc_library_headers {
 			name: "libheader1",
 			export_include_dirs: ["libheader1"],
-			sdk_version: "20",
+			sdk_version: "minimum",
 			stl: "none",
 		}
 
 		cc_library_headers {
 			name: "libheader2",
 			export_include_dirs: ["libheader2"],
-			sdk_version: "20",
+			sdk_version: "minimum",
 			stl: "none",
 		}
 	`, tc.src)
@@ -4303,7 +4305,7 @@ func TestIncludeDirectoryOrdering(t *testing.T) {
 			cc_library {
 				name: "%s",
 				export_include_dirs: ["%s"],
-				sdk_version: "20",
+				sdk_version: "minimum",
 				stl: "none",
 			}
 		`, lib, lib)

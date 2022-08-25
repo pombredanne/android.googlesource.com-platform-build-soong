@@ -128,7 +128,7 @@ type bootclasspathFragmentProperties struct {
 	Coverage BootclasspathFragmentCoverageAffectedProperties
 
 	// Hidden API related properties.
-	Hidden_api HiddenAPIFlagFileProperties
+	HiddenAPIFlagFileProperties
 
 	// The list of additional stub libraries which this fragment's contents use but which are not
 	// provided by another bootclasspath_fragment.
@@ -145,7 +145,7 @@ type bootclasspathFragmentProperties struct {
 	BootclasspathFragmentsDepsProperties
 }
 
-type HiddenApiPackageProperties struct {
+type HiddenAPIPackageProperties struct {
 	Hidden_api struct {
 		// Contains prefixes of a package hierarchy that is provided solely by this
 		// bootclasspath_fragment.
@@ -222,8 +222,8 @@ type HiddenApiPackageProperties struct {
 }
 
 type SourceOnlyBootclasspathProperties struct {
-	HiddenApiPackageProperties
-	Coverage HiddenApiPackageProperties
+	HiddenAPIPackageProperties
+	Coverage HiddenAPIPackageProperties
 }
 
 type BootclasspathFragmentModule struct {
@@ -293,7 +293,7 @@ func bootclasspathFragmentFactory() android.Module {
 				return
 			}
 
-			err = proptools.AppendProperties(&m.sourceOnlyProperties.HiddenApiPackageProperties, &m.sourceOnlyProperties.Coverage, nil)
+			err = proptools.AppendProperties(&m.sourceOnlyProperties.HiddenAPIPackageProperties, &m.sourceOnlyProperties.Coverage, nil)
 			if err != nil {
 				ctx.PropertyErrorf("coverage", "error trying to append hidden api coverage specific properties: %s", err)
 				return
@@ -723,6 +723,10 @@ func (b *BootclasspathFragmentModule) configuredJars(ctx android.ModuleContext) 
 	} else if global.ApexBootJars.Len() != 0 && !android.IsModuleInVersionedSdk(ctx.Module()) {
 		unknown = android.RemoveListFromList(unknown, b.properties.Coverage.Contents)
 		_, unknown = android.RemoveFromList("core-icu4j", unknown)
+		// This module only exists in car products.
+		// So ignore it even if it is not in PRODUCT_APEX_BOOT_JARS.
+		// TODO(b/202896428): Add better way to handle this.
+		_, unknown = android.RemoveFromList("android.car-module", unknown)
 		if len(unknown) > 0 {
 			ctx.ModuleErrorf("%s in contents must also be declared in PRODUCT_APEX_BOOT_JARS", unknown)
 		}
@@ -821,7 +825,12 @@ func (b *BootclasspathFragmentModule) createHiddenAPIFlagInput(ctx android.Modul
 	input.gatherStubLibInfo(ctx, contents)
 
 	// Populate with flag file paths from the properties.
-	input.extractFlagFilesFromProperties(ctx, &b.properties.Hidden_api)
+	input.extractFlagFilesFromProperties(ctx, &b.properties.HiddenAPIFlagFileProperties)
+
+	// Populate with package rules from the properties.
+	input.extractPackageRulesFromProperties(&b.sourceOnlyProperties.HiddenAPIPackageProperties)
+
+	input.gatherPropertyInfo(ctx, contents)
 
 	// Add the stub dex jars from this module's fragment dependencies.
 	input.DependencyStubDexJarsByScope.addStubDexJarsByModule(dependencyHiddenApiInfo.TransitiveStubDexJarsByScope)
@@ -858,9 +867,9 @@ func (b *BootclasspathFragmentModule) produceHiddenAPIOutput(ctx android.ModuleC
 
 	// If the module specifies split_packages or package_prefixes then use those to generate the
 	// signature patterns.
-	splitPackages := b.sourceOnlyProperties.Hidden_api.Split_packages
-	packagePrefixes := b.sourceOnlyProperties.Hidden_api.Package_prefixes
-	singlePackages := b.sourceOnlyProperties.Hidden_api.Single_packages
+	splitPackages := input.SplitPackages
+	packagePrefixes := input.PackagePrefixes
+	singlePackages := input.SinglePackages
 	if splitPackages != nil || packagePrefixes != nil || singlePackages != nil {
 		output.SignaturePatternsPath = buildRuleSignaturePatternsFile(
 			ctx, output.AllFlagsPath, splitPackages, packagePrefixes, singlePackages)

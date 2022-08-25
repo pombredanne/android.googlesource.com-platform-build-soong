@@ -2129,11 +2129,12 @@ var _ SdkLibraryDependency = (*SdkLibraryImport)(nil)
 
 // The type of a structure that contains a field of type sdkLibraryScopeProperties
 // for each apiscope in allApiScopes, e.g. something like:
-// struct {
-//   Public sdkLibraryScopeProperties
-//   System sdkLibraryScopeProperties
-//   ...
-// }
+//
+//	struct {
+//	  Public sdkLibraryScopeProperties
+//	  System sdkLibraryScopeProperties
+//	  ...
+//	}
 var allScopeStructType = createAllScopePropertiesStructType()
 
 // Dynamically create a structure type for each apiscope in allApiScopes.
@@ -2556,9 +2557,7 @@ func (module *SdkLibraryImport) RequiredFilesFromPrebuiltApex(ctx android.BaseMo
 	return requiredFilesFromPrebuiltApexForImport(name)
 }
 
-//
 // java_sdk_library_xml
-//
 type sdkLibraryXml struct {
 	android.ModuleBase
 	android.DefaultableModuleBase
@@ -2700,7 +2699,10 @@ func formattedOptionalSdkLevelAttribute(ctx android.ModuleContext, attrName stri
 			`"current" is not an allowed value for this attribute`)
 		return ""
 	}
-	return formattedOptionalAttribute(attrName, value)
+	// "safeValue" is safe because it translates finalized codenames to a string
+	// with their SDK int.
+	safeValue := apiLevel.String()
+	return formattedOptionalAttribute(attrName, &safeValue)
 }
 
 // formats an attribute for the xml permissions file if the value is not null
