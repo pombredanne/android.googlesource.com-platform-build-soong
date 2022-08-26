@@ -942,12 +942,19 @@ type CommonTestOptions struct {
 	// If the test is a hostside (no device required) unittest that shall be run
 	// during presubmit check.
 	Unit_test *bool
+
+	// Tags provide additional metadata to customize test execution by downstream
+	// test runners. The tags have no special meaning to Soong.
+	Tags []string
 }
 
 // SetAndroidMkEntries sets AndroidMkEntries according to the value of base
 // `test_options`.
 func (t *CommonTestOptions) SetAndroidMkEntries(entries *AndroidMkEntries) {
 	entries.SetBoolIfTrue("LOCAL_IS_UNIT_TEST", Bool(t.Unit_test))
+	if len(t.Tags) > 0 {
+		entries.AddStrings("LOCAL_TEST_OPTIONS_TAGS", t.Tags...)
+	}
 }
 
 // The key to use in TaggedDistFiles when a Dist structure does not specify a
@@ -2367,9 +2374,6 @@ func (m *ModuleBase) GenerateBuildActions(blueprintCtx blueprint.ModuleContext) 
 }
 
 func (m *ModuleBase) isHandledByBazel(ctx ModuleContext) (MixedBuildBuildable, bool) {
-	if !ctx.Config().BazelContext.BazelEnabled() {
-		return nil, false
-	}
 	if mixedBuildMod, ok := m.module.(MixedBuildBuildable); ok {
 		if mixedBuildMod.IsMixedBuildSupported(ctx) && MixedBuildsEnabled(ctx) {
 			return mixedBuildMod, true

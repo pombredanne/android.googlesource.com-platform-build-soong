@@ -524,6 +524,24 @@ var (
 
 		// '//bionic/libc:libc_bp2build_cc_library_static' is duplicated in the 'deps' attribute of rule
 		"toybox-static",
+
+		// Do not convert the following modules because of duplicate labels checking in Bazel.
+		// See b/241283350. They should be removed from this list once the bug is fixed.
+		"libartpalette",
+		"libartbase",
+		"libdexfile",
+		"libartbased",
+		"libdexfile_static",
+		"libartbase-testing",
+		"libartbased-testing",
+		"libdexfile_support",
+		"libunwindstack",
+		"libunwindstack_local",
+		"libfdtrack",
+		"libc_malloc_debug",
+		"libutilscallstack",
+		"libunwindstack_utils",
+		"unwind_for_offline",
 	}
 
 	Bp2buildCcLibraryStaticOnlyList = []string{}
@@ -584,5 +602,15 @@ var (
 		"prebuilt_android-support-annotations-nodeps",
 		"prebuilt_android-arch-paging-common-nodeps",
 		"prebuilt_android-arch-room-common-nodeps",
+		// TODO(b/217750501) exclude_dirs property not supported
+		"prebuilt_kotlin-reflect",
+		"prebuilt_kotlin-stdlib",
+		"prebuilt_kotlin-stdlib-jdk7",
+		"prebuilt_kotlin-stdlib-jdk8",
+		"prebuilt_kotlin-test",
+		// TODO(b/217750501) exclude_files property not supported
+		"prebuilt_platform-robolectric-4.4-prebuilt",
+		"prebuilt_platform-robolectric-4.5.1-prebuilt",
+		"prebuilt_currysrc_org.eclipse",
 	}
 )
