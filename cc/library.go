@@ -270,6 +270,15 @@ type bazelCcLibraryAttributes struct {
 	Features bazel.StringListAttribute
 }
 
+type aidlLibraryAttributes struct {
+	Srcs        bazel.LabelListAttribute
+	Include_dir *string
+}
+
+type ccAidlLibraryAttributes struct {
+	Deps bazel.LabelListAttribute
+}
+
 type stripAttributes struct {
 	Keep_symbols                 bazel.BoolAttribute
 	Keep_symbols_and_debug_frame bazel.BoolAttribute
@@ -359,7 +368,7 @@ func libraryBp2Build(ctx android.TopDownMutatorContext, m *Module) {
 		C_std:                    compilerAttrs.cStd,
 		Use_version_lib:          linkerAttrs.useVersionLib,
 
-		Features: linkerAttrs.features,
+		Features: baseAttributes.features,
 	}
 
 	sharedTargetAttrs := &bazelCcLibrarySharedAttributes{
@@ -391,10 +400,12 @@ func libraryBp2Build(ctx android.TopDownMutatorContext, m *Module) {
 			All:                          linkerAttrs.stripAll,
 			None:                         linkerAttrs.stripNone,
 		},
-		Features: linkerAttrs.features,
+		Features: baseAttributes.features,
+	}
 
-		Stubs_symbol_file: compilerAttrs.stubsSymbolFile,
-		Stubs_versions:    compilerAttrs.stubsVersions,
+	if compilerAttrs.stubsSymbolFile != nil && len(compilerAttrs.stubsVersions.Value) > 0 {
+		hasStubs := true
+		sharedTargetAttrs.Has_stubs.SetValue(&hasStubs)
 	}
 
 	for axis, configToProps := range m.GetArchVariantProperties(ctx, &LibraryProperties{}) {
@@ -427,6 +438,25 @@ func libraryBp2Build(ctx android.TopDownMutatorContext, m *Module) {
 	ctx.CreateBazelTargetModuleWithRestrictions(sharedProps,
 		android.CommonAttributes{Name: m.Name()},
 		sharedTargetAttrs, sharedAttrs.Enabled)
+
+	if compilerAttrs.stubsSymbolFile != nil && len(compilerAttrs.stubsVersions.Value) > 0 {
+		stubSuitesProps := bazel.BazelTargetModuleProperties{
+			Rule_class:        "cc_stub_suite",
+			Bzl_load_location: "//build/bazel/rules/cc:cc_stub_library.bzl",
+		}
+		soname := m.Name() + ".so"
+		stubSuitesAttrs := &bazelCcStubSuiteAttributes{
+			Symbol_file:     compilerAttrs.stubsSymbolFile,
+			Versions:        compilerAttrs.stubsVersions,
+			Export_includes: exportedIncludes.Includes,
+			Soname:          &soname,
+			Source_library:  *bazel.MakeLabelAttribute(":" + m.Name()),
+			Deps:            baseAttributes.deps,
+		}
+		ctx.CreateBazelTargetModule(stubSuitesProps,
+			android.CommonAttributes{Name: m.Name() + "_stub_libs"},
+			stubSuitesAttrs)
+	}
 }
 
 // cc_library creates both static and/or shared libraries for a device and/or
@@ -2579,12 +2609,12 @@ func sharedOrStaticLibraryBp2Build(ctx android.TopDownMutatorContext, module *Mo
 			Conlyflags: compilerAttrs.conlyFlags,
 			Asflags:    asFlags,
 
-			Features: linkerAttrs.features,
+			Features: baseAttributes.features,
 		}
 	} else {
 		commonAttrs.Dynamic_deps.Add(baseAttributes.protoDependency)
 
-		attrs = &bazelCcLibrarySharedAttributes{
+		sharedLibAttrs := &bazelCcLibrarySharedAttributes{
 			staticOrSharedAttributes: commonAttrs,
 
 			Cppflags:   compilerAttrs.cppFlags,
@@ -2616,11 +2646,13 @@ func sharedOrStaticLibraryBp2Build(ctx android.TopDownMutatorContext, module *Mo
 				None:                         linkerAttrs.stripNone,
 			},
 
-			Features: linkerAttrs.features,
-
-			Stubs_symbol_file: compilerAttrs.stubsSymbolFile,
-			Stubs_versions:    compilerAttrs.stubsVersions,
+			Features: baseAttributes.features,
 		}
+		if compilerAttrs.stubsSymbolFile != nil && len(compilerAttrs.stubsVersions.Value) > 0 {
+			hasStubs := true
+			sharedLibAttrs.Has_stubs.SetValue(&hasStubs)
+		}
+		attrs = sharedLibAttrs
 	}
 
 	var modType string
@@ -2694,7 +2726,16 @@ type bazelCcLibrarySharedAttributes struct {
 
 	Features bazel.StringListAttribute
 
-	Stubs_symbol_file *string
-	Stubs_versions    bazel.StringListAttribute
-	Inject_bssl_hash  bazel.BoolAttribute
+	Has_stubs bazel.BoolAttribute
+
+	Inject_bssl_hash bazel.BoolAttribute
+}
+
+type bazelCcStubSuiteAttributes struct {
+	Symbol_file     *string
+	Versions        bazel.StringListAttribute
+	Export_includes bazel.StringListAttribute
+	Source_library  bazel.LabelAttribute
+	Soname          *string
+	Deps            bazel.LabelListAttribute
 }

@@ -46,6 +46,7 @@ var (
 		"bionic":                                Bp2BuildDefaultTrueRecursively,
 		"bootable/recovery/tools/recovery_l10n": Bp2BuildDefaultTrue,
 
+		"build/bazel/examples/aidl":                   Bp2BuildDefaultTrueRecursively,
 		"build/bazel/examples/apex/minimal":           Bp2BuildDefaultTrueRecursively,
 		"build/bazel/examples/soong_config_variables": Bp2BuildDefaultTrueRecursively,
 		"build/bazel/examples/python":                 Bp2BuildDefaultTrueRecursively,
@@ -137,6 +138,7 @@ var (
 		"external/libjpeg-turbo":                 Bp2BuildDefaultTrueRecursively,
 		"external/libmpeg2":                      Bp2BuildDefaultTrueRecursively,
 		"external/libpng":                        Bp2BuildDefaultTrueRecursively,
+		"external/libyuv":                        Bp2BuildDefaultTrueRecursively,
 		"external/lz4/lib":                       Bp2BuildDefaultTrue,
 		"external/lzma/C":                        Bp2BuildDefaultTrueRecursively,
 		"external/mdnsresponder":                 Bp2BuildDefaultTrueRecursively,
@@ -148,6 +150,7 @@ var (
 		"external/scudo":                         Bp2BuildDefaultTrueRecursively,
 		"external/selinux/libselinux":            Bp2BuildDefaultTrueRecursively,
 		"external/selinux/libsepol":              Bp2BuildDefaultTrueRecursively,
+		"external/speex":                         Bp2BuildDefaultTrueRecursively,
 		"external/toybox":                        Bp2BuildDefaultTrueRecursively,
 		"external/zlib":                          Bp2BuildDefaultTrueRecursively,
 		"external/zopfli":                        Bp2BuildDefaultTrueRecursively,
@@ -157,6 +160,7 @@ var (
 		"frameworks/av/media/liberror":                       Bp2BuildDefaultTrueRecursively,
 		"frameworks/av/services/minijail":                    Bp2BuildDefaultTrueRecursively,
 		"frameworks/base/media/tests/MediaDump":              Bp2BuildDefaultTrue,
+		"frameworks/base/services/tests/servicestests/aidl":  Bp2BuildDefaultTrue,
 		"frameworks/base/startop/apps/test":                  Bp2BuildDefaultTrue,
 		"frameworks/base/tests/appwidgets/AppWidgetHostTest": Bp2BuildDefaultTrueRecursively,
 		"frameworks/native/libs/adbd_auth":                   Bp2BuildDefaultTrueRecursively,
@@ -225,6 +229,7 @@ var (
 		"system/libziparchive":                                   Bp2BuildDefaultTrueRecursively,
 		"system/logging/liblog":                                  Bp2BuildDefaultTrueRecursively,
 		"system/media/audio":                                     Bp2BuildDefaultTrueRecursively,
+		"system/media/audio_utils":                               Bp2BuildDefaultTrueRecursively,
 		"system/memory/libion":                                   Bp2BuildDefaultTrueRecursively,
 		"system/memory/libmemunreachable":                        Bp2BuildDefaultTrueRecursively,
 		"system/sepolicy/apex":                                   Bp2BuildDefaultTrueRecursively,
@@ -248,6 +253,7 @@ var (
 		"build/bazel":/* recursive = */ false,
 		"build/bazel/ci/dist":/* recursive = */ false,
 		"build/bazel/examples/android_app":/* recursive = */ true,
+		"build/bazel/examples/cc":/* recursive = */ true,
 		"build/bazel/examples/java":/* recursive = */ true,
 		"build/bazel/examples/partitions":/* recursive = */ true,
 		"build/bazel/bazel_skylib":/* recursive = */ true,
@@ -306,7 +312,8 @@ var (
 		"libandroid_runtime_lazy",
 		"libandroid_runtime_vm_headers",
 		"libaudioclient_aidl_conversion_util",
-		"libaudioutils_fixedfft",
+		"libbinder",
+		"libbinder_device_interface_sources",
 		"libbinder_aidl",
 		"libbinder_headers",
 		"libbinder_headers_platform_shared",
@@ -408,6 +415,7 @@ var (
 		"linker_config",
 		"java_import",
 		"java_import_host",
+		"aidl_interface_headers",
 	}
 
 	Bp2buildModuleDoNotConvertList = []string{
@@ -419,7 +427,6 @@ var (
 		"linker",                 // TODO(b/228316882): cc_binary uses link_crt
 		"libdebuggerd",           // TODO(b/228314770): support product variable-specific header_libs
 		"versioner",              // TODO(b/228313961):  depends on prebuilt shared library libclang-cpp_host as a shared library, which does not supply expected providers for a shared library
-		"libspeexresampler",      // TODO(b/231995978): Filter out unknown cflags
 		"libvpx",                 // TODO(b/240756936): Arm neon variant not supported
 		"art_libartbase_headers", // TODO(b/236268577): Header libraries do not support export_shared_libs_headers
 		"apexer_test",            // Requires aapt2
@@ -524,6 +531,24 @@ var (
 
 		// '//bionic/libc:libc_bp2build_cc_library_static' is duplicated in the 'deps' attribute of rule
 		"toybox-static",
+
+		// Do not convert the following modules because of duplicate labels checking in Bazel.
+		// See b/241283350. They should be removed from this list once the bug is fixed.
+		"libartpalette",
+		"libartbase",
+		"libdexfile",
+		"libartbased",
+		"libdexfile_static",
+		"libartbase-testing",
+		"libartbased-testing",
+		"libdexfile_support",
+		"libunwindstack",
+		"libunwindstack_local",
+		"libfdtrack",
+		"libc_malloc_debug",
+		"libutilscallstack",
+		"libunwindstack_utils",
+		"unwind_for_offline",
 	}
 
 	Bp2buildCcLibraryStaticOnlyList = []string{}
