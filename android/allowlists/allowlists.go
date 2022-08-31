@@ -46,20 +46,16 @@ var (
 		"bionic":                                Bp2BuildDefaultTrueRecursively,
 		"bootable/recovery/tools/recovery_l10n": Bp2BuildDefaultTrue,
 
-		"build/bazel/examples/aidl":                   Bp2BuildDefaultTrueRecursively,
-		"build/bazel/examples/apex/minimal":           Bp2BuildDefaultTrueRecursively,
-		"build/bazel/examples/soong_config_variables": Bp2BuildDefaultTrueRecursively,
-		"build/bazel/examples/python":                 Bp2BuildDefaultTrueRecursively,
-		"build/bazel/examples/gensrcs":                Bp2BuildDefaultTrueRecursively,
-		"build/make/target/product/security":          Bp2BuildDefaultTrue,
-		"build/make/tools/signapk":                    Bp2BuildDefaultTrue,
-		"build/make/tools/zipalign":                   Bp2BuildDefaultTrueRecursively,
-		"build/soong":                                 Bp2BuildDefaultTrue,
-		"build/soong/cc/libbuildversion":              Bp2BuildDefaultTrue, // Skip tests subdir
-		"build/soong/cc/ndkstubgen":                   Bp2BuildDefaultTrue,
-		"build/soong/cc/symbolfile":                   Bp2BuildDefaultTrue,
-		"build/soong/linkerconfig":                    Bp2BuildDefaultTrueRecursively,
-		"build/soong/scripts":                         Bp2BuildDefaultTrueRecursively,
+		"build/bazel":                        Bp2BuildDefaultTrueRecursively,
+		"build/make/target/product/security": Bp2BuildDefaultTrue,
+		"build/make/tools/signapk":           Bp2BuildDefaultTrue,
+		"build/make/tools/zipalign":          Bp2BuildDefaultTrueRecursively,
+		"build/soong":                        Bp2BuildDefaultTrue,
+		"build/soong/cc/libbuildversion":     Bp2BuildDefaultTrue, // Skip tests subdir
+		"build/soong/cc/ndkstubgen":          Bp2BuildDefaultTrue,
+		"build/soong/cc/symbolfile":          Bp2BuildDefaultTrue,
+		"build/soong/linkerconfig":           Bp2BuildDefaultTrueRecursively,
+		"build/soong/scripts":                Bp2BuildDefaultTrueRecursively,
 
 		"cts/common/device-side/nativetesthelper/jni": Bp2BuildDefaultTrueRecursively,
 		"development/apps/DevelopmentSettings":        Bp2BuildDefaultTrue,
@@ -166,6 +162,9 @@ var (
 		"frameworks/native/libs/adbd_auth":                   Bp2BuildDefaultTrueRecursively,
 		"frameworks/native/libs/arect":                       Bp2BuildDefaultTrueRecursively,
 		"frameworks/native/libs/math":                        Bp2BuildDefaultTrueRecursively,
+		"hardware/interfaces/common/aidl":                    Bp2BuildDefaultTrue,
+		"hardware/interfaces/graphics/common/aidl":           Bp2BuildDefaultTrue,
+		"hardware/interfaces/neuralnetworks/aidl":            Bp2BuildDefaultTrue,
 		"frameworks/native/libs/nativebase":                  Bp2BuildDefaultTrueRecursively,
 		"frameworks/native/opengl/tests/gl2_cameraeye":       Bp2BuildDefaultTrue,
 		"frameworks/native/opengl/tests/gl2_java":            Bp2BuildDefaultTrue,
@@ -174,7 +173,35 @@ var (
 		"frameworks/native/opengl/tests/testViewport":        Bp2BuildDefaultTrue,
 		"frameworks/proto_logging/stats/stats_log_api_gen":   Bp2BuildDefaultTrueRecursively,
 
-		"libnativehelper":                                  Bp2BuildDefaultTrueRecursively,
+		"hardware/interfaces":                          Bp2BuildDefaultTrue,
+		"hardware/interfaces/configstore/1.0":          Bp2BuildDefaultTrue,
+		"hardware/interfaces/configstore/1.1":          Bp2BuildDefaultTrue,
+		"hardware/interfaces/configstore/utils":        Bp2BuildDefaultTrue,
+		"hardware/interfaces/graphics/allocator/2.0":   Bp2BuildDefaultTrue,
+		"hardware/interfaces/graphics/allocator/3.0":   Bp2BuildDefaultTrue,
+		"hardware/interfaces/graphics/allocator/4.0":   Bp2BuildDefaultTrue,
+		"hardware/interfaces/graphics/bufferqueue/1.0": Bp2BuildDefaultTrue,
+		"hardware/interfaces/graphics/bufferqueue/2.0": Bp2BuildDefaultTrue,
+		"hardware/interfaces/graphics/common/1.0":      Bp2BuildDefaultTrue,
+		"hardware/interfaces/graphics/common/1.1":      Bp2BuildDefaultTrue,
+		"hardware/interfaces/graphics/common/1.2":      Bp2BuildDefaultTrue,
+		"hardware/interfaces/graphics/mapper/2.0":      Bp2BuildDefaultTrue,
+		"hardware/interfaces/graphics/mapper/2.1":      Bp2BuildDefaultTrue,
+		"hardware/interfaces/graphics/mapper/3.0":      Bp2BuildDefaultTrue,
+		"hardware/interfaces/graphics/mapper/4.0":      Bp2BuildDefaultTrue,
+		"hardware/interfaces/media/1.0":                Bp2BuildDefaultTrue,
+		"hardware/interfaces/media/bufferpool/2.0":     Bp2BuildDefaultTrue,
+		"hardware/interfaces/media/c2/1.0":             Bp2BuildDefaultTrue,
+		"hardware/interfaces/media/c2/1.1":             Bp2BuildDefaultTrue,
+		"hardware/interfaces/media/c2/1.2":             Bp2BuildDefaultTrue,
+		"hardware/interfaces/media/omx/1.0":            Bp2BuildDefaultTrue,
+		"hardware/interfaces/neuralnetworks/1.0":       Bp2BuildDefaultTrue,
+		"hardware/interfaces/neuralnetworks/1.1":       Bp2BuildDefaultTrue,
+		"hardware/interfaces/neuralnetworks/1.2":       Bp2BuildDefaultTrue,
+		"hardware/interfaces/neuralnetworks/1.3":       Bp2BuildDefaultTrue,
+
+		"libnativehelper": Bp2BuildDefaultTrueRecursively,
+
 		"packages/apps/DevCamera":                          Bp2BuildDefaultTrue,
 		"packages/apps/HTMLViewer":                         Bp2BuildDefaultTrue,
 		"packages/apps/Protips":                            Bp2BuildDefaultTrue,
@@ -220,10 +247,18 @@ var (
 		"system/libartpalette":                                   Bp2BuildDefaultTrueRecursively,
 		"system/libbase":                                         Bp2BuildDefaultTrueRecursively,
 		"system/libfmq":                                          Bp2BuildDefaultTrue,
+		"system/libhidl/libhidlmemory":                           Bp2BuildDefaultTrue,
+		"system/libhidl/transport":                               Bp2BuildDefaultTrue,
+		"system/libhidl/transport/allocator/1.0":                 Bp2BuildDefaultTrue,
 		"system/libhidl/transport/base/1.0":                      Bp2BuildDefaultTrue,
 		"system/libhidl/transport/manager/1.0":                   Bp2BuildDefaultTrue,
 		"system/libhidl/transport/manager/1.1":                   Bp2BuildDefaultTrue,
 		"system/libhidl/transport/manager/1.2":                   Bp2BuildDefaultTrue,
+		"system/libhidl/transport/memory/1.0":                    Bp2BuildDefaultTrue,
+		"system/libhidl/transport/memory/token/1.0":              Bp2BuildDefaultTrue,
+		"system/libhidl/transport/safe_union/1.0":                Bp2BuildDefaultTrue,
+		"system/libhidl/transport/token/1.0":                     Bp2BuildDefaultTrue,
+		"system/libhidl/transport/token/1.0/utils":               Bp2BuildDefaultTrue,
 		"system/libhwbinder":                                     Bp2BuildDefaultTrueRecursively,
 		"system/libprocinfo":                                     Bp2BuildDefaultTrue,
 		"system/libziparchive":                                   Bp2BuildDefaultTrueRecursively,
@@ -247,24 +282,7 @@ var (
 		// This is actually build/bazel/build.BAZEL symlinked to ./BUILD
 		".":/*recursive = */ false,
 
-		// build/bazel/examples/apex/... BUILD files should be generated, so
-		// build/bazel is not recursive. Instead list each subdirectory under
-		// build/bazel explicitly.
-		"build/bazel":/* recursive = */ false,
-		"build/bazel/ci/dist":/* recursive = */ false,
-		"build/bazel/examples/android_app":/* recursive = */ true,
-		"build/bazel/examples/cc":/* recursive = */ true,
-		"build/bazel/examples/java":/* recursive = */ true,
-		"build/bazel/examples/partitions":/* recursive = */ true,
-		"build/bazel/bazel_skylib":/* recursive = */ true,
-		"build/bazel/rules":/* recursive = */ true,
-		"build/bazel/rules_cc":/* recursive = */ true,
-		"build/bazel/scripts":/* recursive = */ true,
-		"build/bazel/tests":/* recursive = */ true,
-		"build/bazel/platforms":/* recursive = */ true,
-		"build/bazel/product_config":/* recursive = */ true,
-		"build/bazel/product_variables":/* recursive = */ true,
-		"build/bazel/vendor/google":/* recursive = */ true,
+		"build/bazel":/* recursive = */ true,
 		"build/bazel_common_rules":/* recursive = */ true,
 		// build/make/tools/signapk BUILD file is generated, so build/make/tools is not recursive.
 		"build/make/tools":/* recursive = */ false,
@@ -409,6 +427,9 @@ var (
 
 		//frameworks/native/libs/input
 		"inputconstants_aidl",
+
+		// needed for aidl_interface's ndk backend
+		"libbinder_ndk",
 	}
 
 	Bp2buildModuleTypeAlwaysConvertList = []string{
@@ -511,7 +532,7 @@ var (
 		"libnativehelper_lazy_mts_jni", "libnativehelper_mts_jni", // depends on unconverted modules: libnativetesthelper_jni, libgmock_ndk
 		"libnativetesthelper_jni",   // depends on unconverted modules: libgtest_ndk_c++
 		"libprotobuf-java-nano",     // b/220869005, depends on non-public_current SDK
-		"libstatslog",               // depends on unconverted modules: libstatspull, statsd-aidl-ndk, libbinder_ndk
+		"libstatslog",               // depends on unconverted modules: libstatspull, statsd-aidl-ndk
 		"libstatslog_art",           // depends on unconverted modules: statslog_art.cpp, statslog_art.h
 		"linker_reloc_bench_main",   // depends on unconverted modules: liblinker_reloc_bench_*
 		"pbtombstone", "crash_dump", // depends on libdebuggerd, libunwindstack
@@ -619,5 +640,10 @@ var (
 		"prebuilt_platform-robolectric-4.4-prebuilt",
 		"prebuilt_platform-robolectric-4.5.1-prebuilt",
 		"prebuilt_currysrc_org.eclipse",
+	}
+
+	ProdMixedBuildsEnabledList = []string{
+		// This list left intentionally empty for now. Add specific module names
+		// to have them built by Bazel in Prod Mixed Builds mode.
 	}
 )
