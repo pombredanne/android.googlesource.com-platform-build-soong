@@ -53,9 +53,9 @@ var (
 
 	abitidy = pctx.AndroidStaticRule("abitidy",
 		blueprint.RuleParams{
-			Command:     "$abitidy --all -i $in -o $out",
+			Command:     "$abitidy --all $flags -i $in -o $out",
 			CommandDeps: []string{"$abitidy"},
-		})
+		}, "flags")
 
 	abidiff = pctx.AndroidStaticRule("abidiff",
 		blueprint.RuleParams{
@@ -85,15 +85,16 @@ var (
 // Example:
 //
 // ndk_library {
-//     name: "libfoo",
-//     symbol_file: "libfoo.map.txt",
-//     first_version: "9",
-// }
 //
+//	name: "libfoo",
+//	symbol_file: "libfoo.map.txt",
+//	first_version: "9",
+//
+// }
 type libraryProperties struct {
 	// Relative path to the symbol map.
 	// An example file can be seen here: TODO(danalbert): Make an example.
-	Symbol_file *string
+	Symbol_file *string `android:"path"`
 
 	// The first API level a library was available. A library will be generated
 	// for every API level beginning with this one.
@@ -104,6 +105,15 @@ type libraryProperties struct {
 	// used. This is only needed to work around platform bugs like
 	// https://github.com/android-ndk/ndk/issues/265.
 	Unversioned_until *string
+
+	// If true, does not emit errors when APIs lacking type information are
+	// found. This is false by default and should not be enabled outside bionic,
+	// where it is enabled pending a fix for http://b/190554910 (no debug info
+	// for asm implemented symbols).
+	Allow_untyped_symbols *bool
+
+	// Headers presented by this library to the Public API Surface
+	Export_header_libs []string
 }
 
 type stubDecorator struct {
@@ -278,6 +288,10 @@ func parseNativeAbiDefinition(ctx ModuleContext, symbolFile string,
 }
 
 func compileStubLibrary(ctx ModuleContext, flags Flags, src android.Path) Objects {
+	// libc/libm stubs libraries end up mismatching with clang's internal definition of these
+	// functions (which have noreturn attributes and other things). Because we just want to create a
+	// stub with symbol definitions, and types aren't important in C, ignore the mismatch.
+	flags.Local.ConlyFlags = append(flags.Local.ConlyFlags, "-fno-builtin")
 	return compileObjs(ctx, flagsToBuilderFlags(flags), "",
 		android.Paths{src}, nil, nil, nil, nil)
 }
@@ -315,8 +329,18 @@ func (this *stubDecorator) findPrebuiltAbiDump(ctx ModuleContext,
 }
 
 // Feature flag.
-func canDumpAbi() bool {
-	return runtime.GOOS != "darwin"
+func canDumpAbi(config android.Config) bool {
+	if runtime.GOOS == "darwin" {
+		return false
+	}
+	// abidw doesn't currently handle top-byte-ignore correctly. Disable ABI
+	// dumping for those configs while we wait for a fix. We'll still have ABI
+	// checking coverage from non-hwasan builds.
+	// http://b/190554910
+	if android.InList("hwaddress", config.SanitizeDevice()) {
+		return false
+	}
+	return true
 }
 
 // Feature flag to disable diffing against prebuilts.
@@ -339,14 +363,22 @@ func (this *stubDecorator) dumpAbi(ctx ModuleContext, symbolList android.Path) {
 			"symbolList": symbolList.String(),
 		},
 	})
+
 	this.abiDumpPath = getNdkAbiDumpInstallBase(ctx).Join(ctx,
 		this.apiLevel.String(), ctx.Arch().ArchType.String(),
 		this.libraryName(ctx), "abi.xml")
+	untypedFlag := "--abort-on-untyped-symbols"
+	if proptools.BoolDefault(this.properties.Allow_untyped_symbols, false) {
+		untypedFlag = ""
+	}
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        abitidy,
 		Description: fmt.Sprintf("abitidy %s", implementationLibrary),
 		Input:       abiRawPath,
 		Output:      this.abiDumpPath,
+		Args: map[string]string{
+			"flags": untypedFlag,
+		},
 	})
 }
 
@@ -444,7 +476,7 @@ func (c *stubDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) O
 	nativeAbiResult := parseNativeAbiDefinition(ctx, symbolFile, c.apiLevel, "")
 	objs := compileStubLibrary(ctx, flags, nativeAbiResult.stubSrc)
 	c.versionScriptPath = nativeAbiResult.versionScript
-	if canDumpAbi() {
+	if canDumpAbi(ctx.Config()) {
 		c.dumpAbi(ctx, nativeAbiResult.symbolList)
 		if canDiffAbi() {
 			c.diffAbi(ctx)
@@ -456,8 +488,11 @@ func (c *stubDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) O
 	return objs
 }
 
+// Add a dependency on the header modules of this ndk_library
 func (linker *stubDecorator) linkerDeps(ctx DepsContext, deps Deps) Deps {
-	return Deps{}
+	return Deps{
+		HeaderLibs: linker.properties.Export_header_libs,
+	}
 }
 
 func (linker *stubDecorator) Name(name string) string {

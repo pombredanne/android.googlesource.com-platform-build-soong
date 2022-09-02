@@ -36,19 +36,10 @@ type toolchainContext interface {
 	Arch() android.Arch
 }
 
-type conversionContext interface {
-	BazelConversionMode() bool
-}
-
 func FindToolchainWithContext(ctx toolchainContext) Toolchain {
 	t, err := findToolchain(ctx.Os(), ctx.Arch())
 	if err != nil {
-		if c, ok := ctx.(conversionContext); ok && c.BazelConversionMode() {
-			// TODO(b/179123288): determine conversion for toolchain
-			return &toolchainX86_64{}
-		} else {
-			panic(err)
-		}
+		panic(err)
 	}
 	return t
 }
@@ -149,14 +140,6 @@ func (toolchainBase) ToolchainLdflags() string {
 	return ""
 }
 
-func (toolchainBase) ShlibSuffix() string {
-	return ".so"
-}
-
-func (toolchainBase) ExecutableSuffix() string {
-	return ""
-}
-
 func (toolchainBase) Asflags() string {
 	return ""
 }
@@ -169,16 +152,14 @@ func (toolchainBase) LibclangRuntimeLibraryArch() string {
 	return ""
 }
 
-func (toolchainBase) AvailableLibraries() []string {
-	return nil
-}
+type toolchainNoCrt struct{}
 
-func (toolchainBase) CrtBeginStaticBinary() []string  { return nil }
-func (toolchainBase) CrtBeginSharedBinary() []string  { return nil }
-func (toolchainBase) CrtBeginSharedLibrary() []string { return nil }
-func (toolchainBase) CrtEndStaticBinary() []string    { return nil }
-func (toolchainBase) CrtEndSharedBinary() []string    { return nil }
-func (toolchainBase) CrtEndSharedLibrary() []string   { return nil }
+func (toolchainNoCrt) CrtBeginStaticBinary() []string  { return nil }
+func (toolchainNoCrt) CrtBeginSharedBinary() []string  { return nil }
+func (toolchainNoCrt) CrtBeginSharedLibrary() []string { return nil }
+func (toolchainNoCrt) CrtEndStaticBinary() []string    { return nil }
+func (toolchainNoCrt) CrtEndSharedBinary() []string    { return nil }
+func (toolchainNoCrt) CrtEndSharedLibrary() []string   { return nil }
 
 func (toolchainBase) DefaultSharedLibraries() []string {
 	return nil
@@ -197,7 +178,6 @@ func (toolchainBase) Musl() bool {
 }
 
 type toolchain64Bit struct {
-	toolchainBase
 }
 
 func (toolchain64Bit) Is64Bit() bool {
@@ -205,7 +185,6 @@ func (toolchain64Bit) Is64Bit() bool {
 }
 
 type toolchain32Bit struct {
-	toolchainBase
 }
 
 func (toolchain32Bit) Is64Bit() bool {

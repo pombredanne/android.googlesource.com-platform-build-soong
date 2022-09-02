@@ -25,6 +25,8 @@ import (
 	"android/soong/cc"
 	"android/soong/genrule"
 	"android/soong/java"
+
+	"github.com/google/blueprint/proptools"
 )
 
 // Prepare for running an sdk test with an apex.
@@ -81,6 +83,11 @@ var prepareForSdkTest = android.GroupFixturePreparers(
 		}
 	}),
 
+	// Add a build number file.
+	android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+		variables.BuildNumberFile = proptools.StringPtr(BUILD_NUMBER_FILE)
+	}),
+
 	// Make sure that every test provides all the source files.
 	android.PrepareForTestDisallowNonExistentPaths,
 	android.MockFS{
@@ -115,34 +122,26 @@ func ensureListContains(t *testing.T, result []string, expected string) {
 	}
 }
 
-func pathsToStrings(paths android.Paths) []string {
-	var ret []string
-	for _, p := range paths {
-		ret = append(ret, p.String())
-	}
-	return ret
-}
-
 // Analyse the sdk build rules to extract information about what it is doing.
 //
 // e.g. find the src/dest pairs from each cp command, the various zip files
 // generated, etc.
 func getSdkSnapshotBuildInfo(t *testing.T, result *android.TestResult, sdk *sdk) *snapshotBuildInfo {
 	info := &snapshotBuildInfo{
-		t:                            t,
-		r:                            result,
-		version:                      sdk.builderForTests.version,
-		androidBpContents:            sdk.GetAndroidBpContentsForTests(),
-		androidUnversionedBpContents: sdk.GetUnversionedAndroidBpContentsForTests(),
-		androidVersionedBpContents:   sdk.GetVersionedAndroidBpContentsForTests(),
-		snapshotTestCustomizations:   map[snapshotTest]*snapshotTestCustomization{},
-		targetBuildRelease:           sdk.builderForTests.targetBuildRelease,
+		t:                          t,
+		r:                          result,
+		androidBpContents:          sdk.GetAndroidBpContentsForTests(),
+		infoContents:               sdk.GetInfoContentsForTests(),
+		snapshotTestCustomizations: map[snapshotTest]*snapshotTestCustomization{},
+		targetBuildRelease:         sdk.builderForTests.targetBuildRelease,
 	}
 
 	buildParams := sdk.BuildParamsForTests()
 	copyRules := &strings.Builder{}
 	otherCopyRules := &strings.Builder{}
 	snapshotDirPrefix := sdk.builderForTests.snapshotDir.String() + "/"
+
+	seenBuildNumberFile := false
 	for _, bp := range buildParams {
 		switch bp.Rule.String() {
 		case android.Cp.String():
@@ -152,8 +151,14 @@ func getSdkSnapshotBuildInfo(t *testing.T, result *android.TestResult, sdk *sdk)
 			src := android.NormalizePathForTesting(bp.Input)
 			// We differentiate between copy rules for the snapshot, and copy rules for the install file.
 			if strings.HasPrefix(output.String(), snapshotDirPrefix) {
-				// Get source relative to build directory.
-				_, _ = fmt.Fprintf(copyRules, "%s -> %s\n", src, dest)
+				// Don't include the build-number.txt file in the copy rules as that would break lots of
+				// tests, just verify that it is copied here as it should appear in every snapshot.
+				if output.Base() == BUILD_NUMBER_FILE {
+					seenBuildNumberFile = true
+				} else {
+					// Get source relative to build directory.
+					_, _ = fmt.Fprintf(copyRules, "%s -> %s\n", src, dest)
+				}
 				info.snapshotContents = append(info.snapshotContents, dest)
 			} else {
 				_, _ = fmt.Fprintf(otherCopyRules, "%s -> %s\n", src, dest)
@@ -187,6 +192,10 @@ func getSdkSnapshotBuildInfo(t *testing.T, result *android.TestResult, sdk *sdk)
 			// Save the zips to be merged into the intermediate zip.
 			info.mergeZips = android.NormalizePathsForTesting(bp.Inputs)
 		}
+	}
+
+	if !seenBuildNumberFile {
+		panic(fmt.Sprintf("Every snapshot must include the %s file", BUILD_NUMBER_FILE))
 	}
 
 	info.copyRules = copyRules.String()
@@ -238,10 +247,7 @@ func CheckSnapshot(t *testing.T, result *android.TestResult, name string, dir st
 	if dir != "" {
 		dir = filepath.Clean(dir) + "/"
 	}
-	suffix := ""
-	if snapshotBuildInfo.version != soongSdkSnapshotVersionUnversioned {
-		suffix = "-" + snapshotBuildInfo.version
-	}
+	suffix := "-" + soongSdkSnapshotVersionCurrent
 
 	expectedZipPath := fmt.Sprintf(".intermediates/%s%s/%s/%s%s.zip", dir, name, variant, name, suffix)
 	android.AssertStringEquals(t, "Snapshot zip file in wrong place", expectedZipPath, actual)
@@ -256,8 +262,7 @@ func CheckSnapshot(t *testing.T, result *android.TestResult, name string, dir st
 
 	// If the generated snapshot builders not for the current release then it cannot be loaded by
 	// the current release.
-	currentBuildRelease := latestBuildRelease()
-	if snapshotBuildInfo.targetBuildRelease != currentBuildRelease {
+	if snapshotBuildInfo.targetBuildRelease != buildReleaseCurrent {
 		return
 	}
 
@@ -325,33 +330,6 @@ func checkAndroidBpContents(expected string) snapshotBuildInfoChecker {
 	}
 }
 
-// Check that the snapshot's unversioned generated Android.bp is correct.
-//
-// This func should be used to check the general snapshot generation code.
-//
-// Both the expected and actual string are both trimmed before comparing.
-func checkUnversionedAndroidBpContents(expected string) snapshotBuildInfoChecker {
-	return func(info *snapshotBuildInfo) {
-		info.t.Helper()
-		android.AssertTrimmedStringEquals(info.t, "unversioned Android.bp contents do not match", expected, info.androidUnversionedBpContents)
-	}
-}
-
-// Check that the snapshot's versioned generated Android.bp is correct.
-//
-// This func should only be used to check the version specific snapshot generation code,
-// i.e. the encoding of version into module names and the generation of the _snapshot module. The
-// general snapshot generation code should be checked using the checkUnversionedAndroidBpContents()
-// func.
-//
-// Both the expected and actual string are both trimmed before comparing.
-func checkVersionedAndroidBpContents(expected string) snapshotBuildInfoChecker {
-	return func(info *snapshotBuildInfo) {
-		info.t.Helper()
-		android.AssertTrimmedStringEquals(info.t, "versioned Android.bp contents do not match", expected, info.androidVersionedBpContents)
-	}
-}
-
 // Check that the snapshot's copy rules are correct.
 //
 // The copy rules are formatted as <src> -> <dest>, one per line and then compared
@@ -380,6 +358,17 @@ func checkMergeZips(expected ...string) snapshotBuildInfoChecker {
 		}
 
 		android.AssertDeepEquals(info.t, "mismatching merge zip files", expected, info.mergeZips)
+	}
+}
+
+// Check that the snapshot's info contents are ciorrect.
+//
+// Both the expected and actual string are both trimmed before comparing.
+func checkInfoContents(config android.Config, expected string) snapshotBuildInfoChecker {
+	return func(info *snapshotBuildInfo) {
+		info.t.Helper()
+		android.AssertTrimmedStringEquals(info.t, "info contents do not match",
+			expected, android.StringRelativeToTop(config, info.infoContents))
 	}
 }
 
@@ -446,19 +435,11 @@ type snapshotBuildInfo struct {
 	// The result from RunTest()
 	r *android.TestResult
 
-	// The version of the generated snapshot.
-	//
-	// See snapshotBuilder.version for more information about this field.
-	version string
-
 	// The contents of the generated Android.bp file
 	androidBpContents string
 
-	// The contents of the unversioned Android.bp file
-	androidUnversionedBpContents string
-
-	// The contents of the versioned Android.bp file
-	androidVersionedBpContents string
+	// The contents of the info file.
+	infoContents string
 
 	// The paths, relative to the snapshot root, of all files and directories copied into the
 	// snapshot.

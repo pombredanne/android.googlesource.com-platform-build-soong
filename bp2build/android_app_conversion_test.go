@@ -21,53 +21,52 @@ import (
 	"testing"
 )
 
-func runAndroidAppTestCase(t *testing.T, tc bp2buildTestCase) {
+func runAndroidAppTestCase(t *testing.T, tc Bp2buildTestCase) {
 	t.Helper()
-	runBp2BuildTestCase(t, registerAndroidAppModuleTypes, tc)
+	RunBp2BuildTestCase(t, registerAndroidAppModuleTypes, tc)
 }
 
 func registerAndroidAppModuleTypes(ctx android.RegistrationContext) {
 }
 
 func TestMinimalAndroidApp(t *testing.T) {
-	runAndroidAppTestCase(t, bp2buildTestCase{
-		description:                "Android app - simple example",
-		moduleTypeUnderTest:        "android_app",
-		moduleTypeUnderTestFactory: java.AndroidAppFactory,
-		filesystem: map[string]string{
+	runAndroidAppTestCase(t, Bp2buildTestCase{
+		Description:                "Android app - simple example",
+		ModuleTypeUnderTest:        "android_app",
+		ModuleTypeUnderTestFactory: java.AndroidAppFactory,
+		Filesystem: map[string]string{
 			"app.java":            "",
 			"res/res.png":         "",
 			"AndroidManifest.xml": "",
 		},
-		blueprint: `
+		Blueprint: `
 android_app {
         name: "TestApp",
         srcs: ["app.java"],
         sdk_version: "current",
 }
 `,
-		expectedBazelTargets: []string{
-			makeBazelTarget("android_binary", "TestApp", attrNameToString{
+		ExpectedBazelTargets: []string{
+			MakeBazelTarget("android_binary", "TestApp", AttrNameToString{
 				"srcs":           `["app.java"]`,
 				"manifest":       `"AndroidManifest.xml"`,
 				"resource_files": `["res/res.png"]`,
-				"deps":           `["//prebuilts/sdk:public_current_android_sdk_java_import"]`,
 			}),
 		}})
 }
 
 func TestAndroidAppAllSupportedFields(t *testing.T) {
-	runAndroidAppTestCase(t, bp2buildTestCase{
-		description:                "Android app - all supported fields",
-		moduleTypeUnderTest:        "android_app",
-		moduleTypeUnderTestFactory: java.AndroidAppFactory,
-		filesystem: map[string]string{
+	runAndroidAppTestCase(t, Bp2buildTestCase{
+		Description:                "Android app - all supported fields",
+		ModuleTypeUnderTest:        "android_app",
+		ModuleTypeUnderTestFactory: java.AndroidAppFactory,
+		Filesystem: map[string]string{
 			"app.java":                     "",
 			"resa/res.png":                 "",
 			"resb/res.png":                 "",
 			"manifest/AndroidManifest.xml": "",
 		},
-		blueprint: simpleModuleDoNotConvertBp2build("android_app", "static_lib_dep") + `
+		Blueprint: simpleModuleDoNotConvertBp2build("android_app", "static_lib_dep") + `
 android_app {
         name: "TestApp",
         srcs: ["app.java"],
@@ -75,11 +74,12 @@ android_app {
         package_name: "com.google",
         resource_dirs: ["resa", "resb"],
         manifest: "manifest/AndroidManifest.xml",
-        static_libs: ["static_lib_dep"]
+        static_libs: ["static_lib_dep"],
+        java_version: "7",
 }
 `,
-		expectedBazelTargets: []string{
-			makeBazelTarget("android_binary", "TestApp", attrNameToString{
+		ExpectedBazelTargets: []string{
+			MakeBazelTarget("android_binary", "TestApp", AttrNameToString{
 				"srcs":     `["app.java"]`,
 				"manifest": `"manifest/AndroidManifest.xml"`,
 				"resource_files": `[
@@ -87,26 +87,24 @@ android_app {
         "resb/res.png",
     ]`,
 				"custom_package": `"com.google"`,
-				"deps": `[
-        "//prebuilts/sdk:public_current_android_sdk_java_import",
-        ":static_lib_dep",
-    ]`,
+				"deps":           `[":static_lib_dep"]`,
+				"javacopts":      `["-source 1.7 -target 1.7"]`,
 			}),
 		}})
 }
 
 func TestAndroidAppArchVariantSrcs(t *testing.T) {
-	runAndroidAppTestCase(t, bp2buildTestCase{
-		description:                "Android app - arch variant srcs",
-		moduleTypeUnderTest:        "android_app",
-		moduleTypeUnderTestFactory: java.AndroidAppFactory,
-		filesystem: map[string]string{
+	runAndroidAppTestCase(t, Bp2buildTestCase{
+		Description:                "Android app - arch variant srcs",
+		ModuleTypeUnderTest:        "android_app",
+		ModuleTypeUnderTestFactory: java.AndroidAppFactory,
+		Filesystem: map[string]string{
 			"arm.java":            "",
 			"x86.java":            "",
 			"res/res.png":         "",
 			"AndroidManifest.xml": "",
 		},
-		blueprint: `
+		Blueprint: `
 android_app {
         name: "TestApp",
         sdk_version: "current",
@@ -120,8 +118,8 @@ android_app {
 		}
 }
 `,
-		expectedBazelTargets: []string{
-			makeBazelTarget("android_binary", "TestApp", attrNameToString{
+		ExpectedBazelTargets: []string{
+			MakeBazelTarget("android_binary", "TestApp", AttrNameToString{
 				"srcs": `select({
         "//build/bazel/platforms/arch:arm": ["arm.java"],
         "//build/bazel/platforms/arch:x86": ["x86.java"],
@@ -129,7 +127,6 @@ android_app {
     })`,
 				"manifest":       `"AndroidManifest.xml"`,
 				"resource_files": `["res/res.png"]`,
-				"deps":           `["//prebuilts/sdk:public_current_android_sdk_java_import"]`,
 			}),
 		}})
 }

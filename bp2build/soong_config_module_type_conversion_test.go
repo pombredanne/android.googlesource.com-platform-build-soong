@@ -20,9 +20,9 @@ import (
 	"testing"
 )
 
-func runSoongConfigModuleTypeTest(t *testing.T, tc bp2buildTestCase) {
+func runSoongConfigModuleTypeTest(t *testing.T, tc Bp2buildTestCase) {
 	t.Helper()
-	runBp2BuildTestCase(t, registerSoongConfigModuleTypes, tc)
+	RunBp2BuildTestCase(t, registerSoongConfigModuleTypes, tc)
 }
 
 func registerSoongConfigModuleTypes(ctx android.RegistrationContext) {
@@ -49,6 +49,7 @@ soong_config_module_type {
 custom_cc_library_static {
 	name: "foo",
 	bazel_module: { bp2build_available: true },
+	host_supported: true,
 	soong_config_variables: {
 		feature1: {
 			conditions_default: {
@@ -60,12 +61,12 @@ custom_cc_library_static {
 }
 `
 
-	runSoongConfigModuleTypeTest(t, bp2buildTestCase{
-		description:                "soong config variables - soong_config_module_type is supported in bp2build",
-		moduleTypeUnderTest:        "cc_library_static",
-		moduleTypeUnderTestFactory: cc.LibraryStaticFactory,
-		blueprint:                  bp,
-		expectedBazelTargets: []string{`cc_library_static(
+	runSoongConfigModuleTypeTest(t, Bp2buildTestCase{
+		Description:                "soong config variables - soong_config_module_type is supported in bp2build",
+		ModuleTypeUnderTest:        "cc_library_static",
+		ModuleTypeUnderTestFactory: cc.LibraryStaticFactory,
+		Blueprint:                  bp,
+		ExpectedBazelTargets: []string{`cc_library_static(
     name = "foo",
     copts = select({
         "//build/bazel/product_variables:acme__feature1": ["-DFEATURE1"],
@@ -94,6 +95,7 @@ soong_config_module_type_import {
 custom_cc_library_static {
 	name: "foo",
 	bazel_module: { bp2build_available: true },
+	host_supported: true,
 	soong_config_variables: {
 		feature1: {
 			conditions_default: {
@@ -105,15 +107,15 @@ custom_cc_library_static {
 }
 `
 
-	runSoongConfigModuleTypeTest(t, bp2buildTestCase{
-		description:                "soong config variables - soong_config_module_type_import is supported in bp2build",
-		moduleTypeUnderTest:        "cc_library_static",
-		moduleTypeUnderTestFactory: cc.LibraryStaticFactory,
-		filesystem: map[string]string{
+	runSoongConfigModuleTypeTest(t, Bp2buildTestCase{
+		Description:                "soong config variables - soong_config_module_type_import is supported in bp2build",
+		ModuleTypeUnderTest:        "cc_library_static",
+		ModuleTypeUnderTestFactory: cc.LibraryStaticFactory,
+		Filesystem: map[string]string{
 			"foo/bar/SoongConfig.bp": configBp,
 		},
-		blueprint: bp,
-		expectedBazelTargets: []string{`cc_library_static(
+		Blueprint: bp,
+		ExpectedBazelTargets: []string{`cc_library_static(
     name = "foo",
     copts = select({
         "//build/bazel/product_variables:acme__feature1": ["-DFEATURE1"],
@@ -141,6 +143,7 @@ soong_config_module_type {
 custom_cc_library_static {
 	name: "foo",
 	bazel_module: { bp2build_available: true },
+	host_supported: true,
 	soong_config_variables: {
 		board: {
 			soc_a: {
@@ -158,12 +161,12 @@ custom_cc_library_static {
 }
 `
 
-	runSoongConfigModuleTypeTest(t, bp2buildTestCase{
-		description:                "soong config variables - generates selects for string vars",
-		moduleTypeUnderTest:        "cc_library_static",
-		moduleTypeUnderTestFactory: cc.LibraryStaticFactory,
-		blueprint:                  bp,
-		expectedBazelTargets: []string{`cc_library_static(
+	runSoongConfigModuleTypeTest(t, Bp2buildTestCase{
+		Description:                "soong config variables - generates selects for string vars",
+		ModuleTypeUnderTest:        "cc_library_static",
+		ModuleTypeUnderTestFactory: cc.LibraryStaticFactory,
+		Blueprint:                  bp,
+		ExpectedBazelTargets: []string{`cc_library_static(
     name = "foo",
     copts = select({
         "//build/bazel/product_variables:acme__board__soc_a": ["-DSOC_A"],
@@ -200,6 +203,7 @@ soong_config_module_type {
 custom_cc_library_static {
 	name: "foo",
 	bazel_module: { bp2build_available: true },
+	host_supported: true,
 	soong_config_variables: {
 		feature1: {
 			conditions_default: {
@@ -228,12 +232,12 @@ custom_cc_library_static {
 	},
 }`
 
-	runSoongConfigModuleTypeTest(t, bp2buildTestCase{
-		description:                "soong config variables - generates selects for multiple variable types",
-		moduleTypeUnderTest:        "cc_library_static",
-		moduleTypeUnderTestFactory: cc.LibraryStaticFactory,
-		blueprint:                  bp,
-		expectedBazelTargets: []string{`cc_library_static(
+	runSoongConfigModuleTypeTest(t, Bp2buildTestCase{
+		Description:                "soong config variables - generates selects for multiple variable types",
+		ModuleTypeUnderTest:        "cc_library_static",
+		ModuleTypeUnderTestFactory: cc.LibraryStaticFactory,
+		Blueprint:                  bp,
+		ExpectedBazelTargets: []string{`cc_library_static(
     name = "foo",
     copts = select({
         "//build/bazel/product_variables:acme__board__soc_a": ["-DSOC_A"],
@@ -268,6 +272,7 @@ soong_config_module_type {
 custom_cc_library_static {
 	name: "foo",
 	bazel_module: { bp2build_available: true },
+	host_supported: true,
 	soong_config_variables: {
 		board: {
 			soc_a: {
@@ -293,15 +298,15 @@ cc_library_static { name: "soc_b_dep", bazel_module: { bp2build_available: false
 cc_library_static { name: "soc_default_static_dep", bazel_module: { bp2build_available: false } }
 `
 
-	runSoongConfigModuleTypeTest(t, bp2buildTestCase{
-		description:                "soong config variables - generates selects for label list attributes",
-		moduleTypeUnderTest:        "cc_library_static",
-		moduleTypeUnderTestFactory: cc.LibraryStaticFactory,
-		blueprint:                  bp,
-		filesystem: map[string]string{
+	runSoongConfigModuleTypeTest(t, Bp2buildTestCase{
+		Description:                "soong config variables - generates selects for label list attributes",
+		ModuleTypeUnderTest:        "cc_library_static",
+		ModuleTypeUnderTestFactory: cc.LibraryStaticFactory,
+		Blueprint:                  bp,
+		Filesystem: map[string]string{
 			"foo/bar/Android.bp": otherDeps,
 		},
-		expectedBazelTargets: []string{`cc_library_static(
+		ExpectedBazelTargets: []string{`cc_library_static(
     name = "foo",
     copts = select({
         "//build/bazel/product_variables:acme__board__soc_a": ["-DSOC_A"],
@@ -356,15 +361,16 @@ cc_library_static {
 	name: "lib",
 	defaults: ["foo_defaults_2"],
 	bazel_module: { bp2build_available: true },
+	host_supported: true,
 }
 `
 
-	runSoongConfigModuleTypeTest(t, bp2buildTestCase{
-		description:                "soong config variables - defaults with a single namespace",
-		moduleTypeUnderTest:        "cc_library_static",
-		moduleTypeUnderTestFactory: cc.LibraryStaticFactory,
-		blueprint:                  bp,
-		expectedBazelTargets: []string{`cc_library_static(
+	runSoongConfigModuleTypeTest(t, Bp2buildTestCase{
+		Description:                "soong config variables - defaults with a single namespace",
+		ModuleTypeUnderTest:        "cc_library_static",
+		ModuleTypeUnderTestFactory: cc.LibraryStaticFactory,
+		Blueprint:                  bp,
+		ExpectedBazelTargets: []string{`cc_library_static(
     name = "lib",
     copts = select({
         "//build/bazel/product_variables:vendor_foo__feature": [
@@ -429,21 +435,23 @@ cc_library_static {
 	name: "lib",
 	defaults: ["foo_defaults", "bar_defaults"],
 	bazel_module: { bp2build_available: true },
+	host_supported: true,
 }
 
 cc_library_static {
 	name: "lib2",
 	defaults: ["bar_defaults", "foo_defaults"],
 	bazel_module: { bp2build_available: true },
+	host_supported: true,
 }
 `
 
-	runSoongConfigModuleTypeTest(t, bp2buildTestCase{
-		description:                "soong config variables - multiple defaults with a single namespace",
-		moduleTypeUnderTest:        "cc_library_static",
-		moduleTypeUnderTestFactory: cc.LibraryStaticFactory,
-		blueprint:                  bp,
-		expectedBazelTargets: []string{`cc_library_static(
+	runSoongConfigModuleTypeTest(t, Bp2buildTestCase{
+		Description:                "soong config variables - multiple defaults with a single namespace",
+		ModuleTypeUnderTest:        "cc_library_static",
+		ModuleTypeUnderTestFactory: cc.LibraryStaticFactory,
+		Blueprint:                  bp,
+		ExpectedBazelTargets: []string{`cc_library_static(
     name = "lib",
     asflags = select({
         "//build/bazel/product_variables:acme__feature": ["-asflag_bar"],
@@ -550,15 +558,16 @@ cc_library_static {
 	name: "lib",
 	defaults: ["foo_defaults", "qux_defaults"],
 	bazel_module: { bp2build_available: true },
+	host_supported: true,
 }
 `
 
-	runSoongConfigModuleTypeTest(t, bp2buildTestCase{
-		description:                "soong config variables - defaults with multiple namespaces",
-		moduleTypeUnderTest:        "cc_library_static",
-		moduleTypeUnderTestFactory: cc.LibraryStaticFactory,
-		blueprint:                  bp,
-		expectedBazelTargets: []string{`cc_library_static(
+	runSoongConfigModuleTypeTest(t, Bp2buildTestCase{
+		Description:                "soong config variables - defaults with multiple namespaces",
+		ModuleTypeUnderTest:        "cc_library_static",
+		ModuleTypeUnderTestFactory: cc.LibraryStaticFactory,
+		Blueprint:                  bp,
+		ExpectedBazelTargets: []string{`cc_library_static(
     name = "lib",
     copts = select({
         "//build/bazel/product_variables:vendor_bar__feature": ["-DVENDOR_BAR_FEATURE"],
@@ -615,6 +624,7 @@ library_linking_strategy_cc_defaults {
 library_linking_strategy_cc_defaults {
     name: "library_linking_strategy_merged_defaults",
     defaults: ["library_linking_strategy_lib_a_defaults"],
+    host_supported: true,
     soong_config_variables: {
         library_linking_strategy: {
             prefer_static: {
@@ -643,15 +653,15 @@ cc_library { name: "lib_b", bazel_module: { bp2build_available: false } }
 cc_library { name: "lib_default", bazel_module: { bp2build_available: false } }
 `
 
-	runSoongConfigModuleTypeTest(t, bp2buildTestCase{
-		description:                "soong config variables - generates selects for library_linking_strategy",
-		moduleTypeUnderTest:        "cc_binary",
-		moduleTypeUnderTestFactory: cc.BinaryFactory,
-		blueprint:                  bp,
-		filesystem: map[string]string{
+	runSoongConfigModuleTypeTest(t, Bp2buildTestCase{
+		Description:                "soong config variables - generates selects for library_linking_strategy",
+		ModuleTypeUnderTest:        "cc_binary",
+		ModuleTypeUnderTestFactory: cc.BinaryFactory,
+		Blueprint:                  bp,
+		Filesystem: map[string]string{
 			"foo/bar/Android.bp": otherDeps,
 		},
-		expectedBazelTargets: []string{`cc_binary(
+		ExpectedBazelTargets: []string{`cc_binary(
     name = "library_linking_strategy_sample_binary",
     deps = select({
         "//build/bazel/product_variables:android__library_linking_strategy__prefer_static": [
@@ -714,6 +724,7 @@ library_linking_strategy_cc_defaults {
 
 cc_binary {
     name: "library_linking_strategy_sample_binary",
+    host_supported: true,
     srcs: ["library_linking_strategy.cc"],
     defaults: ["library_linking_strategy_sample_defaults"],
 }`
@@ -723,15 +734,15 @@ cc_library { name: "lib_a", bazel_module: { bp2build_available: false } }
 cc_library { name: "lib_b", bazel_module: { bp2build_available: false } }
 `
 
-	runSoongConfigModuleTypeTest(t, bp2buildTestCase{
-		description:                "soong config variables - generates selects for library_linking_strategy",
-		moduleTypeUnderTest:        "cc_binary",
-		moduleTypeUnderTestFactory: cc.BinaryFactory,
-		blueprint:                  bp,
-		filesystem: map[string]string{
+	runSoongConfigModuleTypeTest(t, Bp2buildTestCase{
+		Description:                "soong config variables - generates selects for library_linking_strategy",
+		ModuleTypeUnderTest:        "cc_binary",
+		ModuleTypeUnderTestFactory: cc.BinaryFactory,
+		Blueprint:                  bp,
+		Filesystem: map[string]string{
 			"foo/bar/Android.bp": otherDeps,
 		},
-		expectedBazelTargets: []string{`cc_binary(
+		ExpectedBazelTargets: []string{`cc_binary(
     name = "library_linking_strategy_sample_binary",
     deps = select({
         "//build/bazel/product_variables:android__library_linking_strategy__prefer_static": [
@@ -800,6 +811,7 @@ alphabet_cc_defaults {
 
 cc_binary {
     name: "alphabet_binary",
+    host_supported: true,
     srcs: ["main.cc"],
     defaults: ["alphabet_sample_cc_defaults"],
 }`
@@ -810,15 +822,15 @@ cc_library { name: "lib_b", bazel_module: { bp2build_available: false } }
 cc_library { name: "lib_default", bazel_module: { bp2build_available: false } }
 `
 
-	runSoongConfigModuleTypeTest(t, bp2buildTestCase{
-		description:                "soong config variables - generates selects for library_linking_strategy",
-		moduleTypeUnderTest:        "cc_binary",
-		moduleTypeUnderTestFactory: cc.BinaryFactory,
-		blueprint:                  bp,
-		filesystem: map[string]string{
+	runSoongConfigModuleTypeTest(t, Bp2buildTestCase{
+		Description:                "soong config variables - generates selects for library_linking_strategy",
+		ModuleTypeUnderTest:        "cc_binary",
+		ModuleTypeUnderTestFactory: cc.BinaryFactory,
+		Blueprint:                  bp,
+		Filesystem: map[string]string{
 			"foo/bar/Android.bp": otherDeps,
 		},
-		expectedBazelTargets: []string{`cc_binary(
+		ExpectedBazelTargets: []string{`cc_binary(
     name = "alphabet_binary",
     deps = select({
         "//build/bazel/product_variables:android__alphabet__a": [],
@@ -861,6 +873,7 @@ alphabet_cc_defaults {
 cc_binary {
     name: "alphabet_binary",
     srcs: ["main.cc"],
+    host_supported: true,
     defaults: ["alphabet_sample_cc_defaults"],
     enabled: false,
     arch: {
@@ -875,13 +888,13 @@ cc_binary {
     },
 }`
 
-	runSoongConfigModuleTypeTest(t, bp2buildTestCase{
-		description:                "soong config variables - generates selects for library_linking_strategy",
-		moduleTypeUnderTest:        "cc_binary",
-		moduleTypeUnderTestFactory: cc.BinaryFactory,
-		blueprint:                  bp,
-		filesystem:                 map[string]string{},
-		expectedBazelTargets: []string{`cc_binary(
+	runSoongConfigModuleTypeTest(t, Bp2buildTestCase{
+		Description:                "soong config variables - generates selects for library_linking_strategy",
+		ModuleTypeUnderTest:        "cc_binary",
+		ModuleTypeUnderTestFactory: cc.BinaryFactory,
+		Blueprint:                  bp,
+		Filesystem:                 map[string]string{},
+		ExpectedBazelTargets: []string{`cc_binary(
     name = "alphabet_binary",
     local_includes = ["."],
     srcs = ["main.cc"],
@@ -928,13 +941,13 @@ cc_binary {
     enabled: false,
 }`
 
-	runSoongConfigModuleTypeTest(t, bp2buildTestCase{
-		description:                "soong config variables - generates selects for library_linking_strategy",
-		moduleTypeUnderTest:        "cc_binary",
-		moduleTypeUnderTestFactory: cc.BinaryFactory,
-		blueprint:                  bp,
-		filesystem:                 map[string]string{},
-		expectedBazelTargets: []string{`cc_binary(
+	runSoongConfigModuleTypeTest(t, Bp2buildTestCase{
+		Description:                "soong config variables - generates selects for library_linking_strategy",
+		ModuleTypeUnderTest:        "cc_binary",
+		ModuleTypeUnderTestFactory: cc.BinaryFactory,
+		Blueprint:                  bp,
+		Filesystem:                 map[string]string{},
+		ExpectedBazelTargets: []string{`cc_binary(
     name = "alphabet_binary",
     local_includes = ["."],
     srcs = ["main.cc"],
@@ -958,6 +971,7 @@ soong_config_module_type {
 
 alphabet_cc_defaults {
     name: "alphabet_sample_cc_defaults",
+    host_supported: true,
     soong_config_variables: {
         special_build: {
             enabled: true,
@@ -971,13 +985,13 @@ cc_binary {
     defaults: ["alphabet_sample_cc_defaults"],
 }`
 
-	runSoongConfigModuleTypeTest(t, bp2buildTestCase{
-		description:                "soong config variables - generates selects for library_linking_strategy",
-		moduleTypeUnderTest:        "cc_binary",
-		moduleTypeUnderTestFactory: cc.BinaryFactory,
-		blueprint:                  bp,
-		filesystem:                 map[string]string{},
-		expectedBazelTargets: []string{`cc_binary(
+	runSoongConfigModuleTypeTest(t, Bp2buildTestCase{
+		Description:                "soong config variables - generates selects for library_linking_strategy",
+		ModuleTypeUnderTest:        "cc_binary",
+		ModuleTypeUnderTestFactory: cc.BinaryFactory,
+		Blueprint:                  bp,
+		Filesystem:                 map[string]string{},
+		ExpectedBazelTargets: []string{`cc_binary(
     name = "alphabet_binary",
     local_includes = ["."],
     srcs = ["main.cc"],

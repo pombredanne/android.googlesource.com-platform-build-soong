@@ -107,6 +107,7 @@ func (s *sdkRepoHost) DepsMutator(ctx android.BottomUpMutatorContext) {
 
 func (s *sdkRepoHost) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	dir := android.PathForModuleOut(ctx, "zip")
+	outputZipFile := dir.Join(ctx, "output.zip")
 	builder := android.NewRuleBuilder(pctx, ctx).
 		Sbox(dir, android.PathForModuleOut(ctx, "out.sbox.textproto")).
 		SandboxInputs()
@@ -123,7 +124,12 @@ func (s *sdkRepoHost) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	s.CopySpecsToDir(ctx, builder, packageSpecs, dir)
 
 	noticeFile := android.PathForModuleOut(ctx, "NOTICES.txt")
-	android.BuildNoticeTextOutputFromLicenseMetadata(ctx, noticeFile)
+	android.BuildNoticeTextOutputFromLicenseMetadata(
+		ctx, noticeFile, "", "",
+		[]string{
+			android.PathForModuleInstall(ctx, "sdk-repo").String() + "/",
+			outputZipFile.String(),
+		})
 	builder.Command().Text("cp").
 		Input(noticeFile).
 		Text(filepath.Join(dir.String(), "NOTICE.txt"))
@@ -160,9 +166,10 @@ func (s *sdkRepoHost) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		}
 	} else {
 		llvmStrip := config.ClangPath(ctx, "bin/llvm-strip")
-		llvmLib := config.ClangPath(ctx, "lib64/libc++.so.1")
+		llvmLib64 := config.ClangPath(ctx, "lib64/libc++.so.1")
+		llvmLib := config.ClangPath(ctx, "lib/libc++.so.1")
 		for _, strip := range s.properties.Strip_files {
-			cmd := builder.Command().Tool(llvmStrip).ImplicitTool(llvmLib)
+			cmd := builder.Command().Tool(llvmStrip).ImplicitTool(llvmLib64).ImplicitTool(llvmLib)
 			if !ctx.Windows() {
 				cmd.Flag("-x")
 			}
@@ -209,7 +216,6 @@ func (s *sdkRepoHost) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 
 	// Zip up our temporary directory as the sdk-repo
-	outputZipFile := dir.Join(ctx, "output.zip")
 	builder.Command().
 		BuiltTool("soong_zip").
 		FlagWithOutput("-o ", outputZipFile).

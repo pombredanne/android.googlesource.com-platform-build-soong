@@ -199,8 +199,11 @@ type productVariables struct {
 	Platform_preview_sdk_version              *string  `json:",omitempty"`
 	Platform_min_supported_target_sdk_version *string  `json:",omitempty"`
 	Platform_base_os                          *string  `json:",omitempty"`
+	Platform_version_last_stable              *string  `json:",omitempty"`
+	Platform_version_known_codenames          *string  `json:",omitempty"`
 
 	DeviceName                            *string  `json:",omitempty"`
+	DeviceProduct                         *string  `json:",omitempty"`
 	DeviceArch                            *string  `json:",omitempty"`
 	DeviceArchVariant                     *string  `json:",omitempty"`
 	DeviceCpuVariant                      *string  `json:",omitempty"`
@@ -246,7 +249,8 @@ type productVariables struct {
 	AAPTPreferredConfig *string  `json:",omitempty"`
 	AAPTPrebuiltDPI     []string `json:",omitempty"`
 
-	DefaultAppCertificate *string `json:",omitempty"`
+	DefaultAppCertificate           *string `json:",omitempty"`
+	MainlineSepolicyDevCertificates *string `json:",omitempty"`
 
 	AppsDefaultVersionName *string `json:",omitempty"`
 
@@ -350,6 +354,8 @@ type productVariables struct {
 	RecoverySnapshotDirsIncluded []string `json:",omitempty"`
 	HostFakeSnapshotEnabled      bool     `json:",omitempty"`
 
+	MultitreeUpdateMeta bool `json:",omitempty"`
+
 	BoardVendorSepolicyDirs           []string `json:",omitempty"`
 	BoardOdmSepolicyDirs              []string `json:",omitempty"`
 	BoardReqdMaskPolicy               []string `json:",omitempty"`
@@ -388,6 +394,8 @@ type productVariables struct {
 	CertificateOverrides         []string `json:",omitempty"`
 	PackageNameOverrides         []string `json:",omitempty"`
 
+	ApexGlobalMinSdkVersionOverride *string `json:",omitempty"`
+
 	EnforceSystemCertificate          *bool    `json:",omitempty"`
 	EnforceSystemCertificateAllowList []string `json:",omitempty"`
 
@@ -422,6 +430,8 @@ type productVariables struct {
 
 	ShippingApiLevel *string `json:",omitempty"`
 
+	BuildBrokenClangProperty           bool     `json:",omitempty"`
+	BuildBrokenDepfile                 *bool    `json:",omitempty"`
 	BuildBrokenEnforceSyspropOwner     bool     `json:",omitempty"`
 	BuildBrokenTrebleSyspropNeverallow bool     `json:",omitempty"`
 	BuildBrokenVendorPropertyNamespace bool     `json:",omitempty"`
@@ -439,6 +449,8 @@ type productVariables struct {
 	SepolicyFreezeTestExtraPrebuiltDirs []string `json:",omitempty"`
 
 	GenerateAidlNdkPlatformBackend bool `json:",omitempty"`
+
+	IgnorePrefer32OnDevice bool `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {
@@ -457,16 +469,18 @@ func (v *productVariables) SetDefaultConfig() {
 	*v = productVariables{
 		BuildNumberFile: stringPtr("build_number.txt"),
 
-		Platform_version_name:             stringPtr("S"),
-		Platform_sdk_version:              intPtr(30),
-		Platform_sdk_codename:             stringPtr("S"),
-		Platform_sdk_final:                boolPtr(false),
-		Platform_version_active_codenames: []string{"S"},
-		Platform_vndk_version:             stringPtr("S"),
+		Platform_version_name:               stringPtr("S"),
+		Platform_base_sdk_extension_version: intPtr(30),
+		Platform_sdk_version:                intPtr(30),
+		Platform_sdk_codename:               stringPtr("S"),
+		Platform_sdk_final:                  boolPtr(false),
+		Platform_version_active_codenames:   []string{"S"},
+		Platform_vndk_version:               stringPtr("S"),
 
 		HostArch:                   stringPtr("x86_64"),
 		HostSecondaryArch:          stringPtr("x86"),
 		DeviceName:                 stringPtr("generic_arm64"),
+		DeviceProduct:              stringPtr("aosp_arm-eng"),
 		DeviceArch:                 stringPtr("arm64"),
 		DeviceArchVariant:          stringPtr("armv8-a"),
 		DeviceCpuVariant:           stringPtr("generic"),
@@ -689,20 +703,20 @@ func ProductVariableProperties(ctx BazelConversionPathContext) ProductConfigProp
 //
 // If the ProductConfigProperties map contains these items, as parsed from the .bp file:
 //
-// library_linking_strategy: {
-//     prefer_static: {
-//         static_libs: [
-//             "lib_a",
-//             "lib_b",
-//         ],
-//     },
-//     conditions_default: {
-//         shared_libs: [
-//             "lib_a",
-//             "lib_b",
-//         ],
-//     },
-// },
+//	library_linking_strategy: {
+//	    prefer_static: {
+//	        static_libs: [
+//	            "lib_a",
+//	            "lib_b",
+//	        ],
+//	    },
+//	    conditions_default: {
+//	        shared_libs: [
+//	            "lib_a",
+//	            "lib_b",
+//	        ],
+//	    },
+//	},
 //
 // Static_libs {Library_linking_strategy ANDROID prefer_static} [lib_a lib_b]
 // Shared_libs {Library_linking_strategy ANDROID conditions_default} [lib_a lib_b]
@@ -715,13 +729,13 @@ func ProductVariableProperties(ctx BazelConversionPathContext) ProductConfigProp
 // instead of putting lib_a and lib_b directly into dynamic_deps without a
 // select:
 //
-// dynamic_deps = select({
-//     "//build/bazel/product_variables:android__library_linking_strategy__prefer_static": [],
-//     "//conditions:default": [
-//         "//foo/bar:lib_a",
-//         "//foo/bar:lib_b",
-//     ],
-// }),
+//	dynamic_deps = select({
+//	    "//build/bazel/product_variables:android__library_linking_strategy__prefer_static": [],
+//	    "//conditions:default": [
+//	        "//foo/bar:lib_a",
+//	        "//foo/bar:lib_b",
+//	    ],
+//	}),
 func (props *ProductConfigProperties) zeroValuesForNamespacedVariables() {
 	// A map of product config properties to the zero values of their respective
 	// property value.

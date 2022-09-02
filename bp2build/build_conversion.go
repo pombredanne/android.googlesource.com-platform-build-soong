@@ -43,7 +43,6 @@ type BazelTarget struct {
 	content         string
 	ruleClass       string
 	bzlLoadLocation string
-	handcrafted     bool
 }
 
 // IsLoadedFromStarlark determines if the BazelTarget's rule class is loaded from a .bzl file,
@@ -65,25 +64,9 @@ func (t BazelTarget) Label() string {
 // BazelTargets is a typedef for a slice of BazelTarget objects.
 type BazelTargets []BazelTarget
 
-// HasHandcraftedTargetsreturns true if a set of bazel targets contain
-// handcrafted ones.
-func (targets BazelTargets) hasHandcraftedTargets() bool {
-	for _, target := range targets {
-		if target.handcrafted {
-			return true
-		}
-	}
-	return false
-}
-
-// sort a list of BazelTargets in-place, by name, and by generated/handcrafted types.
+// sort a list of BazelTargets in-place by name
 func (targets BazelTargets) sort() {
 	sort.Slice(targets, func(i, j int) bool {
-		if targets[i].handcrafted != targets[j].handcrafted {
-			// Handcrafted targets will be generated after the bp2build generated targets.
-			return targets[j].handcrafted
-		}
-		// This will cover all bp2build generated targets.
 		return targets[i].name < targets[j].name
 	})
 }
@@ -94,18 +77,6 @@ func (targets BazelTargets) sort() {
 func (targets BazelTargets) String() string {
 	var res string
 	for i, target := range targets {
-		// There is only at most 1 handcrafted "target", because its contents
-		// represent the entire BUILD file content from the tree. See
-		// build_conversion.go#getHandcraftedBuildContent for more information.
-		//
-		// Add a header to make it easy to debug where the handcrafted targets
-		// are in a generated BUILD file.
-		if target.handcrafted {
-			res += "# -----------------------------\n"
-			res += "# Section: Handcrafted targets. \n"
-			res += "# -----------------------------\n\n"
-		}
-
 		res += target.content
 		if i != len(targets)-1 {
 			res += "\n\n"
@@ -161,22 +132,22 @@ type CodegenContext struct {
 	unconvertedDepMode unconvertedDepsMode
 }
 
-func (c *CodegenContext) Mode() CodegenMode {
-	return c.mode
+func (ctx *CodegenContext) Mode() CodegenMode {
+	return ctx.mode
 }
 
 // CodegenMode is an enum to differentiate code-generation modes.
 type CodegenMode int
 
 const (
-	// Bp2Build: generate BUILD files with targets buildable by Bazel directly.
+	// Bp2Build - generate BUILD files with targets buildable by Bazel directly.
 	//
 	// This mode is used for the Soong->Bazel build definition conversion.
 	Bp2Build CodegenMode = iota
 
-	// QueryView: generate BUILD files with targets representing fully mutated
+	// QueryView - generate BUILD files with targets representing fully mutated
 	// Soong modules, representing the fully configured Soong module graph with
-	// variants and dependency endges.
+	// variants and dependency edges.
 	//
 	// This mode is used for discovering and introspecting the existing Soong
 	// module graph.
@@ -256,7 +227,6 @@ func (r conversionResults) BuildDirToTargets() map[string]BazelTargets {
 
 func GenerateBazelTargets(ctx *CodegenContext, generateFilegroups bool) (conversionResults, []error) {
 	buildFileToTargets := make(map[string]BazelTargets)
-	buildFileToAppend := make(map[string]bool)
 
 	// Simple metrics tracking for bp2build
 	metrics := CodegenMetrics{
@@ -288,30 +258,10 @@ func GenerateBazelTargets(ctx *CodegenContext, generateFilegroups bool) (convers
 				// Handle modules converted to handcrafted targets.
 				//
 				// Since these modules are associated with some handcrafted
-				// target in a BUILD file, we simply append the entire contents
-				// of that BUILD file to the generated BUILD file.
-				//
-				// The append operation is only done once, even if there are
-				// multiple modules from the same directory associated to
-				// targets in the same BUILD file (or package).
+				// target in a BUILD file, we don't autoconvert them.
 
 				// Log the module.
 				metrics.AddConvertedModule(m, moduleType, Handcrafted)
-
-				pathToBuildFile := getBazelPackagePath(b)
-				if _, exists := buildFileToAppend[pathToBuildFile]; exists {
-					// Append the BUILD file content once per package, at most.
-					return
-				}
-				t, err := getHandcraftedBuildContent(ctx, b, pathToBuildFile)
-				if err != nil {
-					errs = append(errs, fmt.Errorf("Error converting %s: %s", bpCtx.ModuleName(m), err))
-					return
-				}
-				targets = append(targets, t)
-				// TODO(b/181575318): currently we append the whole BUILD file, let's change that to do
-				// something more targeted based on the rule type and target
-				buildFileToAppend[pathToBuildFile] = true
 			} else if aModule, ok := m.(android.Module); ok && aModule.IsConvertedByBp2build() {
 				// Handle modules converted to generated targets.
 
@@ -320,7 +270,8 @@ func GenerateBazelTargets(ctx *CodegenContext, generateFilegroups bool) (convers
 
 				// Handle modules with unconverted deps. By default, emit a warning.
 				if unconvertedDeps := aModule.GetUnconvertedBp2buildDeps(); len(unconvertedDeps) > 0 {
-					msg := fmt.Sprintf("%q depends on unconverted modules: %s", m.Name(), strings.Join(unconvertedDeps, ", "))
+					msg := fmt.Sprintf("%s %s:%s depends on unconverted modules: %s",
+						moduleType, bpCtx.ModuleDir(m), m.Name(), strings.Join(unconvertedDeps, ", "))
 					if ctx.unconvertedDepMode == warnUnconvertedDeps {
 						metrics.moduleWithUnconvertedDepsMsgs = append(metrics.moduleWithUnconvertedDepsMsgs, msg)
 					} else if ctx.unconvertedDepMode == errorModulesUnconvertedDeps {
@@ -329,7 +280,8 @@ func GenerateBazelTargets(ctx *CodegenContext, generateFilegroups bool) (convers
 					}
 				}
 				if unconvertedDeps := aModule.GetMissingBp2buildDeps(); len(unconvertedDeps) > 0 {
-					msg := fmt.Sprintf("%q depends on missing modules: %s", m.Name(), strings.Join(unconvertedDeps, ", "))
+					msg := fmt.Sprintf("%s %s:%s depends on missing modules: %s",
+						moduleType, bpCtx.ModuleDir(m), m.Name(), strings.Join(unconvertedDeps, ", "))
 					if ctx.unconvertedDepMode == warnUnconvertedDeps {
 						metrics.moduleWithMissingDepsMsgs = append(metrics.moduleWithMissingDepsMsgs, msg)
 					} else if ctx.unconvertedDepMode == errorModulesUnconvertedDeps {
@@ -371,6 +323,15 @@ func GenerateBazelTargets(ctx *CodegenContext, generateFilegroups bool) (convers
 	if generateFilegroups {
 		// Add a filegroup target that exposes all sources in the subtree of this package
 		// NOTE: This also means we generate a BUILD file for every Android.bp file (as long as it has at least one module)
+		//
+		// This works because: https://bazel.build/reference/be/functions#exports_files
+		// "As a legacy behaviour, also files mentioned as input to a rule are exported with the
+		// default visibility until the flag --incompatible_no_implicit_file_export is flipped. However, this behavior
+		// should not be relied upon and actively migrated away from."
+		//
+		// TODO(b/198619163): We should change this to export_files(glob(["**/*"])) instead, but doing that causes these errors:
+		// "Error in exports_files: generated label '//external/avb:avbtool' conflicts with existing py_binary rule"
+		// So we need to solve all the "target ... is both a rule and a file" warnings first.
 		for dir, _ := range dirs {
 			buildFileToTargets[dir] = append(buildFileToTargets[dir], BazelTarget{
 				name:      "bp2build_all_srcs",
@@ -384,29 +345,6 @@ func GenerateBazelTargets(ctx *CodegenContext, generateFilegroups bool) (convers
 		buildFileToTargets: buildFileToTargets,
 		metrics:            metrics,
 	}, errs
-}
-
-func getBazelPackagePath(b android.Bazelable) string {
-	label := b.HandcraftedLabel()
-	pathToBuildFile := strings.TrimPrefix(label, "//")
-	pathToBuildFile = strings.Split(pathToBuildFile, ":")[0]
-	return pathToBuildFile
-}
-
-func getHandcraftedBuildContent(ctx *CodegenContext, b android.Bazelable, pathToBuildFile string) (BazelTarget, error) {
-	p := android.ExistentPathForSource(ctx, pathToBuildFile, HandcraftedBuildFileName)
-	if !p.Valid() {
-		return BazelTarget{}, fmt.Errorf("Could not find file %q for handcrafted target.", pathToBuildFile)
-	}
-	c, err := b.GetBazelBuildFileContents(ctx.Config(), pathToBuildFile, HandcraftedBuildFileName)
-	if err != nil {
-		return BazelTarget{}, err
-	}
-	// TODO(b/181575318): once this is more targeted, we need to include name, rule class, etc
-	return BazelTarget{
-		content:     c,
-		handcrafted: true,
-	}, nil
 }
 
 func generateBazelTargets(ctx bpToBuildContext, m android.Module) []BazelTarget {
@@ -451,7 +389,6 @@ func generateBazelTarget(ctx bpToBuildContext, m bp2buildModule) BazelTarget {
 			targetName,
 			attributes,
 		),
-		handcrafted: false,
 	}
 }
 
@@ -470,13 +407,13 @@ func generateSoongModuleTarget(ctx bpToBuildContext, m blueprint.Module) BazelTa
 		})
 	}
 
-	for p, _ := range ignoredPropNames {
+	for p := range ignoredPropNames {
 		delete(props.Attrs, p)
 	}
 	attributes := propsToAttributes(props.Attrs)
 
 	depLabelList := "[\n"
-	for depLabel, _ := range depLabels {
+	for depLabel := range depLabels {
 		depLabelList += fmt.Sprintf("        %q,\n", depLabel)
 	}
 	depLabelList += "    ]"
@@ -580,7 +517,9 @@ func prettyPrint(propertyValue reflect.Value, indent int, emitZeroValues bool) (
 				elements = append(elements, val)
 			}
 		}
-		return starlark_fmt.PrintList(elements, indent, "%s"), nil
+		return starlark_fmt.PrintList(elements, indent, func(s string) string {
+			return "%s"
+		}), nil
 
 	case reflect.Struct:
 		// Special cases where the bp2build sends additional information to the codegenerator

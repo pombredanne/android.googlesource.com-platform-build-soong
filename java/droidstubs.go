@@ -42,19 +42,14 @@ func RegisterStubsBuildComponents(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("prebuilt_stubs_sources", PrebuiltStubsSourcesFactory)
 }
 
-//
 // Droidstubs
-//
 type Droidstubs struct {
 	Javadoc
 	android.SdkBase
 
 	properties              DroidstubsProperties
-	apiFile                 android.WritablePath
-	apiXmlFile              android.WritablePath
-	lastReleasedApiXmlFile  android.WritablePath
-	privateApiFile          android.WritablePath
-	removedApiFile          android.WritablePath
+	apiFile                 android.Path
+	removedApiFile          android.Path
 	nullabilityWarningsFile android.WritablePath
 
 	checkCurrentApiTimestamp      android.WritablePath
@@ -67,9 +62,6 @@ type Droidstubs struct {
 
 	annotationsZip android.WritablePath
 	apiVersionsXml android.WritablePath
-
-	apiFilePath        android.Path
-	removedApiFilePath android.Path
 
 	metadataZip android.WritablePath
 	metadataDir android.WritablePath
@@ -134,6 +126,9 @@ type DroidstubsProperties struct {
 
 	// if set to true, Metalava will allow framework SDK to contain API levels annotations.
 	Api_levels_annotations_enabled *bool
+
+	// Apply the api levels database created by this module rather than generating one in this droidstubs.
+	Api_levels_module *string
 
 	// the dirs which Metalava extracts API levels annotations from.
 	Api_levels_annotations_dirs []string
@@ -203,9 +198,9 @@ func (d *Droidstubs) OutputFiles(tag string) (android.Paths, error) {
 		return android.Paths{d.docZip}, nil
 	case ".api.txt", android.DefaultDistTag:
 		// This is the default dist path for dist properties that have no tag property.
-		return android.Paths{d.apiFilePath}, nil
+		return android.Paths{d.apiFile}, nil
 	case ".removed-api.txt":
-		return android.Paths{d.removedApiFilePath}, nil
+		return android.Paths{d.removedApiFile}, nil
 	case ".annotations.zip":
 		return android.Paths{d.annotationsZip}, nil
 	case ".api_versions.xml":
@@ -220,11 +215,11 @@ func (d *Droidstubs) AnnotationsZip() android.Path {
 }
 
 func (d *Droidstubs) ApiFilePath() android.Path {
-	return d.apiFilePath
+	return d.apiFile
 }
 
 func (d *Droidstubs) RemovedApiFilePath() android.Path {
-	return d.removedApiFilePath
+	return d.removedApiFile
 }
 
 func (d *Droidstubs) StubsSrcJar() android.Path {
@@ -234,6 +229,7 @@ func (d *Droidstubs) StubsSrcJar() android.Path {
 var metalavaMergeAnnotationsDirTag = dependencyTag{name: "metalava-merge-annotations-dir"}
 var metalavaMergeInclusionAnnotationsDirTag = dependencyTag{name: "metalava-merge-inclusion-annotations-dir"}
 var metalavaAPILevelsAnnotationsDirTag = dependencyTag{name: "metalava-api-levels-annotations-dir"}
+var metalavaAPILevelsModuleTag = dependencyTag{name: "metalava-api-levels-module-tag"}
 
 func (d *Droidstubs) DepsMutator(ctx android.BottomUpMutatorContext) {
 	d.Javadoc.addDeps(ctx)
@@ -255,6 +251,10 @@ func (d *Droidstubs) DepsMutator(ctx android.BottomUpMutatorContext) {
 			ctx.AddDependency(ctx.Module(), metalavaAPILevelsAnnotationsDirTag, apiLevelsAnnotationsDir)
 		}
 	}
+
+	if d.properties.Api_levels_module != nil {
+		ctx.AddDependency(ctx.Module(), metalavaAPILevelsModuleTag, proptools.String(d.properties.Api_levels_module))
+	}
 }
 
 func (d *Droidstubs) stubsFlags(ctx android.ModuleContext, cmd *android.RuleBuilderCommand, stubsDir android.OptionalPath) {
@@ -262,24 +262,24 @@ func (d *Droidstubs) stubsFlags(ctx android.ModuleContext, cmd *android.RuleBuil
 		apiCheckEnabled(ctx, d.properties.Check_api.Last_released, "last_released") ||
 		String(d.properties.Api_filename) != "" {
 		filename := proptools.StringDefault(d.properties.Api_filename, ctx.ModuleName()+"_api.txt")
-		d.apiFile = android.PathForModuleOut(ctx, "metalava", filename)
-		cmd.FlagWithOutput("--api ", d.apiFile)
-		d.apiFilePath = d.apiFile
+		uncheckedApiFile := android.PathForModuleOut(ctx, "metalava", filename)
+		cmd.FlagWithOutput("--api ", uncheckedApiFile)
+		d.apiFile = uncheckedApiFile
 	} else if sourceApiFile := proptools.String(d.properties.Check_api.Current.Api_file); sourceApiFile != "" {
 		// If check api is disabled then make the source file available for export.
-		d.apiFilePath = android.PathForModuleSrc(ctx, sourceApiFile)
+		d.apiFile = android.PathForModuleSrc(ctx, sourceApiFile)
 	}
 
 	if apiCheckEnabled(ctx, d.properties.Check_api.Current, "current") ||
 		apiCheckEnabled(ctx, d.properties.Check_api.Last_released, "last_released") ||
 		String(d.properties.Removed_api_filename) != "" {
 		filename := proptools.StringDefault(d.properties.Removed_api_filename, ctx.ModuleName()+"_removed.txt")
-		d.removedApiFile = android.PathForModuleOut(ctx, "metalava", filename)
-		cmd.FlagWithOutput("--removed-api ", d.removedApiFile)
-		d.removedApiFilePath = d.removedApiFile
+		uncheckedRemovedFile := android.PathForModuleOut(ctx, "metalava", filename)
+		cmd.FlagWithOutput("--removed-api ", uncheckedRemovedFile)
+		d.removedApiFile = uncheckedRemovedFile
 	} else if sourceRemovedApiFile := proptools.String(d.properties.Check_api.Current.Removed_api_file); sourceRemovedApiFile != "" {
 		// If check api is disabled then make the source removed api file available for export.
-		d.removedApiFilePath = android.PathForModuleSrc(ctx, sourceRemovedApiFile)
+		d.removedApiFile = android.PathForModuleSrc(ctx, sourceRemovedApiFile)
 	}
 
 	if Bool(d.properties.Write_sdk_values) {
@@ -365,21 +365,35 @@ func (d *Droidstubs) inclusionAnnotationsFlags(ctx android.ModuleContext, cmd *a
 }
 
 func (d *Droidstubs) apiLevelsAnnotationsFlags(ctx android.ModuleContext, cmd *android.RuleBuilderCommand) {
-	if !Bool(d.properties.Api_levels_annotations_enabled) {
-		return
+	var apiVersions android.Path
+	if proptools.Bool(d.properties.Api_levels_annotations_enabled) {
+		d.apiLevelsGenerationFlags(ctx, cmd)
+		apiVersions = d.apiVersionsXml
+	} else {
+		ctx.VisitDirectDepsWithTag(metalavaAPILevelsModuleTag, func(m android.Module) {
+			if s, ok := m.(*Droidstubs); ok {
+				apiVersions = s.apiVersionsXml
+			} else {
+				ctx.PropertyErrorf("api_levels_module",
+					"module %q is not a droidstubs module", ctx.OtherModuleName(m))
+			}
+		})
 	}
+	if apiVersions != nil {
+		cmd.FlagWithArg("--current-version ", ctx.Config().PlatformSdkVersion().String())
+		cmd.FlagWithArg("--current-codename ", ctx.Config().PlatformSdkCodename())
+		cmd.FlagWithInput("--apply-api-levels ", apiVersions)
+	}
+}
 
-	d.apiVersionsXml = android.PathForModuleOut(ctx, "metalava", "api-versions.xml")
-
+func (d *Droidstubs) apiLevelsGenerationFlags(ctx android.ModuleContext, cmd *android.RuleBuilderCommand) {
 	if len(d.properties.Api_levels_annotations_dirs) == 0 {
 		ctx.PropertyErrorf("api_levels_annotations_dirs",
 			"has to be non-empty if api levels annotations was enabled!")
 	}
 
+	d.apiVersionsXml = android.PathForModuleOut(ctx, "metalava", "api-versions.xml")
 	cmd.FlagWithOutput("--generate-api-levels ", d.apiVersionsXml)
-	cmd.FlagWithInput("--apply-api-levels ", d.apiVersionsXml)
-	cmd.FlagWithArg("--current-version ", ctx.Config().PlatformSdkVersion().String())
-	cmd.FlagWithArg("--current-codename ", ctx.Config().PlatformSdkCodename())
 
 	filename := proptools.StringDefault(d.properties.Api_levels_jar_filename, "android.jar")
 
@@ -433,6 +447,10 @@ func (d *Droidstubs) apiLevelsAnnotationsFlags(ctx android.ModuleContext, cmd *a
 	}
 }
 
+func metalavaUseRbe(ctx android.ModuleContext) bool {
+	return ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_METALAVA")
+}
+
 func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersion javaVersion, srcs android.Paths,
 	srcJarList android.Path, bootclasspath, classpath classpath, homeDir android.WritablePath) *android.RuleBuilderCommand {
 	rule.Command().Text("rm -rf").Flag(homeDir.String())
@@ -441,7 +459,7 @@ func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersi
 	cmd := rule.Command()
 	cmd.FlagWithArg("ANDROID_PREFS_ROOT=", homeDir.String())
 
-	if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_METALAVA") {
+	if metalavaUseRbe(ctx) {
 		rule.Remoteable(android.RemoteRuleSupports{RBE: true})
 		execStrategy := ctx.Config().GetenvWithDefault("RBE_METALAVA_EXEC_STRATEGY", remoteexec.LocalExecStrategy)
 		labels := map[string]string{"type": "tool", "name": "metalava"}
@@ -477,7 +495,7 @@ func metalavaCmd(ctx android.ModuleContext, rule *android.RuleBuilder, javaVersi
 		Flag("--format=v2").
 		FlagWithArg("--repeat-errors-max ", "10").
 		FlagWithArg("--hide ", "UnresolvedImport").
-		FlagWithArg("--hide ", "InvalidNullability").
+		FlagWithArg("--hide ", "InvalidNullabilityOverride").
 		// b/223382732
 		FlagWithArg("--hide ", "ChangedDefault")
 
@@ -665,7 +683,9 @@ func (d *Droidstubs) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 
 	// TODO(b/183630617): rewrapper doesn't support restat rules
-	// rule.Restat()
+	if !metalavaUseRbe(ctx) {
+		rule.Restat()
+	}
 
 	zipSyncCleanupCmd(rule, srcJarDir)
 

@@ -324,49 +324,47 @@ var neverallowTests = []struct {
 			`),
 		},
 		expectedErrors: []string{
-			"Only boot images may be imported as a makefile goal.",
+			"Only boot images.* may be imported as a makefile goal",
 		},
 	},
 	{
-		name: "min_sdk too low",
+		name: "disallowed makefile_goal outside external",
 		fs: map[string][]byte{
-			"Android.bp": []byte(`
-				java_library {
-					name: "min_sdk_too_low",
-					min_sdk_version: "30",
-				}`),
-		},
-		rules: []Rule{
-			NeverAllow().WithMatcher("min_sdk_version", LessThanSdkVersion("31")),
+			"project/Android.bp": []byte(`
+				makefile_goal {
+					name: "foo",
+					product_out_path: "obj/EXE/foo",
+				}
+			`),
 		},
 		expectedErrors: []string{
-			"module \"min_sdk_too_low\": violates neverallow",
+			"not in allowed projects",
 		},
 	},
 	{
-		name: "min_sdk high enough",
+		name: "allow makefile_goal within external",
 		fs: map[string][]byte{
-			"Android.bp": []byte(`
-				java_library {
-					name: "min_sdk_high_enough",
-					min_sdk_version: "31",
-				}`),
-		},
-		rules: []Rule{
-			NeverAllow().WithMatcher("min_sdk_version", LessThanSdkVersion("31")),
+			"frameworks/opt/net/wifi/libwifi_hal/Android.bp": []byte(`
+				makefile_goal {
+					name: "foo",
+					product_out_path: "obj/EXE/foo",
+				}
+			`),
 		},
 	},
+	// Tests for the rule prohibiting the use of framework
 	{
-		name: "current min_sdk high enough",
+		name: "prohibit framework",
 		fs: map[string][]byte{
 			"Android.bp": []byte(`
 				java_library {
-					name: "current_min_sdk_high_enough",
-					min_sdk_version: "current",
+					name: "foo",
+					libs: ["framework"],
+					sdk_version: "current",
 				}`),
 		},
-		rules: []Rule{
-			NeverAllow().WithMatcher("min_sdk_version", LessThanSdkVersion("31")),
+		expectedErrors: []string{
+			"framework can't be used when building against SDK",
 		},
 	},
 }
@@ -452,10 +450,9 @@ func (p *mockCcLibraryModule) GenerateAndroidBuildActions(ModuleContext) {
 }
 
 type mockJavaLibraryProperties struct {
-	Libs            []string
-	Min_sdk_version *string
-	Sdk_version     *string
-	Uncompress_dex  *bool
+	Libs           []string
+	Sdk_version    *string
+	Uncompress_dex *bool
 }
 
 type mockJavaLibraryModule struct {

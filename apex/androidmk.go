@@ -168,10 +168,6 @@ func (a *apexBundle) androidMkForFiles(w io.Writer, apexBundleName, apexName, mo
 			if len(newDataPaths) > 0 {
 				fmt.Fprintln(w, "LOCAL_TEST_DATA :=", strings.Join(android.AndroidMkDataPaths(newDataPaths), " "))
 			}
-
-			if fi.module != nil && len(fi.module.NoticeFiles()) > 0 {
-				fmt.Fprintln(w, "LOCAL_NOTICE_FILE :=", strings.Join(fi.module.NoticeFiles().Strings(), " "))
-			}
 		} else {
 			modulePath = pathWhenActivated
 			fmt.Fprintln(w, "LOCAL_MODULE_PATH :=", pathWhenActivated)
@@ -396,10 +392,6 @@ func (a *apexBundle) androidMkForType() android.AndroidMkData {
 				}
 				a.writeRequiredModules(w, moduleNames)
 
-				if a.mergedNotices.Merged.Valid() {
-					fmt.Fprintln(w, "LOCAL_NOTICE_FILE :=", a.mergedNotices.Merged.Path().String())
-				}
-
 				fmt.Fprintln(w, "include $(BUILD_PREBUILT)")
 
 				if apexType == imageApex {
@@ -416,6 +408,7 @@ func (a *apexBundle) androidMkForType() android.AndroidMkData {
 					fmt.Fprintln(w, ".PHONY:", goal)
 					fmt.Fprintf(w, "$(call dist-for-goals,%s,%s:%s)\n",
 						goal, a.installedFilesFile.String(), distFile)
+					fmt.Fprintf(w, "$(call declare-0p-target,%s)\n", a.installedFilesFile.String())
 				}
 				for _, dist := range data.Entries.GetDistForGoals(a) {
 					fmt.Fprintf(w, dist)

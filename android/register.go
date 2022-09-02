@@ -96,10 +96,11 @@ var singletons sortableComponents
 var preSingletons sortableComponents
 
 type mutator struct {
-	name            string
-	bottomUpMutator blueprint.BottomUpMutator
-	topDownMutator  blueprint.TopDownMutator
-	parallel        bool
+	name              string
+	bottomUpMutator   blueprint.BottomUpMutator
+	topDownMutator    blueprint.TopDownMutator
+	transitionMutator blueprint.TransitionMutator
+	parallel          bool
 }
 
 var _ sortableComponent = &mutator{}
@@ -161,10 +162,6 @@ func NewContext(config Config) *Context {
 	ctx := &Context{blueprint.NewContext(), config}
 	ctx.SetSrcDir(absSrcDir)
 	return ctx
-}
-
-func (ctx *Context) SetRunningAsBp2build() {
-	ctx.config.runningAsBp2Build = true
 }
 
 // RegisterForBazelConversion registers an alternate shadow pipeline of
@@ -257,20 +254,20 @@ type RegistrationContext interface {
 
 // Used to register build components from an init() method, e.g.
 //
-// init() {
-//   RegisterBuildComponents(android.InitRegistrationContext)
-// }
+//	init() {
+//	  RegisterBuildComponents(android.InitRegistrationContext)
+//	}
 //
-// func RegisterBuildComponents(ctx android.RegistrationContext) {
-//   ctx.RegisterModuleType(...)
-//   ...
-// }
+//	func RegisterBuildComponents(ctx android.RegistrationContext) {
+//	  ctx.RegisterModuleType(...)
+//	  ...
+//	}
 //
 // Extracting the actual registration into a separate RegisterBuildComponents(ctx) function
 // allows it to be used to initialize test context, e.g.
 //
-//   ctx := android.NewTestContext(config)
-//   RegisterBuildComponents(ctx)
+//	ctx := android.NewTestContext(config)
+//	RegisterBuildComponents(ctx)
 var InitRegistrationContext RegistrationContext = &initRegistrationContext{
 	moduleTypes:       make(map[string]ModuleFactory),
 	singletonTypes:    make(map[string]SingletonFactory),

@@ -22,6 +22,7 @@ import (
 	"github.com/google/blueprint/proptools"
 
 	"android/soong/android"
+	"android/soong/provenance"
 )
 
 func init() {
@@ -57,6 +58,8 @@ type AndroidAppImport struct {
 	installPath android.InstallPath
 
 	hideApexVariantFromMake bool
+
+	provenanceMetaDataFile android.OutputPath
 }
 
 type AndroidAppImportProperties struct {
@@ -76,6 +79,9 @@ type AndroidAppImportProperties struct {
 
 	// Name of the signing certificate lineage file or filegroup module.
 	Lineage *string `android:"path"`
+
+	// For overriding the --rotation-min-sdk-version property of apksig
+	RotationMinSdkVersion *string
 
 	// Sign with the default system dev certificate. Must be used judiciously. Most imported apps
 	// need to either specify a specific certificate or be presigned.
@@ -253,7 +259,7 @@ func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext
 		ctx.ModuleErrorf("One and only one of certficate, presigned, and default_dev_cert properties must be set")
 	}
 
-	_, certificates := collectAppDeps(ctx, a, false, false)
+	_, _, certificates := collectAppDeps(ctx, a, false, false)
 
 	// TODO: LOCAL_EXTRACT_APK/LOCAL_EXTRACT_DPI_APK
 	// TODO: LOCAL_PACKAGE_SPLITS
@@ -330,7 +336,10 @@ func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext
 		if lineage := String(a.properties.Lineage); lineage != "" {
 			lineageFile = android.PathForModuleSrc(ctx, lineage)
 		}
-		SignAppPackage(ctx, signed, jnisUncompressed, certificates, nil, lineageFile)
+
+		rotationMinSdkVersion := String(a.properties.RotationMinSdkVersion)
+
+		SignAppPackage(ctx, signed, jnisUncompressed, certificates, nil, lineageFile, rotationMinSdkVersion)
 		a.outputFile = signed
 	} else {
 		alignedApk := android.PathForModuleOut(ctx, "zip-aligned", apkFilename)
@@ -343,6 +352,8 @@ func (a *AndroidAppImport) generateAndroidBuildActions(ctx android.ModuleContext
 
 	if apexInfo.IsForPlatform() {
 		a.installPath = ctx.InstallFile(installDir, apkFilename, a.outputFile)
+		artifactPath := android.PathForModuleSrc(ctx, *a.properties.Apk)
+		a.provenanceMetaDataFile = provenance.GenerateArtifactProvenanceMetaData(ctx, artifactPath, a.installPath)
 	}
 
 	// TODO: androidmk converter jni libs
@@ -366,6 +377,10 @@ func (a *AndroidAppImport) JacocoReportClassesFile() android.Path {
 
 func (a *AndroidAppImport) Certificate() Certificate {
 	return a.certificate
+}
+
+func (a *AndroidAppImport) ProvenanceMetaDataFile() android.OutputPath {
+	return a.provenanceMetaDataFile
 }
 
 var dpiVariantGroupType reflect.Type
@@ -446,19 +461,19 @@ func createVariantGroupType(variants []string, variantGroupName string) reflect.
 // android_app_import imports a prebuilt apk with additional processing specified in the module.
 // DPI-specific apk source files can be specified using dpi_variants. Example:
 //
-//     android_app_import {
-//         name: "example_import",
-//         apk: "prebuilts/example.apk",
-//         dpi_variants: {
-//             mdpi: {
-//                 apk: "prebuilts/example_mdpi.apk",
-//             },
-//             xhdpi: {
-//                 apk: "prebuilts/example_xhdpi.apk",
-//             },
-//         },
-//         certificate: "PRESIGNED",
-//     }
+//	android_app_import {
+//	    name: "example_import",
+//	    apk: "prebuilts/example.apk",
+//	    dpi_variants: {
+//	        mdpi: {
+//	            apk: "prebuilts/example_mdpi.apk",
+//	        },
+//	        xhdpi: {
+//	            apk: "prebuilts/example_xhdpi.apk",
+//	        },
+//	    },
+//	    presigned: true,
+//	}
 func AndroidAppImportFactory() android.Module {
 	module := &AndroidAppImport{}
 	module.AddProperties(&module.properties)

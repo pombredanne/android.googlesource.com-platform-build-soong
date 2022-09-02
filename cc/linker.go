@@ -227,6 +227,9 @@ type BaseLinkerProperties struct {
 	// local file name to pass to the linker as --dynamic-list
 	Dynamic_list *string `android:"path,arch_variant"`
 
+	// local files to pass to the linker as --script
+	Linker_scripts []string `android:"path,arch_variant"`
+
 	// list of static libs that should not be used to build this module
 	Exclude_static_libs []string `android:"arch_variant"`
 
@@ -386,9 +389,7 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	}
 
 	deps.SystemSharedLibs = linker.Properties.System_shared_libs
-	// In Bazel conversion mode, variations have not been specified, so SystemSharedLibs may
-	// inaccuarately appear unset, which can cause issues with circular dependencies.
-	if deps.SystemSharedLibs == nil && !ctx.BazelConversionMode() {
+	if deps.SystemSharedLibs == nil {
 		// Provide a default system_shared_libs if it is unspecified. Note: If an
 		// empty list [] is specified, it implies that the module declines the
 		// default system_shared_libs.
@@ -398,7 +399,7 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 	if ctx.toolchain().Bionic() {
 		// libclang_rt.builtins has to be last on the command line
 		if !Bool(linker.Properties.No_libcrt) && !ctx.header() {
-			deps.LateStaticLibs = append(deps.LateStaticLibs, config.BuiltinsRuntimeLibrary(ctx.toolchain()))
+			deps.UnexportedStaticLibs = append(deps.UnexportedStaticLibs, config.BuiltinsRuntimeLibrary(ctx.toolchain()))
 		}
 
 		if inList("libdl", deps.SharedLibs) {
@@ -421,7 +422,7 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 		}
 	} else if ctx.toolchain().Musl() {
 		if !Bool(linker.Properties.No_libcrt) && !ctx.header() {
-			deps.LateStaticLibs = append(deps.LateStaticLibs, config.BuiltinsRuntimeLibrary(ctx.toolchain()))
+			deps.UnexportedStaticLibs = append(deps.UnexportedStaticLibs, config.BuiltinsRuntimeLibrary(ctx.toolchain()))
 		}
 	}
 
@@ -435,11 +436,6 @@ func (linker *baseLinker) linkerDeps(ctx DepsContext, deps Deps) Deps {
 }
 
 func (linker *baseLinker) useClangLld(ctx ModuleContext) bool {
-	// Clang lld is not ready for for Darwin host executables yet.
-	// See https://lld.llvm.org/AtomLLD.html for status of lld for Mach-O.
-	if ctx.Darwin() {
-		return false
-	}
 	if linker.Properties.Use_clang_lld != nil {
 		return Bool(linker.Properties.Use_clang_lld)
 	}
@@ -529,10 +525,6 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 		}
 	}
 
-	if ctx.toolchain().LibclangRuntimeLibraryArch() != "" {
-		flags.Global.LdFlags = append(flags.Global.LdFlags, "-Wl,--exclude-libs="+config.BuiltinsRuntimeLibrary(ctx.toolchain())+".a")
-	}
-
 	CheckBadLinkerFlags(ctx, "ldflags", linker.Properties.Ldflags)
 
 	flags.Local.LdFlags = append(flags.Local.LdFlags, proptools.NinjaAndShellEscapeList(linker.Properties.Ldflags)...)
@@ -600,6 +592,17 @@ func (linker *baseLinker) linkerFlags(ctx ModuleContext, flags Flags) Flags {
 				flags.Local.LdFlags = append(flags.Local.LdFlags,
 					"-Wl,--dynamic-list,"+dynamicList.String())
 				flags.LdFlagsDeps = append(flags.LdFlagsDeps, dynamicList.Path())
+			}
+		}
+
+		linkerScriptPaths := android.PathsForModuleSrc(ctx, linker.Properties.Linker_scripts)
+		if len(linkerScriptPaths) > 0 && (ctx.Darwin() || ctx.Windows()) {
+			ctx.PropertyErrorf("linker_scripts", "Only supported for ELF files")
+		} else {
+			for _, linkerScriptPath := range linkerScriptPaths {
+				flags.Local.LdFlags = append(flags.Local.LdFlags,
+					"-Wl,--script,"+linkerScriptPath.String())
+				flags.LdFlagsDeps = append(flags.LdFlagsDeps, linkerScriptPath)
 			}
 		}
 	}

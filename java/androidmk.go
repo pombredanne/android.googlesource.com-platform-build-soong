@@ -132,6 +132,16 @@ func (library *Library) AndroidMkEntries() []android.AndroidMkEntries {
 	return entriesList
 }
 
+func (j *JavaFuzzLibrary) AndroidMkEntries() []android.AndroidMkEntries {
+	entriesList := j.Library.AndroidMkEntries()
+	entries := &entriesList[0]
+	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
+		entries.AddStrings("LOCAL_COMPATIBILITY_SUITE", "null-suite")
+		androidMkWriteTestData(j.jniFilePaths, entries)
+	})
+	return entriesList
+}
+
 // Called for modules that are a component of a test suite.
 func testSuiteComponent(entries *android.AndroidMkEntries, test_suites []string, perTestcaseDirectory bool) {
 	entries.SetString("LOCAL_MODULE_TAGS", "tests")
@@ -157,9 +167,8 @@ func (j *Test) AndroidMkEntries() []android.AndroidMkEntries {
 			entries.SetString("LOCAL_DISABLE_AUTO_GENERATE_TEST_CONFIG", "true")
 		}
 		entries.AddStrings("LOCAL_TEST_MAINLINE_MODULES", j.testProperties.Test_mainline_modules...)
-		if Bool(j.testProperties.Test_options.Unit_test) {
-			entries.SetBool("LOCAL_IS_UNIT_TEST", true)
-		}
+
+		j.testProperties.Test_options.CommonTestOptions.SetAndroidMkEntries(entries)
 	})
 
 	return entriesList
@@ -314,7 +323,7 @@ func (binary *Binary) AndroidMkEntries() []android.AndroidMkEntries {
 }
 
 func (app *AndroidApp) AndroidMkEntries() []android.AndroidMkEntries {
-	if app.hideApexVariantFromMake || app.appProperties.HideFromMake {
+	if app.hideApexVariantFromMake || app.IsHideFromMake() {
 		return []android.AndroidMkEntries{android.AndroidMkEntries{
 			Disabled: true,
 		}}
@@ -411,27 +420,19 @@ func (app *AndroidApp) AndroidMkEntries() []android.AndroidMkEntries {
 		},
 		ExtraFooters: []android.AndroidMkExtraFootersFunc{
 			func(w io.Writer, name, prefix, moduleDir string) {
-				if app.noticeOutputs.Merged.Valid() {
-					fmt.Fprintf(w, "$(call dist-for-goals,%s,%s:%s)\n",
-						app.installApkName, app.noticeOutputs.Merged.String(), app.installApkName+"_NOTICE")
-				}
-				if app.noticeOutputs.TxtOutput.Valid() {
-					fmt.Fprintf(w, "$(call dist-for-goals,%s,%s:%s)\n",
-						app.installApkName, app.noticeOutputs.TxtOutput.String(), app.installApkName+"_NOTICE.txt")
-				}
-				if app.noticeOutputs.HtmlOutput.Valid() {
-					fmt.Fprintf(w, "$(call dist-for-goals,%s,%s:%s)\n",
-						app.installApkName, app.noticeOutputs.HtmlOutput.String(), app.installApkName+"_NOTICE.html")
+				if app.javaApiUsedByOutputFile.String() != "" {
+					fmt.Fprintf(w, "$(call dist-for-goals,%s,%s:%s/$(notdir %s))\n",
+						app.installApkName, app.javaApiUsedByOutputFile.String(), "java_apis_used_by_apex", app.javaApiUsedByOutputFile.String())
 				}
 			},
-		},
-	}}
+		}},
+	}
 }
 
 func (a *AndroidApp) getOverriddenPackages() []string {
 	var overridden []string
-	if len(a.appProperties.Overrides) > 0 {
-		overridden = append(overridden, a.appProperties.Overrides...)
+	if len(a.overridableAppProperties.Overrides) > 0 {
+		overridden = append(overridden, a.overridableAppProperties.Overrides...)
 	}
 	// When APK name is overridden via PRODUCT_PACKAGE_NAME_OVERRIDES
 	// ensure that the original name is overridden.
@@ -548,6 +549,9 @@ func (dstubs *Droidstubs) AndroidMkEntries() []android.AndroidMkEntries {
 	if !outputFile.Valid() {
 		outputFile = android.OptionalPathForPath(dstubs.apiFile)
 	}
+	if !outputFile.Valid() {
+		outputFile = android.OptionalPathForPath(dstubs.apiVersionsXml)
+	}
 	return []android.AndroidMkEntries{android.AndroidMkEntries{
 		Class:      "JAVA_LIBRARIES",
 		OutputFile: outputFile,
@@ -626,6 +630,7 @@ func (dstubs *Droidstubs) AndroidMkEntries() []android.AndroidMkEntries {
 					if dstubs.apiLintReport != nil {
 						fmt.Fprintf(w, "$(call dist-for-goals,%s,%s:%s)\n", dstubs.Name()+"-api-lint",
 							dstubs.apiLintReport.String(), "apilint/"+dstubs.Name()+"-lint-report.txt")
+						fmt.Fprintf(w, "$(call declare-0p-target,%s)\n", dstubs.apiLintReport.String())
 					}
 				}
 				if dstubs.checkNullabilityWarningsTimestamp != nil {

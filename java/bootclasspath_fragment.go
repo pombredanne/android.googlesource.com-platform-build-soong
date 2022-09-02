@@ -32,17 +32,22 @@ import (
 func init() {
 	registerBootclasspathFragmentBuildComponents(android.InitRegistrationContext)
 
-	android.RegisterSdkMemberType(&bootclasspathFragmentMemberType{
-		SdkMemberTypeBase: android.SdkMemberTypeBase{
-			PropertyName: "bootclasspath_fragments",
-			SupportsSdk:  true,
-		},
-	})
+	android.RegisterSdkMemberType(BootclasspathFragmentSdkMemberType)
 }
 
 func registerBootclasspathFragmentBuildComponents(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("bootclasspath_fragment", bootclasspathFragmentFactory)
+	ctx.RegisterModuleType("bootclasspath_fragment_test", testBootclasspathFragmentFactory)
 	ctx.RegisterModuleType("prebuilt_bootclasspath_fragment", prebuiltBootclasspathFragmentFactory)
+}
+
+// BootclasspathFragmentSdkMemberType is the member type used to add bootclasspath_fragments to
+// the SDK snapshot. It is exported for use by apex.
+var BootclasspathFragmentSdkMemberType = &bootclasspathFragmentMemberType{
+	SdkMemberTypeBase: android.SdkMemberTypeBase{
+		PropertyName: "bootclasspath_fragments",
+		SupportsSdk:  true,
+	},
 }
 
 type bootclasspathFragmentContentDependencyTag struct {
@@ -123,7 +128,7 @@ type bootclasspathFragmentProperties struct {
 	Coverage BootclasspathFragmentCoverageAffectedProperties
 
 	// Hidden API related properties.
-	Hidden_api HiddenAPIFlagFileProperties
+	HiddenAPIFlagFileProperties
 
 	// The list of additional stub libraries which this fragment's contents use but which are not
 	// provided by another bootclasspath_fragment.
@@ -140,7 +145,7 @@ type bootclasspathFragmentProperties struct {
 	BootclasspathFragmentsDepsProperties
 }
 
-type HiddenApiPackageProperties struct {
+type HiddenAPIPackageProperties struct {
 	Hidden_api struct {
 		// Contains prefixes of a package hierarchy that is provided solely by this
 		// bootclasspath_fragment.
@@ -217,8 +222,8 @@ type HiddenApiPackageProperties struct {
 }
 
 type SourceOnlyBootclasspathProperties struct {
-	HiddenApiPackageProperties
-	Coverage HiddenApiPackageProperties
+	HiddenAPIPackageProperties
+	Coverage HiddenAPIPackageProperties
 }
 
 type BootclasspathFragmentModule struct {
@@ -226,6 +231,9 @@ type BootclasspathFragmentModule struct {
 	android.ApexModuleBase
 	android.SdkBase
 	ClasspathFragmentBase
+
+	// True if this fragment is for testing purposes.
+	testFragment bool
 
 	properties bootclasspathFragmentProperties
 
@@ -273,7 +281,7 @@ func bootclasspathFragmentFactory() android.Module {
 	android.InitApexModule(m)
 	android.InitSdkAwareModule(m)
 	initClasspathFragment(m, BOOTCLASSPATH)
-	android.InitAndroidArchModule(m, android.HostAndDeviceSupported, android.MultilibCommon)
+	android.InitAndroidArchModule(m, android.DeviceSupported, android.MultilibCommon)
 
 	android.AddLoadHook(m, func(ctx android.LoadHookContext) {
 		// If code coverage has been enabled for the framework then append the properties with
@@ -285,7 +293,7 @@ func bootclasspathFragmentFactory() android.Module {
 				return
 			}
 
-			err = proptools.AppendProperties(&m.sourceOnlyProperties.HiddenApiPackageProperties, &m.sourceOnlyProperties.Coverage, nil)
+			err = proptools.AppendProperties(&m.sourceOnlyProperties.HiddenAPIPackageProperties, &m.sourceOnlyProperties.Coverage, nil)
 			if err != nil {
 				ctx.PropertyErrorf("coverage", "error trying to append hidden api coverage specific properties: %s", err)
 				return
@@ -295,6 +303,12 @@ func bootclasspathFragmentFactory() android.Module {
 		// Initialize the contents property from the image_name.
 		bootclasspathFragmentInitContentsFromImage(ctx, m)
 	})
+	return m
+}
+
+func testBootclasspathFragmentFactory() android.Module {
+	m := bootclasspathFragmentFactory().(*BootclasspathFragmentModule)
+	m.testFragment = true
 	return m
 }
 
@@ -709,6 +723,10 @@ func (b *BootclasspathFragmentModule) configuredJars(ctx android.ModuleContext) 
 	} else if global.ApexBootJars.Len() != 0 && !android.IsModuleInVersionedSdk(ctx.Module()) {
 		unknown = android.RemoveListFromList(unknown, b.properties.Coverage.Contents)
 		_, unknown = android.RemoveFromList("core-icu4j", unknown)
+		// This module only exists in car products.
+		// So ignore it even if it is not in PRODUCT_APEX_BOOT_JARS.
+		// TODO(b/202896428): Add better way to handle this.
+		_, unknown = android.RemoveFromList("android.car-module", unknown)
 		if len(unknown) > 0 {
 			ctx.ModuleErrorf("%s in contents must also be declared in PRODUCT_APEX_BOOT_JARS", unknown)
 		}
@@ -807,12 +825,37 @@ func (b *BootclasspathFragmentModule) createHiddenAPIFlagInput(ctx android.Modul
 	input.gatherStubLibInfo(ctx, contents)
 
 	// Populate with flag file paths from the properties.
-	input.extractFlagFilesFromProperties(ctx, &b.properties.Hidden_api)
+	input.extractFlagFilesFromProperties(ctx, &b.properties.HiddenAPIFlagFileProperties)
+
+	// Populate with package rules from the properties.
+	input.extractPackageRulesFromProperties(&b.sourceOnlyProperties.HiddenAPIPackageProperties)
+
+	input.gatherPropertyInfo(ctx, contents)
 
 	// Add the stub dex jars from this module's fragment dependencies.
 	input.DependencyStubDexJarsByScope.addStubDexJarsByModule(dependencyHiddenApiInfo.TransitiveStubDexJarsByScope)
 
 	return input
+}
+
+// isTestFragment returns true if the current module is a test bootclasspath_fragment.
+func (b *BootclasspathFragmentModule) isTestFragment() bool {
+	if b.testFragment {
+		return true
+	}
+
+	// TODO(b/194063708): Once test fragments all use bootclasspath_fragment_test
+	// Some temporary exceptions until all test fragments use the
+	// bootclasspath_fragment_test module type.
+	name := b.BaseModuleName()
+	if strings.HasPrefix(name, "test_") {
+		return true
+	}
+	if name == "apex.apexd_test_bootclasspath-fragment" {
+		return true
+	}
+
+	return false
 }
 
 // produceHiddenAPIOutput produces the hidden API all-flags.csv file (and supporting files)
@@ -824,15 +867,22 @@ func (b *BootclasspathFragmentModule) produceHiddenAPIOutput(ctx android.ModuleC
 
 	// If the module specifies split_packages or package_prefixes then use those to generate the
 	// signature patterns.
-	splitPackages := b.sourceOnlyProperties.Hidden_api.Split_packages
-	packagePrefixes := b.sourceOnlyProperties.Hidden_api.Package_prefixes
-	singlePackages := b.sourceOnlyProperties.Hidden_api.Single_packages
+	splitPackages := input.SplitPackages
+	packagePrefixes := input.PackagePrefixes
+	singlePackages := input.SinglePackages
 	if splitPackages != nil || packagePrefixes != nil || singlePackages != nil {
-		if splitPackages == nil {
-			splitPackages = []string{"*"}
-		}
 		output.SignaturePatternsPath = buildRuleSignaturePatternsFile(
 			ctx, output.AllFlagsPath, splitPackages, packagePrefixes, singlePackages)
+	} else if !b.isTestFragment() {
+		ctx.ModuleErrorf(`Must specify at least one of the split_packages, package_prefixes and single_packages properties
+  If this is a new bootclasspath_fragment or you are unsure what to do add the
+  the following to the bootclasspath_fragment:
+      hidden_api: {split_packages: ["*"]},
+  and then run the following:
+      m analyze_bcpf && analyze_bcpf --bcpf %q
+  it will analyze the bootclasspath_fragment and provide hints as to what you
+  should specify here. If you are happy with its suggestions then you can add
+  the --fix option and it will fix them for you.`, b.BaseModuleName())
 	}
 
 	return output

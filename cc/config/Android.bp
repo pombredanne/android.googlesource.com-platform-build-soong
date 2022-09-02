@@ -11,7 +11,6 @@ bootstrap_go_package {
         "soong-starlark-format",
     ],
     srcs: [
-        "bp2build.go",
         "clang.go",
         "global.go",
         "tidy.go",
@@ -25,6 +24,7 @@ bootstrap_go_package {
         "x86_device.go",
         "x86_64_device.go",
 
+        "arm_linux_host.go",
         "darwin_host.go",
         "x86_linux_host.go",
         "x86_linux_bionic_host.go",
@@ -33,7 +33,6 @@ bootstrap_go_package {
         "arm64_linux_host.go",
     ],
     testSrcs: [
-        "bp2build_test.go",
         "tidy_test.go",
     ],
 }

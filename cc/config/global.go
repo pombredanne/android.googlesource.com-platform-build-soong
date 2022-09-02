@@ -23,6 +23,9 @@ import (
 )
 
 var (
+	pctx         = android.NewPackageContext("android/soong/cc/config")
+	exportedVars = android.NewExportedVariables(pctx)
+
 	// Flags used by lots of devices.  Putting them in package static variables
 	// will save bytes in build.ninja so they aren't repeated for every file
 	commonGlobalCflags = []string{
@@ -55,6 +58,10 @@ var (
 		"-Werror=pragma-pack-suspicious-include",
 		"-Werror=string-plus-int",
 		"-Werror=unreachable-code-loop-increment",
+
+		// Force deprecation warnings to be warnings for code that compiles with -Werror.
+		// Making deprecated usages an error causes extreme pain when trying to deprecate anything.
+		"-Wno-error=deprecated-declarations",
 
 		"-D__compiler_offsetof=__builtin_offsetof",
 
@@ -113,6 +120,13 @@ var (
 	}
 
 	commonGlobalConlyflags = []string{}
+
+	commonGlobalAsflags = []string{
+		"-D__ASSEMBLY__",
+		// TODO(b/235105792): override global -fdebug-default-version=5, it is causing $TMPDIR to
+		// end up in the dwarf data for crtend_so.S.
+		"-fdebug-default-version=4",
+	}
 
 	deviceGlobalCflags = []string{
 		"-ffunction-sections",
@@ -188,7 +202,6 @@ var (
 		"-Werror=int-in-bool-context",
 		"-Werror=int-to-pointer-cast",
 		"-Werror=pointer-to-int-cast",
-		"-Werror=string-compare",
 		"-Werror=xor-used-as-pow",
 		// http://b/161386391 for -Wno-void-pointer-to-enum-cast
 		"-Wno-void-pointer-to-enum-cast",
@@ -214,19 +227,13 @@ var (
 		// http://b/145211066
 		"-Wno-implicit-int-float-conversion",
 		// New warnings to be fixed after clang-r377782.
-		"-Wno-int-in-bool-context",          // http://b/148287349
 		"-Wno-sizeof-array-div",             // http://b/148815709
 		"-Wno-tautological-overlap-compare", // http://b/148815696
 		// New warnings to be fixed after clang-r383902.
 		"-Wno-deprecated-copy",                      // http://b/153746672
 		"-Wno-range-loop-construct",                 // http://b/153747076
-		"-Wno-misleading-indentation",               // http://b/153746954
 		"-Wno-zero-as-null-pointer-constant",        // http://b/68236239
 		"-Wno-deprecated-anon-enum-enum-conversion", // http://b/153746485
-		"-Wno-deprecated-enum-enum-conversion",      // http://b/153746563
-		"-Wno-string-compare",                       // http://b/153764102
-		"-Wno-enum-enum-conversion",                 // http://b/154138986
-		"-Wno-enum-float-conversion",                // http://b/154255917
 		"-Wno-pessimizing-move",                     // http://b/154270751
 		// New warnings to be fixed after clang-r399163
 		"-Wno-non-c-typedef-for-linkage", // http://b/161304145
@@ -235,6 +242,8 @@ var (
 		// New warnings to be fixed after clang-r433403
 		"-Wno-error=unused-but-set-variable",  // http://b/197240255
 		"-Wno-error=unused-but-set-parameter", // http://b/197240255
+		// New warnings to be fixed after clang-r458507
+		"-Wno-error=unqualified-std-cast-call", // http://b/239662094
 	}
 
 	noOverrideExternalGlobalCflags = []string{
@@ -243,6 +252,8 @@ var (
 		"-Wno-unused-but-set-parameter",
 		// http://b/215753485
 		"-Wno-bitwise-instead-of-logical",
+		// http://b/232926688
+		"-Wno-misleading-indentation",
 	}
 
 	// Extra cflags for external third-party projects to disable warnings that
@@ -274,21 +285,26 @@ var (
 
 		// http://b/175068488
 		"-Wno-string-concatenation",
+
+		// http://b/239661264
+		"-Wno-deprecated-non-prototype",
 	}
+
+	llvmNextExtraCommonGlobalCflags = []string{}
 
 	IllegalFlags = []string{
 		"-w",
 	}
 
-	CStdVersion               = "gnu99"
+	CStdVersion               = "gnu11"
 	CppStdVersion             = "gnu++17"
-	ExperimentalCStdVersion   = "gnu11"
+	ExperimentalCStdVersion   = "gnu17"
 	ExperimentalCppStdVersion = "gnu++2a"
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r445002"
-	ClangDefaultShortVersion = "14.0.2"
+	ClangDefaultVersion      = "clang-r458507"
+	ClangDefaultShortVersion = "15.0.1"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{
@@ -300,20 +316,29 @@ var (
 	WarningAllowedOldProjects = []string{}
 )
 
-var pctx = android.NewPackageContext("android/soong/cc/config")
+// BazelCcToolchainVars generates bzl file content containing variables for
+// Bazel's cc_toolchain configuration.
+func BazelCcToolchainVars(config android.Config) string {
+	return android.BazelToolchainVars(config, exportedVars)
+}
+
+func ExportStringList(name string, value []string) {
+	exportedVars.ExportStringList(name, value)
+}
 
 func init() {
 	if runtime.GOOS == "linux" {
 		commonGlobalCflags = append(commonGlobalCflags, "-fdebug-prefix-map=/proc/self/cwd=")
 	}
 
-	exportStringListStaticVariable("CommonGlobalConlyflags", commonGlobalConlyflags)
-	exportStringListStaticVariable("DeviceGlobalCppflags", deviceGlobalCppflags)
-	exportStringListStaticVariable("DeviceGlobalLdflags", deviceGlobalLdflags)
-	exportStringListStaticVariable("DeviceGlobalLldflags", deviceGlobalLldflags)
-	exportStringListStaticVariable("HostGlobalCppflags", hostGlobalCppflags)
-	exportStringListStaticVariable("HostGlobalLdflags", hostGlobalLdflags)
-	exportStringListStaticVariable("HostGlobalLldflags", hostGlobalLldflags)
+	exportedVars.ExportStringListStaticVariable("CommonGlobalConlyflags", commonGlobalConlyflags)
+	exportedVars.ExportStringListStaticVariable("CommonGlobalAsflags", commonGlobalAsflags)
+	exportedVars.ExportStringListStaticVariable("DeviceGlobalCppflags", deviceGlobalCppflags)
+	exportedVars.ExportStringListStaticVariable("DeviceGlobalLdflags", deviceGlobalLdflags)
+	exportedVars.ExportStringListStaticVariable("DeviceGlobalLldflags", deviceGlobalLldflags)
+	exportedVars.ExportStringListStaticVariable("HostGlobalCppflags", hostGlobalCppflags)
+	exportedVars.ExportStringListStaticVariable("HostGlobalLdflags", hostGlobalLdflags)
+	exportedVars.ExportStringListStaticVariable("HostGlobalLldflags", hostGlobalLldflags)
 
 	// Export the static default CommonGlobalCflags to Bazel.
 	// TODO(187086342): handle cflags that are set in VariableFuncs.
@@ -324,7 +349,7 @@ func init() {
 			"-ftrivial-auto-var-init=zero",
 			"-enable-trivial-auto-var-init-zero-knowing-it-will-be-removed-from-clang",
 		}...)
-	exportedStringListVars.Set("CommonGlobalCflags", bazelCommonGlobalCflags)
+	exportedVars.ExportStringList("CommonGlobalCflags", bazelCommonGlobalCflags)
 
 	pctx.VariableFunc("CommonGlobalCflags", func(ctx android.PackageVarContext) string {
 		flags := commonGlobalCflags
@@ -348,22 +373,36 @@ func init() {
 		if ctx.Config().IsEnvTrue("USE_CCACHE") {
 			flags = append(flags, "-Wno-unused-command-line-argument")
 		}
+
+		if ctx.Config().IsEnvTrue("LLVM_NEXT") {
+			flags = append(flags, llvmNextExtraCommonGlobalCflags...)
+		}
+
+		if ctx.Config().IsEnvTrue("ALLOW_UNKNOWN_WARNING_OPTION") {
+			flags = append(flags, "-Wno-error=unknown-warning-option")
+		}
+
 		return strings.Join(flags, " ")
 	})
 
 	// Export the static default DeviceGlobalCflags to Bazel.
 	// TODO(187086342): handle cflags that are set in VariableFuncs.
-	exportedStringListVars.Set("DeviceGlobalCflags", deviceGlobalCflags)
+	exportedVars.ExportStringList("DeviceGlobalCflags", deviceGlobalCflags)
 
 	pctx.VariableFunc("DeviceGlobalCflags", func(ctx android.PackageVarContext) string {
 		return strings.Join(deviceGlobalCflags, " ")
 	})
 
-	exportStringListStaticVariable("HostGlobalCflags", hostGlobalCflags)
-	exportStringListStaticVariable("NoOverrideGlobalCflags", noOverrideGlobalCflags)
-	exportStringListStaticVariable("NoOverrideExternalGlobalCflags", noOverrideExternalGlobalCflags)
-	exportStringListStaticVariable("CommonGlobalCppflags", commonGlobalCppflags)
-	exportStringListStaticVariable("ExternalCflags", extraExternalCflags)
+	exportedVars.ExportStringListStaticVariable("HostGlobalCflags", hostGlobalCflags)
+	exportedVars.ExportStringListStaticVariable("NoOverrideGlobalCflags", noOverrideGlobalCflags)
+	exportedVars.ExportStringListStaticVariable("NoOverrideExternalGlobalCflags", noOverrideExternalGlobalCflags)
+	exportedVars.ExportStringListStaticVariable("CommonGlobalCppflags", commonGlobalCppflags)
+	exportedVars.ExportStringListStaticVariable("ExternalCflags", extraExternalCflags)
+
+	exportedVars.ExportString("CStdVersion", CStdVersion)
+	exportedVars.ExportString("CppStdVersion", CppStdVersion)
+	exportedVars.ExportString("ExperimentalCStdVersion", ExperimentalCStdVersion)
+	exportedVars.ExportString("ExperimentalCppStdVersion", ExperimentalCppStdVersion)
 
 	// Everything in these lists is a crime against abstraction and dependency tracking.
 	// Do not add anything to this list.
@@ -378,11 +417,11 @@ func init() {
 		"frameworks/native/opengl/include",
 		"frameworks/av/include",
 	}
-	exportedStringListVars.Set("CommonGlobalIncludes", commonGlobalIncludes)
+	exportedVars.ExportStringList("CommonGlobalIncludes", commonGlobalIncludes)
 	pctx.PrefixedExistentPathsForSourcesVariable("CommonGlobalIncludes", "-I", commonGlobalIncludes)
 
-	exportStringStaticVariable("CLANG_DEFAULT_VERSION", ClangDefaultVersion)
-	exportStringStaticVariable("CLANG_DEFAULT_SHORT_VERSION", ClangDefaultShortVersion)
+	exportedVars.ExportStringStaticVariable("CLANG_DEFAULT_VERSION", ClangDefaultVersion)
+	exportedVars.ExportStringStaticVariable("CLANG_DEFAULT_SHORT_VERSION", ClangDefaultShortVersion)
 
 	pctx.StaticVariableWithEnvOverride("ClangBase", "LLVM_PREBUILTS_BASE", ClangDefaultBase)
 	pctx.StaticVariableWithEnvOverride("ClangVersion", "LLVM_PREBUILTS_VERSION", ClangDefaultVersion)
@@ -422,7 +461,7 @@ func init() {
 	pctx.StaticVariableWithEnvOverride("REAbiLinkerExecStrategy", "RBE_ABI_LINKER_EXEC_STRATEGY", remoteexec.LocalExecStrategy)
 }
 
-var HostPrebuiltTag = exportVariableConfigMethod("HostPrebuiltTag", android.Config.PrebuiltOS)
+var HostPrebuiltTag = exportedVars.ExportVariableConfigMethod("HostPrebuiltTag", android.Config.PrebuiltOS)
 
 func ClangPath(ctx android.PathContext, file string) android.SourcePath {
 	type clangToolKey string

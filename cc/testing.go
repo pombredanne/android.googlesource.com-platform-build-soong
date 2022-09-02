@@ -20,6 +20,7 @@ import (
 
 	"android/soong/android"
 	"android/soong/genrule"
+	"android/soong/multitree"
 	"android/soong/snapshot"
 )
 
@@ -29,6 +30,9 @@ func RegisterRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
 	RegisterBinaryBuildComponents(ctx)
 	RegisterLibraryBuildComponents(ctx)
 	RegisterLibraryHeadersBuildComponents(ctx)
+	RegisterLibraryStubBuildComponents(ctx)
+
+	multitree.RegisterApiImportsModule(ctx)
 
 	ctx.RegisterModuleType("cc_benchmark", BenchmarkFactory)
 	ctx.RegisterModuleType("cc_object", ObjectFactory)
@@ -37,6 +41,7 @@ func RegisterRequiredBuildComponentsForTest(ctx android.RegistrationContext) {
 	ctx.RegisterModuleType("ndk_prebuilt_static_stl", NdkPrebuiltStaticStlFactory)
 	ctx.RegisterModuleType("ndk_prebuilt_object", NdkPrebuiltObjectFactory)
 	ctx.RegisterModuleType("ndk_library", NdkLibraryFactory)
+	ctx.RegisterModuleType("ndk_headers", ndkHeadersFactory)
 }
 
 func GatherRequiredDepsForTest(oses ...android.OsType) string {
@@ -72,7 +77,6 @@ func commonDefaultModules() string {
 			nocrt: true,
 			system_shared_libs: [],
 			stl: "none",
-			srcs: [""],
 			check_elf_files: false,
 			sanitize: {
 				never: true,
@@ -83,6 +87,7 @@ func commonDefaultModules() string {
 			name: "libcompiler_rt-extras",
 			defaults: ["toolchain_libs_defaults"],
 			vendor_ramdisk_available: true,
+			srcs: [""],
 		}
 
 		cc_prebuilt_library_static {
@@ -92,11 +97,13 @@ func commonDefaultModules() string {
 	        vendor_available: true,
 			vendor_ramdisk_available: true,
 			native_bridge_supported: true,
+			srcs: [""],
 		}
 
 		cc_prebuilt_library_shared {
 			name: "libclang_rt.hwasan",
 			defaults: ["toolchain_libs_defaults"],
+			srcs: [""],
 		}
 
 		cc_prebuilt_library_static {
@@ -107,6 +114,7 @@ func commonDefaultModules() string {
 			],
 			vendor_ramdisk_available: true,
 			native_bridge_supported: true,
+			srcs: [""],
 		}
 
 		cc_prebuilt_library_static {
@@ -115,17 +123,34 @@ func commonDefaultModules() string {
 				"linux_bionic_supported",
 				"toolchain_libs_defaults",
 			],
+			srcs: [""],
 		}
 
 		// Needed for sanitizer
 		cc_prebuilt_library_shared {
 			name: "libclang_rt.ubsan_standalone",
 			defaults: ["toolchain_libs_defaults"],
+			srcs: [""],
 		}
 
 		cc_prebuilt_library_static {
 			name: "libclang_rt.ubsan_minimal",
 			defaults: ["toolchain_libs_defaults"],
+			host_supported: true,
+			target: {
+				android_arm64: {
+					srcs: ["libclang_rt.ubsan_minimal.android_arm64.a"],
+				},
+				android_arm: {
+					srcs: ["libclang_rt.ubsan_minimal.android_arm.a"],
+				},
+				linux_glibc_x86_64: {
+					srcs: ["libclang_rt.ubsan_minimal.x86_64.a"],
+				},
+				linux_glibc_x86: {
+					srcs: ["libclang_rt.ubsan_minimal.x86.a"],
+				},
+			},
 		}
 
 		cc_library {
@@ -173,7 +198,6 @@ func commonDefaultModules() string {
 			native_coverage: false,
 			system_shared_libs: [],
 			stl: "none",
-			notice: "custom_notice",
 		}
 		cc_library {
 			name: "libprofile-clang-extras",
@@ -184,7 +208,6 @@ func commonDefaultModules() string {
 			native_coverage: false,
 			system_shared_libs: [],
 			stl: "none",
-			notice: "custom_notice",
 		}
 		cc_library {
 			name: "libprofile-extras_ndk",
@@ -193,7 +216,6 @@ func commonDefaultModules() string {
 			native_coverage: false,
 			system_shared_libs: [],
 			stl: "none",
-			notice: "custom_notice",
 			sdk_version: "current",
 		}
 		cc_library {
@@ -203,7 +225,6 @@ func commonDefaultModules() string {
 			native_coverage: false,
 			system_shared_libs: [],
 			stl: "none",
-			notice: "custom_notice",
 			sdk_version: "current",
 		}
 
@@ -513,7 +534,7 @@ var PrepareForTestWithCcBuildComponents = android.GroupFixturePreparers(
 	android.PrepareForTestWithAndroidBuildComponents,
 	android.FixtureRegisterWithContext(RegisterRequiredBuildComponentsForTest),
 	android.FixtureRegisterWithContext(func(ctx android.RegistrationContext) {
-		ctx.RegisterModuleType("cc_fuzz", FuzzFactory)
+		ctx.RegisterModuleType("cc_fuzz", LibFuzzFactory)
 		ctx.RegisterModuleType("cc_test", TestFactory)
 		ctx.RegisterModuleType("cc_test_library", TestLibraryFactory)
 		ctx.RegisterModuleType("vndk_prebuilt_shared", VndkPrebuiltSharedFactory)
@@ -545,6 +566,11 @@ var PrepareForTestWithCcDefaultModules = android.GroupFixturePreparers(
 		"defaults/cc/common/crtend_so.c":            nil,
 		"defaults/cc/common/crtend.c":               nil,
 		"defaults/cc/common/crtbrand.c":             nil,
+
+		"defaults/cc/common/libclang_rt.ubsan_minimal.android_arm64.a": nil,
+		"defaults/cc/common/libclang_rt.ubsan_minimal.android_arm.a":   nil,
+		"defaults/cc/common/libclang_rt.ubsan_minimal.x86_64.a":        nil,
+		"defaults/cc/common/libclang_rt.ubsan_minimal.x86.a":           nil,
 	}.AddToFixture(),
 
 	// Place the default cc test modules that are common to all platforms in a location that will not
@@ -622,7 +648,7 @@ func TestConfig(buildDir string, os android.OsType, env map[string]string,
 func CreateTestContext(config android.Config) *android.TestContext {
 	ctx := android.NewTestArchContext(config)
 	genrule.RegisterGenruleBuildComponents(ctx)
-	ctx.RegisterModuleType("cc_fuzz", FuzzFactory)
+	ctx.RegisterModuleType("cc_fuzz", LibFuzzFactory)
 	ctx.RegisterModuleType("cc_test", TestFactory)
 	ctx.RegisterModuleType("cc_test_library", TestLibraryFactory)
 	ctx.RegisterModuleType("filegroup", android.FileGroupFactory)

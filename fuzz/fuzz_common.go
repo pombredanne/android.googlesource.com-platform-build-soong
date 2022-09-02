@@ -18,6 +18,7 @@ package fuzz
 
 import (
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -29,9 +30,18 @@ import (
 type Lang string
 
 const (
-	Cc   Lang = ""
+	Cc   Lang = "cc"
 	Rust Lang = "rust"
 	Java Lang = "java"
+)
+
+type Framework string
+
+const (
+	AFL              Framework = "afl"
+	LibFuzzer        Framework = "libfuzzer"
+	Jazzer           Framework = "jazzer"
+	UnknownFramework Framework = "unknownframework"
 )
 
 var BoolDefault = proptools.BoolDefault
@@ -59,9 +69,65 @@ type ArchOs struct {
 	Dir          string
 }
 
+type PrivilegedLevel string
+
+const (
+	// Environment with the most minimal permissions.
+	Constrained PrivilegedLevel = "Constrained"
+	// Typical execution environment running unprivileged code.
+	Unprivileged = "Unprivileged"
+	// May have access to elevated permissions.
+	Privileged = "Privileged"
+	// Trusted computing base.
+	Tcb = "TCB"
+	// Bootloader chain.
+	Bootloader = "Bootloader"
+	// Tusted execution environment.
+	Tee = "Tee"
+	// Secure enclave.
+	Se = "Se"
+	// Other.
+	Other = "Other"
+)
+
+func IsValidConfig(fuzzModule FuzzPackagedModule, moduleName string) bool {
+	var config = fuzzModule.FuzzProperties.Fuzz_config
+	if config != nil {
+		var level = PrivilegedLevel(config.Privilege_level)
+		if level != "" {
+			switch level {
+			case Constrained, Unprivileged, Privileged, Tcb, Bootloader, Tee, Se, Other:
+				return true
+			}
+			panic(fmt.Errorf("Invalid privileged level in fuzz config in %s", moduleName))
+		}
+		return true
+	} else {
+		return false
+	}
+}
+
 type FuzzConfig struct {
 	// Email address of people to CC on bugs or contact about this fuzz target.
 	Cc []string `json:"cc,omitempty"`
+	// A brief description of what the fuzzed code does.
+	Description string `json:"description,omitempty"`
+	// Can this code be triggered remotely or only locally.
+	Remotely_accessible *bool `json:"remotely_accessible,omitempty"`
+	// Is the fuzzed code host only, i.e. test frameworks or support utilities.
+	Host_only *bool `json:"host_only,omitempty"`
+	// Can third party/untrusted apps supply data to fuzzed code.
+	Untrusted_data *bool `json:"untrusted_data,omitempty"`
+	// Is the code being fuzzed in a privileged, constrained or any other
+	// context from:
+	// https://source.android.com/security/overview/updates-resources#context_types.
+	Privilege_level PrivilegedLevel `json:"privilege_level,omitempty"`
+	// Can the fuzzed code isolated or can be called by multiple users/processes.
+	Isolated *bool `json:"users_isolation,omitempty"`
+	// When code was relaeased or will be released.
+	Production_date string `json:"production_date,omitempty"`
+	// Prevents critical service functionality like phone calls, bluetooth, etc.
+	Critical *bool `json:"critical,omitempty"`
 	// Specify whether to enable continuous fuzzing on devices. Defaults to true.
 	Fuzz_on_haiku_device *bool `json:"fuzz_on_haiku_device,omitempty"`
 	// Specify whether to enable continuous fuzzing on host. Defaults to true.
@@ -82,6 +148,15 @@ type FuzzConfig struct {
 	Hwasan_options []string `json:"hwasan_options,omitempty"`
 	// Additional options to be passed to HWASAN when running on host in Haiku.
 	Asan_options []string `json:"asan_options,omitempty"`
+	// If there's a Java fuzzer with JNI, a different version of Jazzer would
+	// need to be added to the fuzzer package than one without JNI
+	IsJni *bool `json:"is_jni,omitempty"`
+}
+
+type FuzzFrameworks struct {
+	Afl       *bool
+	Libfuzzer *bool
+	Jazzer    *bool
 }
 
 type FuzzProperties struct {
@@ -93,6 +168,10 @@ type FuzzProperties struct {
 	Data []string `android:"path"`
 	// Optional dictionary to be installed to the fuzz target's output directory.
 	Dictionary *string `android:"path"`
+	// Define the fuzzing frameworks this fuzz target can be built for. If
+	// empty then the fuzz target will be available to be  built for all fuzz
+	// frameworks available
+	Fuzzing_frameworks *FuzzFrameworks
 	// Config for running the target on fuzzing infrastructure.
 	Fuzz_config *FuzzConfig
 }
@@ -105,6 +184,49 @@ type FuzzPackagedModule struct {
 	Config                android.Path
 	Data                  android.Paths
 	DataIntermediateDir   android.Path
+}
+
+func GetFramework(ctx android.LoadHookContext, lang Lang) Framework {
+	framework := ctx.Config().Getenv("FUZZ_FRAMEWORK")
+
+	if lang == Cc {
+		switch strings.ToLower(framework) {
+		case "":
+			return LibFuzzer
+		case "libfuzzer":
+			return LibFuzzer
+		case "afl":
+			return AFL
+		}
+	} else if lang == Rust {
+		return LibFuzzer
+	} else if lang == Java {
+		return Jazzer
+	}
+
+	ctx.ModuleErrorf(fmt.Sprintf("%s is not a valid fuzzing framework for %s", framework, lang))
+	return UnknownFramework
+}
+
+func IsValidFrameworkForModule(targetFramework Framework, lang Lang, moduleFrameworks *FuzzFrameworks) bool {
+	if targetFramework == UnknownFramework {
+		return false
+	}
+
+	if moduleFrameworks == nil {
+		return true
+	}
+
+	switch targetFramework {
+	case LibFuzzer:
+		return proptools.BoolDefault(moduleFrameworks.Libfuzzer, true)
+	case AFL:
+		return proptools.BoolDefault(moduleFrameworks.Afl, true)
+	case Jazzer:
+		return proptools.BoolDefault(moduleFrameworks.Jazzer, true)
+	default:
+		panic("%s is not supported as a fuzz framework")
+	}
 }
 
 func IsValid(fuzzModule FuzzModule) bool {
@@ -154,7 +276,7 @@ func (s *FuzzPackager) PackageArtifacts(ctx android.SingletonContext, module and
 	}
 
 	// Additional fuzz config.
-	if fuzzModule.Config != nil {
+	if fuzzModule.Config != nil && IsValidConfig(fuzzModule, module.Name()) {
 		files = append(files, FileToZip{fuzzModule.Config, ""})
 	}
 
@@ -205,7 +327,7 @@ func (f *FuzzConfig) String() string {
 	return string(b)
 }
 
-func (s *FuzzPackager) CreateFuzzPackage(ctx android.SingletonContext, archDirs map[ArchOs][]FileToZip, lang Lang, pctx android.PackageContext) {
+func (s *FuzzPackager) CreateFuzzPackage(ctx android.SingletonContext, archDirs map[ArchOs][]FileToZip, fuzzType Lang, pctx android.PackageContext) {
 	var archOsList []ArchOs
 	for archOs := range archDirs {
 		archOsList = append(archOsList, archOs)
@@ -218,12 +340,13 @@ func (s *FuzzPackager) CreateFuzzPackage(ctx android.SingletonContext, archDirs 
 		hostOrTarget := archOs.HostOrTarget
 		builder := android.NewRuleBuilder(pctx, ctx)
 		zipFileName := "fuzz-" + hostOrTarget + "-" + arch + ".zip"
-		if lang == Rust {
+		if fuzzType == Rust {
 			zipFileName = "fuzz-rust-" + hostOrTarget + "-" + arch + ".zip"
 		}
-		if lang == Java {
+		if fuzzType == Java {
 			zipFileName = "fuzz-java-" + hostOrTarget + "-" + arch + ".zip"
 		}
+
 		outputFile := android.PathForOutput(ctx, zipFileName)
 
 		s.Packages = append(s.Packages, outputFile)
@@ -234,7 +357,6 @@ func (s *FuzzPackager) CreateFuzzPackage(ctx android.SingletonContext, archDirs 
 			Flag("-L 0") // No need to try and re-compress the zipfiles.
 
 		for _, fileToZip := range filesToZip {
-
 			if fileToZip.DestinationPathPrefix != "" {
 				command.FlagWithArg("-P ", fileToZip.DestinationPathPrefix)
 			} else {
@@ -253,6 +375,7 @@ func (s *FuzzPackager) PreallocateSlice(ctx android.MakeVarsContext, targets str
 	for target, _ := range s.FuzzTargets {
 		fuzzTargets = append(fuzzTargets, target)
 	}
+
 	sort.Strings(fuzzTargets)
 	ctx.Strict(targets, strings.Join(fuzzTargets, " "))
 }

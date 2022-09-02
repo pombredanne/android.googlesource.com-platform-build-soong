@@ -21,17 +21,17 @@ import (
 	"android/soong/java"
 )
 
-func runJavaLibraryHostTestCase(t *testing.T, tc bp2buildTestCase) {
+func runJavaLibraryHostTestCase(t *testing.T, tc Bp2buildTestCase) {
 	t.Helper()
-	(&tc).moduleTypeUnderTest = "java_library_host"
-	(&tc).moduleTypeUnderTestFactory = java.LibraryHostFactory
-	runBp2BuildTestCase(t, func(ctx android.RegistrationContext) {}, tc)
+	(&tc).ModuleTypeUnderTest = "java_library_host"
+	(&tc).ModuleTypeUnderTestFactory = java.LibraryHostFactory
+	RunBp2BuildTestCase(t, func(ctx android.RegistrationContext) {}, tc)
 }
 
 func TestJavaLibraryHost(t *testing.T) {
-	runJavaLibraryHostTestCase(t, bp2buildTestCase{
-		description: "java_library_host with srcs, exclude_srcs and libs",
-		blueprint: `java_library_host {
+	runJavaLibraryHostTestCase(t, Bp2buildTestCase{
+		Description: "java_library_host with srcs, exclude_srcs and libs",
+		Blueprint: `java_library_host {
     name: "java-lib-host-1",
     srcs: ["a.java", "b.java"],
     exclude_srcs: ["b.java"],
@@ -43,9 +43,10 @@ java_library_host {
     name: "java-lib-host-2",
     srcs: ["c.java"],
     bazel_module: { bp2build_available: true },
+    java_version: "9",
 }`,
-		expectedBazelTargets: []string{
-			makeBazelTarget("java_library", "java-lib-host-1", attrNameToString{
+		ExpectedBazelTargets: []string{
+			MakeBazelTarget("java_library", "java-lib-host-1", AttrNameToString{
 				"srcs": `["a.java"]`,
 				"deps": `[":java-lib-host-2"]`,
 				"target_compatible_with": `select({
@@ -53,8 +54,9 @@ java_library_host {
         "//conditions:default": [],
     })`,
 			}),
-			makeBazelTarget("java_library", "java-lib-host-2", attrNameToString{
-				"srcs": `["c.java"]`,
+			MakeBazelTarget("java_library", "java-lib-host-2", AttrNameToString{
+				"javacopts": `["-source 1.9 -target 1.9"]`,
+				"srcs":      `["c.java"]`,
 				"target_compatible_with": `select({
         "//build/bazel/platforms/os:android": ["@platforms//:incompatible"],
         "//conditions:default": [],

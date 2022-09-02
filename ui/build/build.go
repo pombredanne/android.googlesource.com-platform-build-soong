@@ -18,6 +18,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"sync"
 	"text/template"
 
 	"android/soong/ui/metrics"
@@ -103,11 +104,28 @@ const (
 	// Whether to run ninja on the combined ninja.
 	RunNinja = 1 << iota
 	// Whether to run bazel on the combined ninja.
-	RunBazel        = 1 << iota
-	RunBuildTests   = 1 << iota
-	RunAll          = RunProductConfig | RunSoong | RunKati | RunKatiNinja | RunNinja
-	RunAllWithBazel = RunProductConfig | RunSoong | RunKati | RunKatiNinja | RunBazel
+	RunBazel      = 1 << iota
+	RunBuildTests = 1 << iota
+	RunAll        = RunProductConfig | RunSoong | RunKati | RunKatiNinja | RunNinja
 )
+
+// checkBazelMode fails the build if there are conflicting arguments for which bazel
+// build mode to use.
+func checkBazelMode(ctx Context, config Config) {
+	// TODO(cparsons): Remove USE_BAZEL_ANALYSIS handling.
+	if config.Environment().IsEnvTrue("USE_BAZEL_ANALYSIS") {
+		if config.bazelProdMode || config.bazelDevMode {
+			ctx.Fatalf("USE_BAZEL_ANALYSIS is deprecated.\n" +
+				"Unset USE_BAZEL_ANALYSIS when using --bazel-mode or --bazel-mode-dev.")
+		} else {
+			config.bazelDevMode = true
+		}
+	}
+	if config.bazelProdMode && config.bazelDevMode {
+		ctx.Fatalf("Conflicting bazel mode.\n" +
+			"Do not specify both --bazel-mode and --bazel-mode-dev")
+	}
+}
 
 // checkProblematicFiles fails the build if existing Android.mk or CleanSpec.mk files are found at the root of the tree.
 func checkProblematicFiles(ctx Context) {
@@ -182,8 +200,8 @@ func checkRAM(ctx Context, config Config) {
 	}
 }
 
-// Build the tree. The 'what' argument can be used to chose which components of
-// the build to run, via checking various bitmasks.
+// Build the tree. Various flags in `config` govern which components of
+// the build to run.
 func Build(ctx Context, config Config) {
 	ctx.Verboseln("Starting build with args:", config.Arguments())
 	ctx.Verboseln("Environment:", config.Environment().Environ())
@@ -200,10 +218,27 @@ func Build(ctx Context, config Config) {
 	buildLock := BecomeSingletonOrFail(ctx, config)
 	defer buildLock.Unlock()
 
+	logArgsOtherThan := func(specialTargets ...string) {
+		var ignored []string
+		for _, a := range config.Arguments() {
+			if !inList(a, specialTargets) {
+				ignored = append(ignored, a)
+			}
+		}
+		if len(ignored) > 0 {
+			ctx.Printf("ignoring arguments %q", ignored)
+		}
+	}
+
 	if inList("clean", config.Arguments()) || inList("clobber", config.Arguments()) {
+		logArgsOtherThan("clean", "clobber")
 		clean(ctx, config)
 		return
 	}
+
+	defer waitForDist(ctx)
+
+	checkBazelMode(ctx, config)
 
 	// checkProblematicFiles aborts the build if Android.mk or CleanSpec.mk are found at the root of the tree.
 	checkProblematicFiles(ctx)
@@ -220,9 +255,6 @@ func Build(ctx Context, config Config) {
 	SetupPath(ctx, config)
 
 	what := RunAll
-	if config.UseBazel() {
-		what = RunAllWithBazel
-	}
 	if config.Checkbuild() {
 		what |= RunBuildTests
 	}
@@ -263,6 +295,7 @@ func Build(ctx Context, config Config) {
 	}
 
 	if config.StartRBE() {
+		cleanupRBELogsDir(ctx, config)
 		startRBE(ctx, config)
 		defer DumpRBEMetrics(ctx, config, filepath.Join(config.LogsDir(), "rbe_metrics.pb"))
 	}
@@ -275,6 +308,7 @@ func Build(ctx Context, config Config) {
 
 	if inList("installclean", config.Arguments()) ||
 		inList("install-clean", config.Arguments()) {
+		logArgsOtherThan("installclean", "install-clean")
 		installClean(ctx, config)
 		ctx.Println("Deleted images and staging directories.")
 		return
@@ -282,6 +316,7 @@ func Build(ctx Context, config Config) {
 
 	if inList("dataclean", config.Arguments()) ||
 		inList("data-clean", config.Arguments()) {
+		logArgsOtherThan("dataclean", "data-clean")
 		dataClean(ctx, config)
 		ctx.Println("Deleted data files.")
 		return
@@ -329,8 +364,18 @@ func Build(ctx Context, config Config) {
 	}
 }
 
+var distWaitGroup sync.WaitGroup
+
+// waitForDist waits for all backgrounded distGzipFile and distFile writes to finish
+func waitForDist(ctx Context) {
+	ctx.BeginTrace("soong_ui", "dist")
+	defer ctx.EndTrace()
+
+	distWaitGroup.Wait()
+}
+
 // distGzipFile writes a compressed copy of src to the distDir if dist is enabled.  Failures
-// are printed but non-fatal.
+// are printed but non-fatal. Uses the distWaitGroup func for backgrounding (optimization).
 func distGzipFile(ctx Context, config Config, src string, subDirs ...string) {
 	if !config.Dist() {
 		return
@@ -343,13 +388,17 @@ func distGzipFile(ctx Context, config Config, src string, subDirs ...string) {
 		ctx.Printf("failed to mkdir %s: %s", destDir, err.Error())
 	}
 
-	if err := gzipFileToDir(src, destDir); err != nil {
-		ctx.Printf("failed to dist %s: %s", filepath.Base(src), err.Error())
-	}
+	distWaitGroup.Add(1)
+	go func() {
+		defer distWaitGroup.Done()
+		if err := gzipFileToDir(src, destDir); err != nil {
+			ctx.Printf("failed to dist %s: %s", filepath.Base(src), err.Error())
+		}
+	}()
 }
 
 // distFile writes a copy of src to the distDir if dist is enabled.  Failures are printed but
-// non-fatal.
+// non-fatal. Uses the distWaitGroup func for backgrounding (optimization).
 func distFile(ctx Context, config Config, src string, subDirs ...string) {
 	if !config.Dist() {
 		return
@@ -362,7 +411,11 @@ func distFile(ctx Context, config Config, src string, subDirs ...string) {
 		ctx.Printf("failed to mkdir %s: %s", destDir, err.Error())
 	}
 
-	if _, err := copyFile(src, filepath.Join(destDir, filepath.Base(src))); err != nil {
-		ctx.Printf("failed to dist %s: %s", filepath.Base(src), err.Error())
-	}
+	distWaitGroup.Add(1)
+	go func() {
+		defer distWaitGroup.Done()
+		if _, err := copyFile(src, filepath.Join(destDir, filepath.Base(src))); err != nil {
+			ctx.Printf("failed to dist %s: %s", filepath.Base(src), err.Error())
+		}
+	}()
 }

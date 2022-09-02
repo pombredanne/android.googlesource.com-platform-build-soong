@@ -449,6 +449,7 @@ func rewriteTestModuleTypes(f *Fixer) error {
 		}
 
 		hasInstrumentationFor := hasNonEmptyLiteralStringProperty(mod, "instrumentation_for")
+		hasTestSuites := hasNonEmptyLiteralListProperty(mod, "test_suites")
 		tags, _ := getLiteralListPropertyValue(mod, "tags")
 
 		var hasTestsTag bool
@@ -458,7 +459,7 @@ func rewriteTestModuleTypes(f *Fixer) error {
 			}
 		}
 
-		isTest := hasInstrumentationFor || hasTestsTag
+		isTest := hasInstrumentationFor || hasTestsTag || hasTestSuites
 
 		if isTest {
 			switch mod.Type {
@@ -470,13 +471,7 @@ func rewriteTestModuleTypes(f *Fixer) error {
 				mod.Type = "java_test"
 			case "java_library_host":
 				mod.Type = "java_test_host"
-			}
-		}
-
-		// when a cc_binary module has a nonempty test_suites field, modify the type to cc_test
-		if mod.Type == "cc_binary" {
-			hasTestSuites := hasNonEmptyLiteralListProperty(mod, "test_suites")
-			if hasTestSuites {
+			case "cc_binary":
 				mod.Type = "cc_test"
 			}
 		}
@@ -558,7 +553,9 @@ func indicateAttributeError(mod *parser.Module, attributeName string, format str
 
 // If a variable is LOCAL_MODULE, get its value from the 'name' attribute.
 // This handles the statement
-//    LOCAL_SRC_FILES := $(LOCAL_MODULE)
+//
+//	LOCAL_SRC_FILES := $(LOCAL_MODULE)
+//
 // which occurs often.
 func resolveLocalModule(mod *parser.Module, val parser.Expression) parser.Expression {
 	if varLocalName, ok := val.(*parser.Variable); ok {
@@ -572,9 +569,9 @@ func resolveLocalModule(mod *parser.Module, val parser.Expression) parser.Expres
 }
 
 // etcPrebuiltModuleUpdate contains information on updating certain parts of a defined module such as:
-//    * changing the module type from prebuilt_etc to a different one
-//    * stripping the prefix of the install path based on the module type
-//    * appending additional boolean properties to the prebuilt module
+//   - changing the module type from prebuilt_etc to a different one
+//   - stripping the prefix of the install path based on the module type
+//   - appending additional boolean properties to the prebuilt module
 type etcPrebuiltModuleUpdate struct {
 	// The prefix of the install path defined in local_module_path. The prefix is removed from local_module_path
 	// before setting the 'filename' attribute.

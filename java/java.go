@@ -24,6 +24,7 @@ import (
 	"strings"
 
 	"android/soong/bazel"
+	"android/soong/bazel/cquery"
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
@@ -118,6 +119,16 @@ var (
 		copyEverythingToSnapshot,
 	}
 
+	snapshotRequiresImplementationJar = func(ctx android.SdkMemberContext) bool {
+		// In the S build the build will break if updatable-media does not provide a full implementation
+		// jar. That issue was fixed in Tiramisu by b/229932396.
+		if ctx.IsTargetBuildBeforeTiramisu() && ctx.Name() == "updatable-media" {
+			return true
+		}
+
+		return false
+	}
+
 	// Supports adding java boot libraries to module_exports and sdk.
 	//
 	// The build has some implicit dependencies (via the boot jars configuration) on a number of
@@ -135,13 +146,21 @@ var (
 			SupportsSdk:  true,
 		},
 		func(ctx android.SdkMemberContext, j *Library) android.Path {
+			if snapshotRequiresImplementationJar(ctx) {
+				return exportImplementationClassesJar(ctx, j)
+			}
+
 			// Java boot libs are only provided in the SDK to provide access to their dex implementation
 			// jar for use by dexpreopting and boot jars package check. They do not need to provide an
 			// actual implementation jar but the java_import will need a file that exists so just copy an
 			// empty file. Any attempt to use that file as a jar will cause a build error.
 			return ctx.SnapshotBuilder().EmptyFile()
 		},
-		func(osPrefix, name string) string {
+		func(ctx android.SdkMemberContext, osPrefix, name string) string {
+			if snapshotRequiresImplementationJar(ctx) {
+				return sdkSnapshotFilePathForJar(ctx, osPrefix, name)
+			}
+
 			// Create a special name for the implementation jar to try and provide some useful information
 			// to a developer that attempts to compile against this.
 			// TODO(b/175714559): Provide a proper error message in Soong not ninja.
@@ -164,6 +183,9 @@ var (
 		android.SdkMemberTypeBase{
 			PropertyName: "java_systemserver_libs",
 			SupportsSdk:  true,
+
+			// This was only added in Tiramisu.
+			SupportedBuildReleaseSpecification: "Tiramisu+",
 		},
 		func(ctx android.SdkMemberContext, j *Library) android.Path {
 			// Java systemserver libs are only provided in the SDK to provide access to their dex
@@ -172,7 +194,7 @@ var (
 			// file. Any attempt to use that file as a jar will cause a build error.
 			return ctx.SnapshotBuilder().EmptyFile()
 		},
-		func(osPrefix, name string) string {
+		func(_ android.SdkMemberContext, osPrefix, name string) string {
 			// Create a special name for the implementation jar to try and provide some useful information
 			// to a developer that attempts to compile against this.
 			// TODO(b/175714559): Provide a proper error message in Soong not ninja.
@@ -300,19 +322,11 @@ var _ android.LicenseAnnotationsDependencyTag = dependencyTag{}
 
 type usesLibraryDependencyTag struct {
 	dependencyTag
-
-	// SDK version in which the library appared as a standalone library.
-	sdkVersion int
-
-	// If the dependency is optional or required.
-	optional bool
-
-	// Whether this is an implicit dependency inferred by Soong, or an explicit one added via
-	// `uses_libs`/`optional_uses_libs` properties.
-	implicit bool
+	sdkVersion int  // SDK version in which the library appared as a standalone library.
+	optional   bool // If the dependency is optional or required.
 }
 
-func makeUsesLibraryDependencyTag(sdkVersion int, optional bool, implicit bool) usesLibraryDependencyTag {
+func makeUsesLibraryDependencyTag(sdkVersion int, optional bool) usesLibraryDependencyTag {
 	return usesLibraryDependencyTag{
 		dependencyTag: dependencyTag{
 			name:          fmt.Sprintf("uses-library-%d", sdkVersion),
@@ -320,7 +334,6 @@ func makeUsesLibraryDependencyTag(sdkVersion int, optional bool, implicit bool) 
 		},
 		sdkVersion: sdkVersion,
 		optional:   optional,
-		implicit:   implicit,
 	}
 }
 
@@ -351,6 +364,11 @@ var (
 	syspropPublicStubDepTag = dependencyTag{name: "sysprop public stub"}
 	jniInstallTag           = installDependencyTag{name: "jni install"}
 	binaryInstallTag        = installDependencyTag{name: "binary install"}
+	usesLibReqTag           = makeUsesLibraryDependencyTag(dexpreopt.AnySdkVersion, false)
+	usesLibOptTag           = makeUsesLibraryDependencyTag(dexpreopt.AnySdkVersion, true)
+	usesLibCompat28OptTag   = makeUsesLibraryDependencyTag(28, true)
+	usesLibCompat29ReqTag   = makeUsesLibraryDependencyTag(29, false)
+	usesLibCompat30OptTag   = makeUsesLibraryDependencyTag(30, true)
 )
 
 func IsLibDepTag(depTag blueprint.DependencyTag) bool {
@@ -472,6 +490,12 @@ func getJavaVersion(ctx android.ModuleContext, javaVersion string, sdkContext an
 		return normalizeJavaVersion(ctx, javaVersion)
 	} else if ctx.Device() {
 		return defaultJavaLanguageVersion(ctx, sdkContext.SdkVersion(ctx))
+	} else if ctx.Config().TargetsJava17() {
+		// Temporary experimental flag to be able to try and build with
+		// java version 17 options.  The flag, if used, just sets Java
+		// 17 as the default version, leaving any components that
+		// target an older version intact.
+		return JAVA_VERSION_17
 	} else {
 		return JAVA_VERSION_11
 	}
@@ -486,6 +510,7 @@ const (
 	JAVA_VERSION_8           = 8
 	JAVA_VERSION_9           = 9
 	JAVA_VERSION_11          = 11
+	JAVA_VERSION_17          = 17
 )
 
 func (v javaVersion) String() string {
@@ -500,8 +525,24 @@ func (v javaVersion) String() string {
 		return "1.9"
 	case JAVA_VERSION_11:
 		return "11"
+	case JAVA_VERSION_17:
+		return "17"
 	default:
 		return "unsupported"
+	}
+}
+
+func (v javaVersion) StringForKotlinc() string {
+	// $ ./external/kotlinc/bin/kotlinc -jvm-target foo
+	// error: unknown JVM target version: foo
+	// Supported versions: 1.6, 1.8, 9, 10, 11, 12, 13, 14, 15, 16, 17
+	switch v {
+	case JAVA_VERSION_7:
+		return "1.6"
+	case JAVA_VERSION_9:
+		return "9"
+	default:
+		return v.String()
 	}
 }
 
@@ -522,8 +563,10 @@ func normalizeJavaVersion(ctx android.BaseModuleContext, javaVersion string) jav
 		return JAVA_VERSION_9
 	case "11":
 		return JAVA_VERSION_11
-	case "10":
-		ctx.PropertyErrorf("java_version", "Java language levels 10 is not supported")
+	case "17":
+		return JAVA_VERSION_17
+	case "10", "12", "13", "14", "15", "16":
+		ctx.PropertyErrorf("java_version", "Java language level %s is not supported", javaVersion)
 		return JAVA_VERSION_UNSUPPORTED
 	default:
 		ctx.PropertyErrorf("java_version", "Unrecognized Java language level")
@@ -586,6 +629,9 @@ func setUncompressDex(ctx android.ModuleContext, dexpreopter *dexpreopter, dexer
 }
 
 func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+
+	j.provideHiddenAPIPropertyInfo(ctx)
+
 	j.sdkVersion = j.SdkVersion(ctx)
 	j.minSdkVersion = j.MinSdkVersion(ctx)
 	j.maxSdkVersion = j.MaxSdkVersion(ctx)
@@ -596,12 +642,14 @@ func (j *Library) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 
 	j.checkSdkVersions(ctx)
-	j.dexpreopter.installPath = j.dexpreopter.getInstallPath(
-		ctx, android.PathForModuleInstall(ctx, "framework", j.Stem()+".jar"))
-	j.dexpreopter.isSDKLibrary = j.deviceProperties.IsSDKLibrary
-	setUncompressDex(ctx, &j.dexpreopter, &j.dexer)
-	j.dexpreopter.uncompressedDex = *j.dexProperties.Uncompress_dex
-	j.classLoaderContexts = j.usesLibrary.classLoaderContextForUsesLibDeps(ctx)
+	if ctx.Device() {
+		j.dexpreopter.installPath = j.dexpreopter.getInstallPath(
+			ctx, android.PathForModuleInstall(ctx, "framework", j.Stem()+".jar"))
+		j.dexpreopter.isSDKLibrary = j.deviceProperties.IsSDKLibrary
+		setUncompressDex(ctx, &j.dexpreopter, &j.dexer)
+		j.dexpreopter.uncompressedDex = *j.dexProperties.Uncompress_dex
+		j.classLoaderContexts = j.usesLibrary.classLoaderContextForUsesLibDeps(ctx)
+	}
 	j.compile(ctx, nil)
 
 	// Collect the module directory for IDE info in java/jdeps.go.
@@ -646,7 +694,7 @@ const (
 )
 
 // path to the jar file of a java library. Relative to <sdk_root>/<api_dir>
-func sdkSnapshotFilePathForJar(osPrefix, name string) string {
+func sdkSnapshotFilePathForJar(_ android.SdkMemberContext, osPrefix, name string) string {
 	return sdkSnapshotFilePathForMember(osPrefix, name, jarFileSuffix)
 }
 
@@ -663,7 +711,7 @@ type librarySdkMemberType struct {
 
 	// Function to compute the snapshot relative path to which the named library's
 	// jar should be copied.
-	snapshotPathGetter func(osPrefix, name string) string
+	snapshotPathGetter func(ctx android.SdkMemberContext, osPrefix, name string) string
 
 	// True if only the jar should be copied to the snapshot, false if the jar plus any additional
 	// files like aidl files should also be copied.
@@ -721,7 +769,7 @@ func (p *librarySdkMemberProperties) AddToPropertySet(ctx android.SdkMemberConte
 	exportedJar := p.JarToExport
 	if exportedJar != nil {
 		// Delegate the creation of the snapshot relative path to the member type.
-		snapshotRelativeJavaLibPath := memberType.snapshotPathGetter(p.OsPrefix(), ctx.Name())
+		snapshotRelativeJavaLibPath := memberType.snapshotPathGetter(ctx, p.OsPrefix(), ctx.Name())
 
 		// Copy the exported jar to the snapshot.
 		builder.CopyToSnapshot(exportedJar, snapshotRelativeJavaLibPath)
@@ -807,11 +855,10 @@ func LibraryHostFactory() android.Module {
 
 // Test option struct.
 type TestOptions struct {
+	android.CommonTestOptions
+
 	// a list of extra test configuration files that should be installed with the module.
 	Extra_test_configs []string `android:"path,arch_variant"`
-
-	// If the test is a hostside(no device required) unittest that shall be run during presubmit check.
-	Unit_test *bool
 }
 
 type testProperties struct {
@@ -855,7 +902,25 @@ type hostTestProperties struct {
 	Data_native_bins []string `android:"arch_variant"`
 
 	// list of device binary modules that should be installed alongside the test
-	Data_device_bins []string `android:"arch_variant"`
+	// This property only adds the first variant of the dependency
+	Data_device_bins_first []string `android:"arch_variant"`
+
+	// list of device binary modules that should be installed alongside the test
+	// This property adds 64bit AND 32bit variants of the dependency
+	Data_device_bins_both []string `android:"arch_variant"`
+
+	// list of device binary modules that should be installed alongside the test
+	// This property only adds 64bit variants of the dependency
+	Data_device_bins_64 []string `android:"arch_variant"`
+
+	// list of device binary modules that should be installed alongside the test
+	// This property adds 32bit variants of the dependency if available, or else
+	// defaults to the 64bit variant
+	Data_device_bins_prefer32 []string `android:"arch_variant"`
+
+	// list of device binary modules that should be installed alongside the test
+	// This property only adds 32bit variants of the dependency
+	Data_device_bins_32 []string `android:"arch_variant"`
 }
 
 type testHelperLibraryProperties struct {
@@ -922,16 +987,88 @@ func (j *JavaTestImport) InstallInTestcases() bool {
 	return true
 }
 
+func (j *TestHost) addDataDeviceBinsDeps(ctx android.BottomUpMutatorContext) {
+	if len(j.testHostProperties.Data_device_bins_first) > 0 {
+		deviceVariations := ctx.Config().AndroidFirstDeviceTarget.Variations()
+		ctx.AddFarVariationDependencies(deviceVariations, dataDeviceBinsTag, j.testHostProperties.Data_device_bins_first...)
+	}
+
+	var maybeAndroid32Target *android.Target
+	var maybeAndroid64Target *android.Target
+	android32TargetList := android.FirstTarget(ctx.Config().Targets[android.Android], "lib32")
+	android64TargetList := android.FirstTarget(ctx.Config().Targets[android.Android], "lib64")
+	if len(android32TargetList) > 0 {
+		maybeAndroid32Target = &android32TargetList[0]
+	}
+	if len(android64TargetList) > 0 {
+		maybeAndroid64Target = &android64TargetList[0]
+	}
+
+	if len(j.testHostProperties.Data_device_bins_both) > 0 {
+		if maybeAndroid32Target == nil && maybeAndroid64Target == nil {
+			ctx.PropertyErrorf("data_device_bins_both", "no device targets available. Targets: %q", ctx.Config().Targets)
+			return
+		}
+		if maybeAndroid32Target != nil {
+			ctx.AddFarVariationDependencies(
+				maybeAndroid32Target.Variations(),
+				dataDeviceBinsTag,
+				j.testHostProperties.Data_device_bins_both...,
+			)
+		}
+		if maybeAndroid64Target != nil {
+			ctx.AddFarVariationDependencies(
+				maybeAndroid64Target.Variations(),
+				dataDeviceBinsTag,
+				j.testHostProperties.Data_device_bins_both...,
+			)
+		}
+	}
+
+	if len(j.testHostProperties.Data_device_bins_prefer32) > 0 {
+		if maybeAndroid32Target != nil {
+			ctx.AddFarVariationDependencies(
+				maybeAndroid32Target.Variations(),
+				dataDeviceBinsTag,
+				j.testHostProperties.Data_device_bins_prefer32...,
+			)
+		} else {
+			if maybeAndroid64Target == nil {
+				ctx.PropertyErrorf("data_device_bins_prefer32", "no device targets available. Targets: %q", ctx.Config().Targets)
+				return
+			}
+			ctx.AddFarVariationDependencies(
+				maybeAndroid64Target.Variations(),
+				dataDeviceBinsTag,
+				j.testHostProperties.Data_device_bins_prefer32...,
+			)
+		}
+	}
+
+	if len(j.testHostProperties.Data_device_bins_32) > 0 {
+		if maybeAndroid32Target == nil {
+			ctx.PropertyErrorf("data_device_bins_32", "cannot find 32bit device target. Targets: %q", ctx.Config().Targets)
+			return
+		}
+		deviceVariations := maybeAndroid32Target.Variations()
+		ctx.AddFarVariationDependencies(deviceVariations, dataDeviceBinsTag, j.testHostProperties.Data_device_bins_32...)
+	}
+
+	if len(j.testHostProperties.Data_device_bins_64) > 0 {
+		if maybeAndroid64Target == nil {
+			ctx.PropertyErrorf("data_device_bins_64", "cannot find 64bit device target. Targets: %q", ctx.Config().Targets)
+			return
+		}
+		deviceVariations := maybeAndroid64Target.Variations()
+		ctx.AddFarVariationDependencies(deviceVariations, dataDeviceBinsTag, j.testHostProperties.Data_device_bins_64...)
+	}
+}
+
 func (j *TestHost) DepsMutator(ctx android.BottomUpMutatorContext) {
 	if len(j.testHostProperties.Data_native_bins) > 0 {
 		for _, target := range ctx.MultiTargets() {
 			ctx.AddVariationDependencies(target.Variations(), dataNativeBinsTag, j.testHostProperties.Data_native_bins...)
 		}
-	}
-
-	if len(j.testHostProperties.Data_device_bins) > 0 {
-		deviceVariations := ctx.Config().AndroidFirstDeviceTarget.Variations()
-		ctx.AddFarVariationDependencies(deviceVariations, dataDeviceBinsTag, j.testHostProperties.Data_device_bins...)
 	}
 
 	if len(j.testProperties.Jni_libs) > 0 {
@@ -941,6 +1078,8 @@ func (j *TestHost) DepsMutator(ctx android.BottomUpMutatorContext) {
 		}
 	}
 
+	j.addDataDeviceBinsDeps(ctx)
+
 	j.deps(ctx)
 }
 
@@ -948,17 +1087,40 @@ func (j *TestHost) AddExtraResource(p android.Path) {
 	j.extraResources = append(j.extraResources, p)
 }
 
+func (j *TestHost) dataDeviceBins() []string {
+	ret := make([]string, 0,
+		len(j.testHostProperties.Data_device_bins_first)+
+			len(j.testHostProperties.Data_device_bins_both)+
+			len(j.testHostProperties.Data_device_bins_prefer32)+
+			len(j.testHostProperties.Data_device_bins_32)+
+			len(j.testHostProperties.Data_device_bins_64),
+	)
+
+	ret = append(ret, j.testHostProperties.Data_device_bins_first...)
+	ret = append(ret, j.testHostProperties.Data_device_bins_both...)
+	ret = append(ret, j.testHostProperties.Data_device_bins_prefer32...)
+	ret = append(ret, j.testHostProperties.Data_device_bins_32...)
+	ret = append(ret, j.testHostProperties.Data_device_bins_64...)
+
+	return ret
+}
+
 func (j *TestHost) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	var configs []tradefed.Config
-	if len(j.testHostProperties.Data_device_bins) > 0 {
+	dataDeviceBins := j.dataDeviceBins()
+	if len(dataDeviceBins) > 0 {
 		// add Tradefed configuration to push device bins to device for testing
 		remoteDir := filepath.Join("/data/local/tests/unrestricted/", j.Name())
 		options := []tradefed.Option{{Name: "cleanup", Value: "true"}}
-		for _, bin := range j.testHostProperties.Data_device_bins {
+		for _, bin := range dataDeviceBins {
 			fullPath := filepath.Join(remoteDir, bin)
 			options = append(options, tradefed.Option{Name: "push-file", Key: bin, Value: fullPath})
 		}
-		configs = append(configs, tradefed.Object{"target_preparer", "com.android.tradefed.targetprep.PushFilePreparer", options})
+		configs = append(configs, tradefed.Object{
+			Type:    "target_preparer",
+			Class:   "com.android.tradefed.targetprep.PushFilePreparer",
+			Options: options,
+		})
 	}
 
 	j.Test.generateAndroidBuildActionsWithConfig(ctx, configs)
@@ -1072,7 +1234,7 @@ func (p *testSdkMemberProperties) AddToPropertySet(ctx android.SdkMemberContext,
 
 	exportedJar := p.JarToExport
 	if exportedJar != nil {
-		snapshotRelativeJavaLibPath := sdkSnapshotFilePathForJar(p.OsPrefix(), ctx.Name())
+		snapshotRelativeJavaLibPath := sdkSnapshotFilePathForJar(ctx, p.OsPrefix(), ctx.Name())
 		builder.CopyToSnapshot(exportedJar, snapshotRelativeJavaLibPath)
 
 		propertySet.AddProperty("jars", []string{snapshotRelativeJavaLibPath})
@@ -1102,7 +1264,7 @@ func TestFactory() android.Module {
 
 	module.Module.properties.Installable = proptools.BoolPtr(true)
 	module.Module.dexpreopter.isTest = true
-	module.Module.linter.test = true
+	module.Module.linter.properties.Lint.Test = proptools.BoolPtr(true)
 
 	android.InitSdkAwareModule(module)
 	InitJavaModule(module, android.HostAndDeviceSupported)
@@ -1118,7 +1280,7 @@ func TestHelperLibraryFactory() android.Module {
 
 	module.Module.properties.Installable = proptools.BoolPtr(true)
 	module.Module.dexpreopter.isTest = true
-	module.Module.linter.test = true
+	module.Module.linter.properties.Lint.Test = proptools.BoolPtr(true)
 
 	InitJavaModule(module, android.HostAndDeviceSupported)
 	return module
@@ -1249,10 +1411,10 @@ func (j *Binary) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 }
 
 func (j *Binary) DepsMutator(ctx android.BottomUpMutatorContext) {
-	if ctx.Arch().ArchType == android.Common || ctx.BazelConversionMode() {
+	if ctx.Arch().ArchType == android.Common {
 		j.deps(ctx)
 	}
-	if ctx.Arch().ArchType != android.Common || ctx.BazelConversionMode() {
+	if ctx.Arch().ArchType != android.Common {
 		// These dependencies ensure the host installation rules will install the jar file and
 		// the jni libraries when the wrapper is installed.
 		ctx.AddVariationDependencies(nil, jniInstallTag, j.binaryProperties.Jni_libs...)
@@ -1317,6 +1479,10 @@ type ImportProperties struct {
 	// The minimum version of the SDK that this module supports. Defaults to sdk_version if not
 	// specified.
 	Min_sdk_version *string
+
+	// The max sdk version placeholder used to replace maxSdkVersion attributes on permission
+	// and uses-permission tags in manifest_fixer.
+	Replace_max_sdk_version_placeholder *string
 
 	Installable *bool
 
@@ -1397,6 +1563,13 @@ func (j *Import) MinSdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
 	return j.SdkVersion(ctx)
 }
 
+func (j *Import) ReplaceMaxSdkVersionPlaceholder(ctx android.EarlyModuleContext) android.SdkSpec {
+	if j.properties.Replace_max_sdk_version_placeholder != nil {
+		return android.SdkSpecFrom(ctx, *j.properties.Replace_max_sdk_version_placeholder)
+	}
+	return android.SdkSpecFrom(ctx, "")
+}
+
 func (j *Import) TargetSdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
 	return j.SdkVersion(ctx)
 }
@@ -1440,7 +1613,8 @@ func (j *Import) DepsMutator(ctx android.BottomUpMutatorContext) {
 	}
 }
 
-func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+func (j *Import) commonBuildActions(ctx android.ModuleContext) {
+	//TODO(b/231322772) these should come from Bazel once available
 	j.sdkVersion = j.SdkVersion(ctx)
 	j.minSdkVersion = j.MinSdkVersion(ctx)
 
@@ -1451,6 +1625,10 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	if ctx.Windows() {
 		j.HideFromMake()
 	}
+}
+
+func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
+	j.commonBuildActions(ctx)
 
 	jars := android.PathsForModuleSrc(ctx, j.properties.Jars)
 
@@ -1492,19 +1670,7 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		addCLCFromDep(ctx, module, j.classLoaderContexts)
 	})
 
-	if Bool(j.properties.Installable) {
-		var installDir android.InstallPath
-		if ctx.InstallInTestcases() {
-			var archDir string
-			if !ctx.Host() {
-				archDir = ctx.DeviceConfig().DeviceArch()
-			}
-			installDir = android.PathForModuleInstall(ctx, ctx.ModuleName(), archDir)
-		} else {
-			installDir = android.PathForModuleInstall(ctx, "framework")
-		}
-		ctx.InstallFile(installDir, jarName, outputFile)
-	}
+	j.maybeInstall(ctx, jarName, outputFile)
 
 	j.exportAidlIncludeDirs = android.PathsForModuleSrc(ctx, j.properties.Aidl.Export_include_dirs)
 
@@ -1576,6 +1742,24 @@ func (j *Import) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		ImplementationJars:             android.PathsIfNonNil(j.combinedClasspathFile),
 		AidlIncludeDirs:                j.exportAidlIncludeDirs,
 	})
+}
+
+func (j *Import) maybeInstall(ctx android.ModuleContext, jarName string, outputFile android.Path) {
+	if !Bool(j.properties.Installable) {
+		return
+	}
+
+	var installDir android.InstallPath
+	if ctx.InstallInTestcases() {
+		var archDir string
+		if !ctx.Host() {
+			archDir = ctx.DeviceConfig().DeviceArch()
+		}
+		installDir = android.PathForModuleInstall(ctx, ctx.ModuleName(), archDir)
+	} else {
+		installDir = android.PathForModuleInstall(ctx, "framework")
+	}
+	ctx.InstallFile(installDir, jarName, outputFile)
 }
 
 func (j *Import) OutputFiles(tag string) (android.Paths, error) {
@@ -1725,6 +1909,7 @@ func ImportFactoryHost() android.Module {
 
 	android.InitPrebuiltModule(module, &module.properties.Jars)
 	android.InitApexModule(module)
+	android.InitBazelModule(module)
 	InitJavaModule(module, android.HostSupported)
 	return module
 }
@@ -1875,9 +2060,7 @@ func DexImportFactory() android.Module {
 	return module
 }
 
-//
 // Defaults
-//
 type Defaults struct {
 	android.ModuleBase
 	android.DefaultsModuleBase
@@ -1892,29 +2075,29 @@ type Defaults struct {
 //
 // Example:
 //
-//     java_defaults {
-//         name: "example_defaults",
-//         srcs: ["common/**/*.java"],
-//         javacflags: ["-Xlint:all"],
-//         aaptflags: ["--auto-add-overlay"],
-//     }
+//	java_defaults {
+//	    name: "example_defaults",
+//	    srcs: ["common/**/*.java"],
+//	    javacflags: ["-Xlint:all"],
+//	    aaptflags: ["--auto-add-overlay"],
+//	}
 //
-//     java_library {
-//         name: "example",
-//         defaults: ["example_defaults"],
-//         srcs: ["example/**/*.java"],
-//     }
+//	java_library {
+//	    name: "example",
+//	    defaults: ["example_defaults"],
+//	    srcs: ["example/**/*.java"],
+//	}
 //
 // is functionally identical to:
 //
-//     java_library {
-//         name: "example",
-//         srcs: [
-//             "common/**/*.java",
-//             "example/**/*.java",
-//         ],
-//         javacflags: ["-Xlint:all"],
-//     }
+//	java_library {
+//	    name: "example",
+//	    srcs: [
+//	        "common/**/*.java",
+//	        "example/**/*.java",
+//	    ],
+//	    javacflags: ["-Xlint:all"],
+//	}
 func DefaultsFactory() android.Module {
 	module := &Defaults{}
 
@@ -1995,10 +2178,8 @@ func addCLCFromDep(ctx android.ModuleContext, depModule android.Module,
 	depTag := ctx.OtherModuleDependencyTag(depModule)
 	if depTag == libTag {
 		// Ok, propagate <uses-library> through non-static library dependencies.
-	} else if tag, ok := depTag.(usesLibraryDependencyTag); ok &&
-		tag.sdkVersion == dexpreopt.AnySdkVersion && tag.implicit {
-		// Ok, propagate <uses-library> through non-compatibility implicit <uses-library>
-		// dependencies.
+	} else if tag, ok := depTag.(usesLibraryDependencyTag); ok && tag.sdkVersion == dexpreopt.AnySdkVersion {
+		// Ok, propagate <uses-library> through non-compatibility <uses-library> dependencies.
 	} else if depTag == staticLibTag {
 		// Propagate <uses-library> through static library dependencies, unless it is a component
 		// library (such as stubs). Component libraries have a dependency on their SDK library,
@@ -2016,21 +2197,89 @@ func addCLCFromDep(ctx android.ModuleContext, depModule android.Module,
 	// <uses_library> and should not be added to CLC, but the transitive <uses-library> dependencies
 	// from its CLC should be added to the current CLC.
 	if sdkLib != nil {
-		clcMap.AddContext(ctx, dexpreopt.AnySdkVersion, *sdkLib, false, true,
+		clcMap.AddContext(ctx, dexpreopt.AnySdkVersion, *sdkLib, false,
 			dep.DexJarBuildPath().PathOrNil(), dep.DexJarInstallPath(), dep.ClassLoaderContexts())
 	} else {
 		clcMap.AddContextMap(dep.ClassLoaderContexts(), depName)
 	}
 }
 
-type javaLibraryAttributes struct {
+type javaResourcesAttributes struct {
+	Resources             bazel.LabelListAttribute
+	Resource_strip_prefix *string
+}
+
+func (m *Library) convertJavaResourcesAttributes(ctx android.TopDownMutatorContext) *javaResourcesAttributes {
+	var resources bazel.LabelList
+	var resourceStripPrefix *string
+
+	if m.properties.Java_resources != nil {
+		resources.Append(android.BazelLabelForModuleSrc(ctx, m.properties.Java_resources))
+	}
+
+	//TODO(b/179889880) handle case where glob includes files outside package
+	resDeps := ResourceDirsToFiles(
+		ctx,
+		m.properties.Java_resource_dirs,
+		m.properties.Exclude_java_resource_dirs,
+		m.properties.Exclude_java_resources,
+	)
+
+	for i, resDep := range resDeps {
+		dir, files := resDep.dir, resDep.files
+
+		resources.Append(bazel.MakeLabelList(android.RootToModuleRelativePaths(ctx, files)))
+
+		// Bazel includes the relative path from the WORKSPACE root when placing the resource
+		// inside the JAR file, so we need to remove that prefix
+		resourceStripPrefix = proptools.StringPtr(dir.String())
+		if i > 0 {
+			// TODO(b/226423379) allow multiple resource prefixes
+			ctx.ModuleErrorf("bp2build does not support more than one directory in java_resource_dirs (b/226423379)")
+		}
+	}
+
+	return &javaResourcesAttributes{
+		Resources:             bazel.MakeLabelListAttribute(resources),
+		Resource_strip_prefix: resourceStripPrefix,
+	}
+}
+
+type javaCommonAttributes struct {
+	*javaResourcesAttributes
 	Srcs      bazel.LabelListAttribute
-	Deps      bazel.LabelListAttribute
+	Plugins   bazel.LabelListAttribute
 	Javacopts bazel.StringListAttribute
 }
 
-func (m *Library) convertLibraryAttrsBp2Build(ctx android.TopDownMutatorContext) *javaLibraryAttributes {
+type javaDependencyLabels struct {
+	// Dependencies which DO NOT contribute to the API visible to upstream dependencies.
+	Deps bazel.LabelListAttribute
+	// Dependencies which DO contribute to the API visible to upstream dependencies.
+	StaticDeps bazel.LabelListAttribute
+}
+
+type eventLogTagsAttributes struct {
+	Srcs bazel.LabelListAttribute
+}
+
+type aidlLibraryAttributes struct {
+	Srcs bazel.LabelListAttribute
+}
+
+type javaAidlLibraryAttributes struct {
+	Deps bazel.LabelListAttribute
+}
+
+// convertLibraryAttrsBp2Build converts a few shared attributes from java_* modules
+// and also separates dependencies into dynamic dependencies and static dependencies.
+// Each corresponding Bazel target type, can have a different method for handling
+// dynamic vs. static dependencies, and so these are returned to the calling function.
+func (m *Library) convertLibraryAttrsBp2Build(ctx android.TopDownMutatorContext) (*javaCommonAttributes, *javaDependencyLabels) {
 	var srcs bazel.LabelListAttribute
+	var deps bazel.LabelList
+	var staticDeps bazel.LabelList
+
 	archVariantProps := m.GetArchVariantProperties(ctx, &CommonProperties{})
 	for axis, configToProps := range archVariantProps {
 		for config, _props := range configToProps {
@@ -2043,45 +2292,144 @@ func (m *Library) convertLibraryAttrsBp2Build(ctx android.TopDownMutatorContext)
 
 	javaSrcPartition := "java"
 	protoSrcPartition := "proto"
+	logtagSrcPartition := "logtag"
+	aidlSrcPartition := "aidl"
 	srcPartitions := bazel.PartitionLabelListAttribute(ctx, &srcs, bazel.LabelPartitions{
-		javaSrcPartition:  bazel.LabelPartition{Extensions: []string{".java"}, Keep_remainder: true},
-		protoSrcPartition: android.ProtoSrcLabelPartition,
+		javaSrcPartition:   bazel.LabelPartition{Extensions: []string{".java"}, Keep_remainder: true},
+		logtagSrcPartition: bazel.LabelPartition{Extensions: []string{".logtags", ".logtag"}},
+		protoSrcPartition:  android.ProtoSrcLabelPartition,
+		aidlSrcPartition:   android.AidlSrcLabelPartition,
 	})
 
-	attrs := &javaLibraryAttributes{
-		Srcs: srcPartitions[javaSrcPartition],
+	javaSrcs := srcPartitions[javaSrcPartition]
+
+	if !srcPartitions[logtagSrcPartition].IsEmpty() {
+		logtagsLibName := m.Name() + "_logtags"
+		ctx.CreateBazelTargetModule(
+			bazel.BazelTargetModuleProperties{
+				Rule_class:        "event_log_tags",
+				Bzl_load_location: "//build/make/tools:event_log_tags.bzl",
+			},
+			android.CommonAttributes{Name: logtagsLibName},
+			&eventLogTagsAttributes{
+				Srcs: srcPartitions[logtagSrcPartition],
+			},
+		)
+
+		logtagsSrcs := bazel.MakeLabelList([]bazel.Label{{Label: ":" + logtagsLibName}})
+		javaSrcs.Append(bazel.MakeLabelListAttribute(logtagsSrcs))
 	}
 
+	if !srcPartitions[aidlSrcPartition].IsEmpty() {
+		aidlLibs, aidlSrcs := srcPartitions[aidlSrcPartition].Partition(func(src bazel.Label) bool {
+			return android.IsConvertedToAidlLibrary(ctx, src.OriginalModuleName)
+		})
+
+		if !aidlSrcs.IsEmpty() {
+			aidlLibName := m.Name() + "_aidl_library"
+			ctx.CreateBazelTargetModule(
+				bazel.BazelTargetModuleProperties{
+					Rule_class:        "aidl_library",
+					Bzl_load_location: "//build/bazel/rules/aidl:library.bzl",
+				},
+				android.CommonAttributes{Name: aidlLibName},
+				&aidlLibraryAttributes{
+					Srcs: aidlSrcs,
+				},
+			)
+			aidlLibs.Add(&bazel.LabelAttribute{Value: &bazel.Label{Label: ":" + aidlLibName}})
+		}
+
+		javaAidlLibName := m.Name() + "_java_aidl_library"
+		ctx.CreateBazelTargetModule(
+			bazel.BazelTargetModuleProperties{
+				Rule_class:        "java_aidl_library",
+				Bzl_load_location: "//build/bazel/rules/java:aidl_library.bzl",
+			},
+			android.CommonAttributes{Name: javaAidlLibName},
+			&javaAidlLibraryAttributes{
+				Deps: aidlLibs,
+			},
+		)
+
+		staticDeps.Add(&bazel.Label{Label: ":" + javaAidlLibName})
+	}
+
+	var javacopts []string
 	if m.properties.Javacflags != nil {
-		attrs.Javacopts = bazel.MakeStringListAttribute(m.properties.Javacflags)
+		javacopts = append(javacopts, m.properties.Javacflags...)
+	}
+	if m.properties.Java_version != nil {
+		javaVersion := normalizeJavaVersion(ctx, *m.properties.Java_version).String()
+		javacopts = append(javacopts, fmt.Sprintf("-source %s -target %s", javaVersion, javaVersion))
 	}
 
-	var deps bazel.LabelList
-	sdkVersion := m.SdkVersion(ctx)
-	if sdkVersion.Kind == android.SdkPublic && sdkVersion.ApiLevel == android.FutureApiLevel {
-		// TODO(b/220869005) remove forced dependency on current public android.jar
-		deps.Add(&bazel.Label{Label: "//prebuilts/sdk:public_current_android_sdk_java_import"})
+	epEnabled := m.properties.Errorprone.Enabled
+	//TODO(b/227504307) add configuration that depends on RUN_ERROR_PRONE environment variable
+	if Bool(epEnabled) {
+		javacopts = append(javacopts, m.properties.Errorprone.Javacflags...)
 	}
+
+	commonAttrs := &javaCommonAttributes{
+		Srcs:                    javaSrcs,
+		javaResourcesAttributes: m.convertJavaResourcesAttributes(ctx),
+		Plugins: bazel.MakeLabelListAttribute(
+			android.BazelLabelForModuleDeps(ctx, m.properties.Plugins),
+		),
+		Javacopts: bazel.MakeStringListAttribute(javacopts),
+	}
+
 	if m.properties.Libs != nil {
-		deps.Append(android.BazelLabelForModuleDeps(ctx, m.properties.Libs))
+		deps.Append(android.BazelLabelForModuleDeps(ctx, android.LastUniqueStrings(android.CopyOf(m.properties.Libs))))
 	}
+
 	if m.properties.Static_libs != nil {
-		//TODO(b/217236083) handle static libs similarly to Soong
-		deps.Append(android.BazelLabelForModuleDeps(ctx, m.properties.Static_libs))
+		staticDeps.Append(android.BazelLabelForModuleDeps(ctx, android.LastUniqueStrings(android.CopyOf(m.properties.Static_libs))))
 	}
 
-	protoDeps := bp2buildProto(ctx, &m.Module, srcPartitions[protoSrcPartition])
-	if protoDeps != nil {
-		deps.Add(protoDeps)
-	}
+	protoDepLabel := bp2buildProto(ctx, &m.Module, srcPartitions[protoSrcPartition])
+	// Soong does not differentiate between a java_library and the Bazel equivalent of
+	// a java_proto_library + proto_library pair. Instead, in Soong proto sources are
+	// listed directly in the srcs of a java_library, and the classes produced
+	// by protoc are included directly in the resulting JAR. Thus upstream dependencies
+	// that depend on a java_library with proto sources can link directly to the protobuf API,
+	// and so this should be a static dependency.
+	staticDeps.Add(protoDepLabel)
 
-	attrs.Deps = bazel.MakeLabelListAttribute(deps)
+	depLabels := &javaDependencyLabels{}
+	depLabels.Deps = bazel.MakeLabelListAttribute(deps)
+	depLabels.StaticDeps = bazel.MakeLabelListAttribute(staticDeps)
 
-	return attrs
+	return commonAttrs, depLabels
+}
+
+type javaLibraryAttributes struct {
+	*javaCommonAttributes
+	Deps    bazel.LabelListAttribute
+	Exports bazel.LabelListAttribute
 }
 
 func javaLibraryBp2Build(ctx android.TopDownMutatorContext, m *Library) {
-	attrs := m.convertLibraryAttrsBp2Build(ctx)
+	commonAttrs, depLabels := m.convertLibraryAttrsBp2Build(ctx)
+
+	deps := depLabels.Deps
+	if !commonAttrs.Srcs.IsEmpty() {
+		deps.Append(depLabels.StaticDeps) // we should only append these if there are sources to use them
+
+		sdkVersion := m.SdkVersion(ctx)
+		if sdkVersion.Kind == android.SdkPublic && sdkVersion.ApiLevel == android.FutureApiLevel {
+			// TODO(b/220869005) remove forced dependency on current public android.jar
+			deps.Add(bazel.MakeLabelAttribute("//prebuilts/sdk:public_current_android_sdk_java_import"))
+		}
+	} else if !deps.IsEmpty() {
+		ctx.ModuleErrorf("Module has direct dependencies but no sources. Bazel will not allow this.")
+	}
+
+	attrs := &javaLibraryAttributes{
+		javaCommonAttributes: commonAttrs,
+		Deps:                 deps,
+		Exports:              depLabels.StaticDeps,
+	}
 
 	props := bazel.BazelTargetModuleProperties{
 		Rule_class:        "java_library",
@@ -2092,15 +2440,30 @@ func javaLibraryBp2Build(ctx android.TopDownMutatorContext, m *Library) {
 }
 
 type javaBinaryHostAttributes struct {
-	Srcs       bazel.LabelListAttribute
-	Deps       bazel.LabelListAttribute
-	Main_class string
-	Jvm_flags  bazel.StringListAttribute
-	Javacopts  bazel.StringListAttribute
+	*javaCommonAttributes
+	Deps         bazel.LabelListAttribute
+	Runtime_deps bazel.LabelListAttribute
+	Main_class   string
+	Jvm_flags    bazel.StringListAttribute
 }
 
 // JavaBinaryHostBp2Build is for java_binary_host bp2build.
 func javaBinaryHostBp2Build(ctx android.TopDownMutatorContext, m *Binary) {
+	commonAttrs, depLabels := m.convertLibraryAttrsBp2Build(ctx)
+
+	deps := depLabels.Deps
+	deps.Append(depLabels.StaticDeps)
+	if m.binaryProperties.Jni_libs != nil {
+		deps.Append(bazel.MakeLabelListAttribute(android.BazelLabelForModuleDeps(ctx, m.binaryProperties.Jni_libs)))
+	}
+
+	var runtimeDeps bazel.LabelListAttribute
+	if commonAttrs.Srcs.IsEmpty() {
+		// if there are no sources, then the dependencies can only be used at runtime
+		runtimeDeps = deps
+		deps = bazel.LabelListAttribute{}
+	}
+
 	mainClass := ""
 	if m.binaryProperties.Main_class != nil {
 		mainClass = *m.binaryProperties.Main_class
@@ -2112,26 +2475,12 @@ func javaBinaryHostBp2Build(ctx android.TopDownMutatorContext, m *Binary) {
 		}
 		mainClass = mainClassInManifest
 	}
-	srcs := bazel.MakeLabelListAttribute(android.BazelLabelForModuleSrcExcludes(ctx, m.properties.Srcs, m.properties.Exclude_srcs))
+
 	attrs := &javaBinaryHostAttributes{
-		Srcs:       srcs,
-		Main_class: mainClass,
-	}
-
-	if m.properties.Javacflags != nil {
-		attrs.Javacopts = bazel.MakeStringListAttribute(m.properties.Javacflags)
-	}
-
-	// Attribute deps
-	deps := []string{}
-	if m.properties.Static_libs != nil {
-		deps = append(deps, m.properties.Static_libs...)
-	}
-	if m.binaryProperties.Jni_libs != nil {
-		deps = append(deps, m.binaryProperties.Jni_libs...)
-	}
-	if len(deps) > 0 {
-		attrs.Deps = bazel.MakeLabelListAttribute(android.BazelLabelForModuleDeps(ctx, deps))
+		javaCommonAttributes: commonAttrs,
+		Deps:                 deps,
+		Runtime_deps:         runtimeDeps,
+		Main_class:           mainClass,
 	}
 
 	// Attribute jvm_flags
@@ -2174,8 +2523,16 @@ type bazelJavaImportAttributes struct {
 
 // java_import bp2Build converter.
 func (i *Import) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
-	//TODO(b/209577426): Support multiple arch variants
-	jars := bazel.MakeLabelListAttribute(android.BazelLabelForModuleSrcExcludes(ctx, i.properties.Jars, []string(nil)))
+	var jars bazel.LabelListAttribute
+	archVariantProps := i.GetArchVariantProperties(ctx, &ImportProperties{})
+	for axis, configToProps := range archVariantProps {
+		for config, _props := range configToProps {
+			if archProps, ok := _props.(*ImportProperties); ok {
+				archJars := android.BazelLabelForModuleSrcExcludes(ctx, archProps.Jars, []string(nil))
+				jars.SetSelectValue(axis, config, archJars)
+			}
+		}
+	}
 
 	attrs := &bazelJavaImportAttributes{
 		Jars: jars,
@@ -2183,5 +2540,54 @@ func (i *Import) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 	props := bazel.BazelTargetModuleProperties{Rule_class: "java_import"}
 
 	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: android.RemoveOptionalPrebuiltPrefix(i.Name())}, attrs)
+}
 
+var _ android.MixedBuildBuildable = (*Import)(nil)
+
+func (i *Import) getBazelModuleLabel(ctx android.BaseModuleContext) string {
+	return android.RemoveOptionalPrebuiltPrefixFromBazelLabel(i.GetBazelLabel(ctx, i))
+}
+
+func (i *Import) ProcessBazelQueryResponse(ctx android.ModuleContext) {
+	i.commonBuildActions(ctx)
+
+	bazelCtx := ctx.Config().BazelContext
+	filePaths, err := bazelCtx.GetOutputFiles(i.getBazelModuleLabel(ctx), android.GetConfigKey(ctx))
+	if err != nil {
+		ctx.ModuleErrorf(err.Error())
+		return
+	}
+
+	bazelJars := android.Paths{}
+	for _, bazelOutputFile := range filePaths {
+		bazelJars = append(bazelJars, android.PathForBazelOut(ctx, bazelOutputFile))
+	}
+
+	jarName := android.RemoveOptionalPrebuiltPrefix(i.Name()) + ".jar"
+	outputFile := android.PathForModuleOut(ctx, "bazelCombined", jarName)
+	TransformJarsToJar(ctx, outputFile, "combine prebuilt jars", bazelJars,
+		android.OptionalPath{}, // manifest
+		false,                  // stripDirEntries
+		[]string{},             // filesToStrip
+		[]string{},             // dirsToStrip
+	)
+	i.combinedClasspathFile = outputFile
+
+	ctx.SetProvider(JavaInfoProvider, JavaInfo{
+		HeaderJars:                     android.PathsIfNonNil(i.combinedClasspathFile),
+		ImplementationAndResourcesJars: android.PathsIfNonNil(i.combinedClasspathFile),
+		ImplementationJars:             android.PathsIfNonNil(i.combinedClasspathFile),
+		//TODO(b/240308299) include AIDL information from Bazel
+	})
+
+	i.maybeInstall(ctx, jarName, outputFile)
+}
+
+func (i *Import) QueueBazelCall(ctx android.BaseModuleContext) {
+	bazelCtx := ctx.Config().BazelContext
+	bazelCtx.QueueBazelRequest(i.getBazelModuleLabel(ctx), cquery.GetOutputFiles, android.GetConfigKey(ctx))
+}
+
+func (i *Import) IsMixedBuildSupported(ctx android.BaseModuleContext) bool {
+	return true
 }

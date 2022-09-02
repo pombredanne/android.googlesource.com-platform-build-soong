@@ -723,9 +723,9 @@ func TestDefaults(t *testing.T) {
 		t.Errorf("atestNoOptimize should not optimize APK")
 	}
 
-	atestDefault := ctx.ModuleForTests("atestDefault", "android_common").MaybeRule("r8")
+	atestDefault := ctx.ModuleForTests("atestDefault", "android_common").MaybeRule("d8")
 	if atestDefault.Output == nil {
-		t.Errorf("atestDefault should optimize APK")
+		t.Errorf("atestDefault should not optimize APK")
 	}
 }
 
@@ -973,7 +973,7 @@ func TestTurbine(t *testing.T) {
 
 	fooHeaderJar := filepath.Join("out", "soong", ".intermediates", "foo", "android_common", "turbine-combined", "foo.jar")
 	barTurbineJar := filepath.Join("out", "soong", ".intermediates", "bar", "android_common", "turbine", "bar.jar")
-	android.AssertStringDoesContain(t, "bar turbine classpath", barTurbine.Args["classpath"], fooHeaderJar)
+	android.AssertStringDoesContain(t, "bar turbine classpath", barTurbine.Args["turbineFlags"], fooHeaderJar)
 	android.AssertStringDoesContain(t, "bar javac classpath", barJavac.Args["classpath"], fooHeaderJar)
 	android.AssertPathsRelativeToTopEquals(t, "bar turbine combineJar", []string{barTurbineJar, fooHeaderJar}, barTurbineCombined.Inputs)
 	android.AssertStringDoesContain(t, "baz javac classpath", bazJavac.Args["classpath"], "prebuilts/sdk/14/public/android.jar")
@@ -1287,6 +1287,41 @@ func TestAidlExportIncludeDirsFromImports(t *testing.T) {
 	}
 }
 
+func TestAidlIncludeDirFromConvertedFileGroupWithPathPropInMixedBuilds(t *testing.T) {
+	bp := `
+	filegroup {
+		name: "foo_aidl",
+		srcs: ["aidl/foo/IFoo.aidl"],
+		path: "aidl/foo",
+		bazel_module: { label: "//:foo_aidl" },
+	}
+	java_library {
+		name: "foo",
+		srcs: [":foo_aidl"],
+	}
+`
+
+	outBaseDir := "out/bazel/output"
+	result := android.GroupFixturePreparers(
+		prepareForJavaTest,
+		android.PrepareForTestWithFilegroup,
+		android.FixtureModifyConfig(func(config android.Config) {
+			config.BazelContext = android.MockBazelContext{
+				OutputBaseDir: outBaseDir,
+				LabelToOutputFiles: map[string][]string{
+					"//:foo_aidl": []string{"aidl/foo/IFoo.aidl"},
+				},
+			}
+		}),
+	).RunTestWithBp(t, bp)
+
+	aidlCommand := result.ModuleForTests("foo", "android_common").Rule("aidl").RuleParams.Command
+	expectedAidlFlag := "-I" + outBaseDir + "/execroot/__main__/aidl/foo"
+	if !strings.Contains(aidlCommand, expectedAidlFlag) {
+		t.Errorf("aidl command %q does not contain %q", aidlCommand, expectedAidlFlag)
+	}
+}
+
 func TestAidlFlagsArePassedToTheAidlCompiler(t *testing.T) {
 	ctx, _ := testJava(t, `
 		java_library {
@@ -1498,62 +1533,251 @@ func TestErrorproneEnabledOnlyByEnvironmentVariable(t *testing.T) {
 }
 
 func TestDataDeviceBinsBuildsDeviceBinary(t *testing.T) {
-	bp := `
+	testCases := []struct {
+		dataDeviceBinType  string
+		depCompileMultilib string
+		variants           []string
+		expectedError      string
+	}{
+		{
+			dataDeviceBinType:  "first",
+			depCompileMultilib: "first",
+			variants:           []string{"android_arm64_armv8-a"},
+		},
+		{
+			dataDeviceBinType:  "first",
+			depCompileMultilib: "both",
+			variants:           []string{"android_arm64_armv8-a"},
+		},
+		{
+			// this is true because our testing framework is set up with
+			// Targets ~ [<64bit target>, <32bit target>], where 64bit is "first"
+			dataDeviceBinType:  "first",
+			depCompileMultilib: "32",
+			expectedError:      `Android.bp:2:3: dependency "bar" of "foo" missing variant`,
+		},
+		{
+			dataDeviceBinType:  "first",
+			depCompileMultilib: "64",
+			variants:           []string{"android_arm64_armv8-a"},
+		},
+		{
+			dataDeviceBinType:  "both",
+			depCompileMultilib: "both",
+			variants: []string{
+				"android_arm_armv7-a-neon",
+				"android_arm64_armv8-a",
+			},
+		},
+		{
+			dataDeviceBinType:  "both",
+			depCompileMultilib: "32",
+			expectedError:      `Android.bp:2:3: dependency "bar" of "foo" missing variant`,
+		},
+		{
+			dataDeviceBinType:  "both",
+			depCompileMultilib: "64",
+			expectedError:      `Android.bp:2:3: dependency "bar" of "foo" missing variant`,
+		},
+		{
+			dataDeviceBinType:  "both",
+			depCompileMultilib: "first",
+			expectedError:      `Android.bp:2:3: dependency "bar" of "foo" missing variant`,
+		},
+		{
+			dataDeviceBinType:  "32",
+			depCompileMultilib: "32",
+			variants:           []string{"android_arm_armv7-a-neon"},
+		},
+		{
+			dataDeviceBinType:  "32",
+			depCompileMultilib: "first",
+			expectedError:      `Android.bp:2:3: dependency "bar" of "foo" missing variant`,
+		},
+		{
+			dataDeviceBinType:  "32",
+			depCompileMultilib: "both",
+			variants:           []string{"android_arm_armv7-a-neon"},
+		},
+		{
+			dataDeviceBinType:  "32",
+			depCompileMultilib: "64",
+			expectedError:      `Android.bp:2:3: dependency "bar" of "foo" missing variant`,
+		},
+		{
+			dataDeviceBinType:  "64",
+			depCompileMultilib: "64",
+			variants:           []string{"android_arm64_armv8-a"},
+		},
+		{
+			dataDeviceBinType:  "64",
+			depCompileMultilib: "both",
+			variants:           []string{"android_arm64_armv8-a"},
+		},
+		{
+			dataDeviceBinType:  "64",
+			depCompileMultilib: "first",
+			variants:           []string{"android_arm64_armv8-a"},
+		},
+		{
+			dataDeviceBinType:  "64",
+			depCompileMultilib: "32",
+			expectedError:      `Android.bp:2:3: dependency "bar" of "foo" missing variant`,
+		},
+		{
+			dataDeviceBinType:  "prefer32",
+			depCompileMultilib: "32",
+			variants:           []string{"android_arm_armv7-a-neon"},
+		},
+		{
+			dataDeviceBinType:  "prefer32",
+			depCompileMultilib: "both",
+			variants:           []string{"android_arm_armv7-a-neon"},
+		},
+		{
+			dataDeviceBinType:  "prefer32",
+			depCompileMultilib: "first",
+			expectedError:      `Android.bp:2:3: dependency "bar" of "foo" missing variant`,
+		},
+		{
+			dataDeviceBinType:  "prefer32",
+			depCompileMultilib: "64",
+			expectedError:      `Android.bp:2:3: dependency "bar" of "foo" missing variant`,
+		},
+	}
+
+	bpTemplate := `
 		java_test_host {
 			name: "foo",
 			srcs: ["test.java"],
-			data_device_bins: ["bar"],
+			data_device_bins_%s: ["bar"],
 		}
 
 		cc_binary {
 			name: "bar",
+			compile_multilib: "%s",
 		}
 	`
 
-	ctx := android.GroupFixturePreparers(
-		PrepareForIntegrationTestWithJava,
-	).RunTestWithBp(t, bp)
+	for _, tc := range testCases {
+		bp := fmt.Sprintf(bpTemplate, tc.dataDeviceBinType, tc.depCompileMultilib)
 
-	buildOS := ctx.Config.BuildOS.String()
-	fooVariant := ctx.ModuleForTests("foo", buildOS+"_common")
-	barVariant := ctx.ModuleForTests("bar", "android_arm64_armv8-a")
-	fooMod := fooVariant.Module().(*TestHost)
+		errorHandler := android.FixtureExpectsNoErrors
+		if tc.expectedError != "" {
+			errorHandler = android.FixtureExpectsAtLeastOneErrorMatchingPattern(tc.expectedError)
+		}
 
-	relocated := barVariant.Output("bar")
-	expectedInput := "out/soong/.intermediates/bar/android_arm64_armv8-a/unstripped/bar"
-	android.AssertPathRelativeToTopEquals(t, "relocation input", expectedInput, relocated.Input)
+		testName := fmt.Sprintf(`data_device_bins_%s with compile_multilib:"%s"`, tc.dataDeviceBinType, tc.depCompileMultilib)
+		t.Run(testName, func(t *testing.T) {
+			ctx := android.GroupFixturePreparers(PrepareForIntegrationTestWithJava).
+				ExtendWithErrorHandler(errorHandler).
+				RunTestWithBp(t, bp)
+			if tc.expectedError != "" {
+				return
+			}
 
-	entries := android.AndroidMkEntriesForTest(t, ctx.TestContext, fooMod)[0]
-	expectedData := []string{
-		"out/soong/.intermediates/bar/android_arm64_armv8-a/bar:bar",
+			buildOS := ctx.Config.BuildOS.String()
+			fooVariant := ctx.ModuleForTests("foo", buildOS+"_common")
+			fooMod := fooVariant.Module().(*TestHost)
+			entries := android.AndroidMkEntriesForTest(t, ctx.TestContext, fooMod)[0]
+
+			expectedAutogenConfig := `<option name="push-file" key="bar" value="/data/local/tests/unrestricted/foo/bar" />`
+			autogen := fooVariant.Rule("autogen")
+			if !strings.Contains(autogen.Args["extraConfigs"], expectedAutogenConfig) {
+				t.Errorf("foo extraConfigs %v does not contain %q", autogen.Args["extraConfigs"], expectedAutogenConfig)
+			}
+
+			expectedData := []string{}
+			for _, variant := range tc.variants {
+				barVariant := ctx.ModuleForTests("bar", variant)
+				relocated := barVariant.Output("bar")
+				expectedInput := fmt.Sprintf("out/soong/.intermediates/bar/%s/unstripped/bar", variant)
+				android.AssertPathRelativeToTopEquals(t, "relocation input", expectedInput, relocated.Input)
+
+				expectedData = append(expectedData, fmt.Sprintf("out/soong/.intermediates/bar/%s/bar:bar", variant))
+			}
+
+			actualData := entries.EntryMap["LOCAL_COMPATIBILITY_SUPPORT_FILES"]
+			android.AssertStringPathsRelativeToTopEquals(t, "LOCAL_TEST_DATA", ctx.Config, expectedData, actualData)
+		})
 	}
-	actualData := entries.EntryMap["LOCAL_COMPATIBILITY_SUPPORT_FILES"]
-	android.AssertStringPathsRelativeToTopEquals(t, "LOCAL_TEST_DATA", ctx.Config, expectedData, actualData)
 }
 
-func TestDataDeviceBinsAutogenTradefedConfig(t *testing.T) {
+func TestImportMixedBuild(t *testing.T) {
 	bp := `
-		java_test_host {
-			name: "foo",
-			srcs: ["test.java"],
-			data_device_bins: ["bar"],
-		}
-
-		cc_binary {
-			name: "bar",
+		java_import {
+			name: "baz",
+			jars: [
+				"test1.jar",
+				"test2.jar",
+			],
+			bazel_module: { label: "//foo/bar:baz" },
 		}
 	`
 
 	ctx := android.GroupFixturePreparers(
-		PrepareForIntegrationTestWithJava,
+		prepareForJavaTest,
+		android.FixtureModifyConfig(func(config android.Config) {
+			config.BazelContext = android.MockBazelContext{
+				OutputBaseDir: "outputbase",
+				LabelToOutputFiles: map[string][]string{
+					"//foo/bar:baz": []string{"test1.jar", "test2.jar"},
+				},
+			}
+		}),
 	).RunTestWithBp(t, bp)
 
-	buildOS := ctx.Config.BuildOS.String()
-	fooModule := ctx.ModuleForTests("foo", buildOS+"_common")
-	expectedAutogenConfig := `<option name="push-file" key="bar" value="/data/local/tests/unrestricted/foo/bar" />`
+	bazMod := ctx.ModuleForTests("baz", "android_common").Module()
+	producer := bazMod.(android.OutputFileProducer)
+	expectedOutputFiles := []string{".intermediates/baz/android_common/bazelCombined/baz.jar"}
 
-	autogen := fooModule.Rule("autogen")
-	if !strings.Contains(autogen.Args["extraConfigs"], expectedAutogenConfig) {
-		t.Errorf("foo extraConfigs %v does not contain %q", autogen.Args["extraConfigs"], expectedAutogenConfig)
+	outputFiles, err := producer.OutputFiles("")
+	if err != nil {
+		t.Errorf("Unexpected error getting java_import outputfiles %s", err)
+	}
+	actualOutputFiles := android.NormalizePathsForTesting(outputFiles)
+	android.AssertDeepEquals(t, "Output files are produced", expectedOutputFiles, actualOutputFiles)
+
+	javaInfoProvider := ctx.ModuleProvider(bazMod, JavaInfoProvider)
+	javaInfo, ok := javaInfoProvider.(JavaInfo)
+	if !ok {
+		t.Error("could not get JavaInfo from java_import module")
+	}
+	android.AssertDeepEquals(t, "Header JARs are produced", expectedOutputFiles, android.NormalizePathsForTesting(javaInfo.HeaderJars))
+	android.AssertDeepEquals(t, "Implementation/Resources JARs are produced", expectedOutputFiles, android.NormalizePathsForTesting(javaInfo.ImplementationAndResourcesJars))
+	android.AssertDeepEquals(t, "Implementation JARs are produced", expectedOutputFiles, android.NormalizePathsForTesting(javaInfo.ImplementationJars))
+}
+
+func TestGenAidlIncludeFlagsForMixedBuilds(t *testing.T) {
+	bazelOutputBaseDir := filepath.Join("out", "bazel")
+	result := android.GroupFixturePreparers(
+		PrepareForIntegrationTestWithJava,
+		android.FixtureModifyConfig(func(config android.Config) {
+			config.BazelContext = android.MockBazelContext{
+				OutputBaseDir: bazelOutputBaseDir,
+			}
+		}),
+	).RunTest(t)
+
+	ctx := &android.TestPathContext{TestResult: result}
+
+	srcDirectory := filepath.Join("frameworks", "base")
+	srcDirectoryAlreadyIncluded := filepath.Join("frameworks", "base", "core", "java")
+	bazelSrcDirectory := android.PathForBazelOut(ctx, srcDirectory)
+	bazelSrcDirectoryAlreadyIncluded := android.PathForBazelOut(ctx, srcDirectoryAlreadyIncluded)
+	srcs := android.Paths{
+		android.PathForTestingWithRel(bazelSrcDirectory.String(), "bazelAidl.aidl"),
+		android.PathForTestingWithRel(bazelSrcDirectory.String(), "bazelAidl2.aidl"),
+		android.PathForTestingWithRel(bazelSrcDirectoryAlreadyIncluded.String(), "bazelAidlExclude.aidl"),
+		android.PathForTestingWithRel(bazelSrcDirectoryAlreadyIncluded.String(), "bazelAidl2Exclude.aidl"),
+	}
+	dirsAlreadyIncluded := android.Paths{
+		android.PathForTesting(srcDirectoryAlreadyIncluded),
+	}
+
+	expectedFlags := " -Iout/bazel/execroot/__main__/frameworks/base"
+	flags := genAidlIncludeFlags(ctx, srcs, dirsAlreadyIncluded)
+	if flags != expectedFlags {
+		t.Errorf("expected flags to be %q; was %q", expectedFlags, flags)
 	}
 }

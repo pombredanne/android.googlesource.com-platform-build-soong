@@ -15,6 +15,7 @@
 package genrule
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"testing"
@@ -421,7 +422,7 @@ func TestGenruleCmd(t *testing.T) {
 
 			allowMissingDependencies: true,
 
-			expect: "cat ***missing srcs :missing*** > __SBOX_SANDBOX_DIR__/out/out",
+			expect: "cat '***missing srcs :missing***' > __SBOX_SANDBOX_DIR__/out/out",
 		},
 		{
 			name: "tool allow missing dependencies",
@@ -433,7 +434,7 @@ func TestGenruleCmd(t *testing.T) {
 
 			allowMissingDependencies: true,
 
-			expect: "***missing tool :missing*** > __SBOX_SANDBOX_DIR__/out/out",
+			expect: "'***missing tool :missing***' > __SBOX_SANDBOX_DIR__/out/out",
 		},
 	}
 
@@ -626,6 +627,73 @@ func TestGenSrcs(t *testing.T) {
 	}
 }
 
+func TestGensrcsBuildBrokenDepfile(t *testing.T) {
+	tests := []struct {
+		name               string
+		prop               string
+		BuildBrokenDepfile *bool
+		err                string
+	}{
+		{
+			name: `error when BuildBrokenDepfile is set to false`,
+			prop: `
+				depfile: true,
+				cmd: "cat $(in) > $(out) && cat $(depfile)",
+			`,
+			BuildBrokenDepfile: proptools.BoolPtr(false),
+			err:                "depfile: Deprecated to ensure the module type is convertible to Bazel",
+		},
+		{
+			name: `error when BuildBrokenDepfile is not set`,
+			prop: `
+				depfile: true,
+				cmd: "cat $(in) > $(out) && cat $(depfile)",
+			`,
+			err: "depfile: Deprecated to ensure the module type is convertible to Bazel.",
+		},
+		{
+			name: `no error when BuildBrokenDepfile is explicitly set to true`,
+			prop: `
+				depfile: true,
+				cmd: "cat $(in) > $(out) && cat $(depfile)",
+			`,
+			BuildBrokenDepfile: proptools.BoolPtr(true),
+		},
+		{
+			name: `no error if depfile is not set`,
+			prop: `
+				cmd: "cat $(in) > $(out)",
+			`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bp := fmt.Sprintf(`
+			gensrcs {
+			   name: "foo",
+			   srcs: ["data.txt"],
+			   %s
+			}`, test.prop)
+
+			var expectedErrors []string
+			if test.err != "" {
+				expectedErrors = append(expectedErrors, test.err)
+			}
+			android.GroupFixturePreparers(
+				prepareForGenRuleTest,
+				android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+					if test.BuildBrokenDepfile != nil {
+						variables.BuildBrokenDepfile = test.BuildBrokenDepfile
+					}
+				}),
+			).
+				ExtendWithErrorHandler(android.FixtureExpectsAllErrorsToMatchAPattern(expectedErrors)).
+				RunTestWithBp(t, bp)
+		})
+
+	}
+}
+
 func TestGenruleDefaults(t *testing.T) {
 	bp := `
 				genrule_defaults {
@@ -808,6 +876,92 @@ func TestGenruleWithBazel(t *testing.T) {
 		"outputbase/execroot/__main__/bazeltwo.txt"}
 	android.AssertDeepEquals(t, "output files", expectedOutputFiles, gen.outputFiles.Strings())
 	android.AssertDeepEquals(t, "output deps", expectedOutputFiles, gen.outputDeps.Strings())
+}
+
+func TestGenruleWithGlobPaths(t *testing.T) {
+	testcases := []struct {
+		name            string
+		bp              string
+		additionalFiles android.MockFS
+		expectedCmd     string
+	}{
+		{
+			name: "single file in directory with $ sign",
+			bp: `
+				genrule {
+					name: "gen",
+					srcs: ["inn*.txt"],
+					out: ["out.txt"],
+					cmd: "cp $(in) $(out)",
+				}
+				`,
+			additionalFiles: android.MockFS{"inn$1.txt": nil},
+			expectedCmd:     "cp 'inn$1.txt' __SBOX_SANDBOX_DIR__/out/out.txt",
+		},
+		{
+			name: "multiple file in directory with $ sign",
+			bp: `
+				genrule {
+					name: "gen",
+					srcs: ["inn*.txt"],
+					out: ["."],
+					cmd: "cp $(in) $(out)",
+				}
+				`,
+			additionalFiles: android.MockFS{"inn$1.txt": nil, "inn$2.txt": nil},
+			expectedCmd:     "cp 'inn$1.txt' 'inn$2.txt' __SBOX_SANDBOX_DIR__/out",
+		},
+		{
+			name: "file in directory with other shell unsafe character",
+			bp: `
+				genrule {
+					name: "gen",
+					srcs: ["inn*.txt"],
+					out: ["out.txt"],
+					cmd: "cp $(in) $(out)",
+				}
+				`,
+			additionalFiles: android.MockFS{"inn@1.txt": nil},
+			expectedCmd:     "cp 'inn@1.txt' __SBOX_SANDBOX_DIR__/out/out.txt",
+		},
+		{
+			name: "glob location param with filepath containing $",
+			bp: `
+				genrule {
+					name: "gen",
+					srcs: ["**/inn*"],
+					out: ["."],
+					cmd: "cp $(in) $(location **/inn*)",
+				}
+				`,
+			additionalFiles: android.MockFS{"a/inn$1.txt": nil},
+			expectedCmd:     "cp 'a/inn$1.txt' 'a/inn$1.txt'",
+		},
+		{
+			name: "glob locations param with filepath containing $",
+			bp: `
+				genrule {
+					name: "gen",
+					tool_files: ["**/inn*"],
+					out: ["out.txt"],
+					cmd: "cp $(locations  **/inn*) $(out)",
+				}
+				`,
+			additionalFiles: android.MockFS{"a/inn$1.txt": nil},
+			expectedCmd:     "cp '__SBOX_SANDBOX_DIR__/tools/src/a/inn$1.txt' __SBOX_SANDBOX_DIR__/out/out.txt",
+		},
+	}
+
+	for _, test := range testcases {
+		t.Run(test.name, func(t *testing.T) {
+			result := android.GroupFixturePreparers(
+				prepareForGenRuleTest,
+				android.FixtureMergeMockFs(test.additionalFiles),
+			).RunTestWithBp(t, test.bp)
+			gen := result.Module("gen", "").(*Module)
+			android.AssertStringEquals(t, "command", test.expectedCmd, gen.rawCommands[0])
+		})
+	}
 }
 
 type testTool struct {

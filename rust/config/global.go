@@ -24,7 +24,7 @@ import (
 var pctx = android.NewPackageContext("android/soong/rust/config")
 
 var (
-	RustDefaultVersion = "1.59.0"
+	RustDefaultVersion = "1.63.0"
 	RustDefaultBase    = "prebuilts/rust/"
 	DefaultEdition     = "2021"
 	Stdlibs            = []string{
@@ -50,6 +50,7 @@ var (
 		"-C force-unwind-tables=yes",
 		// Use v0 mangling to distinguish from C++ symbols
 		"-C symbol-mangling-version=v0",
+		"--color always",
 	}
 
 	deviceGlobalRustFlags = []string{
@@ -77,7 +78,13 @@ var (
 
 func init() {
 	pctx.SourcePathVariable("RustDefaultBase", RustDefaultBase)
-	pctx.VariableConfigMethod("HostPrebuiltTag", android.Config.PrebuiltOS)
+	pctx.VariableConfigMethod("HostPrebuiltTag", func(config android.Config) string {
+		if config.UseHostMusl() {
+			return "linux-musl-x86"
+		} else {
+			return config.PrebuiltOS()
+		}
+	})
 
 	pctx.VariableFunc("RustBase", func(ctx android.PackageVarContext) string {
 		if override := ctx.Config().Getenv("RUST_PREBUILTS_BASE"); override != "" {
@@ -86,12 +93,7 @@ func init() {
 		return "${RustDefaultBase}"
 	})
 
-	pctx.VariableFunc("RustVersion", func(ctx android.PackageVarContext) string {
-		if override := ctx.Config().Getenv("RUST_PREBUILTS_VERSION"); override != "" {
-			return override
-		}
-		return RustDefaultVersion
-	})
+	pctx.VariableFunc("RustVersion", getRustVersionPctx)
 
 	pctx.StaticVariable("RustPath", "${RustBase}/${HostPrebuiltTag}/${RustVersion}")
 	pctx.StaticVariable("RustBin", "${RustPath}/bin")
@@ -102,4 +104,15 @@ func init() {
 
 	pctx.StaticVariable("DeviceGlobalLinkFlags", strings.Join(deviceGlobalLinkFlags, " "))
 
+}
+
+func getRustVersionPctx(ctx android.PackageVarContext) string {
+	return GetRustVersion(ctx)
+}
+
+func GetRustVersion(ctx android.PathContext) string {
+	if override := ctx.Config().Getenv("RUST_PREBUILTS_VERSION"); override != "" {
+		return override
+	}
+	return RustDefaultVersion
 }

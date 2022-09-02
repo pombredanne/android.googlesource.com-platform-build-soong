@@ -148,6 +148,14 @@ type AndroidMkEntries struct {
 	// without worrying about the variables being mixed up in the actual mk file.
 	// 3. Makes troubleshooting and spotting errors easier.
 	entryOrder []string
+
+	// Provides data typically stored by Context objects that are commonly needed by
+	//AndroidMkEntries objects.
+	entryContext AndroidMkEntriesContext
+}
+
+type AndroidMkEntriesContext interface {
+	Config() Config
 }
 
 type AndroidMkExtraEntriesContext interface {
@@ -280,6 +288,8 @@ func (a *AndroidMkEntries) AddCompatibilityTestSuites(suites ...string) {
 
 // The contributions to the dist.
 type distContributions struct {
+	// Path to license metadata file.
+	licenseMetadataFile Path
 	// List of goals and the dist copy instructions.
 	copiesForGoals []*copiesForGoals
 }
@@ -356,6 +366,8 @@ func (a *AndroidMkEntries) getDistContributions(mod blueprint.Module) *distContr
 	// Collate the contributions this module makes to the dist.
 	distContributions := &distContributions{}
 
+	distContributions.licenseMetadataFile = amod.licenseMetadataFile
+
 	// Iterate over this module's dist structs, merged from the dist and dists properties.
 	for _, dist := range amod.Dists() {
 		// Get the list of goals this dist should be enabled for. e.g. sdk, droidcore
@@ -408,10 +420,19 @@ func (a *AndroidMkEntries) getDistContributions(mod blueprint.Module) *distContr
 				}
 			}
 
+			ext := filepath.Ext(dest)
+			suffix := ""
 			if dist.Suffix != nil {
-				ext := filepath.Ext(dest)
-				suffix := *dist.Suffix
-				dest = strings.TrimSuffix(dest, ext) + suffix + ext
+				suffix = *dist.Suffix
+			}
+
+			productString := ""
+			if dist.Append_artifact_with_product != nil && *dist.Append_artifact_with_product {
+				productString = fmt.Sprintf("_%s", a.entryContext.Config().DeviceProduct())
+			}
+
+			if suffix != "" || productString != "" {
+				dest = strings.TrimSuffix(dest, ext) + suffix + productString + ext
 			}
 
 			if dist.Dir != nil {
@@ -437,6 +458,10 @@ func generateDistContributionsForMake(distContributions *distContributions) []st
 		ret = append(ret, fmt.Sprintf(".PHONY: %s\n", d.goals))
 		// Create dist-for-goals calls for each of the copy instructions.
 		for _, c := range d.copies {
+			ret = append(
+				ret,
+				fmt.Sprintf("$(if $(strip $(ALL_TARGETS.%s.META_LIC)),,$(eval ALL_TARGETS.%s.META_LIC := %s))\n",
+					c.from.String(), c.from.String(), distContributions.licenseMetadataFile.String()))
 			ret = append(
 				ret,
 				fmt.Sprintf("$(call dist-for-goals,%s,%s:%s)\n", d.goals, c.from.String(), c.dest))
@@ -478,6 +503,7 @@ type fillInEntriesContext interface {
 }
 
 func (a *AndroidMkEntries) fillInEntries(ctx fillInEntriesContext, mod blueprint.Module) {
+	a.entryContext = ctx
 	a.EntryMap = make(map[string][]string)
 	amod := mod.(Module)
 	base := amod.base()
@@ -560,7 +586,7 @@ func (a *AndroidMkEntries) fillInEntries(ctx fillInEntriesContext, mod blueprint
 			}
 		}
 
-		if !base.InRamdisk() && !base.InVendorRamdisk() {
+		if !base.InVendorRamdisk() {
 			a.AddPaths("LOCAL_FULL_INIT_RC", base.initRcPaths)
 		}
 		if len(base.vintfFragmentsPaths) > 0 {
@@ -576,10 +602,6 @@ func (a *AndroidMkEntries) fillInEntries(ctx fillInEntriesContext, mod blueprint
 		if base.commonProperties.Owner != nil {
 			a.SetString("LOCAL_MODULE_OWNER", *base.commonProperties.Owner)
 		}
-	}
-
-	if len(base.noticeFiles) > 0 {
-		a.SetString("LOCAL_NOTICE_FILE", strings.Join(base.noticeFiles.Strings(), " "))
 	}
 
 	if host {
@@ -919,7 +941,10 @@ func shouldSkipAndroidMkProcessing(module *ModuleBase) bool {
 	return !module.Enabled() ||
 		module.commonProperties.HideFromMake ||
 		// Make does not understand LinuxBionic
-		module.Os() == LinuxBionic
+		module.Os() == LinuxBionic ||
+		// Make does not understand LinuxMusl, except when we are building with USE_HOST_MUSL=true
+		// and all host binaries are LinuxMusl
+		(module.Os() == LinuxMusl && module.Target().HostCross)
 }
 
 // A utility func to format LOCAL_TEST_DATA outputs. See the comments on DataPath to understand how

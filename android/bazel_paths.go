@@ -32,14 +32,14 @@ import (
 // There is often a similar method for Bazel as there is for Soong path handling and should be used
 // in similar circumstances
 //
-// Bazel                                Soong
-//
-// BazelLabelForModuleSrc               PathForModuleSrc
-// BazelLabelForModuleSrcExcludes       PathForModuleSrcExcludes
-// BazelLabelForModuleDeps              n/a
-// tbd                                  PathForSource
-// tbd                                  ExistentPathsForSources
-// PathForBazelOut                      PathForModuleOut
+//   Bazel                                Soong
+//   ==============================================================
+//   BazelLabelForModuleSrc               PathForModuleSrc
+//   BazelLabelForModuleSrcExcludes       PathForModuleSrcExcludes
+//   BazelLabelForModuleDeps              n/a
+//   tbd                                  PathForSource
+//   tbd                                  ExistentPathsForSources
+//   PathForBazelOut                      PathForModuleOut
 //
 // Use cases:
 //  * Module contains a property (often tagged `android:"path"`) that expects paths *relative to the
@@ -68,7 +68,7 @@ import (
 //   cannot be resolved,the function will panic. This is often due to the dependency not being added
 //   via an AddDependency* method.
 
-// A minimal context interface to check if a module should be converted by bp2build,
+// BazelConversionContext is a minimal context interface to check if a module should be converted by bp2build,
 // with functions containing information to match against allowlists and denylists.
 // If a module is deemed to be convertible by bp2build, then it should rely on a
 // BazelConversionPathContext for more functions for dep/path features.
@@ -79,6 +79,7 @@ type BazelConversionContext interface {
 	OtherModuleType(m blueprint.Module) string
 	OtherModuleName(m blueprint.Module) string
 	OtherModuleDir(m blueprint.Module) string
+	ModuleErrorf(format string, args ...interface{})
 }
 
 // A subset of the ModuleContext methods which are sufficient to resolve references to paths/deps in
@@ -220,9 +221,13 @@ func directoryHasBlueprint(fs pathtools.FileSystem, prefix string, components []
 // Transform a path (if necessary) to acknowledge package boundaries
 //
 // e.g. something like
-//   async_safe/include/async_safe/CHECK.h
+//
+//	async_safe/include/async_safe/CHECK.h
+//
 // might become
-//   //bionic/libc/async_safe:include/async_safe/CHECK.h
+//
+//	//bionic/libc/async_safe:include/async_safe/CHECK.h
+//
 // if the "async_safe" directory is actually a package and not just a directory.
 //
 // In particular, paths that extend into packages are transformed into absolute labels beginning with //.
@@ -302,20 +307,21 @@ func RootToModuleRelativePaths(ctx BazelConversionPathContext, paths Paths) []ba
 // directory and Bazel target labels, excluding those included in the excludes argument (which
 // should already be expanded to resolve references to Soong-modules). Valid elements of paths
 // include:
-// * filepath, relative to local module directory, resolves as a filepath relative to the local
-//   source directory
-// * glob, relative to the local module directory, resolves as filepath(s), relative to the local
-//    module directory. Because Soong does not have a concept of crossing package boundaries, the
-//    glob as computed by Soong may contain paths that cross package-boundaries that would be
-//    unknowingly omitted if the glob were handled by Bazel. To allow identification and detect
-//    (within Bazel) use of paths that cross package boundaries, we expand globs within Soong rather
-//    than converting Soong glob syntax to Bazel glob syntax. **Invalid for excludes.**
-// * other modules using the ":name{.tag}" syntax. These modules must implement SourceFileProducer
-//    or OutputFileProducer. These resolve as a Bazel label for a target. If the Bazel target is in
-//    the local module directory, it will be returned relative to the current package (e.g.
-//    ":<target>"). Otherwise, it will be returned as an absolute Bazel label (e.g.
-//    "//path/to/dir:<target>"). If the reference to another module cannot be resolved,the function
-//    will panic.
+//   - filepath, relative to local module directory, resolves as a filepath relative to the local
+//     source directory
+//   - glob, relative to the local module directory, resolves as filepath(s), relative to the local
+//     module directory. Because Soong does not have a concept of crossing package boundaries, the
+//     glob as computed by Soong may contain paths that cross package-boundaries that would be
+//     unknowingly omitted if the glob were handled by Bazel. To allow identification and detect
+//     (within Bazel) use of paths that cross package boundaries, we expand globs within Soong rather
+//     than converting Soong glob syntax to Bazel glob syntax. **Invalid for excludes.**
+//   - other modules using the ":name{.tag}" syntax. These modules must implement SourceFileProducer
+//     or OutputFileProducer. These resolve as a Bazel label for a target. If the Bazel target is in
+//     the local module directory, it will be returned relative to the current package (e.g.
+//     ":<target>"). Otherwise, it will be returned as an absolute Bazel label (e.g.
+//     "//path/to/dir:<target>"). If the reference to another module cannot be resolved,the function
+//     will panic.
+//
 // Properties passed as the paths or excludes argument must have been annotated with struct tag
 // `android:"path"` so that dependencies on other modules will have already been handled by the
 // path_deps mutator.
@@ -448,23 +454,49 @@ func (p BazelOutPath) objPathWithExt(ctx ModuleOutPathContext, subdir, ext strin
 	return PathForModuleObj(ctx, subdir, pathtools.ReplaceExtension(p.path, ext))
 }
 
-// PathForBazelOut returns a Path representing the paths... under an output directory dedicated to
-// bazel-owned outputs.
-func PathForBazelOut(ctx PathContext, paths ...string) BazelOutPath {
-	execRootPathComponents := append([]string{"execroot", "__main__"}, paths...)
-	execRootPath := filepath.Join(execRootPathComponents...)
-	validatedExecRootPath, err := validatePath(execRootPath)
+// PathForBazelOutRelative returns a BazelOutPath representing the path under an output directory dedicated to
+// bazel-owned outputs. Calling .Rel() on the result will give the input path as relative to the given
+// relativeRoot.
+func PathForBazelOutRelative(ctx PathContext, relativeRoot string, path string) BazelOutPath {
+	validatedPath, err := validatePath(filepath.Join("execroot", "__main__", path))
 	if err != nil {
 		reportPathError(ctx, err)
 	}
+	relativeRootPath := filepath.Join("execroot", "__main__", relativeRoot)
+	if pathComponents := strings.Split(path, "/"); len(pathComponents) >= 3 &&
+		pathComponents[0] == "bazel-out" && pathComponents[2] == "bin" {
+		// If the path starts with something like: bazel-out/linux_x86_64-fastbuild-ST-b4ef1c4402f9/bin/
+		// make it relative to that folder. bazel-out/volatile-status.txt is an example
+		// of something that starts with bazel-out but is not relative to the bin folder
+		relativeRootPath = filepath.Join("execroot", "__main__", pathComponents[0], pathComponents[1], pathComponents[2], relativeRoot)
+	}
 
-	outputPath := OutputPath{basePath{"", ""},
+	var relPath string
+	if relPath, err = filepath.Rel(relativeRootPath, validatedPath); err != nil || strings.HasPrefix(relPath, "../") {
+		// We failed to make this path relative to execroot/__main__, fall back to a non-relative path
+		// One case where this happens is when path is ../bazel_tools/something
+		relativeRootPath = ""
+		relPath = validatedPath
+	}
+
+	outputPath := OutputPath{
+		basePath{"", ""},
 		ctx.Config().soongOutDir,
-		ctx.Config().BazelContext.OutputBase()}
+		ctx.Config().BazelContext.OutputBase(),
+	}
 
 	return BazelOutPath{
-		OutputPath: outputPath.withRel(validatedExecRootPath),
+		// .withRel() appends its argument onto the current path, and only the most
+		// recently appended part is returned by outputPath.rel().
+		// So outputPath.rel() will return relPath.
+		OutputPath: outputPath.withRel(relativeRootPath).withRel(relPath),
 	}
+}
+
+// PathForBazelOut returns a BazelOutPath representing the path under an output directory dedicated to
+// bazel-owned outputs.
+func PathForBazelOut(ctx PathContext, path string) BazelOutPath {
+	return PathForBazelOutRelative(ctx, "", path)
 }
 
 // PathsForBazelOut returns a list of paths representing the paths under an output directory

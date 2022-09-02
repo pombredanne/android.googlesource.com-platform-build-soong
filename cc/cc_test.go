@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -776,6 +777,68 @@ func TestDataLibsRelativeInstallPath(t *testing.T) {
 	if !strings.HasSuffix(entries.EntryMap["LOCAL_TEST_DATA"][1], ":test_bin:foo/bar/baz") {
 		t.Errorf("expected LOCAL_TEST_DATA to end with `:test_bin:foo/bar/baz`,"+
 			" but was '%s'", entries.EntryMap["LOCAL_TEST_DATA"][1])
+	}
+}
+
+func TestTestBinaryTestSuites(t *testing.T) {
+	bp := `
+		cc_test {
+			name: "main_test",
+			srcs: ["main_test.cpp"],
+			test_suites: [
+				"suite_1",
+				"suite_2",
+			],
+			gtest: false,
+		}
+	`
+
+	ctx := prepareForCcTest.RunTestWithBp(t, bp).TestContext
+	module := ctx.ModuleForTests("main_test", "android_arm_armv7-a-neon").Module()
+
+	entries := android.AndroidMkEntriesForTest(t, ctx, module)[0]
+	compatEntries := entries.EntryMap["LOCAL_COMPATIBILITY_SUITE"]
+	if len(compatEntries) != 2 {
+		t.Errorf("expected two elements in LOCAL_COMPATIBILITY_SUITE. got %d", len(compatEntries))
+	}
+	if compatEntries[0] != "suite_1" {
+		t.Errorf("expected LOCAL_COMPATIBILITY_SUITE to be`suite_1`,"+
+			" but was '%s'", compatEntries[0])
+	}
+	if compatEntries[1] != "suite_2" {
+		t.Errorf("expected LOCAL_COMPATIBILITY_SUITE to be`suite_2`,"+
+			" but was '%s'", compatEntries[1])
+	}
+}
+
+func TestTestLibraryTestSuites(t *testing.T) {
+	bp := `
+		cc_test_library {
+			name: "main_test_lib",
+			srcs: ["main_test_lib.cpp"],
+			test_suites: [
+				"suite_1",
+				"suite_2",
+			],
+			gtest: false,
+		}
+	`
+
+	ctx := prepareForCcTest.RunTestWithBp(t, bp).TestContext
+	module := ctx.ModuleForTests("main_test_lib", "android_arm_armv7-a-neon_shared").Module()
+
+	entries := android.AndroidMkEntriesForTest(t, ctx, module)[0]
+	compatEntries := entries.EntryMap["LOCAL_COMPATIBILITY_SUITE"]
+	if len(compatEntries) != 2 {
+		t.Errorf("expected two elements in LOCAL_COMPATIBILITY_SUITE. got %d", len(compatEntries))
+	}
+	if compatEntries[0] != "suite_1" {
+		t.Errorf("expected LOCAL_COMPATIBILITY_SUITE to be`suite_1`,"+
+			" but was '%s'", compatEntries[0])
+	}
+	if compatEntries[1] != "suite_2" {
+		t.Errorf("expected LOCAL_COMPATIBILITY_SUITE to be`suite_2`,"+
+			" but was '%s'", compatEntries[1])
 	}
 }
 
@@ -3280,6 +3343,127 @@ func TestErrorsIfAModuleDependsOnDisabled(t *testing.T) {
 	`)
 }
 
+func VerifyAFLFuzzTargetVariant(t *testing.T, variant string) {
+	bp := `
+		cc_fuzz {
+			name: "test_afl_fuzz_target",
+			srcs: ["foo.c"],
+			host_supported: true,
+			static_libs: [
+				"afl_fuzz_static_lib",
+			],
+			shared_libs: [
+				"afl_fuzz_shared_lib",
+			],
+			fuzzing_frameworks: {
+				afl: true,
+				libfuzzer: false,
+			},
+		}
+		cc_library {
+			name: "afl_fuzz_static_lib",
+			host_supported: true,
+			srcs: ["static_file.c"],
+		}
+		cc_library {
+			name: "libfuzzer_only_static_lib",
+			host_supported: true,
+			srcs: ["static_file.c"],
+		}
+		cc_library {
+			name: "afl_fuzz_shared_lib",
+			host_supported: true,
+			srcs: ["shared_file.c"],
+			static_libs: [
+				"second_static_lib",
+			],
+		}
+		cc_library_headers {
+			name: "libafl_headers",
+			vendor_available: true,
+			host_supported: true,
+			export_include_dirs: [
+				"include",
+				"instrumentation",
+			],
+		}
+		cc_object {
+			name: "afl-compiler-rt",
+			vendor_available: true,
+			host_supported: true,
+			cflags: [
+				"-fPIC",
+			],
+			srcs: [
+				"instrumentation/afl-compiler-rt.o.c",
+			],
+		}
+		cc_library {
+			name: "second_static_lib",
+			host_supported: true,
+			srcs: ["second_file.c"],
+		}
+		cc_object {
+			name: "aflpp_driver",
+			host_supported: true,
+			srcs: [
+				"aflpp_driver.c",
+			],
+		}`
+
+	testEnv := map[string]string{
+		"FUZZ_FRAMEWORK": "AFL",
+	}
+
+	ctx := android.GroupFixturePreparers(prepareForCcTest, android.FixtureMergeEnv(testEnv)).RunTestWithBp(t, bp)
+
+	checkPcGuardFlag := func(
+		modName string, variantName string, shouldHave bool) {
+		cc := ctx.ModuleForTests(modName, variantName).Rule("cc")
+
+		cFlags, ok := cc.Args["cFlags"]
+		if !ok {
+			t.Errorf("Could not find cFlags for module %s and variant %s",
+				modName, variantName)
+		}
+
+		if strings.Contains(
+			cFlags, "-fsanitize-coverage=trace-pc-guard") != shouldHave {
+			t.Errorf("Flag was found: %t. Expected to find flag:  %t. "+
+				"Test failed for module %s and variant %s",
+				!shouldHave, shouldHave, modName, variantName)
+		}
+	}
+
+	moduleName := "test_afl_fuzz_target"
+	checkPcGuardFlag(moduleName, variant+"_fuzzer", true)
+
+	moduleName = "afl_fuzz_static_lib"
+	checkPcGuardFlag(moduleName, variant+"_static", false)
+	checkPcGuardFlag(moduleName, variant+"_static_fuzzer", true)
+
+	moduleName = "second_static_lib"
+	checkPcGuardFlag(moduleName, variant+"_static", false)
+	checkPcGuardFlag(moduleName, variant+"_static_fuzzer", true)
+
+	ctx.ModuleForTests("afl_fuzz_shared_lib",
+		"android_arm64_armv8-a_shared").Rule("cc")
+	ctx.ModuleForTests("afl_fuzz_shared_lib",
+		"android_arm64_armv8-a_shared_fuzzer").Rule("cc")
+}
+
+func TestAFLFuzzTargetForDevice(t *testing.T) {
+	VerifyAFLFuzzTargetVariant(t, "android_arm64_armv8-a")
+}
+
+func TestAFLFuzzTargetForLinuxHost(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("requires linux")
+	}
+
+	VerifyAFLFuzzTargetVariant(t, "linux_glibc_x86_64")
+}
+
 // Simple smoke test for the cc_fuzz target that ensures the rule compiles
 // correctly.
 func TestFuzzTarget(t *testing.T) {
@@ -3660,6 +3844,25 @@ func TestMinSdkVersionInClangTriple(t *testing.T) {
 	android.AssertStringDoesContain(t, "min sdk version", cFlags, "-target aarch64-linux-android29")
 }
 
+func TestNonDigitMinSdkVersionInClangTriple(t *testing.T) {
+	bp := `
+		cc_library_shared {
+			name: "libfoo",
+			srcs: ["foo.c"],
+			min_sdk_version: "S",
+		}
+	`
+	result := android.GroupFixturePreparers(
+		prepareForCcTest,
+		android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+			variables.Platform_version_active_codenames = []string{"UpsideDownCake", "Tiramisu"}
+		}),
+	).RunTestWithBp(t, bp)
+	ctx := result.TestContext
+	cFlags := ctx.ModuleForTests("libfoo", "android_arm64_armv8-a_shared").Rule("cc").Args["cFlags"]
+	android.AssertStringDoesContain(t, "min sdk version", cFlags, "-target aarch64-linux-android31")
+}
+
 func TestIncludeDirsExporting(t *testing.T) {
 
 	// Trim spaces from the beginning, end and immediately after any newline characters. Leaves
@@ -3908,7 +4111,7 @@ func TestIncludeDirsExporting(t *testing.T) {
 			name: "libfoo",
 			srcs: [
 				"foo.c",
-				"a.sysprop",
+				"path/to/a.sysprop",
 				"b.aidl",
 				"a.proto",
 			],
@@ -3921,11 +4124,11 @@ func TestIncludeDirsExporting(t *testing.T) {
 			`),
 			expectedSystemIncludeDirs(``),
 			expectedGeneratedHeaders(`
-				.intermediates/libfoo/android_arm64_armv8-a_shared/gen/sysprop/include/a.sysprop.h
+				.intermediates/libfoo/android_arm64_armv8-a_shared/gen/sysprop/include/path/to/a.sysprop.h
 			`),
 			expectedOrderOnlyDeps(`
-				.intermediates/libfoo/android_arm64_armv8-a_shared/gen/sysprop/include/a.sysprop.h
-				.intermediates/libfoo/android_arm64_armv8-a_shared/gen/sysprop/public/include/a.sysprop.h
+				.intermediates/libfoo/android_arm64_armv8-a_shared/gen/sysprop/include/path/to/a.sysprop.h
+				.intermediates/libfoo/android_arm64_armv8-a_shared/gen/sysprop/public/include/path/to/a.sysprop.h
 			`),
 		)
 	})
@@ -3942,7 +4145,7 @@ func TestIncludeDirectoryOrdering(t *testing.T) {
 		"${config.ArmArmv7ANeonCflags}",
 		"${config.ArmGenericCflags}",
 		"-target",
-		"armv7a-linux-androideabi20",
+		"armv7a-linux-androideabi21",
 	}
 
 	expectedIncludes := []string{
@@ -3973,14 +4176,13 @@ func TestIncludeDirectoryOrdering(t *testing.T) {
 		"external/foo/lib32",
 		"external/foo/libandroid_arm",
 		"defaults/cc/common/ndk_libc++_shared",
-		"defaults/cc/common/ndk_libandroid_support",
 	}
 
 	conly := []string{"-fPIC", "${config.CommonGlobalConlyflags}"}
 	cppOnly := []string{"-fPIC", "${config.CommonGlobalCppflags}", "${config.DeviceGlobalCppflags}", "${config.ArmCppflags}"}
 
-	cflags := []string{"-Wall", "-Werror", "-std=candcpp"}
-	cstd := []string{"-std=gnu99", "-std=conly"}
+	cflags := []string{"-Werror", "-std=candcpp"}
+	cstd := []string{"-std=gnu11", "-std=conly"}
 	cppstd := []string{"-std=gnu++17", "-std=cpp", "-fno-rtti"}
 
 	lastIncludes := []string{
@@ -4014,7 +4216,7 @@ func TestIncludeDirectoryOrdering(t *testing.T) {
 		{
 			name:     "assemble",
 			src:      "foo.s",
-			expected: combineSlices(baseExpectedFlags, []string{"-D__ASSEMBLY__"}, expectedIncludes, lastIncludes),
+			expected: combineSlices(baseExpectedFlags, []string{"${config.CommonGlobalAsflags}"}, expectedIncludes, lastIncludes),
 		},
 	}
 
@@ -4066,20 +4268,20 @@ func TestIncludeDirectoryOrdering(t *testing.T) {
 				},
 			},
 			stl: "libc++",
-			sdk_version: "20",
+			sdk_version: "minimum",
 		}
 
 		cc_library_headers {
 			name: "libheader1",
 			export_include_dirs: ["libheader1"],
-			sdk_version: "20",
+			sdk_version: "minimum",
 			stl: "none",
 		}
 
 		cc_library_headers {
 			name: "libheader2",
 			export_include_dirs: ["libheader2"],
-			sdk_version: "20",
+			sdk_version: "minimum",
 			stl: "none",
 		}
 	`, tc.src)
@@ -4103,7 +4305,7 @@ func TestIncludeDirectoryOrdering(t *testing.T) {
 			cc_library {
 				name: "%s",
 				export_include_dirs: ["%s"],
-				sdk_version: "20",
+				sdk_version: "minimum",
 				stl: "none",
 			}
 		`, lib, lib)
@@ -4133,4 +4335,54 @@ func TestIncludeDirectoryOrdering(t *testing.T) {
 		})
 	}
 
+}
+
+func TestCcBuildBrokenClangProperty(t *testing.T) {
+	tests := []struct {
+		name                     string
+		clang                    bool
+		BuildBrokenClangProperty bool
+		err                      string
+	}{
+		{
+			name:  "error when clang is set to false",
+			clang: false,
+			err:   "is no longer supported",
+		},
+		{
+			name:  "error when clang is set to true",
+			clang: true,
+			err:   "property is deprecated, see Changes.md",
+		},
+		{
+			name:                     "no error when BuildBrokenClangProperty is explicitly set to true",
+			clang:                    true,
+			BuildBrokenClangProperty: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			bp := fmt.Sprintf(`
+			cc_library {
+			   name: "foo",
+			   clang: %t,
+			}`, test.clang)
+
+			if test.err == "" {
+				android.GroupFixturePreparers(
+					prepareForCcTest,
+					android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+						if test.BuildBrokenClangProperty {
+							variables.BuildBrokenClangProperty = test.BuildBrokenClangProperty
+						}
+					}),
+				).RunTestWithBp(t, bp)
+			} else {
+				prepareForCcTest.
+					ExtendWithErrorHandler(android.FixtureExpectsOneErrorPattern(test.err)).
+					RunTestWithBp(t, bp)
+			}
+		})
+	}
 }

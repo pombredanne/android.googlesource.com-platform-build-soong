@@ -22,12 +22,13 @@ import (
 	"android/soong/java"
 )
 
-func runJavaBinaryHostTestCase(t *testing.T, tc bp2buildTestCase) {
+func runJavaBinaryHostTestCase(t *testing.T, tc Bp2buildTestCase) {
 	t.Helper()
-	(&tc).moduleTypeUnderTest = "java_binary_host"
-	(&tc).moduleTypeUnderTestFactory = java.BinaryHostFactory
-	runBp2BuildTestCase(t, func(ctx android.RegistrationContext) {
+	(&tc).ModuleTypeUnderTest = "java_binary_host"
+	(&tc).ModuleTypeUnderTestFactory = java.BinaryHostFactory
+	RunBp2BuildTestCase(t, func(ctx android.RegistrationContext) {
 		ctx.RegisterModuleType("cc_library_host_shared", cc.LibraryHostSharedFactory)
+		ctx.RegisterModuleType("java_library", java.LibraryFactory)
 	}, tc)
 }
 
@@ -40,10 +41,10 @@ var fs = map[string]string{
 }
 
 func TestJavaBinaryHost(t *testing.T) {
-	runJavaBinaryHostTestCase(t, bp2buildTestCase{
-		description: "java_binary_host with srcs, exclude_srcs, jni_libs, javacflags, and manifest.",
-		filesystem:  fs,
-		blueprint: `java_binary_host {
+	runJavaBinaryHostTestCase(t, Bp2buildTestCase{
+		Description: "java_binary_host with srcs, exclude_srcs, jni_libs, javacflags, and manifest.",
+		Filesystem:  fs,
+		Blueprint: `java_binary_host {
     name: "java-binary-host-1",
     srcs: ["a.java", "b.java"],
     exclude_srcs: ["b.java"],
@@ -51,14 +52,48 @@ func TestJavaBinaryHost(t *testing.T) {
     jni_libs: ["jni-lib-1"],
     javacflags: ["-Xdoclint:all/protected"],
     bazel_module: { bp2build_available: true },
+    java_version: "8",
 }`,
-		expectedBazelTargets: []string{
-			makeBazelTarget("java_binary", "java-binary-host-1", attrNameToString{
+		ExpectedBazelTargets: []string{
+			MakeBazelTarget("java_binary", "java-binary-host-1", AttrNameToString{
 				"srcs":       `["a.java"]`,
 				"main_class": `"com.android.test.MainClass"`,
 				"deps":       `["//other:jni-lib-1"]`,
 				"jvm_flags":  `["-Djava.library.path=$${RUNPATH}other"]`,
-				"javacopts":  `["-Xdoclint:all/protected"]`,
+				"javacopts": `[
+        "-Xdoclint:all/protected",
+        "-source 1.8 -target 1.8",
+    ]`,
+				"target_compatible_with": `select({
+        "//build/bazel/platforms/os:android": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    })`,
+			}),
+		},
+	})
+}
+
+func TestJavaBinaryHostRuntimeDeps(t *testing.T) {
+	runJavaBinaryHostTestCase(t, Bp2buildTestCase{
+		Description: "java_binary_host with srcs, exclude_srcs, jni_libs, javacflags, and manifest.",
+		Filesystem:  fs,
+		Blueprint: `java_binary_host {
+    name: "java-binary-host-1",
+    static_libs: ["java-dep-1"],
+    manifest: "test.mf",
+    bazel_module: { bp2build_available: true },
+}
+
+java_library {
+    name: "java-dep-1",
+    srcs: ["a.java"],
+    bazel_module: { bp2build_available: false },
+}
+`,
+		ExpectedBazelTargets: []string{
+			MakeBazelTarget("java_binary", "java-binary-host-1", AttrNameToString{
+				"main_class":   `"com.android.test.MainClass"`,
+				"runtime_deps": `[":java-dep-1"]`,
 				"target_compatible_with": `select({
         "//build/bazel/platforms/os:android": ["@platforms//:incompatible"],
         "//conditions:default": [],

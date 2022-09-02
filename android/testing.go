@@ -83,6 +83,8 @@ var PrepareForTestWithLicenses = GroupFixturePreparers(
 	FixtureRegisterWithContext(registerLicenseMutators),
 )
 
+var PrepareForTestWithGenNotice = FixtureRegisterWithContext(RegisterGenNoticeBuildComponents)
+
 func registerLicenseMutators(ctx RegistrationContext) {
 	ctx.PreArchMutators(RegisterLicensesPackageMapper)
 	ctx.PreArchMutators(RegisterLicensesPropertyGatherer)
@@ -211,8 +213,8 @@ func (ctx *TestContext) FinalDepsMutators(f RegisterMutatorFunc) {
 	ctx.finalDeps = append(ctx.finalDeps, f)
 }
 
-func (ctx *TestContext) RegisterBp2BuildConfig(config Bp2BuildConfig) {
-	ctx.config.bp2buildPackageConfig = config
+func (ctx *TestContext) RegisterBp2BuildConfig(config Bp2BuildConversionAllowlist) {
+	ctx.config.Bp2buildPackageConfig = config
 }
 
 // PreArchBp2BuildMutators adds mutators to be register for converting Android Blueprint modules
@@ -455,7 +457,7 @@ func (ctx *TestContext) Register() {
 
 // RegisterForBazelConversion prepares a test context for bp2build conversion.
 func (ctx *TestContext) RegisterForBazelConversion() {
-	ctx.SetRunningAsBp2build()
+	ctx.config.BuildMode = Bp2build
 	RegisterMutatorsForBazelConversion(ctx.Context, ctx.bp2buildPreArch)
 }
 
@@ -686,17 +688,17 @@ type TestingBuildParams struct {
 //
 // The parts of this structure which are changed are:
 // * BuildParams
-//   * Args
-//   * All Path, Paths, WritablePath and WritablePaths fields.
+//   - Args
+//   - All Path, Paths, WritablePath and WritablePaths fields.
 //
 // * RuleParams
-//   * Command
-//   * Depfile
-//   * Rspfile
-//   * RspfileContent
-//   * SymlinkOutputs
-//   * CommandDeps
-//   * CommandOrderOnly
+//   - Command
+//   - Depfile
+//   - Rspfile
+//   - RspfileContent
+//   - SymlinkOutputs
+//   - CommandDeps
+//   - CommandOrderOnly
 //
 // See PathRelativeToTop for more details.
 //

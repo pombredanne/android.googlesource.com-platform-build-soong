@@ -30,7 +30,7 @@ var (
 	defaultBindgenFlags = []string{""}
 
 	// bindgen should specify its own Clang revision so updating Clang isn't potentially blocked on bindgen failures.
-	bindgenClangVersion = "clang-r445002"
+	bindgenClangVersion = "clang-r450784d"
 
 	_ = pctx.VariableFunc("bindgenClangVersion", func(ctx android.PackageVarContext) string {
 		if override := ctx.Config().Getenv("LLVM_BINDGEN_PREBUILTS_VERSION"); override != "" {
@@ -41,10 +41,25 @@ var (
 
 	//TODO(b/160803703) Use a prebuilt bindgen instead of the built bindgen.
 	_ = pctx.HostBinToolVariable("bindgenCmd", "bindgen")
+	_ = pctx.VariableFunc("bindgenHostPrebuiltTag", func(ctx android.PackageVarContext) string {
+		if ctx.Config().UseHostMusl() {
+			// This is a hack to use the glibc bindgen binary until we have a musl version checked in.
+			return "linux-x86"
+		} else {
+			return "${config.HostPrebuiltTag}"
+		}
+	})
+	_ = pctx.VariableFunc("bindgenClangLibdir", func(ctx android.PackageVarContext) string {
+		if ctx.Config().UseHostMusl() {
+			return "musl/lib64/"
+		} else {
+			return "lib64/"
+		}
+	})
 	_ = pctx.SourcePathVariable("bindgenClang",
-		"${cc_config.ClangBase}/${config.HostPrebuiltTag}/${bindgenClangVersion}/bin/clang")
+		"${cc_config.ClangBase}/${bindgenHostPrebuiltTag}/${bindgenClangVersion}/bin/clang")
 	_ = pctx.SourcePathVariable("bindgenLibClang",
-		"${cc_config.ClangBase}/${config.HostPrebuiltTag}/${bindgenClangVersion}/lib64/")
+		"${cc_config.ClangBase}/${bindgenHostPrebuiltTag}/${bindgenClangVersion}/${bindgenClangLibdir}")
 
 	//TODO(ivanlozano) Switch this to RuleBuilder
 	bindgen = pctx.AndroidStaticRule("bindgen",
@@ -224,6 +239,11 @@ func (b *bindgenDecorator) GenerateSource(ctx ModuleContext, deps PathDeps) andr
 		cflags = append(cflags, "-x c")
 	}
 
+	// LLVM_NEXT may contain flags that bindgen doesn't recognise. Turn off unknown flags warning.
+	if ctx.Config().IsEnvTrue("LLVM_NEXT") {
+		cflags = append(cflags, "-Wno-unknown-warning-option")
+	}
+
 	outputFile := android.PathForModuleOut(ctx, b.BaseSourceProvider.getStem(ctx)+".rs")
 
 	var cmd, cmdDesc string
@@ -279,7 +299,15 @@ func NewRustBindgen(hod android.HostOrDeviceSupported) (*Module, *bindgenDecorat
 		ClangProperties:    cc.RustBindgenClangProperties{},
 	}
 
-	module := NewSourceProviderModule(hod, bindgen, false)
+	module := NewSourceProviderModule(hod, bindgen, false, true)
+
+	android.AddLoadHook(module, func(ctx android.LoadHookContext) {
+		type stub_props struct {
+			Visibility []string
+		}
+		props := &stub_props{[]string{":__subpackages__"}}
+		ctx.PrependProperties(props)
+	})
 
 	return module, bindgen
 }

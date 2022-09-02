@@ -246,10 +246,6 @@ func (library *libraryDecorator) autoDep(ctx android.BottomUpMutatorContext) aut
 		return rlibAutoDep
 	} else if library.dylib() || library.shared() {
 		return dylibAutoDep
-	} else if ctx.BazelConversionMode() {
-		// In Bazel conversion mode, we are currently ignoring the deptag, so we just need to supply a
-		// compatible tag in order to add the dependency.
-		return rlibAutoDep
 	} else {
 		panic(fmt.Errorf("autoDep called on library %q that has no enabled variants.", ctx.ModuleName()))
 	}
@@ -474,8 +470,9 @@ func (library *libraryDecorator) compilerFlags(ctx ModuleContext, flags Flags) F
 	return flags
 }
 
-func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) android.Path {
-	var outputFile, ret android.ModuleOutPath
+func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps PathDeps) buildOutput {
+	var outputFile android.ModuleOutPath
+	var ret buildOutput
 	var fileName string
 	srcPath := library.srcPath(ctx, deps)
 
@@ -487,19 +484,19 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 	if library.rlib() {
 		fileName = library.getStem(ctx) + ctx.toolchain().RlibSuffix()
 		outputFile = android.PathForModuleOut(ctx, fileName)
-		ret = outputFile
+		ret.outputFile = outputFile
 	} else if library.dylib() {
 		fileName = library.getStem(ctx) + ctx.toolchain().DylibSuffix()
 		outputFile = android.PathForModuleOut(ctx, fileName)
-		ret = outputFile
+		ret.outputFile = outputFile
 	} else if library.static() {
 		fileName = library.getStem(ctx) + ctx.toolchain().StaticLibSuffix()
 		outputFile = android.PathForModuleOut(ctx, fileName)
-		ret = outputFile
+		ret.outputFile = outputFile
 	} else if library.shared() {
 		fileName = library.sharedLibFilename(ctx)
 		outputFile = android.PathForModuleOut(ctx, fileName)
-		ret = outputFile
+		ret.outputFile = outputFile
 	}
 
 	if !library.rlib() && !library.static() && library.stripper.NeedsStrip(ctx) {
@@ -524,13 +521,13 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 
 	// Call the appropriate builder for this library type
 	if library.rlib() {
-		TransformSrctoRlib(ctx, srcPath, deps, flags, outputFile)
+		ret.kytheFile = TransformSrctoRlib(ctx, srcPath, deps, flags, outputFile).kytheFile
 	} else if library.dylib() {
-		TransformSrctoDylib(ctx, srcPath, deps, flags, outputFile)
+		ret.kytheFile = TransformSrctoDylib(ctx, srcPath, deps, flags, outputFile).kytheFile
 	} else if library.static() {
-		TransformSrctoStatic(ctx, srcPath, deps, flags, outputFile)
+		ret.kytheFile = TransformSrctoStatic(ctx, srcPath, deps, flags, outputFile).kytheFile
 	} else if library.shared() {
-		TransformSrctoShared(ctx, srcPath, deps, flags, outputFile)
+		ret.kytheFile = TransformSrctoShared(ctx, srcPath, deps, flags, outputFile).kytheFile
 	}
 
 	if library.rlib() || library.dylib() {
@@ -572,7 +569,7 @@ func (library *libraryDecorator) compile(ctx ModuleContext, flags Flags, deps Pa
 	return ret
 }
 
-func (library *libraryDecorator) srcPath(ctx ModuleContext, deps PathDeps) android.Path {
+func (library *libraryDecorator) srcPath(ctx ModuleContext, _ PathDeps) android.Path {
 	if library.sourceProvider != nil {
 		// Assume the first source from the source provider is the library entry point.
 		return library.sourceProvider.Srcs()[0]

@@ -105,7 +105,7 @@ func (m *apexKey) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	m.keyName = pubKeyName
 }
 
-////////////////////////////////////////////////////////////////////////
+// //////////////////////////////////////////////////////////////////////
 // apex_keys_text
 type apexKeysText struct {
 	output android.OutputPath
@@ -230,7 +230,7 @@ func apexKeyBp2BuildInternal(ctx android.TopDownMutatorContext, module *apexKey)
 
 	props := bazel.BazelTargetModuleProperties{
 		Rule_class:        "apex_key",
-		Bzl_load_location: "//build/bazel/rules:apex_key.bzl",
+		Bzl_load_location: "//build/bazel/rules/apex:apex_key.bzl",
 	}
 
 	ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: module.Name()}, attrs)

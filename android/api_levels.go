@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"android/soong/bazel"
 	"android/soong/starlark_fmt"
 )
 
@@ -51,6 +52,14 @@ type ApiLevel struct {
 
 	// Identifies this API level as either a preview or final API level.
 	isPreview bool
+}
+
+func (this ApiLevel) FinalInt() int {
+	if this.IsPreview() {
+		panic("Requested a final int from a non-final ApiLevel")
+	} else {
+		return this.number
+	}
 }
 
 func (this ApiLevel) FinalOrFutureInt() int {
@@ -183,17 +192,9 @@ var FirstNonLibAndroidSupportVersion = uncheckedFinalApiLevel(21)
 // a core-for-system-modules.jar for the module-lib API scope.
 var LastWithoutModuleLibCoreSystemModules = uncheckedFinalApiLevel(31)
 
-// If the `raw` input is the codename of an API level has been finalized, this
-// function returns the API level number associated with that API level. If the
-// input is *not* a finalized codename, the input is returned unmodified.
-//
-// For example, at the time of writing, R has been finalized as API level 30,
-// but S is in development so it has no number assigned. For the following
-// inputs:
-//
-// * "30" -> "30"
-// * "R" -> "30"
-// * "S" -> "S"
+// ReplaceFinalizedCodenames returns the API level number associated with that API level
+// if the `raw` input is the codename of an API level has been finalized.
+// If the input is *not* a finalized codename, the input is returned unmodified.
 func ReplaceFinalizedCodenames(config Config, raw string) string {
 	num, ok := getFinalCodenamesMap(config)[raw]
 	if !ok {
@@ -306,24 +307,25 @@ var finalCodenamesMapKey = NewOnceKey("FinalCodenamesMap")
 func getFinalCodenamesMap(config Config) map[string]int {
 	return config.Once(finalCodenamesMapKey, func() interface{} {
 		apiLevelsMap := map[string]int{
-			"G":     9,
-			"I":     14,
-			"J":     16,
-			"J-MR1": 17,
-			"J-MR2": 18,
-			"K":     19,
-			"L":     21,
-			"L-MR1": 22,
-			"M":     23,
-			"N":     24,
-			"N-MR1": 25,
-			"O":     26,
-			"O-MR1": 27,
-			"P":     28,
-			"Q":     29,
-			"R":     30,
-			"S":     31,
-			"S-V2":  32,
+			"G":        9,
+			"I":        14,
+			"J":        16,
+			"J-MR1":    17,
+			"J-MR2":    18,
+			"K":        19,
+			"L":        21,
+			"L-MR1":    22,
+			"M":        23,
+			"N":        24,
+			"N-MR1":    25,
+			"O":        26,
+			"O-MR1":    27,
+			"P":        28,
+			"Q":        29,
+			"R":        30,
+			"S":        31,
+			"S-V2":     32,
+			"Tiramisu": 33,
 		}
 
 		// TODO: Differentiate "current" and "future".
@@ -350,24 +352,25 @@ var apiLevelsMapKey = NewOnceKey("ApiLevelsMap")
 func GetApiLevelsMap(config Config) map[string]int {
 	return config.Once(apiLevelsMapKey, func() interface{} {
 		apiLevelsMap := map[string]int{
-			"G":     9,
-			"I":     14,
-			"J":     16,
-			"J-MR1": 17,
-			"J-MR2": 18,
-			"K":     19,
-			"L":     21,
-			"L-MR1": 22,
-			"M":     23,
-			"N":     24,
-			"N-MR1": 25,
-			"O":     26,
-			"O-MR1": 27,
-			"P":     28,
-			"Q":     29,
-			"R":     30,
-			"S":     31,
-			"S-V2":  32,
+			"G":        9,
+			"I":        14,
+			"J":        16,
+			"J-MR1":    17,
+			"J-MR2":    18,
+			"K":        19,
+			"L":        21,
+			"L-MR1":    22,
+			"M":        23,
+			"N":        24,
+			"N-MR1":    25,
+			"O":        26,
+			"O-MR1":    27,
+			"P":        28,
+			"Q":        29,
+			"R":        30,
+			"S":        31,
+			"S-V2":     32,
+			"Tiramisu": 33,
 		}
 		for i, codename := range config.PlatformVersionActiveCodenames() {
 			apiLevelsMap[codename] = previewAPILevelBase + i
@@ -393,7 +396,7 @@ func printApiLevelsStarlarkDict(config Config) string {
 }
 
 func StarlarkApiLevelConfigs(config Config) string {
-	return fmt.Sprintf(`# GENERATED FOR BAZEL FROM SOONG. DO NOT EDIT.
+	return fmt.Sprintf(bazel.GeneratedBazelFileWarning+`
 _api_levels = %s
 
 api_levels = _api_levels

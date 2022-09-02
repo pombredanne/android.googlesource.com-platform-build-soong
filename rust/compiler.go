@@ -304,6 +304,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags) Flag
 	flags.GlobalRustFlags = append(flags.GlobalRustFlags, config.GlobalRustFlags...)
 	flags.GlobalRustFlags = append(flags.GlobalRustFlags, ctx.toolchain().ToolchainRustFlags())
 	flags.GlobalLinkFlags = append(flags.GlobalLinkFlags, ctx.toolchain().ToolchainLinkFlags())
+	flags.EmitXrefs = ctx.Config().EmitXrefRules()
 
 	if ctx.Host() && !ctx.Windows() {
 		rpathPrefix := `\$$ORIGIN/`
@@ -324,7 +325,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags) Flag
 	return flags
 }
 
-func (compiler *baseCompiler) compile(ctx ModuleContext, flags Flags, deps PathDeps) android.Path {
+func (compiler *baseCompiler) compile(ctx ModuleContext, flags Flags, deps PathDeps) buildOutput {
 	panic(fmt.Errorf("baseCrater doesn't know how to crate things!"))
 }
 
@@ -370,8 +371,9 @@ func (compiler *baseCompiler) compilerDeps(ctx DepsContext, deps Deps) Deps {
 
 	if !Bool(compiler.Properties.No_stdlibs) {
 		for _, stdlib := range config.Stdlibs {
-			// If we're building for the build host, use the prebuilt stdlibs
-			if ctx.Target().Os == android.Linux || ctx.Target().Os == android.Darwin {
+			// If we're building for the build host, use the prebuilt stdlibs, unless the host
+			// is linux_bionic which doesn't have prebuilts.
+			if ctx.Host() && !ctx.Target().HostCross && ctx.Target().Os != android.LinuxBionic {
 				stdlib = "prebuilt_" + stdlib
 			}
 			deps.Stdlibs = append(deps.Stdlibs, stdlib)

@@ -63,10 +63,10 @@ var (
 	ld, ldRE = pctx.RemoteStaticRules("ld",
 		blueprint.RuleParams{
 			Command: "$reTemplate$ldCmd ${crtBegin} @${out}.rsp " +
-				"${libFlags} ${crtEnd} -o ${out} ${ldFlags} ${extraLibFlags}",
+				"${crtEnd} -o ${out} ${ldFlags} ${extraLibFlags}",
 			CommandDeps:    []string{"$ldCmd"},
 			Rspfile:        "${out}.rsp",
-			RspfileContent: "${in}",
+			RspfileContent: "${in} ${libFlags}",
 			// clang -Wl,--out-implib doesn't update its output file if it hasn't changed.
 			Restat: true,
 		},
@@ -202,36 +202,22 @@ var (
 		},
 		"clangBin", "format")
 
-	// Rule for invoking clang-tidy (a clang-based linter).
-	clangTidyDep, clangTidyDepRE = pctx.RemoteStaticRules("clangTidyDep",
-		blueprint.RuleParams{
-			Depfile: "$out",
-			Deps:    blueprint.DepsGCC,
-			Command: "${config.CcWrapper}$ccCmd $cFlags -E -o /dev/null $in " +
-				"-MQ $tidyFile -MD -MF $out",
-			CommandDeps: []string{"$ccCmd"},
-		},
-		&remoteexec.REParams{
-			Labels:       map[string]string{"type": "lint", "tool": "clang-tidy", "lang": "cpp"},
-			ExecStrategy: "${config.REClangTidyExecStrategy}",
-			Inputs:       []string{"$in"},
-			Platform:     map[string]string{remoteexec.PoolKey: "${config.REClangTidyPool}"},
-		}, []string{"ccCmd", "cFlags", "tidyFile"}, []string{})
-
+	// Rules for invoking clang-tidy (a clang-based linter).
 	clangTidy, clangTidyRE = pctx.RemoteStaticRules("clangTidy",
 		blueprint.RuleParams{
 			Depfile: "${out}.d",
 			Deps:    blueprint.DepsGCC,
-			Command: "cp ${out}.dep ${out}.d && " +
-				"$tidyVars$reTemplate${config.ClangBin}/clang-tidy $tidyFlags $in -- $cFlags && " +
-				"touch $out",
-			CommandDeps: []string{"${config.ClangBin}/clang-tidy"},
+			Command: "CLANG_CMD=$clangCmd TIDY_FILE=$out " +
+				"$tidyVars$reTemplate${config.ClangBin}/clang-tidy.sh $in $tidyFlags -- $cFlags",
+			CommandDeps: []string{"${config.ClangBin}/clang-tidy.sh", "$ccCmd", "$tidyCmd"},
 		},
 		&remoteexec.REParams{
 			Labels:               map[string]string{"type": "lint", "tool": "clang-tidy", "lang": "cpp"},
 			ExecStrategy:         "${config.REClangTidyExecStrategy}",
-			Inputs:               []string{"$in", "${out}.dep"},
-			EnvironmentVariables: []string{"TIDY_TIMEOUT"},
+			Inputs:               []string{"$in"},
+			OutputFiles:          []string{"${out}", "${out}.d"},
+			ToolchainInputs:      []string{"$ccCmd", "$tidyCmd"},
+			EnvironmentVariables: []string{"CLANG_CMD", "TIDY_FILE", "TIDY_TIMEOUT"},
 			// Although clang-tidy has an option to "fix" source files, that feature is hardly useable
 			// under parallel compilation and RBE. So we assume no OutputFiles here.
 			// The clang-tidy fix option is best run locally in single thread.
@@ -239,7 +225,7 @@ var (
 			// (1) New timestamps trigger clang and clang-tidy compilations again.
 			// (2) Changing source files caused concurrent clang or clang-tidy jobs to crash.
 			Platform: map[string]string{remoteexec.PoolKey: "${config.REClangTidyPool}"},
-		}, []string{"cFlags", "tidyFlags", "tidyVars"}, []string{})
+		}, []string{"cFlags", "ccCmd", "clangCmd", "tidyCmd", "tidyFlags", "tidyVars"}, []string{})
 
 	_ = pctx.SourcePathVariable("yasmCmd", "prebuilts/misc/${config.HostPrebuiltTag}/yasm/yasm")
 
@@ -296,7 +282,7 @@ var (
 	sAbiDiff = pctx.RuleFunc("sAbiDiff",
 		func(ctx android.PackageRuleContext) blueprint.RuleParams {
 			commandStr := "($sAbiDiffer ${extraFlags} -lib ${libName} -arch ${arch} -o ${out} -new ${in} -old ${referenceDump})"
-			commandStr += "|| (echo 'error: Please update ABI references with: $$ANDROID_BUILD_TOP/development/vndk/tools/header-checker/utils/create_reference_dumps.py ${createReferenceDumpFlags} -l ${libName}'"
+			commandStr += "|| (echo '${errorMessage}'"
 			commandStr += " && (mkdir -p $$DIST_DIR/abidiffs && cp ${out} $$DIST_DIR/abidiffs/)"
 			commandStr += " && exit 1)"
 			return blueprint.RuleParams{
@@ -304,7 +290,7 @@ var (
 				CommandDeps: []string{"$sAbiDiffer"},
 			}
 		},
-		"extraFlags", "referenceDump", "libName", "arch", "createReferenceDumpFlags")
+		"extraFlags", "referenceDump", "libName", "arch", "errorMessage")
 
 	// Rule to unzip a reference abi dump.
 	unzipRefSAbiDump = pctx.AndroidStaticRule("unzipRefSAbiDump",
@@ -636,6 +622,7 @@ func transformSourceToObj(ctx ModuleContext, subdir string, srcFiles, noTidySrcs
 			continue
 		}
 
+		// ccCmd is "clang" or "clang++"
 		ccDesc := ccCmd
 
 		ccCmd = "${config.ClangBin}/" + ccCmd
@@ -681,43 +668,30 @@ func transformSourceToObj(ctx ModuleContext, subdir string, srcFiles, noTidySrcs
 		//  Even with tidy, some src file could be skipped by noTidySrcsMap.
 		if tidy && !noTidySrcsMap[srcFile.String()] {
 			tidyFile := android.ObjPathWithExt(ctx, subdir, srcFile, "tidy")
-			tidyDepFile := android.ObjPathWithExt(ctx, subdir, srcFile, "tidy.dep")
 			tidyFiles = append(tidyFiles, tidyFile)
+			tidyCmd := "${config.ClangBin}/clang-tidy"
 
-			ruleDep := clangTidyDep
 			rule := clangTidy
 			if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_CLANG_TIDY") {
-				ruleDep = clangTidyDepRE
 				rule = clangTidyRE
 			}
 
 			sharedCFlags := shareFlags("cFlags", moduleFlags)
 			srcRelPath := srcFile.Rel()
 
-			// Add the .tidy.d rule
-			ctx.Build(pctx, android.BuildParams{
-				Rule:        ruleDep,
-				Description: "clang-tidy-dep " + srcRelPath,
-				Output:      tidyDepFile,
-				Input:       srcFile,
-				Implicits:   cFlagsDeps,
-				OrderOnly:   pathDeps,
-				Args: map[string]string{
-					"ccCmd":    ccCmd,
-					"cFlags":   sharedCFlags,
-					"tidyFile": tidyFile.String(),
-				},
-			})
-			// Add the .tidy rule with order only dependency on the .tidy.d file
+			// Add the .tidy rule
 			ctx.Build(pctx, android.BuildParams{
 				Rule:        rule,
 				Description: "clang-tidy " + srcRelPath,
 				Output:      tidyFile,
 				Input:       srcFile,
 				Implicits:   cFlagsDeps,
-				OrderOnly:   append(android.Paths{}, tidyDepFile),
+				OrderOnly:   pathDeps,
 				Args: map[string]string{
 					"cFlags":    sharedCFlags,
+					"ccCmd":     ccCmd,
+					"clangCmd":  ccDesc,
+					"tidyCmd":   tidyCmd,
 					"tidyFlags": shareFlags("tidyFlags", config.TidyFlagsForSrcFile(srcFile, flags.tidyFlags)),
 					"tidyVars":  tidyVars, // short and not shared
 				},
@@ -944,13 +918,18 @@ func unzipRefDump(ctx android.ModuleContext, zippedRefDump android.Path, baseNam
 	return outputFile
 }
 
-// sourceAbiDiff registers a build statement to compare linked sAbi dump files (.ldump).
+// sourceAbiDiff registers a build statement to compare linked sAbi dump files (.lsdump).
 func sourceAbiDiff(ctx android.ModuleContext, inputDump android.Path, referenceDump android.Path,
-	baseName, exportedHeaderFlags string, checkAllApis, isLlndk, isNdk, isVndkExt bool) android.OptionalPath {
+	baseName, exportedHeaderFlags string, diffFlags []string, prevVersion int,
+	checkAllApis, isLlndk, isNdk, isVndkExt, previousVersionDiff bool) android.OptionalPath {
 
-	outputFile := android.PathForModuleOut(ctx, baseName+".abidiff")
+	var outputFile android.ModuleOutPath
+	if previousVersionDiff {
+		outputFile = android.PathForModuleOut(ctx, baseName+"."+strconv.Itoa(prevVersion)+".abidiff")
+	} else {
+		outputFile = android.PathForModuleOut(ctx, baseName+".abidiff")
+	}
 	libName := strings.TrimSuffix(baseName, filepath.Ext(baseName))
-	createReferenceDumpFlags := ""
 
 	var extraFlags []string
 	if checkAllApis {
@@ -961,22 +940,28 @@ func sourceAbiDiff(ctx android.ModuleContext, inputDump android.Path, referenceD
 			"-allow-unreferenced-elf-symbol-changes")
 	}
 
-	if exportedHeaderFlags == "" {
+	var errorMessage string
+	// When error occurs in previous version ABI diff, Developers can't just update ABI
+	// reference but need to follow instructions to ensure ABI backward compatibility.
+	if previousVersionDiff {
+		// TODO(b/241496591): Remove -advice-only after b/239792343 and b/239790286 are reolved.
 		extraFlags = append(extraFlags, "-advice-only")
+		errorMessage = "error: Please follow development/vndk/tools/header-checker/README.md to ensure the ABI compatibility between your source code and version " + strconv.Itoa(prevVersion) + "."
+		sourceVersion := prevVersion + 1
+		extraFlags = append(extraFlags, "-target-version", strconv.Itoa(sourceVersion))
+	} else {
+		errorMessage = "error: Please update ABI references with: $$ANDROID_BUILD_TOP/development/vndk/tools/header-checker/utils/create_reference_dumps.py -l " + libName
+		extraFlags = append(extraFlags, "-target-version", "current")
 	}
 
 	if isLlndk || isNdk {
-		createReferenceDumpFlags = "--llndk"
-		if isLlndk {
-			// TODO(b/130324828): "-consider-opaque-types-different" should apply to
-			// both LLNDK and NDK shared libs. However, a known issue in header-abi-diff
-			// breaks libaaudio. Remove the if-guard after the issue is fixed.
-			extraFlags = append(extraFlags, "-consider-opaque-types-different")
-		}
+		extraFlags = append(extraFlags, "-consider-opaque-types-different")
 	}
-	if isVndkExt {
+	if isVndkExt || previousVersionDiff {
 		extraFlags = append(extraFlags, "-allow-extensions")
 	}
+	// TODO(b/232891473): Simplify the above logic with diffFlags.
+	extraFlags = append(extraFlags, diffFlags...)
 
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        sAbiDiff,
@@ -985,11 +970,11 @@ func sourceAbiDiff(ctx android.ModuleContext, inputDump android.Path, referenceD
 		Input:       inputDump,
 		Implicit:    referenceDump,
 		Args: map[string]string{
-			"referenceDump":            referenceDump.String(),
-			"libName":                  libName,
-			"arch":                     ctx.Arch().ArchType.Name,
-			"extraFlags":               strings.Join(extraFlags, " "),
-			"createReferenceDumpFlags": createReferenceDumpFlags,
+			"referenceDump": referenceDump.String(),
+			"libName":       libName,
+			"arch":          ctx.Arch().ArchType.Name,
+			"extraFlags":    strings.Join(extraFlags, " "),
+			"errorMessage":  errorMessage,
 		},
 	})
 	return android.OptionalPathForPath(outputFile)

@@ -19,12 +19,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"android/soong/shared"
@@ -41,6 +43,15 @@ const (
 	configFetcher         = "vendor/google/tools/soong/expconfigfetcher"
 	envConfigFetchTimeout = 10 * time.Second
 )
+
+var (
+	rbeRandPrefix int
+)
+
+func init() {
+	rand.Seed(time.Now().UnixNano())
+	rbeRandPrefix = rand.Intn(1000)
+}
 
 type Config struct{ *configImpl }
 
@@ -88,11 +99,8 @@ type configImpl struct {
 
 	pathReplaced bool
 
-	useBazel bool
-
-	// During Bazel execution, Bazel cannot write outside OUT_DIR.
-	// So if DIST_DIR is set to an external dir (outside of OUT_DIR), we need to rig it temporarily and then migrate files at the end of the build.
-	riggedDistDirForBazel string
+	bazelProdMode bool
+	bazelDevMode  bool
 
 	// Set by multiproduct_kati
 	emptyNinjaFile bool
@@ -119,18 +127,6 @@ const (
 	BUILD_MODULES
 )
 
-type bazelBuildMode int
-
-// Bazel-related build modes.
-const (
-	// Don't use bazel at all.
-	noBazel bazelBuildMode = iota
-
-	// Generate synthetic build files and incorporate these files into a build which
-	// partially uses Bazel. Build metadata may come from Android.bp or BUILD files.
-	mixedBuild
-)
-
 // checkTopDir validates that the current directory is at the root directory of the source tree.
 func checkTopDir(ctx Context) {
 	if _, err := os.Stat(srcDirFileCheck); err != nil {
@@ -144,6 +140,17 @@ func checkTopDir(ctx Context) {
 // fetchEnvConfig optionally fetches environment config from an
 // experiments system to control Soong features dynamically.
 func fetchEnvConfig(ctx Context, config *configImpl, envConfigName string) error {
+	configName := envConfigName + "." + jsonSuffix
+	expConfigFetcher := &smpb.ExpConfigFetcher{Filename: &configName}
+	defer func() {
+		ctx.Metrics.ExpConfigFetcher(expConfigFetcher)
+	}()
+	if !config.GoogleProdCredsExist() {
+		status := smpb.ExpConfigFetcher_MISSING_GCERT
+		expConfigFetcher.Status = &status
+		return nil
+	}
+
 	s, err := os.Stat(configFetcher)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -152,30 +159,37 @@ func fetchEnvConfig(ctx Context, config *configImpl, envConfigName string) error
 		return err
 	}
 	if s.Mode()&0111 == 0 {
+		status := smpb.ExpConfigFetcher_ERROR
+		expConfigFetcher.Status = &status
 		return fmt.Errorf("configuration fetcher binary %v is not executable: %v", configFetcher, s.Mode())
-	}
-
-	configExists := false
-	outConfigFilePath := filepath.Join(config.OutDir(), envConfigName+jsonSuffix)
-	if _, err := os.Stat(outConfigFilePath); err == nil {
-		configExists = true
 	}
 
 	tCtx, cancel := context.WithTimeout(ctx, envConfigFetchTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(tCtx, configFetcher, "-output_config_dir", config.OutDir())
+	fetchStart := time.Now()
+	cmd := exec.CommandContext(tCtx, configFetcher, "-output_config_dir", config.OutDir(),
+		"-output_config_name", configName)
 	if err := cmd.Start(); err != nil {
+		status := smpb.ExpConfigFetcher_ERROR
+		expConfigFetcher.Status = &status
 		return err
 	}
 
-	// If a config file already exists, return immediately and run the config file
-	// fetch in the background. Otherwise, wait for the config file to be fetched.
-	if configExists {
-		go cmd.Wait()
-		return nil
-	}
 	if err := cmd.Wait(); err != nil {
+		status := smpb.ExpConfigFetcher_ERROR
+		expConfigFetcher.Status = &status
 		return err
+	}
+	fetchEnd := time.Now()
+	expConfigFetcher.Micros = proto.Uint64(uint64(fetchEnd.Sub(fetchStart).Microseconds()))
+	outConfigFilePath := filepath.Join(config.OutDir(), configName)
+	expConfigFetcher.Filename = proto.String(outConfigFilePath)
+	if _, err := os.Stat(outConfigFilePath); err == nil {
+		status := smpb.ExpConfigFetcher_CONFIG
+		expConfigFetcher.Status = &status
+	} else {
+		status := smpb.ExpConfigFetcher_NO_CONFIG
+		expConfigFetcher.Status = &status
 	}
 	return nil
 }
@@ -187,7 +201,7 @@ func loadEnvConfig(ctx Context, config *configImpl) error {
 	}
 
 	if err := fetchEnvConfig(ctx, config, bc); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to fetch config file: %v\n", err)
+		ctx.Verbosef("Failed to fetch config file: %v\n", err)
 	}
 
 	configDirs := []string{
@@ -419,21 +433,6 @@ func NewConfig(ctx Context, args ...string) Config {
 		ctx.Fatalf("Unable to remove bazel profile directory %q: %v", bpd, err)
 	}
 
-	ret.useBazel = ret.environ.IsEnvTrue("USE_BAZEL")
-
-	if ret.UseBazel() {
-		if err := os.MkdirAll(bpd, 0777); err != nil {
-			ctx.Fatalf("Failed to create bazel profile directory %q: %v", bpd, err)
-		}
-	}
-
-	if ret.UseBazel() {
-		ret.riggedDistDirForBazel = filepath.Join(ret.OutDir(), "dist")
-	} else {
-		// Not rigged
-		ret.riggedDistDirForBazel = ret.distDir
-	}
-
 	c := Config{ret}
 	storeConfigMetrics(ctx, c)
 	return c
@@ -466,8 +465,7 @@ func buildConfig(config Config) *smpb.BuildConfig {
 		ForceUseGoma:    proto.Bool(config.ForceUseGoma()),
 		UseGoma:         proto.Bool(config.UseGoma()),
 		UseRbe:          proto.Bool(config.UseRBE()),
-		BazelAsNinja:    proto.Bool(config.UseBazel()),
-		BazelMixedBuild: proto.Bool(config.bazelBuildMode() == mixedBuild),
+		BazelMixedBuild: proto.Bool(config.BazelBuildEnabled()),
 	}
 	c.Targets = append(c.Targets, config.arguments...)
 
@@ -718,6 +716,10 @@ func (c *configImpl) parseArgs(ctx Context, args []string) {
 			c.skipSoongTests = true
 		} else if arg == "--mk-metrics" {
 			c.reportMkMetrics = true
+		} else if arg == "--bazel-mode" {
+			c.bazelProdMode = true
+		} else if arg == "--bazel-mode-dev" {
+			c.bazelDevMode = true
 		} else if len(arg) > 0 && arg[0] == '-' {
 			parseArgNum := func(def int) int {
 				if len(arg) > 2 {
@@ -853,11 +855,7 @@ func (c *configImpl) OutDir() string {
 }
 
 func (c *configImpl) DistDir() string {
-	if c.UseBazel() {
-		return c.riggedDistDirForBazel
-	} else {
-		return c.distDir
-	}
+	return c.distDir
 }
 
 func (c *configImpl) RealDistDir() string {
@@ -1105,16 +1103,8 @@ func (c *configImpl) UseRBE() bool {
 	return false
 }
 
-func (c *configImpl) UseBazel() bool {
-	return c.useBazel
-}
-
-func (c *configImpl) bazelBuildMode() bazelBuildMode {
-	if c.Environment().IsEnvTrue("USE_BAZEL_ANALYSIS") {
-		return mixedBuild
-	} else {
-		return noBazel
-	}
+func (c *configImpl) BazelBuildEnabled() bool {
+	return c.bazelProdMode || c.bazelDevMode
 }
 
 func (c *configImpl) StartRBE() bool {
@@ -1131,34 +1121,25 @@ func (c *configImpl) StartRBE() bool {
 	return true
 }
 
-func (c *configImpl) rbeLogDir() string {
-	for _, f := range []string{"RBE_log_dir", "FLAG_log_dir"} {
+func (c *configImpl) rbeProxyLogsDir() string {
+	for _, f := range []string{"RBE_proxy_log_dir", "FLAG_output_dir"} {
 		if v, ok := c.environ.Get(f); ok {
 			return v
 		}
 	}
-	if c.Dist() {
-		return c.LogsDir()
-	}
-	return c.OutDir()
+	buildTmpDir := shared.TempDirForOutDir(c.SoongOutDir())
+	return filepath.Join(buildTmpDir, "rbe")
 }
 
-func (c *configImpl) rbeStatsOutputDir() string {
-	for _, f := range []string{"RBE_output_dir", "FLAG_output_dir"} {
-		if v, ok := c.environ.Get(f); ok {
-			return v
+func (c *configImpl) shouldCleanupRBELogsDir() bool {
+	// Perform a log directory cleanup only when the log directory
+	// is auto created by the build rather than user-specified.
+	for _, f := range []string{"RBE_proxy_log_dir", "FLAG_output_dir"} {
+		if _, ok := c.environ.Get(f); ok {
+			return false
 		}
 	}
-	return c.rbeLogDir()
-}
-
-func (c *configImpl) rbeLogPath() string {
-	for _, f := range []string{"RBE_log_path", "FLAG_log_path"} {
-		if v, ok := c.environ.Get(f); ok {
-			return v
-		}
-	}
-	return fmt.Sprintf("text://%v/reproxy_log.txt", c.rbeLogDir())
+	return true
 }
 
 func (c *configImpl) rbeExecRoot() string {
@@ -1210,8 +1191,55 @@ func (c *configImpl) rbeAuth() (string, string) {
 	return "RBE_use_application_default_credentials", "true"
 }
 
+func (c *configImpl) rbeSockAddr(dir string) (string, error) {
+	maxNameLen := len(syscall.RawSockaddrUnix{}.Path)
+	base := fmt.Sprintf("reproxy_%v.sock", rbeRandPrefix)
+
+	name := filepath.Join(dir, base)
+	if len(name) < maxNameLen {
+		return name, nil
+	}
+
+	name = filepath.Join("/tmp", base)
+	if len(name) < maxNameLen {
+		return name, nil
+	}
+
+	return "", fmt.Errorf("cannot generate a proxy socket address shorter than the limit of %v", maxNameLen)
+}
+
+// IsGooglerEnvironment returns true if the current build is running
+// on a Google developer machine and false otherwise.
+func (c *configImpl) IsGooglerEnvironment() bool {
+	cf := "ANDROID_BUILD_ENVIRONMENT_CONFIG"
+	if v, ok := c.environ.Get(cf); ok {
+		return v == "googler"
+	}
+	return false
+}
+
+// GoogleProdCredsExist determine whether credentials exist on the
+// Googler machine to use remote execution.
+func (c *configImpl) GoogleProdCredsExist() bool {
+	if _, err := exec.Command("/usr/bin/prodcertstatus", "--simple_output", "--nocheck_loas").Output(); err != nil {
+		return false
+	}
+	return true
+}
+
+// UseRemoteBuild indicates whether to use a remote build acceleration system
+// to speed up the build.
 func (c *configImpl) UseRemoteBuild() bool {
 	return c.UseGoma() || c.UseRBE()
+}
+
+// StubbyExists checks whether the stubby binary exists on the machine running
+// the build.
+func (c *configImpl) StubbyExists() bool {
+	if _, err := exec.LookPath("stubby"); err != nil {
+		return false
+	}
+	return true
 }
 
 // RemoteParallel controls how many remote jobs (i.e., commands which contain
@@ -1257,6 +1285,10 @@ func (c *configImpl) KatiBuildNinjaFile() string {
 
 func (c *configImpl) KatiPackageNinjaFile() string {
 	return filepath.Join(c.OutDir(), "build"+c.KatiSuffix()+katiPackageSuffix+".ninja")
+}
+
+func (c *configImpl) SoongVarsFile() string {
+	return filepath.Join(c.SoongOutDir(), "soong.variables")
 }
 
 func (c *configImpl) SoongNinjaFile() string {

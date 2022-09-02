@@ -36,11 +36,14 @@ type DexProperties struct {
 	Main_dex_rules []string `android:"path"`
 
 	Optimize struct {
-		// If false, disable all optimization.  Defaults to true for android_app and android_test
-		// modules, false for java_library and java_test modules.
+		// If false, disable all optimization.  Defaults to true for android_app and
+		// android_test_helper_app modules, false for android_test, java_library, and java_test modules.
 		Enabled *bool
 		// True if the module containing this has it set by default.
 		EnabledByDefault bool `blueprint:"mutated"`
+
+		// Whether to continue building even if warnings are emitted.  Defaults to true.
+		Ignore_warnings *bool
 
 		// If true, runs R8 in Proguard compatibility mode (default).
 		// Otherwise, runs R8 in full mode.
@@ -95,7 +98,7 @@ var d8, d8RE = pctx.MultiCommandRemoteStaticRules("d8",
 		Command: `rm -rf "$outDir" && mkdir -p "$outDir" && ` +
 			`mkdir -p $$(dirname $tmpJar) && ` +
 			`${config.Zip2ZipCmd} -i $in -o $tmpJar -x '**/*.dex' && ` +
-			`$d8Template${config.D8Cmd} ${config.DexFlags} --output $outDir $d8Flags $tmpJar && ` +
+			`$d8Template${config.D8Cmd} ${config.D8Flags} --output $outDir $d8Flags $tmpJar && ` +
 			`$zipTemplate${config.SoongZipCmd} $zipFlags -o $outDir/classes.dex.jar -C $outDir -f "$outDir/classes*.dex" && ` +
 			`${config.MergeZipsCmd} -D -stripFile "**/*.class" $mergeZipsFlags $out $outDir/classes.dex.jar $in`,
 		CommandDeps: []string{
@@ -128,7 +131,7 @@ var r8, r8RE = pctx.MultiCommandRemoteStaticRules("r8",
 			`mkdir -p $$(dirname ${outUsage}) && ` +
 			`mkdir -p $$(dirname $tmpJar) && ` +
 			`${config.Zip2ZipCmd} -i $in -o $tmpJar -x '**/*.dex' && ` +
-			`$r8Template${config.R8Cmd} ${config.DexFlags} -injars $tmpJar --output $outDir ` +
+			`$r8Template${config.R8Cmd} ${config.R8Flags} -injars $tmpJar --output $outDir ` +
 			`--no-data-resources ` +
 			`-printmapping ${outDict} ` +
 			`-printusage ${outUsage} ` +
@@ -293,7 +296,10 @@ func (d *dexer) r8Flags(ctx android.ModuleContext, flags javaBuilderFlags) (r8Fl
 	}
 
 	// TODO(b/180878971): missing classes should be added to the relevant builds.
-	r8Flags = append(r8Flags, "-ignorewarnings")
+	// TODO(b/229727645): do not use true as default for Android platform builds.
+	if proptools.BoolDefault(opt.Ignore_warnings, true) {
+		r8Flags = append(r8Flags, "-ignorewarnings")
+	}
 
 	return r8Flags, r8Deps
 }

@@ -37,64 +37,6 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestDepNotInRequiredSdks(t *testing.T) {
-	testSdkError(t, `module "myjavalib".*depends on "otherlib".*that isn't part of the required SDKs:.*`, `
-		sdk {
-			name: "mysdk",
-			java_header_libs: ["sdkmember"],
-		}
-
-		sdk_snapshot {
-			name: "mysdk@1",
-			java_header_libs: ["sdkmember_mysdk_1"],
-		}
-
-		java_import {
-			name: "sdkmember",
-			prefer: false,
-			host_supported: true,
-		}
-
-		java_import {
-			name: "sdkmember_mysdk_1",
-			sdk_member_name: "sdkmember",
-			host_supported: true,
-		}
-
-		java_library {
-			name: "myjavalib",
-			srcs: ["Test.java"],
-			libs: [
-				"sdkmember",
-				"otherlib",
-			],
-			system_modules: "none",
-			sdk_version: "none",
-			compile_dex: true,
-			host_supported: true,
-			apex_available: ["myapex"],
-		}
-
-		// this lib is no in mysdk
-		java_library {
-			name: "otherlib",
-			srcs: ["Test.java"],
-			system_modules: "none",
-			sdk_version: "none",
-			compile_dex: true,
-			host_supported: true,
-		}
-
-		apex {
-			name: "myapex",
-			java_libs: ["myjavalib"],
-			uses_sdks: ["mysdk@1"],
-			key: "myapex.key",
-			certificate: ":myapex.cert",
-		}
-	`)
-}
-
 // Ensure that prebuilt modules have the same effective visibility as the source
 // modules.
 func TestSnapshotVisibility(t *testing.T) {
@@ -177,18 +119,6 @@ func TestSnapshotVisibility(t *testing.T) {
 // This is auto-generated. DO NOT EDIT.
 
 java_import {
-    name: "mysdk_myjavalib@current",
-    sdk_member_name: "myjavalib",
-    visibility: [
-        "//other/foo",
-        "//package",
-        "//prebuilts/mysdk",
-    ],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
-}
-
-java_import {
     name: "myjavalib",
     prefer: false,
     visibility: [
@@ -201,31 +131,11 @@ java_import {
 }
 
 java_import {
-    name: "mysdk_mypublicjavalib@current",
-    sdk_member_name: "mypublicjavalib",
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/mypublicjavalib.jar"],
-}
-
-java_import {
     name: "mypublicjavalib",
     prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     jars: ["java/mypublicjavalib.jar"],
-}
-
-java_import {
-    name: "mysdk_mydefaultedjavalib@current",
-    sdk_member_name: "mydefaultedjavalib",
-    visibility: [
-        "//other/bar",
-        "//package",
-        "//prebuilts/mysdk",
-    ],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/mydefaultedjavalib.jar"],
 }
 
 java_import {
@@ -241,17 +151,6 @@ java_import {
 }
 
 java_import {
-    name: "mysdk_myprivatejavalib@current",
-    sdk_member_name: "myprivatejavalib",
-    visibility: [
-        "//package",
-        "//prebuilts/mysdk",
-    ],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/myprivatejavalib.jar"],
-}
-
-java_import {
     name: "myprivatejavalib",
     prefer: false,
     visibility: [
@@ -260,20 +159,6 @@ java_import {
     ],
     apex_available: ["//apex_available:platform"],
     jars: ["java/myprivatejavalib.jar"],
-}
-
-sdk_snapshot {
-    name: "mysdk@current",
-    visibility: [
-        "//other/foo",
-        "//package:__subpackages__",
-    ],
-    java_header_libs: [
-        "mysdk_myjavalib@current",
-        "mysdk_mypublicjavalib@current",
-        "mysdk_mydefaultedjavalib@current",
-        "mysdk_myprivatejavalib@current",
-    ],
 }
 `))
 }
@@ -321,7 +206,10 @@ func TestSdkInstall(t *testing.T) {
 	result := testSdkWithFs(t, sdk, nil)
 
 	CheckSnapshot(t, result, "mysdk", "",
-		checkAllOtherCopyRules(`.intermediates/mysdk/common_os/mysdk-current.zip -> mysdk-current.zip`))
+		checkAllOtherCopyRules(`
+.intermediates/mysdk/common_os/mysdk-current.info -> mysdk-current.info
+.intermediates/mysdk/common_os/mysdk-current.zip -> mysdk-current.zip
+`))
 }
 
 type EmbeddedPropertiesStruct struct {
@@ -505,25 +393,11 @@ func TestSnapshot_EnvConfiguration(t *testing.T) {
 // This is auto-generated. DO NOT EDIT.
 
 java_import {
-    name: "mysdk_myjavalib@current",
-    sdk_member_name: "myjavalib",
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
-}
-
-java_import {
     name: "myjavalib",
     prefer: false,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     jars: ["java/myjavalib.jar"],
-}
-
-sdk_snapshot {
-    name: "mysdk@current",
-    visibility: ["//visibility:public"],
-    java_header_libs: ["mysdk_myjavalib@current"],
 }
 			`),
 		)
@@ -544,25 +418,11 @@ sdk_snapshot {
 // This is auto-generated. DO NOT EDIT.
 
 java_import {
-    name: "mysdk_myjavalib@current",
-    sdk_member_name: "myjavalib",
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
-}
-
-java_import {
     name: "myjavalib",
     prefer: true,
     visibility: ["//visibility:public"],
     apex_available: ["//apex_available:platform"],
     jars: ["java/myjavalib.jar"],
-}
-
-sdk_snapshot {
-    name: "mysdk@current",
-    visibility: ["//visibility:public"],
-    java_header_libs: ["mysdk_myjavalib@current"],
 }
 			`),
 		)
@@ -583,14 +443,6 @@ sdk_snapshot {
 // This is auto-generated. DO NOT EDIT.
 
 java_import {
-    name: "mysdk_myjavalib@current",
-    sdk_member_name: "myjavalib",
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
-}
-
-java_import {
     name: "myjavalib",
     prefer: false,
     use_source_config_var: {
@@ -601,110 +453,7 @@ java_import {
     apex_available: ["//apex_available:platform"],
     jars: ["java/myjavalib.jar"],
 }
-
-sdk_snapshot {
-    name: "mysdk@current",
-    visibility: ["//visibility:public"],
-    java_header_libs: ["mysdk_myjavalib@current"],
-}
 			`),
-		)
-	})
-
-	t.Run("SOONG_SDK_SNAPSHOT_VERSION=unversioned", func(t *testing.T) {
-		result := android.GroupFixturePreparers(
-			preparer,
-			android.FixtureMergeEnv(map[string]string{
-				"SOONG_SDK_SNAPSHOT_VERSION": "unversioned",
-			}),
-		).RunTest(t)
-
-		checkZipFile(t, result, "out/soong/.intermediates/mysdk/common_os/mysdk.zip")
-
-		CheckSnapshot(t, result, "mysdk", "",
-			checkAndroidBpContents(`
-// This is auto-generated. DO NOT EDIT.
-
-java_import {
-    name: "myjavalib",
-    prefer: false,
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
-}
-			`),
-		)
-	})
-
-	t.Run("SOONG_SDK_SNAPSHOT_VERSION=current", func(t *testing.T) {
-		result := android.GroupFixturePreparers(
-			preparer,
-			android.FixtureMergeEnv(map[string]string{
-				"SOONG_SDK_SNAPSHOT_VERSION": "current",
-			}),
-		).RunTest(t)
-
-		checkZipFile(t, result, "out/soong/.intermediates/mysdk/common_os/mysdk-current.zip")
-
-		CheckSnapshot(t, result, "mysdk", "",
-			checkAndroidBpContents(`
-// This is auto-generated. DO NOT EDIT.
-
-java_import {
-    name: "mysdk_myjavalib@current",
-    sdk_member_name: "myjavalib",
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
-}
-
-java_import {
-    name: "myjavalib",
-    prefer: false,
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
-}
-
-sdk_snapshot {
-    name: "mysdk@current",
-    visibility: ["//visibility:public"],
-    java_header_libs: ["mysdk_myjavalib@current"],
-}
-			`),
-		)
-	})
-
-	t.Run("SOONG_SDK_SNAPSHOT_VERSION=2", func(t *testing.T) {
-		result := android.GroupFixturePreparers(
-			preparer,
-			android.FixtureMergeEnv(map[string]string{
-				"SOONG_SDK_SNAPSHOT_VERSION": "2",
-			}),
-		).RunTest(t)
-
-		checkZipFile(t, result, "out/soong/.intermediates/mysdk/common_os/mysdk-2.zip")
-
-		CheckSnapshot(t, result, "mysdk", "",
-			checkAndroidBpContents(`
-// This is auto-generated. DO NOT EDIT.
-
-java_import {
-    name: "mysdk_myjavalib@2",
-    sdk_member_name: "myjavalib",
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
-}
-
-sdk_snapshot {
-    name: "mysdk@2",
-    visibility: ["//visibility:public"],
-    java_header_libs: ["mysdk_myjavalib@2"],
-}
-			`),
-			// A versioned snapshot cannot be used on its own so add the source back in.
-			snapshotTestPreparer(checkSnapshotWithoutSource, android.FixtureWithRootAndroidBp(bp)),
 		)
 	})
 
@@ -724,6 +473,9 @@ sdk_snapshot {
 				name: "mybootclasspathfragment",
 				apex_available: ["myapex"],
 				contents: ["mysdklibrary"],
+				hidden_api: {
+					split_packages: ["*"],
+				},
 			}
 
 			java_sdk_library {
@@ -740,7 +492,7 @@ sdk_snapshot {
 		).RunTest(t)
 
 		CheckSnapshot(t, result, "mysdk", "",
-			checkUnversionedAndroidBpContents(`
+			checkAndroidBpContents(`
 // This is auto-generated. DO NOT EDIT.
 
 prebuilt_bootclasspath_fragment {

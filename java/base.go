@@ -170,6 +170,9 @@ type CommonProperties struct {
 	}
 
 	Instrument bool `blueprint:"mutated"`
+	// If true, then the module supports statically including the jacocoagent
+	// into the library.
+	Supports_static_instrumentation bool `blueprint:"mutated"`
 
 	// List of files to include in the META-INF/services folder of the resulting jar.
 	Services []string `android:"path,arch_variant"`
@@ -185,12 +188,12 @@ type CommonProperties struct {
 // constructing a new module.
 type DeviceProperties struct {
 	// If not blank, set to the version of the sdk to compile against.
-	// Defaults to compiling against the current platform.
+	// Defaults to private.
 	// Values are of one of the following forms:
-	// 1) numerical API level or "current"
-	// 2) An SDK kind with an API level: "<sdk kind>_<API level>". See
-	// build/soong/android/sdk_version.go for the complete and up to date list of
-	// SDK kinds. If the SDK kind value is empty, it will be set to public.
+	// 1) numerical API level, "current", "none", or "core_platform"
+	// 2) An SDK kind with an API level: "<sdk kind>_<API level>"
+	// See build/soong/android/sdk_version.go for the complete and up to date list of SDK kinds.
+	// If the SDK kind is empty, it will be set to public.
 	Sdk_version *string
 
 	// if not blank, set the minimum version of the sdk that the compiled artifacts will run against.
@@ -201,13 +204,17 @@ type DeviceProperties struct {
 	// Defaults to empty string "". See sdk_version for possible values.
 	Max_sdk_version *string
 
+	// if not blank, set the maxSdkVersion properties of permission and uses-permission tags.
+	// Defaults to empty string "". See sdk_version for possible values.
+	Replace_max_sdk_version_placeholder *string
+
 	// if not blank, set the targetSdkVersion in the AndroidManifest.xml.
 	// Defaults to sdk_version if not set. See sdk_version for possible values.
 	Target_sdk_version *string
 
 	// Whether to compile against the platform APIs instead of an SDK.
 	// If true, then sdk_version must be empty. The value of this field
-	// is ignored when module's type isn't android_app.
+	// is ignored when module's type isn't android_app, android_test, or android_test_helper_app.
 	Platform_apis *bool
 
 	Aidl struct {
@@ -260,6 +267,9 @@ type DeviceProperties struct {
 	// Only for libraries created by a sysprop_library module, SyspropPublicStub is the name of the
 	// public stubs library.
 	SyspropPublicStub string `blueprint:"mutated"`
+
+	HiddenAPIPackageProperties
+	HiddenAPIFlagFileProperties
 }
 
 // Device properties that can be overridden by overriding module (e.g. override_android_app)
@@ -442,9 +452,6 @@ type Module struct {
 	// manifest file to use instead of properties.Manifest
 	overrideManifest android.OptionalPath
 
-	// map of SDK version to class loader context
-	classLoaderContexts dexpreopt.ClassLoaderContextMap
-
 	// list of plugins that this java module is exporting
 	exportedPluginJars android.Paths
 
@@ -560,6 +567,20 @@ func (j *Module) addHostAndDeviceProperties() {
 	)
 }
 
+// provideHiddenAPIPropertyInfo populates a HiddenAPIPropertyInfo from hidden API properties and
+// makes it available through the hiddenAPIPropertyInfoProvider.
+func (j *Module) provideHiddenAPIPropertyInfo(ctx android.ModuleContext) {
+	hiddenAPIInfo := newHiddenAPIPropertyInfo()
+
+	// Populate with flag file paths from the properties.
+	hiddenAPIInfo.extractFlagFilesFromProperties(ctx, &j.deviceProperties.HiddenAPIFlagFileProperties)
+
+	// Populate with package rules from the properties.
+	hiddenAPIInfo.extractPackageRulesFromProperties(&j.deviceProperties.HiddenAPIPackageProperties)
+
+	ctx.SetProvider(hiddenAPIPropertyInfoProvider, hiddenAPIInfo)
+}
+
 func (j *Module) OutputFiles(tag string) (android.Paths, error) {
 	switch tag {
 	case "":
@@ -605,7 +626,8 @@ func (j *Module) shouldInstrument(ctx android.BaseModuleContext) bool {
 }
 
 func (j *Module) shouldInstrumentStatic(ctx android.BaseModuleContext) bool {
-	return j.shouldInstrument(ctx) &&
+	return j.properties.Supports_static_instrumentation &&
+		j.shouldInstrument(ctx) &&
 		(ctx.Config().IsEnvTrue("EMMA_INSTRUMENT_STATIC") ||
 			ctx.Config().UnbundledBuild())
 }
@@ -646,6 +668,11 @@ func (j *Module) MaxSdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
 	// SdkSpecFrom returns SdkSpecPrivate for this, which may be confusing.
 	// TODO(b/208456999): ideally MaxSdkVersion should be an ApiLevel and not SdkSpec.
 	return android.SdkSpecFrom(ctx, maxSdkVersion)
+}
+
+func (j *Module) ReplaceMaxSdkVersionPlaceholder(ctx android.EarlyModuleContext) android.SdkSpec {
+	replaceMaxSdkVersionPlaceholder := proptools.StringDefault(j.deviceProperties.Replace_max_sdk_version_placeholder, "")
+	return android.SdkSpecFrom(ctx, replaceMaxSdkVersionPlaceholder)
 }
 
 func (j *Module) MinSdkVersionString() string {
@@ -723,8 +750,10 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 			if component, ok := dep.(SdkLibraryComponentDependency); ok {
 				if lib := component.OptionalSdkLibraryImplementation(); lib != nil {
 					// Add library as optional if it's one of the optional compatibility libs.
-					optional := android.InList(*lib, dexpreopt.OptionalCompatUsesLibs)
-					tag := makeUsesLibraryDependencyTag(dexpreopt.AnySdkVersion, optional, true)
+					tag := usesLibReqTag
+					if android.InList(*lib, dexpreopt.OptionalCompatUsesLibs) {
+						tag = usesLibOptTag
+					}
 					ctx.AddVariationDependencies(nil, tag, *lib)
 				}
 			}
@@ -745,9 +774,7 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 		// Kotlin files
 		ctx.AddVariationDependencies(nil, kotlinStdlibTag,
 			"kotlin-stdlib", "kotlin-stdlib-jdk7", "kotlin-stdlib-jdk8")
-		if len(j.properties.Plugins) > 0 {
-			ctx.AddVariationDependencies(nil, kotlinAnnotationsTag, "kotlin-annotations")
-		}
+		ctx.AddVariationDependencies(nil, kotlinAnnotationsTag, "kotlin-annotations")
 	}
 
 	// Framework libraries need special handling in static coverage builds: they should not have
@@ -793,7 +820,7 @@ func (j *Module) individualAidlFlags(ctx android.ModuleContext, aidlFile android
 }
 
 func (j *Module) aidlFlags(ctx android.ModuleContext, aidlPreprocess android.OptionalPath,
-	aidlIncludeDirs android.Paths) (string, android.Paths) {
+	aidlIncludeDirs android.Paths, aidlSrcs android.Paths) (string, android.Paths) {
 
 	aidlIncludes := android.PathsForModuleSrc(ctx, j.deviceProperties.Aidl.Local_include_dirs)
 	aidlIncludes = append(aidlIncludes,
@@ -803,6 +830,7 @@ func (j *Module) aidlFlags(ctx android.ModuleContext, aidlPreprocess android.Opt
 
 	var flags []string
 	var deps android.Paths
+	var includeDirs android.Paths
 
 	flags = append(flags, j.deviceProperties.Aidl.Flags...)
 
@@ -810,21 +838,24 @@ func (j *Module) aidlFlags(ctx android.ModuleContext, aidlPreprocess android.Opt
 		flags = append(flags, "-p"+aidlPreprocess.String())
 		deps = append(deps, aidlPreprocess.Path())
 	} else if len(aidlIncludeDirs) > 0 {
-		flags = append(flags, android.JoinWithPrefix(aidlIncludeDirs.Strings(), "-I"))
+		includeDirs = append(includeDirs, aidlIncludeDirs...)
 	}
 
 	if len(j.exportAidlIncludeDirs) > 0 {
-		flags = append(flags, android.JoinWithPrefix(j.exportAidlIncludeDirs.Strings(), "-I"))
+		includeDirs = append(includeDirs, j.exportAidlIncludeDirs...)
 	}
 
 	if len(aidlIncludes) > 0 {
-		flags = append(flags, android.JoinWithPrefix(aidlIncludes.Strings(), "-I"))
+		includeDirs = append(includeDirs, aidlIncludes...)
 	}
 
-	flags = append(flags, "-I"+android.PathForModuleSrc(ctx).String())
+	includeDirs = append(includeDirs, android.PathForModuleSrc(ctx))
 	if src := android.ExistentPathForSource(ctx, ctx.ModuleDir(), "src"); src.Valid() {
-		flags = append(flags, "-I"+src.String())
+		includeDirs = append(includeDirs, src.Path())
 	}
+	flags = append(flags, android.JoinWithPrefix(includeDirs.Strings(), "-I"))
+	// add flags for dirs containing AIDL srcs that haven't been specified yet
+	flags = append(flags, genAidlIncludeFlags(ctx, aidlSrcs, includeDirs))
 
 	if Bool(j.deviceProperties.Aidl.Generate_traces) {
 		flags = append(flags, "-t")
@@ -907,9 +938,6 @@ func (j *Module) collectBuilderFlags(ctx android.ModuleContext, deps deps) javaB
 
 	// systemModules
 	flags.systemModules = deps.systemModules
-
-	// aidl flags.
-	flags.aidlFlags, flags.aidlDeps = j.aidlFlags(ctx, deps.aidlPreprocess, deps.aidlIncludeDirs)
 
 	return flags
 }
@@ -1019,6 +1047,10 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		ctx.PropertyErrorf("common_srcs", "common_srcs must be .kt files")
 	}
 
+	aidlSrcs := srcFiles.FilterByExt(".aidl")
+	flags.aidlFlags, flags.aidlDeps = j.aidlFlags(ctx, deps.aidlPreprocess, deps.aidlIncludeDirs, aidlSrcs)
+
+	nonGeneratedSrcJars := srcFiles.FilterByExt(".srcjar")
 	srcFiles = j.genSources(ctx, srcFiles, flags)
 
 	// Collect javac flags only after computing the full set of srcFiles to
@@ -1048,12 +1080,24 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		}
 	}
 
+	// We don't currently run annotation processors in turbine, which means we can't use turbine
+	// generated header jars when an annotation processor that generates API is enabled.  One
+	// exception (handled further below) is when kotlin sources are enabled, in which case turbine
+	//  is used to run all of the annotation processors.
+	disableTurbine := deps.disableTurbine
+
 	// Collect .java files for AIDEGen
 	j.expandIDEInfoCompiledSrcs = append(j.expandIDEInfoCompiledSrcs, uniqueSrcFiles.Strings()...)
 
 	var kotlinJars android.Paths
+	var kotlinHeaderJars android.Paths
 
 	if srcFiles.HasExt(".kt") {
+		// When using kotlin sources turbine is used to generate annotation processor sources,
+		// including for annotation processors that generate API, so we can use turbine for
+		// java sources too.
+		disableTurbine = false
+
 		// user defined kotlin flags.
 		kotlincFlags := j.properties.Kotlincflags
 		CheckKotlincFlags(ctx, kotlincFlags)
@@ -1091,8 +1135,6 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		flags.classpath = append(flags.classpath, deps.kotlinStdlib...)
 		flags.classpath = append(flags.classpath, deps.kotlinAnnotations...)
 
-		flags.dexClasspath = append(flags.dexClasspath, deps.kotlinAnnotations...)
-
 		flags.kotlincClasspath = append(flags.kotlincClasspath, flags.bootClasspath...)
 		flags.kotlincClasspath = append(flags.kotlincClasspath, flags.classpath...)
 
@@ -1109,20 +1151,27 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		}
 
 		kotlinJar := android.PathForModuleOut(ctx, "kotlin", jarName)
-		kotlinCompile(ctx, kotlinJar, kotlinSrcFiles, kotlinCommonSrcFiles, srcJars, flags)
+		kotlinHeaderJar := android.PathForModuleOut(ctx, "kotlin_headers", jarName)
+		kotlinCompile(ctx, kotlinJar, kotlinHeaderJar, kotlinSrcFiles, kotlinCommonSrcFiles, srcJars, flags)
 		if ctx.Failed() {
 			return
 		}
 
 		// Make javac rule depend on the kotlinc rule
-		flags.classpath = append(flags.classpath, kotlinJar)
+		flags.classpath = append(classpath{kotlinHeaderJar}, flags.classpath...)
 
 		kotlinJars = append(kotlinJars, kotlinJar)
+		kotlinHeaderJars = append(kotlinHeaderJars, kotlinHeaderJar)
+
 		// Jar kotlin classes into the final jar after javac
 		if BoolDefault(j.properties.Static_kotlin_stdlib, true) {
 			kotlinJars = append(kotlinJars, deps.kotlinStdlib...)
+			kotlinJars = append(kotlinJars, deps.kotlinAnnotations...)
+			kotlinHeaderJars = append(kotlinHeaderJars, deps.kotlinStdlib...)
+			kotlinHeaderJars = append(kotlinHeaderJars, deps.kotlinAnnotations...)
 		} else {
 			flags.dexClasspath = append(flags.dexClasspath, deps.kotlinStdlib...)
+			flags.dexClasspath = append(flags.dexClasspath, deps.kotlinAnnotations...)
 		}
 	}
 
@@ -1134,7 +1183,7 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 
 	enableSharding := false
 	var headerJarFileWithoutDepsOrJarjar android.Path
-	if ctx.Device() && !ctx.Config().IsEnvFalse("TURBINE_ENABLED") && !deps.disableTurbine {
+	if ctx.Device() && !ctx.Config().IsEnvFalse("TURBINE_ENABLED") && !disableTurbine {
 		if j.properties.Javac_shard_size != nil && *(j.properties.Javac_shard_size) > 0 {
 			enableSharding = true
 			// Formerly, there was a check here that prevented annotation processors
@@ -1144,18 +1193,27 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 			// with sharding enabled. See: b/77284273.
 		}
 		headerJarFileWithoutDepsOrJarjar, j.headerJarFile =
-			j.compileJavaHeader(ctx, uniqueSrcFiles, srcJars, deps, flags, jarName, kotlinJars)
+			j.compileJavaHeader(ctx, uniqueSrcFiles, srcJars, deps, flags, jarName, kotlinHeaderJars)
 		if ctx.Failed() {
 			return
 		}
 	}
 	if len(uniqueSrcFiles) > 0 || len(srcJars) > 0 {
+		hasErrorproneableFiles := false
+		for _, ext := range j.sourceExtensions {
+			if ext != ".proto" && ext != ".aidl" {
+				// Skip running errorprone on pure proto or pure aidl modules. Some modules take a long time to
+				// compile, and it's not useful to have warnings on these generated sources.
+				hasErrorproneableFiles = true
+				break
+			}
+		}
 		var extraJarDeps android.Paths
 		if Bool(j.properties.Errorprone.Enabled) {
 			// If error-prone is enabled, enable errorprone flags on the regular
 			// build.
 			flags = enableErrorproneFlags(flags)
-		} else if ctx.Config().RunErrorProne() && j.properties.Errorprone.Enabled == nil {
+		} else if hasErrorproneableFiles && ctx.Config().RunErrorProne() && j.properties.Errorprone.Enabled == nil {
 			// Otherwise, if the RUN_ERROR_PRONE environment variable is set, create
 			// a new jar file just for compiling with the errorprone compiler to.
 			// This is because we don't want to cause the java files to get completely
@@ -1399,17 +1457,18 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	j.implementationAndResourcesJar = implementationAndResourcesJar
 
 	// Enable dex compilation for the APEX variants, unless it is disabled explicitly
+	compileDex := j.dexProperties.Compile_dex
 	apexInfo := ctx.Provider(android.ApexInfoProvider).(android.ApexInfo)
 	if j.DirectlyInAnyApex() && !apexInfo.IsForPlatform() {
-		if j.dexProperties.Compile_dex == nil {
-			j.dexProperties.Compile_dex = proptools.BoolPtr(true)
+		if compileDex == nil {
+			compileDex = proptools.BoolPtr(true)
 		}
 		if j.deviceProperties.Hostdex == nil {
 			j.deviceProperties.Hostdex = proptools.BoolPtr(true)
 		}
 	}
 
-	if ctx.Device() && (Bool(j.properties.Installable) || Bool(j.dexProperties.Compile_dex)) {
+	if ctx.Device() && (Bool(j.properties.Installable) || Bool(compileDex)) {
 		if j.hasCode(ctx) {
 			if j.shouldInstrumentStatic(ctx) {
 				j.dexer.extraProguardFlagFiles = append(j.dexer.extraProguardFlagFiles,
@@ -1465,22 +1524,41 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	}
 
 	if ctx.Device() {
-		lintSDKVersionString := func(sdkSpec android.SdkSpec) string {
+		lintSDKVersion := func(sdkSpec android.SdkSpec) int {
 			if v := sdkSpec.ApiLevel; !v.IsPreview() {
-				return v.String()
+				return v.FinalInt()
 			} else {
-				return ctx.Config().DefaultAppTargetSdk(ctx).String()
+				// When running metalava, we pass --version-codename. When that value
+				// is not REL, metalava will add 1 to the --current-version argument.
+				// On old branches, PLATFORM_SDK_VERSION is the latest version (for that
+				// branch) and the codename is REL, except potentially on the most
+				// recent non-master branch. On that branch, it goes through two other
+				// phases before it gets to the phase previously described:
+				//  - PLATFORM_SDK_VERSION has not been updated yet, and the codename
+				//    is not rel. This happens for most of the internal branch's life
+				//    while the branch has been cut but is still under active development.
+				//  - PLATFORM_SDK_VERSION has been set, but the codename is still not
+				//    REL. This happens briefly during the release process. During this
+				//    state the code to add --current-version is commented out, and then
+				//    that commenting out is reverted after the codename is set to REL.
+				// On the master branch, the PLATFORM_SDK_VERSION always represents a
+				// prior version and the codename is always non-REL.
+				//
+				// We need to add one here to match metalava adding 1. Technically
+				// this means that in the state described in the second bullet point
+				// above, this number is 1 higher than it should be.
+				return ctx.Config().PlatformSdkVersion().FinalInt() + 1
 			}
 		}
 
 		j.linter.name = ctx.ModuleName()
-		j.linter.srcs = srcFiles
-		j.linter.srcJars = srcJars
+		j.linter.srcs = append(srcFiles, nonGeneratedSrcJars...)
+		j.linter.srcJars, _ = android.FilterPathList(srcJars, nonGeneratedSrcJars)
 		j.linter.classpath = append(append(android.Paths(nil), flags.bootClasspath...), flags.classpath...)
 		j.linter.classes = j.implementationJarFile
-		j.linter.minSdkVersion = lintSDKVersionString(j.MinSdkVersion(ctx))
-		j.linter.targetSdkVersion = lintSDKVersionString(j.TargetSdkVersion(ctx))
-		j.linter.compileSdkVersion = lintSDKVersionString(j.SdkVersion(ctx))
+		j.linter.minSdkVersion = lintSDKVersion(j.MinSdkVersion(ctx))
+		j.linter.targetSdkVersion = lintSDKVersion(j.TargetSdkVersion(ctx))
+		j.linter.compileSdkVersion = lintSDKVersion(j.SdkVersion(ctx))
 		j.linter.compileSdkKind = j.SdkVersion(ctx).Kind
 		j.linter.javaLanguageLevel = flags.javaVersion.String()
 		j.linter.kotlinLanguageLevel = "1.3"
@@ -1678,6 +1756,8 @@ func (j *Module) IDEInfo(dpInfo *android.IdeInfo) {
 		dpInfo.Jarjar_rules = append(dpInfo.Jarjar_rules, j.expandJarjarRules.String())
 	}
 	dpInfo.Paths = append(dpInfo.Paths, j.modulePaths...)
+	dpInfo.Static_libs = append(dpInfo.Static_libs, j.properties.Static_libs...)
+	dpInfo.Libs = append(dpInfo.Libs, j.properties.Libs...)
 }
 
 func (j *Module) CompilerDeps() []string {
@@ -1892,6 +1972,9 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			case bootClasspathTag:
 				deps.bootClasspath = append(deps.bootClasspath, dep.HeaderJars...)
 			case libTag, instrumentationForTag:
+				if _, ok := module.(*Plugin); ok {
+					ctx.ModuleErrorf("a java_plugin (%s) cannot be used as a libs dependency", otherName)
+				}
 				deps.classpath = append(deps.classpath, dep.HeaderJars...)
 				deps.dexClasspath = append(deps.dexClasspath, dep.HeaderJars...)
 				deps.aidlIncludeDirs = append(deps.aidlIncludeDirs, dep.AidlIncludeDirs...)
@@ -1900,6 +1983,9 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			case java9LibTag:
 				deps.java9Classpath = append(deps.java9Classpath, dep.HeaderJars...)
 			case staticLibTag:
+				if _, ok := module.(*Plugin); ok {
+					ctx.ModuleErrorf("a java_plugin (%s) cannot be used as a static_libs dependency", otherName)
+				}
 				deps.classpath = append(deps.classpath, dep.HeaderJars...)
 				deps.staticJars = append(deps.staticJars, dep.ImplementationJars...)
 				deps.staticHeaderJars = append(deps.staticHeaderJars, dep.HeaderJars...)

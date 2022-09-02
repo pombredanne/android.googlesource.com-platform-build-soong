@@ -26,7 +26,8 @@ import (
 )
 
 var (
-	pctx = android.NewPackageContext("android/soong/java/config")
+	pctx         = android.NewPackageContext("android/soong/java/config")
+	exportedVars = android.NewExportedVariables(pctx)
 
 	LegacyCorePlatformBootclasspathLibraries = []string{"legacy.core.platform.api.stubs", "core-lambda-stubs"}
 	LegacyCorePlatformSystemModules          = "legacy-core-platform-api-stubs-system-modules"
@@ -50,33 +51,55 @@ var (
 		"core-icu4j",
 		"core-oj",
 		"core-libart",
-		// TODO: Could this be all updatable bootclasspath jars?
-		"updatable-media",
-		"framework-mediaprovider",
-		"framework-sdkextensions",
-		"android.net.ipsec.ike",
 	}
 )
 
-const (
-	JavaVmFlags  = `-XX:OnError="cat hs_err_pid%p.log" -XX:CICompilerCount=6 -XX:+UseDynamicNumberOfGCThreads`
-	JavacVmFlags = `-J-XX:OnError="cat hs_err_pid%p.log" -J-XX:CICompilerCount=6 -J-XX:+UseDynamicNumberOfGCThreads -J-XX:+TieredCompilation -J-XX:TieredStopAtLevel=1`
+var (
+	JavacVmFlags    = strings.Join(javacVmFlagsList, " ")
+	javaVmFlagsList = []string{
+		`-XX:OnError="cat hs_err_pid%p.log"`,
+		"-XX:CICompilerCount=6",
+		"-XX:+UseDynamicNumberOfGCThreads",
+	}
+	javacVmFlagsList = []string{
+		`-J-XX:OnError="cat hs_err_pid%p.log"`,
+		"-J-XX:CICompilerCount=6",
+		"-J-XX:+UseDynamicNumberOfGCThreads",
+		"-J-XX:+TieredCompilation",
+		"-J-XX:TieredStopAtLevel=1",
+	}
+	dexerJavaVmFlagsList = []string{
+		`-JXX:OnError="cat hs_err_pid%p.log"`,
+		"-JXX:CICompilerCount=6",
+		"-JXX:+UseDynamicNumberOfGCThreads",
+	}
 )
 
 func init() {
 	pctx.Import("github.com/google/blueprint/bootstrap")
 
-	pctx.StaticVariable("JavacHeapSize", "2048M")
-	pctx.StaticVariable("JavacHeapFlags", "-J-Xmx${JavacHeapSize}")
+	exportedVars.ExportStringStaticVariable("JavacHeapSize", "2048M")
+	exportedVars.ExportStringStaticVariable("JavacHeapFlags", "-J-Xmx${JavacHeapSize}")
 
 	// ErrorProne can use significantly more memory than javac alone, give it a higher heap
 	// size (b/221480398).
-	pctx.StaticVariable("ErrorProneHeapSize", "4096M")
-	pctx.StaticVariable("ErrorProneHeapFlags", "-J-Xmx${ErrorProneHeapSize}")
+	exportedVars.ExportStringStaticVariable("ErrorProneHeapSize", "4096M")
+	exportedVars.ExportStringStaticVariable("ErrorProneHeapFlags", "-J-Xmx${ErrorProneHeapSize}")
 
-	pctx.StaticVariable("DexFlags", "-JXX:OnError='cat hs_err_pid%p.log' -JXX:CICompilerCount=6 -JXX:+UseDynamicNumberOfGCThreads")
+	// D8 invocations are shorter lived, so we restrict their JIT tiering relative to R8.
+	// Note that the `-JXX` prefix syntax is specific to the R8/D8 invocation wrappers.
+	exportedVars.ExportStringListStaticVariable("D8Flags", append([]string{
+		"-JXmx4096M",
+		"-JXX:+TieredCompilation",
+		"-JXX:TieredStopAtLevel=1",
+	}, dexerJavaVmFlagsList...))
+	exportedVars.ExportStringListStaticVariable("R8Flags", append([]string{
+		"-JXmx2048M",
+		// Disable this optimization as it can impact weak reference semantics. See b/233432839.
+		"-JDcom.android.tools.r8.disableEnqueuerDeferredTracing=true",
+	}, dexerJavaVmFlagsList...))
 
-	pctx.StaticVariable("CommonJdkFlags", strings.Join([]string{
+	exportedVars.ExportStringListStaticVariable("CommonJdkFlags", []string{
 		`-Xmaxerrs 9999999`,
 		`-encoding UTF-8`,
 		`-sourcepath ""`,
@@ -90,10 +113,10 @@ func init() {
 
 		// b/65004097: prevent using java.lang.invoke.StringConcatFactory when using -target 1.9
 		`-XDstringConcat=inline`,
-	}, " "))
+	})
 
-	pctx.StaticVariable("JavaVmFlags", JavaVmFlags)
-	pctx.StaticVariable("JavacVmFlags", JavacVmFlags)
+	exportedVars.ExportStringListStaticVariable("JavaVmFlags", javaVmFlagsList)
+	exportedVars.ExportStringListStaticVariable("JavacVmFlags", javacVmFlagsList)
 
 	pctx.VariableConfigMethod("hostPrebuiltTag", android.Config.PrebuiltOS)
 
@@ -125,7 +148,7 @@ func init() {
 	pctx.SourcePathVariable("JavaKytheExtractorJar", "prebuilts/build-tools/common/framework/javac_extractor.jar")
 	pctx.SourcePathVariable("Ziptime", "prebuilts/build-tools/${hostPrebuiltTag}/bin/ziptime")
 
-	pctx.HostBinToolVariable("GenKotlinBuildFileCmd", "gen-kotlin-build-file.py")
+	pctx.HostBinToolVariable("GenKotlinBuildFileCmd", "gen-kotlin-build-file")
 
 	pctx.SourcePathVariable("JarArgsCmd", "build/soong/scripts/jar-args.sh")
 	pctx.SourcePathVariable("PackageCheckCmd", "build/soong/scripts/package-check.sh")
@@ -136,7 +159,7 @@ func init() {
 	pctx.HostBinToolVariable("ZipSyncCmd", "zipsync")
 	pctx.HostBinToolVariable("ApiCheckCmd", "apicheck")
 	pctx.HostBinToolVariable("D8Cmd", "d8")
-	pctx.HostBinToolVariable("R8Cmd", "r8-compat-proguard")
+	pctx.HostBinToolVariable("R8Cmd", "r8")
 	pctx.HostBinToolVariable("HiddenAPICmd", "hiddenapi")
 	pctx.HostBinToolVariable("ExtractApksCmd", "extract_apks")
 	pctx.VariableFunc("TurbineJar", func(ctx android.PackageVarContext) string {
@@ -154,7 +177,7 @@ func init() {
 	pctx.HostJavaToolVariable("MetalavaJar", "metalava.jar")
 	pctx.HostJavaToolVariable("DokkaJar", "dokka.jar")
 	pctx.HostJavaToolVariable("JetifierJar", "jetifier.jar")
-	pctx.HostJavaToolVariable("R8Jar", "r8-compat-proguard.jar")
+	pctx.HostJavaToolVariable("R8Jar", "r8.jar")
 	pctx.HostJavaToolVariable("D8Jar", "d8.jar")
 
 	pctx.HostBinToolVariable("SoongJavacWrapper", "soong_javac_wrapper")
@@ -187,6 +210,10 @@ func init() {
 	// TODO(ccross): this should come from the signapk dependencies, but we don't have any way
 	// to express host JNI dependencies yet.
 	hostJNIToolVariableWithSdkToolsPrebuilt("SignapkJniLibrary", "libconscrypt_openjdk_jni")
+}
+
+func BazelJavaToolchainVars(config android.Config) string {
+	return android.BazelToolchainVars(config, exportedVars)
 }
 
 func hostBinToolVariableWithSdkToolsPrebuilt(name, tool string) {

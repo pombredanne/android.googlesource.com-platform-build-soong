@@ -141,7 +141,6 @@ var BannerVars = []string{
 	"PLATFORM_VERSION",
 	"TARGET_PRODUCT",
 	"TARGET_BUILD_VARIANT",
-	"TARGET_BUILD_TYPE",
 	"TARGET_BUILD_APPS",
 	"TARGET_BUILD_UNBUNDLED",
 	"TARGET_ARCH",
@@ -150,18 +149,11 @@ var BannerVars = []string{
 	"TARGET_2ND_ARCH",
 	"TARGET_2ND_ARCH_VARIANT",
 	"TARGET_2ND_CPU_VARIANT",
-	"HOST_ARCH",
-	"HOST_2ND_ARCH",
 	"HOST_OS",
 	"HOST_OS_EXTRA",
 	"HOST_CROSS_OS",
-	"HOST_CROSS_ARCH",
-	"HOST_CROSS_2ND_ARCH",
-	"HOST_BUILD_TYPE",
 	"BUILD_ID",
 	"OUT_DIR",
-	"AUX_OS_VARIANT_LIST",
-	"PRODUCT_SOONG_NAMESPACES",
 	"SOONG_SDK_SNAPSHOT_PREFER",
 	"SOONG_SDK_SNAPSHOT_TARGET_BUILD_RELEASE",
 	"SOONG_SDK_SNAPSHOT_USE_SOURCE_CONFIG_VAR",
@@ -205,6 +197,9 @@ func runMakeProductConfig(ctx Context, config Config) {
 		"CCACHE_SLOPPINESS",
 		"CCACHE_BASEDIR",
 		"CCACHE_CPP2",
+
+		// LLVM compiler wrapper options
+		"TOOLCHAIN_RUSAGE_OUTPUT",
 	}
 
 	allVars := append(append([]string{
@@ -233,6 +228,13 @@ func runMakeProductConfig(ctx Context, config Config) {
 
 		// Not used, but useful to be in the soong.log
 		"BOARD_VNDK_VERSION",
+		"TARGET_BUILD_TYPE",
+		"HOST_ARCH",
+		"HOST_2ND_ARCH",
+		"HOST_CROSS_ARCH",
+		"HOST_CROSS_2ND_ARCH",
+		"HOST_BUILD_TYPE",
+		"PRODUCT_SOONG_NAMESPACES",
 
 		"DEFAULT_WARNING_BUILD_MODULE_TYPES",
 		"DEFAULT_ERROR_BUILD_MODULE_TYPES",
@@ -242,8 +244,6 @@ func runMakeProductConfig(ctx Context, config Config) {
 		"BUILD_BROKEN_USES_BUILD_EXECUTABLE",
 		"BUILD_BROKEN_USES_BUILD_FUZZ_TEST",
 		"BUILD_BROKEN_USES_BUILD_HEADER_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_HOST_DALVIK_JAVA_LIBRARY",
-		"BUILD_BROKEN_USES_BUILD_HOST_DALVIK_STATIC_JAVA_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_HOST_EXECUTABLE",
 		"BUILD_BROKEN_USES_BUILD_HOST_JAVA_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_HOST_PREBUILT",
@@ -261,12 +261,6 @@ func runMakeProductConfig(ctx Context, config Config) {
 		"BUILD_BROKEN_USES_BUILD_STATIC_JAVA_LIBRARY",
 		"BUILD_BROKEN_USES_BUILD_STATIC_LIBRARY",
 	}, exportEnvVars...), BannerVars...)
-
-	// We need Roboleaf converter and runner in the mixed mode
-	runMicrofactory(ctx, config, "mk2rbc", "android/soong/mk2rbc/cmd",
-		map[string]string{"android/soong": "build/soong"})
-	runMicrofactory(ctx, config, "rbcrun", "rbcrun/cmd",
-		map[string]string{"go.starlark.net": "external/starlark-go", "rbcrun": "build/make/tools/rbcrun"})
 
 	makeVars, err := dumpMakeVars(ctx, config, config.Arguments(), allVars, true, "")
 	if err != nil {

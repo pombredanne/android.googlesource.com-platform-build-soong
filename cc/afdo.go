@@ -45,6 +45,8 @@ func recordMissingAfdoProfileFile(ctx android.BaseModuleContext, missing string)
 }
 
 type AfdoProperties struct {
+	// Afdo allows developers self-service enroll for
+	// automatic feedback-directed optimization using profile data.
 	Afdo bool
 
 	AfdoTarget *string  `blueprint:"mutated"`
@@ -64,8 +66,9 @@ func (afdo *afdo) AfdoEnabled() bool {
 }
 
 // Get list of profile file names, ordered by level of specialisation. For example:
-//   1. libfoo_arm64.afdo
-//   2. libfoo.afdo
+//  1. libfoo_arm64.afdo
+//  2. libfoo.afdo
+//
 // Add more specialisation as needed.
 func getProfileFiles(ctx android.BaseModuleContext, moduleName string) []string {
 	var files []string

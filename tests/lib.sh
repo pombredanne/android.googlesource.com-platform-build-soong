@@ -8,7 +8,7 @@ HARDWIRED_MOCK_TOP=
 
 REAL_TOP="$(readlink -f "$(dirname "$0")"/../../..)"
 
-if [[ ! -z "$HARDWIRED_MOCK_TOP" ]]; then
+if [[ -n "$HARDWIRED_MOCK_TOP" ]]; then
   MOCK_TOP="$HARDWIRED_MOCK_TOP"
 else
   MOCK_TOP=$(mktemp -t -d st.XXXXX)
@@ -36,37 +36,38 @@ function cleanup_mock_top {
 }
 
 function info {
-  echo -e "\e[92;1m[TEST HARNESS INFO]\e[0m" $*
+  echo -e "\e[92;1m[TEST HARNESS INFO]\e[0m" "$*"
 }
 
 function fail {
-  echo -e "\e[91;1mFAILED:\e[0m" $*
+  echo -e "\e[91;1mFAILED:\e[0m" "$*"
   exit 1
 }
 
-function copy_directory() {
+function copy_directory {
   local dir="$1"
-  local parent="$(dirname "$dir")"
+  local -r parent="$(dirname "$dir")"
 
   mkdir -p "$MOCK_TOP/$parent"
   cp -R "$REAL_TOP/$dir" "$MOCK_TOP/$parent"
 }
 
-function symlink_file() {
+function symlink_file {
   local file="$1"
 
   mkdir -p "$MOCK_TOP/$(dirname "$file")"
   ln -s "$REAL_TOP/$file" "$MOCK_TOP/$file"
 }
 
-function symlink_directory() {
+function symlink_directory {
   local dir="$1"
 
   mkdir -p "$MOCK_TOP/$dir"
   # We need to symlink the contents of the directory individually instead of
   # using one symlink for the whole directory because finder.go doesn't follow
   # symlinks when looking for Android.bp files
-  for i in $(ls "$REAL_TOP/$dir"); do
+  for i in "$REAL_TOP/$dir"/*; do
+    i=$(basename "$i")
     local target="$MOCK_TOP/$dir/$i"
     local source="$REAL_TOP/$dir/$i"
 
@@ -83,17 +84,20 @@ function symlink_directory() {
 function create_mock_soong {
   copy_directory build/blueprint
   copy_directory build/soong
+  copy_directory build/make/tools/rbcrun
 
+  symlink_directory prebuilts/sdk
   symlink_directory prebuilts/go
   symlink_directory prebuilts/build-tools
   symlink_directory prebuilts/clang/host
   symlink_directory external/go-cmp
   symlink_directory external/golang-protobuf
+  symlink_directory external/starlark-go
 
   touch "$MOCK_TOP/Android.bp"
 }
 
-function setup() {
+function setup {
   cleanup_mock_top
   mkdir -p "$MOCK_TOP"
 
@@ -105,33 +109,42 @@ function setup() {
   tar xzf "$WARMED_UP_MOCK_TOP"
 }
 
-function run_soong() {
-  build/soong/soong_ui.bash --make-mode --skip-ninja --skip-config --soong-only --skip-soong-tests "$@"
+# shellcheck disable=SC2120
+function run_soong {
+  USE_RBE=false build/soong/soong_ui.bash --make-mode --skip-ninja --skip-config --soong-only --skip-soong-tests "$@"
 }
 
-function create_mock_bazel() {
+function create_mock_bazel {
   copy_directory build/bazel
+  copy_directory build/bazel_common_rules
 
   symlink_directory prebuilts/bazel
+  symlink_directory prebuilts/clang
   symlink_directory prebuilts/jdk
   symlink_directory external/bazel-skylib
+  symlink_directory external/bazelbuild-rules_android
 
   symlink_file WORKSPACE
   symlink_file BUILD
   symlink_file tools/bazel
 }
 
-run_bazel() {
+function run_bazel {
+  # Remove the ninja_build output marker file to communicate to buildbot that this is not a regular Ninja build, and its
+  # output should not be parsed as such.
+  rm -rf out/ninja_build
+
   tools/bazel "$@"
 }
 
-run_ninja() {
+function run_ninja {
   build/soong/soong_ui.bash --make-mode --skip-config --soong-only --skip-soong-tests "$@"
 }
 
-info "Starting Soong integration test suite $(basename $0)"
+info "Starting Soong integration test suite $(basename "$0")"
 info "Mock top: $MOCK_TOP"
 
 
 export ALLOW_MISSING_DEPENDENCIES=true
+export ALLOW_BP_UNDER_SYMLINKS=true
 warmup_mock_top

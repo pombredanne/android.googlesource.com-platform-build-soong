@@ -387,20 +387,21 @@ func ExistentPathsForSources(ctx PathContext, paths []string) Paths {
 }
 
 // PathsForModuleSrc returns a Paths{} containing the resolved references in paths:
-// * filepath, relative to local module directory, resolves as a filepath relative to the local
-//   source directory
-// * glob, relative to the local module directory, resolves as filepath(s), relative to the local
-//  source directory.
-// * other modules using the ":name{.tag}" syntax. These modules must implement SourceFileProducer
-//    or OutputFileProducer. These resolve as a filepath to an output filepath or generated source
-//    filepath.
+//   - filepath, relative to local module directory, resolves as a filepath relative to the local
+//     source directory
+//   - glob, relative to the local module directory, resolves as filepath(s), relative to the local
+//     source directory.
+//   - other modules using the ":name{.tag}" syntax. These modules must implement SourceFileProducer
+//     or OutputFileProducer. These resolve as a filepath to an output filepath or generated source
+//     filepath.
+//
 // Properties passed as the paths argument must have been annotated with struct tag
 // `android:"path"` so that dependencies on SourceFileProducer modules will have already been handled by the
 // path_deps mutator.
 // If a requested module is not found as a dependency:
-//   * if ctx.Config().AllowMissingDependencies() is true, this module to be marked as having
+//   - if ctx.Config().AllowMissingDependencies() is true, this module to be marked as having
 //     missing dependencies
-//   * otherwise, a ModuleError is thrown.
+//   - otherwise, a ModuleError is thrown.
 func PathsForModuleSrc(ctx ModuleMissingDepsPathContext, paths []string) Paths {
 	return PathsForModuleSrcExcludes(ctx, paths, nil)
 }
@@ -414,21 +415,22 @@ type SourceInput struct {
 
 // PathsForModuleSrcExcludes returns a Paths{} containing the resolved references in paths, minus
 // those listed in excludes. Elements of paths and excludes are resolved as:
-// * filepath, relative to local module directory, resolves as a filepath relative to the local
-//   source directory
-// * glob, relative to the local module directory, resolves as filepath(s), relative to the local
-//  source directory. Not valid in excludes.
-// * other modules using the ":name{.tag}" syntax. These modules must implement SourceFileProducer
-//    or OutputFileProducer. These resolve as a filepath to an output filepath or generated source
-//    filepath.
+//   - filepath, relative to local module directory, resolves as a filepath relative to the local
+//     source directory
+//   - glob, relative to the local module directory, resolves as filepath(s), relative to the local
+//     source directory. Not valid in excludes.
+//   - other modules using the ":name{.tag}" syntax. These modules must implement SourceFileProducer
+//     or OutputFileProducer. These resolve as a filepath to an output filepath or generated source
+//     filepath.
+//
 // excluding the items (similarly resolved
 // Properties passed as the paths argument must have been annotated with struct tag
 // `android:"path"` so that dependencies on SourceFileProducer modules will have already been handled by the
 // path_deps mutator.
 // If a requested module is not found as a dependency:
-//   * if ctx.Config().AllowMissingDependencies() is true, this module to be marked as having
+//   - if ctx.Config().AllowMissingDependencies() is true, this module to be marked as having
 //     missing dependencies
-//   * otherwise, a ModuleError is thrown.
+//   - otherwise, a ModuleError is thrown.
 func PathsForModuleSrcExcludes(ctx ModuleMissingDepsPathContext, paths, excludes []string) Paths {
 	return PathsRelativeToModuleSourceDir(SourceInput{
 		Context:      ctx,
@@ -548,13 +550,14 @@ func GetModuleFromPathDep(ctx ModuleWithDepsPathContext, moduleName, tag string)
 
 // PathsAndMissingDepsForModuleSrcExcludes returns a Paths{} containing the resolved references in
 // paths, minus those listed in excludes. Elements of paths and excludes are resolved as:
-// * filepath, relative to local module directory, resolves as a filepath relative to the local
-//   source directory
-// * glob, relative to the local module directory, resolves as filepath(s), relative to the local
-//  source directory. Not valid in excludes.
-// * other modules using the ":name{.tag}" syntax. These modules must implement SourceFileProducer
-//    or OutputFileProducer. These resolve as a filepath to an output filepath or generated source
-//    filepath.
+//   - filepath, relative to local module directory, resolves as a filepath relative to the local
+//     source directory
+//   - glob, relative to the local module directory, resolves as filepath(s), relative to the local
+//     source directory. Not valid in excludes.
+//   - other modules using the ":name{.tag}" syntax. These modules must implement SourceFileProducer
+//     or OutputFileProducer. These resolve as a filepath to an output filepath or generated source
+//     filepath.
+//
 // and a list of the module names of missing module dependencies are returned as the second return.
 // Properties passed as the paths argument must have been annotated with struct tag
 // `android:"path"` so that dependencies on SourceFileProducer modules will have already been handled by the
@@ -1057,7 +1060,8 @@ func safePathForSource(ctx PathContext, pathComponents ...string) (SourcePath, e
 	}
 
 	// absolute path already checked by validateSafePath
-	if strings.HasPrefix(ret.String(), ctx.Config().soongOutDir) {
+	// special-case api surface gen files for now
+	if strings.HasPrefix(ret.String(), ctx.Config().soongOutDir) && !strings.Contains(ret.String(), ctx.Config().soongOutDir+"/.export") {
 		return ret, fmt.Errorf("source path %q is in output", ret.String())
 	}
 
@@ -1073,7 +1077,8 @@ func pathForSource(ctx PathContext, pathComponents ...string) (SourcePath, error
 	}
 
 	// absolute path already checked by validatePath
-	if strings.HasPrefix(ret.String(), ctx.Config().soongOutDir) {
+	// special-case for now
+	if strings.HasPrefix(ret.String(), ctx.Config().soongOutDir) && !strings.Contains(ret.String(), ctx.Config().soongOutDir+"/.export") {
 		return ret, fmt.Errorf("source path %q is in output", ret.String())
 	}
 
@@ -1469,41 +1474,6 @@ func pathForModuleOut(ctx ModuleOutPathContext) OutputPath {
 	return PathForOutput(ctx, ".intermediates", ctx.ModuleDir(), ctx.ModuleName(), ctx.ModuleSubDir())
 }
 
-// PathForVndkRefAbiDump returns an OptionalPath representing the path of the
-// reference abi dump for the given module. This is not guaranteed to be valid.
-func PathForVndkRefAbiDump(ctx ModuleInstallPathContext, version, fileName string,
-	isNdk, isLlndkOrVndk, isGzip bool) OptionalPath {
-
-	currentArchType := ctx.Arch().ArchType
-	primaryArchType := ctx.Config().DevicePrimaryArchType()
-	archName := currentArchType.String()
-	if currentArchType != primaryArchType {
-		archName += "_" + primaryArchType.String()
-	}
-
-	var dirName string
-	if isNdk {
-		dirName = "ndk"
-	} else if isLlndkOrVndk {
-		dirName = "vndk"
-	} else {
-		dirName = "platform" // opt-in libs
-	}
-
-	binderBitness := ctx.DeviceConfig().BinderBitness()
-
-	var ext string
-	if isGzip {
-		ext = ".lsdump.gz"
-	} else {
-		ext = ".lsdump"
-	}
-
-	return ExistentPathForSource(ctx, "prebuilts", "abi-dumps", dirName,
-		version, binderBitness, archName, "source-based",
-		fileName+ext)
-}
-
 // PathForModuleOut returns a Path representing the paths... under the module's
 // output directory.
 func PathForModuleOut(ctx ModuleOutPathContext, paths ...string) ModuleOutPath {
@@ -1737,10 +1707,16 @@ func pathForInstall(ctx PathContext, os OsType, arch ArchType, partition string,
 		partionPaths = []string{"target", "product", ctx.Config().DeviceName(), partition}
 	} else {
 		osName := os.String()
-		if os == Linux || os == LinuxMusl {
+		if os == Linux {
 			// instead of linux_glibc
 			osName = "linux"
 		}
+		if os == LinuxMusl && ctx.Config().UseHostMusl() {
+			// When using musl instead of glibc, use "linux" instead of "linux_musl".  When cross
+			// compiling we will still use "linux_musl".
+			osName = "linux"
+		}
+
 		// SOONG_HOST_OUT is set to out/host/$(HOST_OS)-$(HOST_PREBUILT_ARCH)
 		// and HOST_PREBUILT_ARCH is forcibly set to x86 even on x86_64 hosts. We don't seem
 		// to have a plan to fix it (see the comment in build/make/core/envsetup.mk).
@@ -1965,6 +1941,18 @@ func PathForTesting(paths ...string) Path {
 		panic(err)
 	}
 	return testPath{basePath{path: p, rel: p}}
+}
+
+func PathForTestingWithRel(path, rel string) Path {
+	p, err := validateSafePath(path, rel)
+	if err != nil {
+		panic(err)
+	}
+	r, err := validatePath(rel)
+	if err != nil {
+		panic(err)
+	}
+	return testPath{basePath{path: p, rel: r}}
 }
 
 // PathsForTesting returns a Path constructed from each element in strs. It should only be used from within tests.
