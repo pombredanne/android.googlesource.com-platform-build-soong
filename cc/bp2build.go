@@ -339,6 +339,8 @@ type compilerAttributes struct {
 	stubsVersions   bazel.StringListAttribute
 
 	features bazel.StringListAttribute
+
+	suffix bazel.StringAttribute
 }
 
 type filterOutFn func(string) bool
@@ -694,6 +696,9 @@ func bp2BuildParseBaseProps(ctx android.Bp2buildMutatorContext, module *Module) 
 					compilerAttrs.stubsSymbolFile = libraryProps.Stubs.Symbol_file
 					compilerAttrs.stubsVersions.SetSelectValue(axis, config, libraryProps.Stubs.Versions)
 				}
+				if suffix := libraryProps.Suffix; suffix != nil {
+					compilerAttrs.suffix.SetSelectValue(axis, config, suffix)
+				}
 			}
 		}
 	}
@@ -1021,11 +1026,17 @@ func (la *linkerAttributes) convertProductVariables(ctx android.BazelConversionP
 		depResolutionFunc func(ctx android.BazelConversionPathContext, modules, excludes []string) bazel.LabelList
 	}
 
+	// an intermediate attribute that holds Header_libs info, and will be appended to
+	// implementationDeps at the end, to solve the confliction that both header_libs
+	// and static_libs use implementationDeps.
+	var headerDeps bazel.LabelListAttribute
+
 	productVarToDepFields := map[string]productVarDep{
 		// product variables do not support exclude_shared_libs
 		"Shared_libs":       {attribute: &la.implementationDynamicDeps, depResolutionFunc: bazelLabelForSharedDepsExcludes},
 		"Static_libs":       {"Exclude_static_libs", &la.implementationDeps, bazelLabelForStaticDepsExcludes},
 		"Whole_static_libs": {"Exclude_static_libs", &la.wholeArchiveDeps, bazelLabelForWholeDepsExcludes},
+		"Header_libs":       {attribute: &headerDeps, depResolutionFunc: bazelLabelForHeaderDepsExcludes},
 	}
 
 	for name, dep := range productVarToDepFields {
@@ -1067,14 +1078,18 @@ func (la *linkerAttributes) convertProductVariables(ctx android.BazelConversionP
 			)
 		}
 	}
+	la.implementationDeps.Append(headerDeps)
 }
 
 func (la *linkerAttributes) finalize(ctx android.BazelConversionPathContext) {
 	// if system dynamic deps have the default value, any use of a system dynamic library used will
 	// result in duplicate library errors for bionic OSes. Here, we explicitly exclude those libraries
-	// from bionic OSes.
+	// from bionic OSes and the no config case as these libraries only build for bionic OSes.
 	if la.systemDynamicDeps.IsNil() && len(la.usedSystemDynamicDepAsDynamicDep) > 0 {
 		toRemove := bazelLabelForSharedDeps(ctx, android.SortedStringKeys(la.usedSystemDynamicDepAsDynamicDep))
+		la.dynamicDeps.Exclude(bazel.NoConfigAxis, "", toRemove)
+		la.implementationDynamicDeps.Exclude(bazel.NoConfigAxis, "", toRemove)
+		la.implementationDynamicDeps.Exclude(bazel.NoConfigAxis, "", toRemove)
 		la.dynamicDeps.Exclude(bazel.OsConfigurationAxis, "android", toRemove)
 		la.dynamicDeps.Exclude(bazel.OsConfigurationAxis, "linux_bionic", toRemove)
 		la.implementationDynamicDeps.Exclude(bazel.OsConfigurationAxis, "android", toRemove)
@@ -1195,12 +1210,19 @@ func bazelLabelForHeaderDeps(ctx android.BazelConversionPathContext, modules []s
 	return bazelLabelForSharedDeps(ctx, modules)
 }
 
+func bazelLabelForHeaderDepsExcludes(ctx android.BazelConversionPathContext, modules, excludes []string) bazel.LabelList {
+	// This is only used when product_variable header_libs is processed, to follow
+	// the pattern of depResolutionFunc
+	return android.BazelLabelForModuleDepsExcludesWithFn(ctx, modules, excludes, bazelLabelForSharedModule)
+}
+
 func bazelLabelForSharedDepsExcludes(ctx android.BazelConversionPathContext, modules, excludes []string) bazel.LabelList {
 	return android.BazelLabelForModuleDepsExcludesWithFn(ctx, modules, excludes, bazelLabelForSharedModule)
 }
 
 type binaryLinkerAttrs struct {
 	Linkshared *bool
+	Suffix     bazel.StringAttribute
 }
 
 func bp2buildBinaryLinkerProps(ctx android.BazelConversionPathContext, m *Module) binaryLinkerAttrs {
@@ -1216,6 +1238,9 @@ func bp2buildBinaryLinkerProps(ctx android.BazelConversionPathContext, m *Module
 			// TODO(b/202876379): Static_executable is arch-variant; however, linkshared is a
 			// nonconfigurable attribute. Only 4 AOSP modules use this feature, defer handling
 			ctx.ModuleErrorf("bp2build cannot migrate a module with arch/target-specific static_executable values")
+		}
+		if suffix := linkerProps.Suffix; suffix != nil {
+			attrs.Suffix.SetSelectValue(axis, config, suffix)
 		}
 	})
 
