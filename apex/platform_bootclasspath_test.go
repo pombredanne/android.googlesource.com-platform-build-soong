@@ -125,7 +125,6 @@ func TestPlatformBootclasspath_Fragments(t *testing.T) {
 					unsupported_packages: [
 							"bar-unsupported-packages.txt",
 					],
-					split_packages: ["*"],
 				},
 			}
 
@@ -275,9 +274,6 @@ func TestPlatformBootclasspathDependencies(t *testing.T) {
 				"baz",
 				"quuz",
 			],
-			hidden_api: {
-				split_packages: ["*"],
-			},
 		}
 
 		java_library {
@@ -321,9 +317,6 @@ func TestPlatformBootclasspathDependencies(t *testing.T) {
 			name: "my-bootclasspath-fragment",
 			contents: ["bar"],
 			apex_available: ["myapex"],
-			hidden_api: {
-				split_packages: ["*"],
-			},
 		}
 
 		apex_key {
@@ -489,9 +482,6 @@ func TestPlatformBootclasspath_AlwaysUsePrebuiltSdks(t *testing.T) {
 			contents: [
 				"foo", "bar",
 			],
-			hidden_api: {
-				split_packages: ["*"],
-			},
 		}
 
 		prebuilt_bootclasspath_fragment {
@@ -609,9 +599,6 @@ func TestPlatformBootclasspath_IncludesRemainingApexJars(t *testing.T) {
 				generate_classpaths_proto: false,
 				contents: ["foo"],
 				apex_available: ["myapex"],
-				hidden_api: {
-					split_packages: ["*"],
-				},
 			}
 
 			java_library {
@@ -669,9 +656,6 @@ func TestBootJarNotInApex(t *testing.T) {
 				contents: [
 					"foo",
 				],
-				hidden_api: {
-					split_packages: ["*"],
-				},
 			}
 
 			platform_bootclasspath {
@@ -712,9 +696,6 @@ func TestBootFragmentNotInApex(t *testing.T) {
 			bootclasspath_fragment {
 				name: "not-in-apex-fragment",
 				contents: ["foo"],
-				hidden_api: {
-					split_packages: ["*"],
-				},
 			}
 
 			platform_bootclasspath {
@@ -765,9 +746,6 @@ func TestNonBootJarInFragment(t *testing.T) {
 				name: "apex-fragment",
 				contents: ["foo", "bar"],
 				apex_available:[ "myapex" ],
-				hidden_api: {
-					split_packages: ["*"],
-				},
 			}
 
 			platform_bootclasspath {

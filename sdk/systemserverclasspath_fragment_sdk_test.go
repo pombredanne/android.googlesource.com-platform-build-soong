@@ -22,21 +22,28 @@ import (
 	"android/soong/java"
 )
 
-func testSnapshotWithSystemServerClasspathFragment(t *testing.T, sdk string, targetBuildRelease string, expectedSdkSnapshot string) {
+func TestSnapshotWithSystemServerClasspathFragment(t *testing.T) {
 	result := android.GroupFixturePreparers(
 		prepareForSdkTestWithJava,
 		java.PrepareForTestWithJavaDefaultModules,
 		java.PrepareForTestWithJavaSdkLibraryFiles,
 		java.FixtureWithLastReleaseApis("mysdklibrary"),
 		dexpreopt.FixtureSetApexSystemServerJars("myapex:mylib", "myapex:mysdklibrary"),
-		android.FixtureModifyEnv(func(env map[string]string) {
-			if targetBuildRelease != "latest" {
-				env["SOONG_SDK_SNAPSHOT_TARGET_BUILD_RELEASE"] = targetBuildRelease
-			}
-		}),
 		prepareForSdkTestWithApex,
 
-		android.FixtureWithRootAndroidBp(sdk+`
+		android.FixtureWithRootAndroidBp(`
+			sdk {
+				name: "mysdk",
+				systemserverclasspath_fragments: ["mysystemserverclasspathfragment"],
+				java_sdk_libs: [
+					// This is not strictly needed as it should be automatically added to the sdk_snapshot as
+					// a java_sdk_libs module because it is used in the mysystemserverclasspathfragment's
+					// contents property. However, it is specified here to ensure that duplicates are
+					// correctly deduped.
+					"mysdklibrary",
+				],
+			}
+
 			apex {
 				name: "myapex",
 				key: "myapex.key",
@@ -76,137 +83,89 @@ func testSnapshotWithSystemServerClasspathFragment(t *testing.T, sdk string, tar
 	).RunTest(t)
 
 	CheckSnapshot(t, result, "mysdk", "",
-		checkAndroidBpContents(expectedSdkSnapshot),
+		checkUnversionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+java_sdk_library_import {
+    name: "mysdklibrary",
+    prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["myapex"],
+    shared_library: false,
+    public: {
+        jars: ["sdk_library/public/mysdklibrary-stubs.jar"],
+        stub_srcs: ["sdk_library/public/mysdklibrary_stub_sources"],
+        current_api: "sdk_library/public/mysdklibrary.txt",
+        removed_api: "sdk_library/public/mysdklibrary-removed.txt",
+        sdk_version: "current",
+    },
+}
+
+java_import {
+    name: "mylib",
+    prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["myapex"],
+    jars: ["java_systemserver_libs/snapshot/jars/are/invalid/mylib.jar"],
+    permitted_packages: ["mylib"],
+}
+
+prebuilt_systemserverclasspath_fragment {
+    name: "mysystemserverclasspathfragment",
+    prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["myapex"],
+    contents: [
+        "mylib",
+        "mysdklibrary",
+    ],
+}
+`),
+		checkVersionedAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+java_sdk_library_import {
+    name: "mysdk_mysdklibrary@current",
+    sdk_member_name: "mysdklibrary",
+    visibility: ["//visibility:public"],
+    apex_available: ["myapex"],
+    shared_library: false,
+    public: {
+        jars: ["sdk_library/public/mysdklibrary-stubs.jar"],
+        stub_srcs: ["sdk_library/public/mysdklibrary_stub_sources"],
+        current_api: "sdk_library/public/mysdklibrary.txt",
+        removed_api: "sdk_library/public/mysdklibrary-removed.txt",
+        sdk_version: "current",
+    },
+}
+
+java_import {
+    name: "mysdk_mylib@current",
+    sdk_member_name: "mylib",
+    visibility: ["//visibility:public"],
+    apex_available: ["myapex"],
+    jars: ["java_systemserver_libs/snapshot/jars/are/invalid/mylib.jar"],
+    permitted_packages: ["mylib"],
+}
+
+prebuilt_systemserverclasspath_fragment {
+    name: "mysdk_mysystemserverclasspathfragment@current",
+    sdk_member_name: "mysystemserverclasspathfragment",
+    visibility: ["//visibility:public"],
+    apex_available: ["myapex"],
+    contents: [
+        "mysdk_mylib@current",
+        "mysdk_mysdklibrary@current",
+    ],
+}
+
+sdk_snapshot {
+    name: "mysdk@current",
+    visibility: ["//visibility:public"],
+    java_sdk_libs: ["mysdk_mysdklibrary@current"],
+    java_systemserver_libs: ["mysdk_mylib@current"],
+    systemserverclasspath_fragments: ["mysdk_mysystemserverclasspathfragment@current"],
+}
+`),
 	)
-}
-
-func TestSnapshotWithSystemServerClasspathFragment(t *testing.T) {
-
-	commonSdk := `
-sdk {
-	name: "mysdk",
-	systemserverclasspath_fragments: ["mysystemserverclasspathfragment"],
-	java_sdk_libs: [
-		// This is not strictly needed as it should be automatically added to the sdk_snapshot as
-		// a java_sdk_libs module because it is used in the mysystemserverclasspathfragment's
-		// contents property. However, it is specified here to ensure that duplicates are
-		// correctly deduped.
-		"mysdklibrary",
-	],
-}
-	`
-
-	expectedLatestSnapshot := `
-// This is auto-generated. DO NOT EDIT.
-
-java_sdk_library_import {
-    name: "mysdklibrary",
-    prefer: false,
-    visibility: ["//visibility:public"],
-    apex_available: ["myapex"],
-    shared_library: false,
-    public: {
-        jars: ["sdk_library/public/mysdklibrary-stubs.jar"],
-        stub_srcs: ["sdk_library/public/mysdklibrary_stub_sources"],
-        current_api: "sdk_library/public/mysdklibrary.txt",
-        removed_api: "sdk_library/public/mysdklibrary-removed.txt",
-        sdk_version: "current",
-    },
-}
-
-java_import {
-    name: "mylib",
-    prefer: false,
-    visibility: ["//visibility:public"],
-    apex_available: ["myapex"],
-    jars: ["java_systemserver_libs/snapshot/jars/are/invalid/mylib.jar"],
-    permitted_packages: ["mylib"],
-}
-
-prebuilt_systemserverclasspath_fragment {
-    name: "mysystemserverclasspathfragment",
-    prefer: false,
-    visibility: ["//visibility:public"],
-    apex_available: ["myapex"],
-    contents: [
-        "mylib",
-        "mysdklibrary",
-    ],
-}
-`
-
-	t.Run("target-s", func(t *testing.T) {
-		testSnapshotWithSystemServerClasspathFragment(t, commonSdk, "S", `
-// This is auto-generated. DO NOT EDIT.
-
-java_sdk_library_import {
-    name: "mysdklibrary",
-    prefer: false,
-    visibility: ["//visibility:public"],
-    apex_available: ["myapex"],
-    shared_library: false,
-    public: {
-        jars: ["sdk_library/public/mysdklibrary-stubs.jar"],
-        stub_srcs: ["sdk_library/public/mysdklibrary_stub_sources"],
-        current_api: "sdk_library/public/mysdklibrary.txt",
-        removed_api: "sdk_library/public/mysdklibrary-removed.txt",
-        sdk_version: "current",
-    },
-}
-`)
-	})
-
-	t.Run("target-t", func(t *testing.T) {
-		testSnapshotWithSystemServerClasspathFragment(t, commonSdk, "Tiramisu", `
-// This is auto-generated. DO NOT EDIT.
-
-java_sdk_library_import {
-    name: "mysdklibrary",
-    prefer: false,
-    visibility: ["//visibility:public"],
-    apex_available: ["myapex"],
-    shared_library: false,
-    public: {
-        jars: ["sdk_library/public/mysdklibrary-stubs.jar"],
-        stub_srcs: ["sdk_library/public/mysdklibrary_stub_sources"],
-        current_api: "sdk_library/public/mysdklibrary.txt",
-        removed_api: "sdk_library/public/mysdklibrary-removed.txt",
-        sdk_version: "current",
-    },
-}
-
-java_import {
-    name: "mylib",
-    prefer: false,
-    visibility: ["//visibility:public"],
-    apex_available: ["myapex"],
-    jars: ["java_systemserver_libs/snapshot/jars/are/invalid/mylib.jar"],
-    permitted_packages: ["mylib"],
-}
-
-prebuilt_systemserverclasspath_fragment {
-    name: "mysystemserverclasspathfragment",
-    prefer: false,
-    visibility: ["//visibility:public"],
-    apex_available: ["myapex"],
-    contents: [
-        "mylib",
-        "mysdklibrary",
-    ],
-}
-`)
-	})
-
-	t.Run("added-directly", func(t *testing.T) {
-		testSnapshotWithSystemServerClasspathFragment(t, commonSdk, `latest`, expectedLatestSnapshot)
-	})
-
-	t.Run("added-via-apex", func(t *testing.T) {
-		testSnapshotWithSystemServerClasspathFragment(t, `
-			sdk {
-				name: "mysdk",
-				apexes: ["myapex"],
-			}
-		`, `latest`, expectedLatestSnapshot)
-	})
 }

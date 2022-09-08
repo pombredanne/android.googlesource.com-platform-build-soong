@@ -110,9 +110,6 @@ func TestBootclasspathFragments(t *testing.T) {
 			apex_available: [
 				"com.android.art",
 			],
-			hidden_api: {
-				split_packages: ["*"],
-			},
 		}
 `,
 	)
@@ -212,9 +209,6 @@ func TestBootclasspathFragments_FragmentDependency(t *testing.T) {
 			apex_available: [
 				"com.android.art",
 			],
-			hidden_api: {
-				split_packages: ["*"],
-			},
 		}
 
 		bootclasspath_fragment {
@@ -226,9 +220,6 @@ func TestBootclasspathFragments_FragmentDependency(t *testing.T) {
 							module: "art-bootclasspath-fragment",
 					},
 			],
-			hidden_api: {
-				split_packages: ["*"],
-			},
 		}
 `,
 	)
@@ -370,9 +361,6 @@ func TestBootclasspathFragmentInArtApex(t *testing.T) {
 				apex_available: [
 					"com.android.art",
 				],
-				hidden_api: {
-					split_packages: ["*"],
-				},
 			}
 		`, contentsInsert(contents))
 
@@ -865,9 +853,6 @@ func TestBootclasspathFragmentContentsNoName(t *testing.T) {
 			apex_available: [
 				"myapex",
 			],
-			hidden_api: {
-				split_packages: ["*"],
-			},
 		}
 	`)
 
@@ -974,9 +959,6 @@ func TestBootclasspathFragment_HiddenAPIList(t *testing.T) {
 			apex_available: [
 				"com.android.art",
 			],
-			hidden_api: {
-				split_packages: ["*"],
-			},
 		}
 
 		apex {
@@ -1028,9 +1010,6 @@ func TestBootclasspathFragment_HiddenAPIList(t *testing.T) {
 					module: "art-bootclasspath-fragment",
 				},
 			],
-			hidden_api: {
-				split_packages: ["*"],
-			},
 		}
 	`)
 
@@ -1144,9 +1123,6 @@ func TestBootclasspathFragment_AndroidNonUpdatable(t *testing.T) {
 			apex_available: [
 				"com.android.art",
 			],
-			hidden_api: {
-				split_packages: ["*"],
-			},
 		}
 
 		apex {
@@ -1199,9 +1175,6 @@ func TestBootclasspathFragment_AndroidNonUpdatable(t *testing.T) {
 					module: "art-bootclasspath-fragment",
 				},
 			],
-			hidden_api: {
-				split_packages: ["*"],
-			},
 		}
 	`)
 
@@ -1309,9 +1282,6 @@ func TestBootclasspathFragment_AndroidNonUpdatable_AlwaysUsePrebuiltSdks(t *test
 			apex_available: [
 				"com.android.art",
 			],
-			hidden_api: {
-				split_packages: ["*"],
-			},
 		}
 
 		apex {
@@ -1364,9 +1334,6 @@ func TestBootclasspathFragment_AndroidNonUpdatable_AlwaysUsePrebuiltSdks(t *test
 					module: "art-bootclasspath-fragment",
 				},
 			],
-			hidden_api: {
-				split_packages: ["*"],
-			},
 		}
 	`)
 

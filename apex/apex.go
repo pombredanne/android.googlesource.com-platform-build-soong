@@ -604,49 +604,32 @@ type dependencyTag struct {
 	// replacement. This is needed because some prebuilt modules do not provide all the information
 	// needed by the apex.
 	sourceOnly bool
-
-	// If not-nil and an APEX is a member of an SDK then dependencies of that APEX with this tag will
-	// also be added as exported members of that SDK.
-	memberType android.SdkMemberType
 }
 
-func (d *dependencyTag) SdkMemberType(_ android.Module) android.SdkMemberType {
-	return d.memberType
-}
-
-func (d *dependencyTag) ExportMember() bool {
-	return true
-}
-
-func (d *dependencyTag) String() string {
-	return fmt.Sprintf("apex.dependencyTag{%q}", d.name)
-}
-
-func (d *dependencyTag) ReplaceSourceWithPrebuilt() bool {
+func (d dependencyTag) ReplaceSourceWithPrebuilt() bool {
 	return !d.sourceOnly
 }
 
 var _ android.ReplaceSourceWithPrebuilt = &dependencyTag{}
-var _ android.SdkMemberDependencyTag = &dependencyTag{}
 
 var (
-	androidAppTag   = &dependencyTag{name: "androidApp", payload: true}
-	bpfTag          = &dependencyTag{name: "bpf", payload: true}
-	certificateTag  = &dependencyTag{name: "certificate"}
-	executableTag   = &dependencyTag{name: "executable", payload: true}
-	fsTag           = &dependencyTag{name: "filesystem", payload: true}
-	bcpfTag         = &dependencyTag{name: "bootclasspathFragment", payload: true, sourceOnly: true, memberType: java.BootclasspathFragmentSdkMemberType}
-	sscpfTag        = &dependencyTag{name: "systemserverclasspathFragment", payload: true, sourceOnly: true, memberType: java.SystemServerClasspathFragmentSdkMemberType}
-	compatConfigTag = &dependencyTag{name: "compatConfig", payload: true, sourceOnly: true}
-	javaLibTag      = &dependencyTag{name: "javaLib", payload: true}
-	jniLibTag       = &dependencyTag{name: "jniLib", payload: true}
-	keyTag          = &dependencyTag{name: "key"}
-	prebuiltTag     = &dependencyTag{name: "prebuilt", payload: true}
-	rroTag          = &dependencyTag{name: "rro", payload: true}
-	sharedLibTag    = &dependencyTag{name: "sharedLib", payload: true}
-	testForTag      = &dependencyTag{name: "test for"}
-	testTag         = &dependencyTag{name: "test", payload: true}
-	shBinaryTag     = &dependencyTag{name: "shBinary", payload: true}
+	androidAppTag   = dependencyTag{name: "androidApp", payload: true}
+	bpfTag          = dependencyTag{name: "bpf", payload: true}
+	certificateTag  = dependencyTag{name: "certificate"}
+	executableTag   = dependencyTag{name: "executable", payload: true}
+	fsTag           = dependencyTag{name: "filesystem", payload: true}
+	bcpfTag         = dependencyTag{name: "bootclasspathFragment", payload: true, sourceOnly: true}
+	sscpfTag        = dependencyTag{name: "systemserverclasspathFragment", payload: true, sourceOnly: true}
+	compatConfigTag = dependencyTag{name: "compatConfig", payload: true, sourceOnly: true}
+	javaLibTag      = dependencyTag{name: "javaLib", payload: true}
+	jniLibTag       = dependencyTag{name: "jniLib", payload: true}
+	keyTag          = dependencyTag{name: "key"}
+	prebuiltTag     = dependencyTag{name: "prebuilt", payload: true}
+	rroTag          = dependencyTag{name: "rro", payload: true}
+	sharedLibTag    = dependencyTag{name: "sharedLib", payload: true}
+	testForTag      = dependencyTag{name: "test for"}
+	testTag         = dependencyTag{name: "test", payload: true}
+	shBinaryTag     = dependencyTag{name: "shBinary", payload: true}
 )
 
 // TODO(jiyong): shorten this function signature
@@ -1752,7 +1735,7 @@ func (a *apexBundle) WalkPayloadDeps(ctx android.ModuleContext, do android.Paylo
 		if _, ok := depTag.(android.ExcludeFromApexContentsTag); ok {
 			return false
 		}
-		if dt, ok := depTag.(*dependencyTag); ok && !dt.payload {
+		if dt, ok := depTag.(dependencyTag); ok && !dt.payload {
 			return false
 		}
 

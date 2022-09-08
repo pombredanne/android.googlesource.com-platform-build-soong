@@ -24,22 +24,18 @@ import (
 
 // buildRelease represents the version of a build system used to create a specific release.
 //
-// The name of the release, is the same as the code for the dessert release, e.g. S, Tiramisu, etc.
+// The name of the release, is the same as the code for the dessert release, e.g. S, T, etc.
 type buildRelease struct {
-	// The name of the release, e.g. S, Tiramisu, etc.
+	// The name of the release, e.g. S, T, etc.
 	name string
 
 	// The index of this structure within the buildReleases list.
 	ordinal int
 }
 
-func (br *buildRelease) EarlierThan(other *buildRelease) bool {
-	return br.ordinal < other.ordinal
-}
-
 // String returns the name of the build release.
-func (br *buildRelease) String() string {
-	return br.name
+func (s *buildRelease) String() string {
+	return s.name
 }
 
 // buildReleaseSet represents a set of buildRelease objects.

@@ -15,9 +15,7 @@
 package build
 
 import (
-	"errors"
 	"fmt"
-	"io/fs"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -493,14 +491,10 @@ func runSoong(ctx Context, config Config) {
 
 	ninja("bootstrap", "bootstrap.ninja", targets...)
 
+	var soongBuildMetrics *soong_metrics_proto.SoongBuildMetrics
 	if shouldCollectBuildSoongMetrics(config) {
 		soongBuildMetrics := loadSoongBuildMetrics(ctx, config)
-		if soongBuildMetrics != nil {
-			logSoongBuildMetrics(ctx, soongBuildMetrics)
-			if ctx.Metrics != nil {
-				ctx.Metrics.SetSoongBuildMetrics(soongBuildMetrics)
-			}
-		}
+		logSoongBuildMetrics(ctx, soongBuildMetrics)
 	}
 
 	distGzipFile(ctx, config, config.SoongNinjaFile(), "soong")
@@ -510,6 +504,9 @@ func runSoong(ctx Context, config Config) {
 		distGzipFile(ctx, config, config.SoongMakeVarsMk(), "soong")
 	}
 
+	if shouldCollectBuildSoongMetrics(config) && ctx.Metrics != nil {
+		ctx.Metrics.SetSoongBuildMetrics(soongBuildMetrics)
+	}
 	if config.JsonModuleGraph() {
 		distGzipFile(ctx, config, config.ModuleGraphFile(), "soong")
 	}
@@ -541,12 +538,8 @@ func shouldCollectBuildSoongMetrics(config Config) bool {
 
 func loadSoongBuildMetrics(ctx Context, config Config) *soong_metrics_proto.SoongBuildMetrics {
 	soongBuildMetricsFile := filepath.Join(config.LogsDir(), "soong_build_metrics.pb")
-	buf, err := os.ReadFile(soongBuildMetricsFile)
-	if errors.Is(err, fs.ErrNotExist) {
-		// Soong may not have run during this invocation
-          ctx.Verbosef("Failed to read metrics file, %s: %s", soongBuildMetricsFile, err)
-		return nil
-	} else if err != nil {
+	buf, err := ioutil.ReadFile(soongBuildMetricsFile)
+	if err != nil {
 		ctx.Fatalf("Failed to load %s: %s", soongBuildMetricsFile, err)
 	}
 	soongBuildMetrics := &soong_metrics_proto.SoongBuildMetrics{}

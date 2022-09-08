@@ -183,7 +183,8 @@ func runQueryView(queryviewDir, queryviewMarker string, configuration android.Co
 	touch(shared.JoinPath(topDir, queryviewMarker))
 }
 
-func writeMetrics(configuration android.Config, eventHandler metrics.EventHandler, metricsDir string) {
+func writeMetrics(configuration android.Config, eventHandler metrics.EventHandler) {
+	metricsDir := configuration.Getenv("LOG_DIR")
 	if len(metricsDir) < 1 {
 		fmt.Fprintf(os.Stderr, "\nMissing required env var for generating soong metrics: LOG_DIR\n")
 		os.Exit(1)
@@ -237,7 +238,7 @@ func writeDepFile(outputFile string, eventHandler metrics.EventHandler, ninjaDep
 // doChosenActivity runs Soong for a specific activity, like bp2build, queryview
 // or the actual Soong build for the build.ninja file. Returns the top level
 // output file of the specific activity.
-func doChosenActivity(configuration android.Config, extraNinjaDeps []string, logDir string) string {
+func doChosenActivity(configuration android.Config, extraNinjaDeps []string) string {
 	mixedModeBuild := configuration.BazelContext.BazelEnabled()
 	generateBazelWorkspace := bp2buildMarker != ""
 	generateQueryView := bazelQueryViewDir != ""
@@ -301,7 +302,7 @@ func doChosenActivity(configuration android.Config, extraNinjaDeps []string, log
 		}
 	}
 
-	writeMetrics(configuration, *ctx.EventHandler, logDir)
+	writeMetrics(configuration, *ctx.EventHandler)
 	return cmdlineArgs.OutFile
 }
 
@@ -357,11 +358,7 @@ func main() {
 		extraNinjaDeps = append(extraNinjaDeps, filepath.Join(configuration.SoongOutDir(), "always_rerun_for_delve"))
 	}
 
-	// Bypass configuration.Getenv, as LOG_DIR does not need to be dependency tracked. By definition, it will
-	// change between every CI build, so tracking it would require re-running Soong for every build.
-	logDir := availableEnv["LOG_DIR"]
-
-	finalOutputFile := doChosenActivity(configuration, extraNinjaDeps, logDir)
+	finalOutputFile := doChosenActivity(configuration, extraNinjaDeps)
 
 	writeUsedEnvironmentFile(configuration, finalOutputFile)
 }
