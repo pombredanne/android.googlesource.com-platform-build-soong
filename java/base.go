@@ -169,6 +169,8 @@ type CommonProperties struct {
 		Output_params []string
 	}
 
+	// If true, then jacocoagent is automatically added as a libs dependency so that
+	// r8 will not strip instrumentation classes out of dexed libraries.
 	Instrument bool `blueprint:"mutated"`
 	// If true, then the module supports statically including the jacocoagent
 	// into the library.
@@ -263,6 +265,9 @@ type DeviceProperties struct {
 	// Only for libraries created by a sysprop_library module, SyspropPublicStub is the name of the
 	// public stubs library.
 	SyspropPublicStub string `blueprint:"mutated"`
+
+	HiddenAPIPackageProperties
+	HiddenAPIFlagFileProperties
 }
 
 // Device properties that can be overridden by overriding module (e.g. override_android_app)
@@ -563,6 +568,20 @@ func (j *Module) addHostAndDeviceProperties() {
 	)
 }
 
+// provideHiddenAPIPropertyInfo populates a HiddenAPIPropertyInfo from hidden API properties and
+// makes it available through the hiddenAPIPropertyInfoProvider.
+func (j *Module) provideHiddenAPIPropertyInfo(ctx android.ModuleContext) {
+	hiddenAPIInfo := newHiddenAPIPropertyInfo()
+
+	// Populate with flag file paths from the properties.
+	hiddenAPIInfo.extractFlagFilesFromProperties(ctx, &j.deviceProperties.HiddenAPIFlagFileProperties)
+
+	// Populate with package rules from the properties.
+	hiddenAPIInfo.extractPackageRulesFromProperties(&j.deviceProperties.HiddenAPIPackageProperties)
+
+	ctx.SetProvider(hiddenAPIPropertyInfoProvider, hiddenAPIInfo)
+}
+
 func (j *Module) OutputFiles(tag string) (android.Paths, error) {
 	switch tag {
 	case "":
@@ -763,6 +782,9 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 		}
 	} else if j.shouldInstrumentStatic(ctx) {
 		ctx.AddVariationDependencies(nil, staticLibTag, "jacocoagent")
+	}
+	if j.shouldInstrument(ctx) {
+		ctx.AddVariationDependencies(nil, libTag, "jacocoagent")
 	}
 
 	if j.useCompose() {
@@ -1419,17 +1441,18 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	j.implementationAndResourcesJar = implementationAndResourcesJar
 
 	// Enable dex compilation for the APEX variants, unless it is disabled explicitly
+	compileDex := j.dexProperties.Compile_dex
 	apexInfo := ctx.Provider(android.ApexInfoProvider).(android.ApexInfo)
 	if j.DirectlyInAnyApex() && !apexInfo.IsForPlatform() {
-		if j.dexProperties.Compile_dex == nil {
-			j.dexProperties.Compile_dex = proptools.BoolPtr(true)
+		if compileDex == nil {
+			compileDex = proptools.BoolPtr(true)
 		}
 		if j.deviceProperties.Hostdex == nil {
 			j.deviceProperties.Hostdex = proptools.BoolPtr(true)
 		}
 	}
 
-	if ctx.Device() && (Bool(j.properties.Installable) || Bool(j.dexProperties.Compile_dex)) {
+	if ctx.Device() && (Bool(j.properties.Installable) || Bool(compileDex)) {
 		if j.hasCode(ctx) {
 			if j.shouldInstrumentStatic(ctx) {
 				j.dexer.extraProguardFlagFiles = append(j.dexer.extraProguardFlagFiles,
