@@ -179,7 +179,7 @@ func GenNoticeFactory() Module {
 	// The visibility property needs to be checked and parsed by the visibility module.
 	setPrimaryVisibilityProperty(module, "visibility", &module.properties.Visibility)
 
-	InitAndroidArchModule(module, DeviceSupported, MultilibCommon)
+	initAndroidModuleBase(module)
 	InitDefaultableModule(module)
 
 	return module
