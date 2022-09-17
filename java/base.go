@@ -649,6 +649,10 @@ func (j *Module) shouldInstrumentInApex(ctx android.BaseModuleContext) bool {
 	return false
 }
 
+func (j *Module) setInstrument(value bool) {
+	j.properties.Instrument = value
+}
+
 func (j *Module) SdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
 	return android.SdkSpecFrom(ctx, String(j.deviceProperties.Sdk_version))
 }
@@ -782,9 +786,6 @@ func (j *Module) deps(ctx android.BottomUpMutatorContext) {
 		}
 	} else if j.shouldInstrumentStatic(ctx) {
 		ctx.AddVariationDependencies(nil, staticLibTag, "jacocoagent")
-	}
-	if j.shouldInstrument(ctx) {
-		ctx.AddVariationDependencies(nil, libTag, "jacocoagent")
 	}
 
 	if j.useCompose() {
@@ -1414,10 +1415,6 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		j.headerJarFile = j.implementationJarFile
 	}
 
-	if j.shouldInstrumentInApex(ctx) {
-		j.properties.Instrument = true
-	}
-
 	// enforce syntax check to jacoco filters for any build (http://b/183622051)
 	specs := j.jacocoModuleToZipCommand(ctx)
 	if ctx.Failed() {
@@ -1937,6 +1934,9 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			case bootClasspathTag:
 				deps.bootClasspath = append(deps.bootClasspath, dep.HeaderJars...)
 			case libTag, instrumentationForTag:
+				if _, ok := module.(*Plugin); ok {
+					ctx.ModuleErrorf("a java_plugin (%s) cannot be used as a libs dependency", otherName)
+				}
 				deps.classpath = append(deps.classpath, dep.HeaderJars...)
 				deps.dexClasspath = append(deps.dexClasspath, dep.HeaderJars...)
 				deps.aidlIncludeDirs = append(deps.aidlIncludeDirs, dep.AidlIncludeDirs...)
@@ -1945,6 +1945,9 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			case java9LibTag:
 				deps.java9Classpath = append(deps.java9Classpath, dep.HeaderJars...)
 			case staticLibTag:
+				if _, ok := module.(*Plugin); ok {
+					ctx.ModuleErrorf("a java_plugin (%s) cannot be used as a static_libs dependency", otherName)
+				}
 				deps.classpath = append(deps.classpath, dep.HeaderJars...)
 				deps.staticJars = append(deps.staticJars, dep.ImplementationJars...)
 				deps.staticHeaderJars = append(deps.staticHeaderJars, dep.HeaderJars...)
