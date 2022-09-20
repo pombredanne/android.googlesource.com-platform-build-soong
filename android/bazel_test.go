@@ -158,7 +158,7 @@ func (m TestBazelModule) GenerateBuildActions(blueprint.ModuleContext) {
 
 type TestBazelConversionContext struct {
 	omc       bazel.OtherModuleTestContext
-	allowlist bp2BuildConversionAllowlist
+	allowlist Bp2BuildConversionAllowlist
 	errors    []string
 }
 
@@ -183,7 +183,7 @@ func (bcc *TestBazelConversionContext) ModuleErrorf(format string, args ...inter
 func (bcc *TestBazelConversionContext) Config() Config {
 	return Config{
 		&config{
-			bp2buildPackageConfig: bcc.allowlist,
+			Bp2buildPackageConfig: bcc.allowlist,
 		},
 	}
 }
@@ -202,7 +202,7 @@ func TestBp2BuildAllowlist(t *testing.T) {
 		shouldConvert  bool
 		expectedErrors []string
 		module         TestBazelModule
-		allowlist      bp2BuildConversionAllowlist
+		allowlist      Bp2BuildConversionAllowlist
 	}{
 		{
 			description:   "allowlist enables module",
@@ -215,7 +215,7 @@ func TestBp2BuildAllowlist(t *testing.T) {
 				},
 				BazelModuleBase: bazelableBazelModuleBase,
 			},
-			allowlist: bp2BuildConversionAllowlist{
+			allowlist: Bp2BuildConversionAllowlist{
 				moduleAlwaysConvert: map[string]bool{
 					"foo": true,
 				},
@@ -233,7 +233,7 @@ func TestBp2BuildAllowlist(t *testing.T) {
 				},
 				BazelModuleBase: bazelableBazelModuleBase,
 			},
-			allowlist: bp2BuildConversionAllowlist{
+			allowlist: Bp2BuildConversionAllowlist{
 				moduleAlwaysConvert: map[string]bool{
 					"foo": true,
 				},
@@ -254,7 +254,7 @@ func TestBp2BuildAllowlist(t *testing.T) {
 				},
 				BazelModuleBase: bazelableBazelModuleBase,
 			},
-			allowlist: bp2BuildConversionAllowlist{
+			allowlist: Bp2BuildConversionAllowlist{
 				moduleAlwaysConvert: map[string]bool{
 					"foo": true,
 				},
@@ -264,30 +264,9 @@ func TestBp2BuildAllowlist(t *testing.T) {
 			},
 		},
 		{
-			description:    "module in allowlist and existing BUILD file",
-			shouldConvert:  false,
-			expectedErrors: []string{"A module cannot be in a directory listed in keepExistingBuildFile and also be in moduleAlwaysConvert. Directory: 'existing/build/dir'"},
-			module: TestBazelModule{
-				TestModuleInfo: bazel.TestModuleInfo{
-					ModuleName: "foo",
-					Typ:        "rule1",
-					Dir:        "existing/build/dir",
-				},
-				BazelModuleBase: bazelableBazelModuleBase,
-			},
-			allowlist: bp2BuildConversionAllowlist{
-				moduleAlwaysConvert: map[string]bool{
-					"foo": true,
-				},
-				keepExistingBuildFile: map[string]bool{
-					"existing/build/dir": true,
-				},
-			},
-		},
-		{
 			description:    "module allowlist and enabled directory",
 			shouldConvert:  false,
-			expectedErrors: []string{"A module cannot be in a directory marked Bp2BuildDefaultTrue or Bp2BuildDefaultTrueRecursively and also be in moduleAlwaysConvert. Directory: 'existing/build/dir'"},
+			expectedErrors: []string{"A module cannot be in a directory marked Bp2BuildDefaultTrue or Bp2BuildDefaultTrueRecursively and also be in moduleAlwaysConvert. Directory: 'existing/build/dir' Module: 'foo'"},
 			module: TestBazelModule{
 				TestModuleInfo: bazel.TestModuleInfo{
 					ModuleName: "foo",
@@ -296,7 +275,7 @@ func TestBp2BuildAllowlist(t *testing.T) {
 				},
 				BazelModuleBase: bazelableBazelModuleBase,
 			},
-			allowlist: bp2BuildConversionAllowlist{
+			allowlist: Bp2BuildConversionAllowlist{
 				moduleAlwaysConvert: map[string]bool{
 					"foo": true,
 				},
@@ -308,7 +287,7 @@ func TestBp2BuildAllowlist(t *testing.T) {
 		{
 			description:    "module allowlist and enabled subdirectory",
 			shouldConvert:  false,
-			expectedErrors: []string{"A module cannot be in a directory marked Bp2BuildDefaultTrue or Bp2BuildDefaultTrueRecursively and also be in moduleAlwaysConvert. Directory: 'existing/build/dir'"},
+			expectedErrors: []string{"A module cannot be in a directory marked Bp2BuildDefaultTrue or Bp2BuildDefaultTrueRecursively and also be in moduleAlwaysConvert. Directory: 'existing/build/dir' Module: 'foo'"},
 			module: TestBazelModule{
 				TestModuleInfo: bazel.TestModuleInfo{
 					ModuleName: "foo",
@@ -317,7 +296,7 @@ func TestBp2BuildAllowlist(t *testing.T) {
 				},
 				BazelModuleBase: bazelableBazelModuleBase,
 			},
-			allowlist: bp2BuildConversionAllowlist{
+			allowlist: Bp2BuildConversionAllowlist{
 				moduleAlwaysConvert: map[string]bool{
 					"foo": true,
 				},
@@ -344,7 +323,7 @@ func TestBp2BuildAllowlist(t *testing.T) {
 					},
 				},
 			},
-			allowlist: bp2BuildConversionAllowlist{
+			allowlist: Bp2BuildConversionAllowlist{
 				moduleAlwaysConvert: map[string]bool{
 					"foo": true,
 				},

@@ -71,7 +71,7 @@ func errored(t *testing.T, tc Bp2buildTestCase, errs []error) bool {
 	return false
 }
 
-func runBp2BuildTestCaseSimple(t *testing.T, tc Bp2buildTestCase) {
+func RunBp2BuildTestCaseSimple(t *testing.T, tc Bp2buildTestCase) {
 	t.Helper()
 	RunBp2BuildTestCase(t, func(ctx android.RegistrationContext) {}, tc)
 }
@@ -141,7 +141,7 @@ func RunBp2BuildTestCase(t *testing.T, registerModuleTypes func(ctx android.Regi
 		android.FailIfErrored(t, errs)
 	}
 	if actualCount, expectedCount := len(bazelTargets), len(tc.ExpectedBazelTargets); actualCount != expectedCount {
-		t.Errorf("%s: Expected %d bazel target (%s), got `%d`` (%s)",
+		t.Errorf("%s: Expected %d bazel target (%s), got %d (%s)",
 			tc.Description, expectedCount, tc.ExpectedBazelTargets, actualCount, bazelTargets)
 	} else {
 		for i, target := range bazelTargets {
@@ -384,6 +384,9 @@ func customBp2buildOneToMany(ctx android.TopDownMutatorContext, m *customModule)
 func generateBazelTargetsForDir(codegenCtx *CodegenContext, dir string) (BazelTargets, []error) {
 	// TODO: Set generateFilegroups to true and/or remove the generateFilegroups argument completely
 	res, err := GenerateBazelTargets(codegenCtx, false)
+	if err != nil {
+		return BazelTargets{}, err
+	}
 	return res.buildFileToTargets[dir], err
 }
 
@@ -426,7 +429,9 @@ func makeBazelTargetHostOrDevice(typ, name string, attrs AttrNameToString, hod a
 	}
 
 	attrStrings := make([]string, 0, len(attrs)+1)
-	attrStrings = append(attrStrings, fmt.Sprintf(`    name = "%s",`, name))
+	if name != "" {
+		attrStrings = append(attrStrings, fmt.Sprintf(`    name = "%s",`, name))
+	}
 	for _, k := range android.SortedStringKeys(attrs) {
 		attrStrings = append(attrStrings, fmt.Sprintf("    %s = %s,", k, attrs[k]))
 	}
@@ -444,6 +449,37 @@ func MakeBazelTargetNoRestrictions(typ, name string, attrs AttrNameToString) str
 
 // makeBazelTargetNoRestrictions returns bazel target build file definition that is device specific
 // as this is the most common default in Soong.
-func makeBazelTarget(typ, name string, attrs AttrNameToString) string {
+func MakeBazelTarget(typ, name string, attrs AttrNameToString) string {
 	return makeBazelTargetHostOrDevice(typ, name, attrs, android.DeviceSupported)
+}
+
+type ExpectedRuleTarget struct {
+	Rule  string
+	Name  string
+	Attrs AttrNameToString
+	Hod   android.HostOrDeviceSupported
+}
+
+func (ebr ExpectedRuleTarget) String() string {
+	return makeBazelTargetHostOrDevice(ebr.Rule, ebr.Name, ebr.Attrs, ebr.Hod)
+}
+
+func makeCcStubSuiteTargets(name string, attrs AttrNameToString) string {
+	if _, hasStubs := attrs["stubs_symbol_file"]; !hasStubs {
+		return ""
+	}
+	STUB_SUITE_ATTRS := map[string]string{
+		"stubs_symbol_file": "symbol_file",
+		"stubs_versions":    "versions",
+		"soname":            "soname",
+		"source_library":    "source_library",
+	}
+
+	stubSuiteAttrs := AttrNameToString{}
+	for key, _ := range attrs {
+		if _, stubSuiteAttr := STUB_SUITE_ATTRS[key]; stubSuiteAttr {
+			stubSuiteAttrs[STUB_SUITE_ATTRS[key]] = attrs[key]
+		}
+	}
+	return MakeBazelTarget("cc_stub_suite", name+"_stub_libs", stubSuiteAttrs)
 }

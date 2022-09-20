@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/google/blueprint/proptools"
@@ -670,10 +671,11 @@ func generatePrebuiltSnapshot(s snapshot.SnapshotSingleton, ctx android.Singleto
 // For Bazel / bp2build
 
 type bazelPrebuiltFileAttributes struct {
-	Src         bazel.LabelAttribute
-	Filename    string
-	Dir         string
-	Installable bazel.BoolAttribute
+	Src               bazel.LabelAttribute
+	Filename          bazel.LabelAttribute
+	Dir               string
+	Installable       bazel.BoolAttribute
+	Filename_from_src bazel.BoolAttribute
 }
 
 // ConvertWithBp2build performs bp2build conversion of PrebuiltEtc
@@ -691,11 +693,37 @@ func (module *PrebuiltEtc) ConvertWithBp2build(ctx android.TopDownMutatorContext
 				src.SetSelectValue(axis, config, label)
 			}
 		}
+
+		for propName, productConfigProps := range android.ProductVariableProperties(ctx) {
+			for configProp, propVal := range productConfigProps {
+				if propName == "Src" {
+					props, ok := propVal.(*string)
+					if !ok {
+						ctx.PropertyErrorf(" Expected Property to have type string, but was %s\n", reflect.TypeOf(propVal).String())
+						continue
+					}
+					if props != nil {
+						label := android.BazelLabelForModuleSrcSingle(ctx, *props)
+						src.SetSelectValue(configProp.ConfigurationAxis(), configProp.SelectKey(), label)
+					}
+				}
+			}
+		}
 	}
 
 	var filename string
-	if module.properties.Filename != nil {
-		filename = *module.properties.Filename
+	var filenameFromSrc bool
+	moduleProps := module.properties
+
+	if moduleProps.Filename != nil && *moduleProps.Filename != "" {
+		filename = *moduleProps.Filename
+	} else if moduleProps.Filename_from_src != nil && *moduleProps.Filename_from_src {
+		if moduleProps.Src != nil {
+			filename = *moduleProps.Src
+		}
+		filenameFromSrc = true
+	} else {
+		filename = ctx.ModuleName()
 	}
 
 	var dir = module.installDirBase
@@ -714,9 +742,14 @@ func (module *PrebuiltEtc) ConvertWithBp2build(ctx android.TopDownMutatorContext
 
 	attrs := &bazelPrebuiltFileAttributes{
 		Src:         src,
-		Filename:    filename,
 		Dir:         dir,
 		Installable: installable,
+	}
+
+	if filename != "" {
+		attrs.Filename = bazel.LabelAttribute{Value: &bazel.Label{Label: filename}}
+	} else if filenameFromSrc {
+		attrs.Filename_from_src = bazel.BoolAttribute{Value: moduleProps.Filename_from_src}
 	}
 
 	props := bazel.BazelTargetModuleProperties{

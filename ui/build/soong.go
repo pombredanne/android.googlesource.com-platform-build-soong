@@ -32,7 +32,6 @@ import (
 
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/bootstrap"
-	"github.com/google/blueprint/deptools"
 	"github.com/google/blueprint/microfactory"
 
 	"google.golang.org/protobuf/proto"
@@ -170,9 +169,8 @@ func primaryBuilderInvocation(
 
 	commonArgs = append(commonArgs, "-l", filepath.Join(config.FileListDir(), "Android.bp.list"))
 	invocationEnv := make(map[string]string)
-	debugMode := os.Getenv("SOONG_DELVE") != ""
-
-	if debugMode {
+	if os.Getenv("SOONG_DELVE") != "" {
+		//debug mode
 		commonArgs = append(commonArgs, "--delve_listen", os.Getenv("SOONG_DELVE"))
 		commonArgs = append(commonArgs, "--delve_path", shared.ResolveDelveBinary())
 		// GODEBUG=asyncpreemptoff=1 disables the preemption of goroutines. This
@@ -187,7 +185,7 @@ func primaryBuilderInvocation(
 		invocationEnv["GODEBUG"] = "asyncpreemptoff=1"
 	}
 
-	allArgs := make([]string, 0, 0)
+	var allArgs []string
 	allArgs = append(allArgs, specificArgs...)
 	allArgs = append(allArgs,
 		"--globListDir", name,
@@ -350,12 +348,9 @@ func bootstrapBlueprint(ctx Context, config Config) {
 			soongDocsInvocation},
 	}
 
-	bootstrapDeps := bootstrap.RunBlueprint(blueprintArgs, bootstrap.DoEverything, blueprintCtx, blueprintConfig)
-	bootstrapDepFile := shared.JoinPath(config.SoongOutDir(), "bootstrap.ninja.d")
-	err := deptools.WriteDepFile(bootstrapDepFile, blueprintArgs.OutFile, bootstrapDeps)
-	if err != nil {
-		ctx.Fatalf("Error writing depfile '%s': %s", bootstrapDepFile, err)
-	}
+	// since `bootstrap.ninja` is regenerated unconditionally, we ignore the deps, i.e. little
+	// reason to write a `bootstrap.ninja.d` file
+	_ = bootstrap.RunBlueprint(blueprintArgs, bootstrap.DoEverything, blueprintCtx, blueprintConfig)
 }
 
 func checkEnvironmentFile(currentEnv *Environment, envFile string) {

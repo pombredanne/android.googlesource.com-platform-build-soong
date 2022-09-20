@@ -213,8 +213,8 @@ func (ctx *TestContext) FinalDepsMutators(f RegisterMutatorFunc) {
 	ctx.finalDeps = append(ctx.finalDeps, f)
 }
 
-func (ctx *TestContext) RegisterBp2BuildConfig(config bp2BuildConversionAllowlist) {
-	ctx.config.bp2buildPackageConfig = config
+func (ctx *TestContext) RegisterBp2BuildConfig(config Bp2BuildConversionAllowlist) {
+	ctx.config.Bp2buildPackageConfig = config
 }
 
 // PreArchBp2BuildMutators adds mutators to be register for converting Android Blueprint modules
@@ -1037,7 +1037,7 @@ func FailIfNoMatchingErrors(t *testing.T, pattern string, errs []error) bool {
 		}
 	}
 	if !found {
-		t.Errorf("missing the expected error %q (checked %d error(s))", pattern, len(errs))
+		t.Errorf("could not match the expected error regex %q (checked %d error(s))", pattern, len(errs))
 		for i, err := range errs {
 			t.Errorf("errs[%d] = %q", i, err)
 		}

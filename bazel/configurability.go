@@ -16,6 +16,8 @@ package bazel
 
 import (
 	"fmt"
+	"math"
+	"sort"
 	"strings"
 )
 
@@ -67,7 +69,75 @@ const (
 
 	AndroidAndInApex  = "android-in_apex"
 	AndroidAndNonApex = "android-non_apex"
+
+	InApex  = "in_apex"
+	NonApex = "non_apex"
 )
+
+func PowerSetWithoutEmptySet[T any](items []T) [][]T {
+	resultSize := int(math.Pow(2, float64(len(items))))
+	powerSet := make([][]T, 0, resultSize-1)
+	for i := 1; i < resultSize; i++ {
+		combination := make([]T, 0)
+		for j := 0; j < len(items); j++ {
+			if (i>>j)%2 == 1 {
+				combination = append(combination, items[j])
+			}
+		}
+		powerSet = append(powerSet, combination)
+	}
+	return powerSet
+}
+
+func createPlatformArchMap() map[string]string {
+	// Copy of archFeatures from android/arch_list.go because the bazel
+	// package can't access the android package
+	archFeatures := map[string][]string{
+		"arm": {
+			"neon",
+		},
+		"arm64": {
+			"dotprod",
+		},
+		"x86": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"aes_ni",
+			"avx",
+			"avx2",
+			"avx512",
+			"popcnt",
+			"movbe",
+		},
+		"x86_64": {
+			"ssse3",
+			"sse4",
+			"sse4_1",
+			"sse4_2",
+			"aes_ni",
+			"avx",
+			"avx2",
+			"avx512",
+			"popcnt",
+		},
+	}
+	result := make(map[string]string)
+	for arch, allFeatures := range archFeatures {
+		result[arch] = "//build/bazel/platforms/arch:" + arch
+		// Sometimes we want to select on multiple features being active, so
+		// add the power set of all possible features to the map. More details
+		// in android.ModuleBase.GetArchVariantProperties
+		for _, features := range PowerSetWithoutEmptySet(allFeatures) {
+			sort.Strings(features)
+			archFeaturesName := arch + "-" + strings.Join(features, "-")
+			result[archFeaturesName] = "//build/bazel/platforms/arch/variants:" + archFeaturesName
+		}
+	}
+	result[ConditionsDefaultConfigKey] = ConditionsDefaultSelectKey
+	return result
+}
 
 var (
 	// These are the list of OSes and architectures with a Bazel config_setting
@@ -77,13 +147,7 @@ var (
 
 	// A map of architectures to the Bazel label of the constraint_value
 	// for the @platforms//cpu:cpu constraint_setting
-	platformArchMap = map[string]string{
-		archArm:                    "//build/bazel/platforms/arch:arm",
-		archArm64:                  "//build/bazel/platforms/arch:arm64",
-		archX86:                    "//build/bazel/platforms/arch:x86",
-		archX86_64:                 "//build/bazel/platforms/arch:x86_64",
-		ConditionsDefaultConfigKey: ConditionsDefaultSelectKey, // The default condition of as arch select map.
-	}
+	platformArchMap = createPlatformArchMap()
 
 	// A map of target operating systems to the Bazel label of the
 	// constraint_value for the @platforms//os:os constraint_setting
@@ -137,6 +201,12 @@ var (
 		AndroidAndNonApex:          "//build/bazel/rules/apex:android-non_apex",
 		ConditionsDefaultConfigKey: ConditionsDefaultSelectKey,
 	}
+
+	inApexMap = map[string]string{
+		InApex:                     "//build/bazel/rules/apex:in_apex",
+		NonApex:                    "//build/bazel/rules/apex:non_apex",
+		ConditionsDefaultConfigKey: ConditionsDefaultSelectKey,
+	}
 )
 
 // basic configuration types
@@ -149,6 +219,7 @@ const (
 	osArch
 	productVariables
 	osAndInApex
+	inApex
 )
 
 func osArchString(os string, arch string) string {
@@ -163,6 +234,7 @@ func (ct configurationType) String() string {
 		osArch:           "arch_os",
 		productVariables: "product_variables",
 		osAndInApex:      "os_in_apex",
+		inApex:           "in_apex",
 	}[ct]
 }
 
@@ -190,6 +262,10 @@ func (ct configurationType) validateConfig(config string) {
 		if _, ok := osAndInApexMap[config]; !ok {
 			panic(fmt.Errorf("Unknown os+in_apex config: %s", config))
 		}
+	case inApex:
+		if _, ok := inApexMap[config]; !ok {
+			panic(fmt.Errorf("Unknown in_apex config: %s", config))
+		}
 	default:
 		panic(fmt.Errorf("Unrecognized ConfigurationType %d", ct))
 	}
@@ -215,6 +291,8 @@ func (ca ConfigurationAxis) SelectKey(config string) string {
 		return fmt.Sprintf("%s:%s", productVariableBazelPackage, config)
 	case osAndInApex:
 		return osAndInApexMap[config]
+	case inApex:
+		return inApexMap[config]
 	default:
 		panic(fmt.Errorf("Unrecognized ConfigurationType %d", ca.configurationType))
 	}
@@ -231,13 +309,16 @@ var (
 	OsArchConfigurationAxis = ConfigurationAxis{configurationType: osArch}
 	// An axis for os+in_apex-specific configurations
 	OsAndInApexAxis = ConfigurationAxis{configurationType: osAndInApex}
+	// An axis for in_apex-specific configurations
+	InApexAxis = ConfigurationAxis{configurationType: inApex}
 )
 
 // ProductVariableConfigurationAxis returns an axis for the given product variable
-func ProductVariableConfigurationAxis(variable string) ConfigurationAxis {
+func ProductVariableConfigurationAxis(variable string, outerAxis ConfigurationAxis) ConfigurationAxis {
 	return ConfigurationAxis{
 		configurationType: productVariables,
 		subType:           variable,
+		outerAxisType:     outerAxis.configurationType,
 	}
 }
 
@@ -248,6 +329,8 @@ type ConfigurationAxis struct {
 	// some configuration types (e.g. productVariables) have multiple independent axes, subType helps
 	// distinguish between them without needing to list all 17 product variables.
 	subType string
+	// used to keep track of which product variables are arch variant
+	outerAxisType configurationType
 }
 
 func (ca *ConfigurationAxis) less(other ConfigurationAxis) bool {

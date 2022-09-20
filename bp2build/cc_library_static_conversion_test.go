@@ -173,7 +173,7 @@ cc_library_static {
     // TODO: Also support export_header_lib_headers
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"absolute_includes": `[
         "include_dir_1",
         "include_dir_2",
@@ -238,7 +238,7 @@ cc_library_static {
     ],
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"absolute_includes": `["subpackage"]`,
 				"local_includes":    `["."]`,
 			}),
@@ -262,7 +262,7 @@ cc_library_static {
     include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"export_includes": `["subpackage"]`,
 			}),
 		},
@@ -285,7 +285,7 @@ cc_library_static {
     include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"export_system_includes": `["subpackage"]`,
 			}),
 		},
@@ -320,7 +320,7 @@ cc_library_static {
 		},
 		Blueprint: soongCcLibraryStaticPreamble,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"absolute_includes": `[
         "subpackage/subsubpackage",
         "subpackage2",
@@ -352,7 +352,7 @@ cc_library_static {
     include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"absolute_includes": `["subpackage"]`,
 				"local_includes":    `["subpackage2"]`,
 			}),
@@ -379,7 +379,7 @@ cc_library_static {
     include_build_directory: true,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"absolute_includes": `["subpackage"]`,
 				"local_includes": `[
         "subpackage2",
@@ -409,7 +409,7 @@ cc_library_static {
     include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"implementation_deps": `select({
         "//build/bazel/platforms/arch:arm64": [":static_dep"],
         "//conditions:default": [],
@@ -442,7 +442,7 @@ cc_library_static {
     include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"implementation_deps": `select({
         "//build/bazel/platforms/os:android": [":static_dep"],
         "//conditions:default": [],
@@ -486,7 +486,7 @@ cc_library_static {
     include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"implementation_deps": `[":static_dep"] + select({
         "//build/bazel/platforms/arch:arm64": [":static_dep4"],
         "//conditions:default": [],
@@ -516,7 +516,7 @@ cc_library_static {
     include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"srcs_c": `[
         "common.c",
         "foo-a.c",
@@ -541,7 +541,7 @@ cc_library_static {
     include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"srcs_c": `["common.c"] + select({
         "//build/bazel/platforms/arch:arm": ["foo-arm.c"],
         "//conditions:default": [],
@@ -571,7 +571,7 @@ cc_library_static {
     include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"srcs_c": `["common.c"] + select({
         "//build/bazel/platforms/arch:arm": ["for-arm.c"],
         "//conditions:default": ["not-for-arm.c"],
@@ -603,7 +603,7 @@ cc_library_static {
     include_build_directory: false,
 } `,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"srcs_c": `["common.c"] + select({
         "//build/bazel/platforms/arch:arm": [
             "not-for-x86.c",
@@ -652,7 +652,7 @@ cc_library_static {
     include_build_directory: false,
 } `,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"srcs_c": `["common.c"] + select({
         "//build/bazel/platforms/arch:arm": [
             "not-for-arm64.c",
@@ -709,7 +709,7 @@ cc_library_static {
     include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"srcs": `["common.cc"] + select({
         "//build/bazel/platforms/arch:arm": [],
         "//conditions:default": ["foo-no-arm.cc"],
@@ -740,7 +740,7 @@ cc_library_static {
     include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"srcs": `["common.cc"] + select({
         "//build/bazel/platforms/arch:arm": [],
         "//build/bazel/platforms/arch:x86": [
@@ -769,7 +769,7 @@ cc_library_static {
     include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"implementation_deps": `[":static_dep"]`,
 			}),
 		},
@@ -794,7 +794,7 @@ cc_library_static {
     include_build_directory: false,
 } `,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"srcs_c": `["common.c"] + select({
         "//build/bazel/platforms/arch:arm": ["for-lib32.c"],
         "//build/bazel/platforms/arch:x86": ["for-lib32.c"],
@@ -826,7 +826,7 @@ cc_library_static {
     include_build_directory: false,
 } `,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"srcs_c": `["common.c"] + select({
         "//build/bazel/platforms/arch:arm": [
             "not-for-lib64.c",
@@ -891,7 +891,7 @@ cc_library_static {
     include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"srcs_c": `["common.c"] + select({
         "//build/bazel/platforms/arch:arm": [
             "not-for-arm64.c",
@@ -962,7 +962,7 @@ cc_library_static {
     include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"export_includes": `["."]`,
 				"local_includes":  `["."]`,
 				"hdrs":            `[":export_generated_hdr"]`,
@@ -1030,7 +1030,7 @@ cc_library_static {
 }
 `,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"srcs": `[
         "common.cpp",
         ":generated_src",
@@ -1093,7 +1093,7 @@ cc_library_static {
     include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"srcs_c": `select({
         "//build/bazel/platforms/os:android": ["android_src.c"],
         "//conditions:default": [],
@@ -1132,7 +1132,7 @@ cc_library_static {
     include_build_directory: false,
 } `,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"copts": `select({
         "//build/bazel/product_variables:binder32bit": ["-Wbinder32bit"],
         "//conditions:default": [],
@@ -1192,7 +1192,7 @@ cc_library_static {
     include_build_directory: false,
 } `,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"copts": `select({
         "//build/bazel/product_variables:malloc_not_svelte": ["-Wmalloc_not_svelte"],
         "//conditions:default": [],
@@ -1231,7 +1231,7 @@ cc_library_static {
     include_build_directory: false,
 } `,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo_static", AttrNameToString{
 				"asflags": `select({
         "//build/bazel/product_variables:platform_sdk_version": ["-DPLATFORM_SDK_VERSION=$(Platform_sdk_version)"],
         "//conditions:default": [],
@@ -1253,7 +1253,7 @@ cc_library_static {
 }
 `,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "root_empty", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "root_empty", AttrNameToString{
 				"system_dynamic_deps": `[]`,
 			}),
 		},
@@ -1277,7 +1277,7 @@ cc_library_static {
 }
 `,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "static_empty", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "static_empty", AttrNameToString{
 				"system_dynamic_deps": `[]`,
 			}),
 		},
@@ -1299,7 +1299,7 @@ cc_library_static {
 }
 `,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "target_bionic_empty", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "target_bionic_empty", AttrNameToString{
 				"system_dynamic_deps": `[]`,
 			}),
 		},
@@ -1325,7 +1325,7 @@ cc_library_static {
 }
 `,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "target_linux_bionic_empty", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "target_linux_bionic_empty", AttrNameToString{
 				"system_dynamic_deps": `[]`,
 			}),
 		},
@@ -1348,7 +1348,7 @@ cc_library_static {
 }
 `,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "target_bionic", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "target_bionic", AttrNameToString{
 				"system_dynamic_deps": `select({
         "//build/bazel/platforms/os:android": [":libc"],
         "//build/bazel/platforms/os:linux_bionic": [":libc"],
@@ -1377,7 +1377,7 @@ cc_library_static {
 }
 `,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "target_linux_bionic", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "target_linux_bionic", AttrNameToString{
 				"system_dynamic_deps": `[":libc"] + select({
         "//build/bazel/platforms/os:linux_bionic": [":libm"],
         "//conditions:default": [],
@@ -1392,6 +1392,16 @@ func TestCcLibrarystatic_SystemSharedLibUsedAsDep(t *testing.T) {
 		Description: "cc_library_static system_shared_lib empty for linux_bionic variant",
 		Blueprint: soongCcLibraryStaticPreamble +
 			simpleModuleDoNotConvertBp2build("cc_library", "libc") + `
+
+cc_library {
+    name: "libm",
+    stubs: {
+        symbol_file: "libm.map.txt",
+        versions: ["current"],
+    },
+    bazel_module: { bp2build_available: false },
+}
+
 cc_library_static {
     name: "used_in_bionic_oses",
     target: {
@@ -1414,23 +1424,38 @@ cc_library_static {
 cc_library_static {
     name: "keep_for_empty_system_shared_libs",
     shared_libs: ["libc"],
-		system_shared_libs: [],
+    system_shared_libs: [],
+    include_build_directory: false,
+}
+
+cc_library_static {
+    name: "used_with_stubs",
+    shared_libs: ["libm"],
+    include_build_directory: false,
+}
+
+cc_library_static {
+    name: "keep_with_stubs",
+    shared_libs: ["libm"],
+    system_shared_libs: [],
     include_build_directory: false,
 }
 `,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "all", AttrNameToString{
-				"implementation_dynamic_deps": `select({
-        "//build/bazel/platforms/os:android": [],
-        "//build/bazel/platforms/os:linux_bionic": [],
-        "//conditions:default": [":libc"],
-    })`,
-			}),
-			makeBazelTarget("cc_library_static", "keep_for_empty_system_shared_libs", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "all", AttrNameToString{}),
+			MakeBazelTarget("cc_library_static", "keep_for_empty_system_shared_libs", AttrNameToString{
 				"implementation_dynamic_deps": `[":libc"]`,
 				"system_dynamic_deps":         `[]`,
 			}),
-			makeBazelTarget("cc_library_static", "used_in_bionic_oses", AttrNameToString{}),
+			MakeBazelTarget("cc_library_static", "keep_with_stubs", AttrNameToString{
+				"implementation_dynamic_deps": `select({
+        "//build/bazel/rules/apex:android-in_apex": [":libm_stub_libs_current"],
+        "//conditions:default": [":libm"],
+    })`,
+				"system_dynamic_deps": `[]`,
+			}),
+			MakeBazelTarget("cc_library_static", "used_in_bionic_oses", AttrNameToString{}),
+			MakeBazelTarget("cc_library_static", "used_with_stubs", AttrNameToString{}),
 		},
 	})
 }
@@ -1446,11 +1471,11 @@ func TestCcLibraryStaticProto(t *testing.T) {
 	include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("proto_library", "foo_proto", AttrNameToString{
+			MakeBazelTarget("proto_library", "foo_proto", AttrNameToString{
 				"srcs": `["foo.proto"]`,
-			}), makeBazelTarget("cc_lite_proto_library", "foo_cc_proto_lite", AttrNameToString{
+			}), MakeBazelTarget("cc_lite_proto_library", "foo_cc_proto_lite", AttrNameToString{
 				"deps": `[":foo_proto"]`,
-			}), makeBazelTarget("cc_library_static", "foo", AttrNameToString{
+			}), MakeBazelTarget("cc_library_static", "foo", AttrNameToString{
 				"deps":               `[":libprotobuf-cpp-lite"]`,
 				"whole_archive_deps": `[":foo_cc_proto_lite"]`,
 			}),
@@ -1460,14 +1485,37 @@ func TestCcLibraryStaticProto(t *testing.T) {
 
 func TestCcLibraryStaticUseVersionLib(t *testing.T) {
 	runCcLibraryStaticTestCase(t, Bp2buildTestCase{
+		Filesystem: map[string]string{
+			soongCcVersionLibBpPath: soongCcVersionLibBp,
+		},
 		Blueprint: soongCcProtoPreamble + `cc_library_static {
 	name: "foo",
 	use_version_lib: true,
+	static_libs: ["libbuildversion"],
 	include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo", AttrNameToString{
-				"use_version_lib": "True",
+			MakeBazelTarget("cc_library_static", "foo", AttrNameToString{
+				"implementation_whole_archive_deps": `["//build/soong/cc/libbuildversion:libbuildversion"]`,
+			}),
+		},
+	})
+}
+
+func TestCcLibraryStaticUseVersionLibHasDep(t *testing.T) {
+	runCcLibraryStaticTestCase(t, Bp2buildTestCase{
+		Filesystem: map[string]string{
+			soongCcVersionLibBpPath: soongCcVersionLibBp,
+		},
+		Blueprint: soongCcProtoPreamble + `cc_library_static {
+	name: "foo",
+	use_version_lib: true,
+	whole_static_libs: ["libbuildversion"],
+	include_build_directory: false,
+}`,
+		ExpectedBazelTargets: []string{
+			MakeBazelTarget("cc_library_static", "foo", AttrNameToString{
+				"whole_archive_deps": `["//build/soong/cc/libbuildversion:libbuildversion"]`,
 			}),
 		},
 	})
@@ -1483,7 +1531,7 @@ func TestCcLibraryStaticStdInFlags(t *testing.T) {
 	include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_static", "foo", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo", AttrNameToString{
 				"conlyflags": `["-std=conly"]`,
 				"cppflags":   `["-std=cpp"]`,
 			}),
@@ -1553,7 +1601,7 @@ func TestCcLibraryStaticStl(t *testing.T) {
 	%s
 }`, tc.prop),
 				ExpectedBazelTargets: []string{
-					makeBazelTarget("cc_library_static", "foo", tc.attr),
+					MakeBazelTarget("cc_library_static", "foo", tc.attr),
 				},
 			})
 		})
@@ -1571,10 +1619,10 @@ cc_library_static {
   runtime_libs: ["foo"],
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("cc_library_shared", "bar", AttrNameToString{
+			MakeBazelTarget("cc_library_shared", "bar", AttrNameToString{
 				"local_includes": `["."]`,
 			}),
-			makeBazelTarget("cc_library_static", "foo", AttrNameToString{
+			MakeBazelTarget("cc_library_static", "foo", AttrNameToString{
 				"runtime_deps":   `[":foo"]`,
 				"local_includes": `["."]`,
 			}),

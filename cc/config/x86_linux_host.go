@@ -109,7 +109,7 @@ var (
 	}, "-l")
 
 	muslCrtBeginStaticBinary, muslCrtEndStaticBinary   = []string{"libc_musl_crtbegin_static"}, []string{"libc_musl_crtend"}
-	muslCrtBeginSharedBinary, muslCrtEndSharedBinary   = []string{"libc_musl_crtbegin_dynamic", "musl_linker_script"}, []string{"libc_musl_crtend"}
+	muslCrtBeginSharedBinary, muslCrtEndSharedBinary   = []string{"libc_musl_crtbegin_dynamic"}, []string{"libc_musl_crtend"}
 	muslCrtBeginSharedLibrary, muslCrtEndSharedLibrary = []string{"libc_musl_crtbegin_so"}, []string{"libc_musl_crtend_so"}
 
 	muslDefaultSharedLibraries = []string{"libc_musl"}
@@ -158,6 +158,7 @@ func init() {
 }
 
 type toolchainLinux struct {
+	toolchainBase
 	cFlags, ldFlags string
 }
 
@@ -247,9 +248,18 @@ func (t *toolchainLinux) AvailableLibraries() []string {
 	return linuxAvailableLibraries
 }
 
+func (toolchainLinux) ShlibSuffix() string {
+	return ".so"
+}
+
+func (toolchainLinux) ExecutableSuffix() string {
+	return ""
+}
+
 // glibc specialization of the linux toolchain
 
 type toolchainGlibc struct {
+	toolchainNoCrt
 }
 
 func (toolchainGlibc) Glibc() bool { return true }
