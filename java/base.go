@@ -169,6 +169,8 @@ type CommonProperties struct {
 		Output_params []string
 	}
 
+	// If true, then jacocoagent is automatically added as a libs dependency so that
+	// r8 will not strip instrumentation classes out of dexed libraries.
 	Instrument bool `blueprint:"mutated"`
 	// If true, then the module supports statically including the jacocoagent
 	// into the library.
@@ -263,6 +265,9 @@ type DeviceProperties struct {
 	// Only for libraries created by a sysprop_library module, SyspropPublicStub is the name of the
 	// public stubs library.
 	SyspropPublicStub string `blueprint:"mutated"`
+
+	HiddenAPIPackageProperties
+	HiddenAPIFlagFileProperties
 }
 
 // Device properties that can be overridden by overriding module (e.g. override_android_app)
@@ -563,6 +568,20 @@ func (j *Module) addHostAndDeviceProperties() {
 	)
 }
 
+// provideHiddenAPIPropertyInfo populates a HiddenAPIPropertyInfo from hidden API properties and
+// makes it available through the hiddenAPIPropertyInfoProvider.
+func (j *Module) provideHiddenAPIPropertyInfo(ctx android.ModuleContext) {
+	hiddenAPIInfo := newHiddenAPIPropertyInfo()
+
+	// Populate with flag file paths from the properties.
+	hiddenAPIInfo.extractFlagFilesFromProperties(ctx, &j.deviceProperties.HiddenAPIFlagFileProperties)
+
+	// Populate with package rules from the properties.
+	hiddenAPIInfo.extractPackageRulesFromProperties(&j.deviceProperties.HiddenAPIPackageProperties)
+
+	ctx.SetProvider(hiddenAPIPropertyInfoProvider, hiddenAPIInfo)
+}
+
 func (j *Module) OutputFiles(tag string) (android.Paths, error) {
 	switch tag {
 	case "":
@@ -628,6 +647,10 @@ func (j *Module) shouldInstrumentInApex(ctx android.BaseModuleContext) bool {
 		}
 	}
 	return false
+}
+
+func (j *Module) setInstrument(value bool) {
+	j.properties.Instrument = value
 }
 
 func (j *Module) SdkVersion(ctx android.EarlyModuleContext) android.SdkSpec {
@@ -1392,10 +1415,6 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 		j.headerJarFile = j.implementationJarFile
 	}
 
-	if j.shouldInstrumentInApex(ctx) {
-		j.properties.Instrument = true
-	}
-
 	// enforce syntax check to jacoco filters for any build (http://b/183622051)
 	specs := j.jacocoModuleToZipCommand(ctx)
 	if ctx.Failed() {
@@ -1419,17 +1438,18 @@ func (j *Module) compile(ctx android.ModuleContext, aaptSrcJar android.Path) {
 	j.implementationAndResourcesJar = implementationAndResourcesJar
 
 	// Enable dex compilation for the APEX variants, unless it is disabled explicitly
+	compileDex := j.dexProperties.Compile_dex
 	apexInfo := ctx.Provider(android.ApexInfoProvider).(android.ApexInfo)
 	if j.DirectlyInAnyApex() && !apexInfo.IsForPlatform() {
-		if j.dexProperties.Compile_dex == nil {
-			j.dexProperties.Compile_dex = proptools.BoolPtr(true)
+		if compileDex == nil {
+			compileDex = proptools.BoolPtr(true)
 		}
 		if j.deviceProperties.Hostdex == nil {
 			j.deviceProperties.Hostdex = proptools.BoolPtr(true)
 		}
 	}
 
-	if ctx.Device() && (Bool(j.properties.Installable) || Bool(j.dexProperties.Compile_dex)) {
+	if ctx.Device() && (Bool(j.properties.Installable) || Bool(compileDex)) {
 		if j.hasCode(ctx) {
 			if j.shouldInstrumentStatic(ctx) {
 				j.dexer.extraProguardFlagFiles = append(j.dexer.extraProguardFlagFiles,
@@ -1914,6 +1934,9 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			case bootClasspathTag:
 				deps.bootClasspath = append(deps.bootClasspath, dep.HeaderJars...)
 			case libTag, instrumentationForTag:
+				if _, ok := module.(*Plugin); ok {
+					ctx.ModuleErrorf("a java_plugin (%s) cannot be used as a libs dependency", otherName)
+				}
 				deps.classpath = append(deps.classpath, dep.HeaderJars...)
 				deps.dexClasspath = append(deps.dexClasspath, dep.HeaderJars...)
 				deps.aidlIncludeDirs = append(deps.aidlIncludeDirs, dep.AidlIncludeDirs...)
@@ -1922,6 +1945,9 @@ func (j *Module) collectDeps(ctx android.ModuleContext) deps {
 			case java9LibTag:
 				deps.java9Classpath = append(deps.java9Classpath, dep.HeaderJars...)
 			case staticLibTag:
+				if _, ok := module.(*Plugin); ok {
+					ctx.ModuleErrorf("a java_plugin (%s) cannot be used as a static_libs dependency", otherName)
+				}
 				deps.classpath = append(deps.classpath, dep.HeaderJars...)
 				deps.staticJars = append(deps.staticJars, dep.ImplementationJars...)
 				deps.staticHeaderJars = append(deps.staticHeaderJars, dep.HeaderJars...)

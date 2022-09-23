@@ -5931,7 +5931,7 @@ func TestApexAvailable_DirectDep(t *testing.T) {
 func TestApexAvailable_IndirectDep(t *testing.T) {
 	// libbbaz is an indirect dep
 	testApexError(t, `requires "libbaz" that doesn't list the APEX under 'apex_available'.\n\nDependency path:
-.*via tag apex\.dependencyTag.*name:sharedLib.*
+.*via tag apex\.dependencyTag\{"sharedLib"\}
 .*-> libfoo.*link:shared.*
 .*via tag cc\.libraryDependencyTag.*Kind:sharedLibraryDependency.*
 .*-> libbar.*link:shared.*
@@ -6227,6 +6227,9 @@ func TestOverrideApex(t *testing.T) {
 			name: "mybootclasspath_fragment",
 			contents: ["bcplib"],
 			apex_available: ["myapex"],
+			hidden_api: {
+				split_packages: ["*"],
+			},
 		}
 
 		java_library {
@@ -6241,6 +6244,9 @@ func TestOverrideApex(t *testing.T) {
 			name: "override_bootclasspath_fragment",
 			contents: ["override_bcplib"],
 			apex_available: ["myapex"],
+			hidden_api: {
+				split_packages: ["*"],
+			},
 		}
 
 		java_library {
@@ -7294,6 +7300,9 @@ func testNoUpdatableJarsInBootImage(t *testing.T, errmsg string, preparer androi
 			apex_available: [
 				"some-non-updatable-apex",
 			],
+			hidden_api: {
+				split_packages: ["*"],
+			},
 		}
 
 		java_library {
@@ -7352,6 +7361,9 @@ func testNoUpdatableJarsInBootImage(t *testing.T, errmsg string, preparer androi
 			apex_available: [
 				"com.android.art.debug",
 			],
+			hidden_api: {
+				split_packages: ["*"],
+			},
 		}
 
 		apex_key {
@@ -8796,6 +8808,9 @@ func TestApexJavaCoverage(t *testing.T) {
 			name: "mybootclasspathfragment",
 			contents: ["mybootclasspathlib"],
 			apex_available: ["myapex"],
+			hidden_api: {
+				split_packages: ["*"],
+			},
 		}
 
 		java_library {
@@ -8827,9 +8842,7 @@ func TestApexJavaCoverage(t *testing.T) {
 		android.FixtureWithRootAndroidBp(bp),
 		dexpreopt.FixtureSetApexBootJars("myapex:mybootclasspathlib"),
 		dexpreopt.FixtureSetApexSystemServerJars("myapex:mysystemserverclasspathlib"),
-		android.FixtureMergeEnv(map[string]string{
-			"EMMA_INSTRUMENT": "true",
-		}),
+		java.PrepareForTestWithJacocoInstrumentation,
 	).RunTest(t)
 
 	// Make sure jacoco ran on both mylib and mybootclasspathlib
@@ -9116,6 +9129,9 @@ func TestSdkLibraryCanHaveHigherMinSdkVersion(t *testing.T) {
 				name: "mybootclasspathfragment",
 				contents: ["mybootclasspathlib"],
 				apex_available: ["myapex"],
+				hidden_api: {
+					split_packages: ["*"],
+				},
 			}
 
 			java_sdk_library {
@@ -9216,6 +9232,9 @@ func TestSdkLibraryCanHaveHigherMinSdkVersion(t *testing.T) {
 					name: "mybootclasspathfragment",
 					contents: ["mybootclasspathlib"],
 					apex_available: ["myapex"],
+					hidden_api: {
+						split_packages: ["*"],
+					},
 				}
 
 				java_sdk_library {
@@ -9435,6 +9454,9 @@ func TestApexStrictUpdtabilityLintBcpFragmentDeps(t *testing.T) {
 			name: "mybootclasspathfragment",
 			contents: ["myjavalib"],
 			apex_available: ["myapex"],
+			hidden_api: {
+				split_packages: ["*"],
+			},
 		}
 		java_library {
 			name: "myjavalib",

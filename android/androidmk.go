@@ -288,6 +288,8 @@ func (a *AndroidMkEntries) AddCompatibilityTestSuites(suites ...string) {
 
 // The contributions to the dist.
 type distContributions struct {
+	// Path to license metadata file.
+	licenseMetadataFile Path
 	// List of goals and the dist copy instructions.
 	copiesForGoals []*copiesForGoals
 }
@@ -363,6 +365,10 @@ func (a *AndroidMkEntries) getDistContributions(mod blueprint.Module) *distContr
 
 	// Collate the contributions this module makes to the dist.
 	distContributions := &distContributions{}
+
+	if !exemptFromRequiredApplicableLicensesProperty(mod.(Module)) {
+		distContributions.licenseMetadataFile = amod.licenseMetadataFile
+	}
 
 	// Iterate over this module's dist structs, merged from the dist and dists properties.
 	for _, dist := range amod.Dists() {
@@ -454,6 +460,12 @@ func generateDistContributionsForMake(distContributions *distContributions) []st
 		ret = append(ret, fmt.Sprintf(".PHONY: %s\n", d.goals))
 		// Create dist-for-goals calls for each of the copy instructions.
 		for _, c := range d.copies {
+			if distContributions.licenseMetadataFile != nil {
+				ret = append(
+					ret,
+					fmt.Sprintf("$(if $(strip $(ALL_TARGETS.%s.META_LIC)),,$(eval ALL_TARGETS.%s.META_LIC := %s))\n",
+						c.from.String(), c.from.String(), distContributions.licenseMetadataFile.String()))
+			}
 			ret = append(
 				ret,
 				fmt.Sprintf("$(call dist-for-goals,%s,%s:%s)\n", d.goals, c.from.String(), c.dest))
@@ -597,7 +609,7 @@ func (a *AndroidMkEntries) fillInEntries(ctx fillInEntriesContext, mod blueprint
 	}
 
 	if len(base.noticeFiles) > 0 {
-		a.SetString("LOCAL_NOTICE_FILE", strings.Join(base.noticeFiles.Strings(), " "))
+		a.AddStrings("LOCAL_NOTICE_FILE", strings.Join(base.noticeFiles.Strings(), " "))
 	}
 
 	if host {
