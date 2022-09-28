@@ -971,6 +971,24 @@ func TestModuleTypeBp2Build(t *testing.T) {
 			},
 		},
 		{
+			Description:                "filegroup with dot-slash-prefixed srcs",
+			ModuleTypeUnderTest:        "filegroup",
+			ModuleTypeUnderTestFactory: android.FileGroupFactory,
+			Blueprint: `filegroup {
+    name: "fg_foo",
+    srcs: ["./a", "./b"],
+    bazel_module: { bp2build_available: true },
+}`,
+			ExpectedBazelTargets: []string{
+				MakeBazelTargetNoRestrictions("filegroup", "fg_foo", map[string]string{
+					"srcs": `[
+        "a",
+        "b",
+    ]`,
+				}),
+			},
+		},
+		{
 			Description:                "filegroup with excludes srcs",
 			ModuleTypeUnderTest:        "filegroup",
 			ModuleTypeUnderTestFactory: android.FileGroupFactory,
@@ -1035,6 +1053,29 @@ func TestModuleTypeBp2Build(t *testing.T) {
 }`,
 			},
 		},
+		{
+			Description:                "depends_on_other_missing_module_error",
+			ModuleTypeUnderTest:        "filegroup",
+			ModuleTypeUnderTestFactory: android.FileGroupFactory,
+			UnconvertedDepsMode:        errorModulesUnconvertedDeps,
+			Blueprint: `filegroup {
+    name: "foobar",
+    srcs: [
+        "c",
+        "//other:foo",
+        "//other:goo",
+    ],
+    bazel_module: { bp2build_available: true },
+}`,
+			ExpectedErr: fmt.Errorf(`filegroup .:foobar depends on missing modules: //other:goo`),
+			Filesystem: map[string]string{"other/Android.bp": `filegroup {
+    name: "foo",
+    srcs: ["a"],
+    bazel_module: { bp2build_available: true },
+}
+`,
+			},
+		},
 	}
 
 	for _, testCase := range testCases {
@@ -1043,8 +1084,6 @@ func TestModuleTypeBp2Build(t *testing.T) {
 		})
 	}
 }
-
-type bp2buildMutator = func(android.TopDownMutatorContext)
 
 func TestAllowlistingBp2buildTargetsExplicitly(t *testing.T) {
 	testCases := []struct {
@@ -1781,4 +1820,31 @@ filegroup {
 			RunBp2BuildTestCaseSimple(t, tc)
 		})
 	}
+}
+
+func TestLicensesAttrConversion(t *testing.T) {
+	RunBp2BuildTestCase(t,
+		func(ctx android.RegistrationContext) {
+			ctx.RegisterModuleType("license", android.LicenseFactory)
+		},
+		Bp2buildTestCase{
+			Description:                "Test that licenses: attribute is converted",
+			ModuleTypeUnderTest:        "filegroup",
+			ModuleTypeUnderTestFactory: android.FileGroupFactory,
+			Blueprint: `
+license {
+    name: "my_license",
+}
+filegroup {
+    name: "my_filegroup",
+    licenses: ["my_license"],
+}
+`,
+			ExpectedBazelTargets: []string{
+				MakeBazelTargetNoRestrictions("filegroup", "my_filegroup", AttrNameToString{
+					"applicable_licenses": `[":my_license"]`,
+				}),
+				MakeBazelTargetNoRestrictions("android_license", "my_license", AttrNameToString{}),
+			},
+		})
 }
