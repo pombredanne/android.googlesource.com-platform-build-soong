@@ -45,6 +45,7 @@ const (
 	bp2buildTag        = "bp2build"
 	jsonModuleGraphTag = "modulegraph"
 	queryviewTag       = "queryview"
+	apiBp2buildTag     = "api_bp2build"
 	soongDocsTag       = "soong_docs"
 
 	// bootstrapEpoch is used to determine if an incremental build is incompatible with the current
@@ -237,6 +238,7 @@ func bootstrapGlobFileList(config Config) []string {
 		config.NamedGlobFile(bp2buildTag),
 		config.NamedGlobFile(jsonModuleGraphTag),
 		config.NamedGlobFile(queryviewTag),
+		config.NamedGlobFile(apiBp2buildTag),
 		config.NamedGlobFile(soongDocsTag),
 	}
 }
@@ -307,6 +309,19 @@ func bootstrapBlueprint(ctx Context, config Config) {
 		fmt.Sprintf("generating the Soong module graph as a Bazel workspace at %s", queryviewDir),
 	)
 
+	// The BUILD files will be generated in out/soong/.api_bp2build (no symlinks to src files)
+	// The final workspace will be generated in out/soong/api_bp2build
+	apiBp2buildDir := filepath.Join(config.SoongOutDir(), ".api_bp2build")
+	apiBp2buildInvocation := primaryBuilderInvocation(
+		config,
+		apiBp2buildTag,
+		config.ApiBp2buildMarkerFile(),
+		[]string{
+			"--bazel_api_bp2build_dir", apiBp2buildDir,
+		},
+		fmt.Sprintf("generating BUILD files for API contributions at %s", apiBp2buildDir),
+	)
+
 	soongDocsInvocation := primaryBuilderInvocation(
 		config,
 		soongDocsTag,
@@ -345,6 +360,7 @@ func bootstrapBlueprint(ctx Context, config Config) {
 			bp2buildInvocation,
 			jsonModuleGraphInvocation,
 			queryviewInvocation,
+			apiBp2buildInvocation,
 			soongDocsInvocation},
 	}
 
@@ -381,7 +397,9 @@ func runSoong(ctx Context, config Config) {
 	soongBuildEnv.Set("TOP", os.Getenv("TOP"))
 	// For Bazel mixed builds.
 	soongBuildEnv.Set("BAZEL_PATH", "./tools/bazel")
-	soongBuildEnv.Set("BAZEL_HOME", filepath.Join(config.BazelOutDir(), "bazelhome"))
+	// Bazel's HOME var is set to an output subdirectory which doesn't exist. This
+	// prevents Bazel from file I/O in the actual user HOME directory.
+	soongBuildEnv.Set("BAZEL_HOME", absPath(ctx, filepath.Join(config.BazelOutDir(), "bazelhome")))
 	soongBuildEnv.Set("BAZEL_OUTPUT_BASE", filepath.Join(config.BazelOutDir(), "output"))
 	soongBuildEnv.Set("BAZEL_WORKSPACE", absPath(ctx, "."))
 	soongBuildEnv.Set("BAZEL_METRICS_DIR", config.BazelMetricsDir())
@@ -413,6 +431,10 @@ func runSoong(ctx Context, config Config) {
 
 		if config.Queryview() {
 			checkEnvironmentFile(soongBuildEnv, config.UsedEnvFile(queryviewTag))
+		}
+
+		if config.ApiBp2build() {
+			checkEnvironmentFile(soongBuildEnv, config.UsedEnvFile(apiBp2buildTag))
 		}
 
 		if config.SoongDocs() {
@@ -476,6 +498,10 @@ func runSoong(ctx Context, config Config) {
 
 	if config.Queryview() {
 		targets = append(targets, config.QueryviewMarkerFile())
+	}
+
+	if config.ApiBp2build() {
+		targets = append(targets, config.ApiBp2buildMarkerFile())
 	}
 
 	if config.SoongDocs() {
