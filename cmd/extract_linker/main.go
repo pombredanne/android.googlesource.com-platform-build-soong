@@ -50,7 +50,7 @@ func main() {
 
 	asm := &bytes.Buffer{}
 	script := &bytes.Buffer{}
-	baseLoadAddr := uint64(0x1000)
+	baseLoadAddr := uint64(0x10000)
 	load := 0
 
 	fmt.Fprintln(asm, ".globl __dlwrap_linker_offset")
