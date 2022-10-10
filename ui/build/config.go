@@ -15,12 +15,16 @@
 package build
 
 import (
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"android/soong/shared"
@@ -29,6 +33,20 @@ import (
 
 	smpb "android/soong/ui/metrics/metrics_proto"
 )
+
+const (
+	envConfigDir  = "vendor/google/tools/soong_config"
+	jsonSuffix    = "json"
+)
+
+var (
+	rbeRandPrefix int
+)
+
+func init() {
+	rand.Seed(time.Now().UnixNano())
+	rbeRandPrefix = rand.Intn(1000)
+}
 
 type Config struct{ *configImpl }
 
@@ -122,6 +140,43 @@ func checkTopDir(ctx Context) {
 	}
 }
 
+func loadEnvConfig(config *configImpl) error {
+	bc := os.Getenv("ANDROID_BUILD_ENVIRONMENT_CONFIG")
+	if bc == "" {
+		return nil
+	}
+	configDirs := []string{
+		os.Getenv("ANDROID_BUILD_ENVIRONMENT_CONFIG_DIR"),
+		config.OutDir(),
+		envConfigDir,
+	}
+	var cfgFile string
+	for _, dir := range configDirs {
+		cfgFile = filepath.Join(os.Getenv("TOP"), dir, fmt.Sprintf("%s.%s", bc, jsonSuffix))
+		if _, err := os.Stat(cfgFile); err == nil {
+			break
+		}
+	}
+
+	envVarsJSON, err := ioutil.ReadFile(cfgFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\033[33mWARNING:\033[0m failed to open config file %s: %s\n", cfgFile, err.Error())
+		return nil
+	}
+
+	var envVars map[string]map[string]string
+	if err := json.Unmarshal(envVarsJSON, &envVars); err != nil {
+		return fmt.Errorf("env vars config file: %s did not parse correctly: %s", cfgFile, err.Error())
+	}
+	for k, v := range envVars["env"] {
+		if os.Getenv(k) != "" {
+			continue
+		}
+		config.Environment().Set(k, v)
+	}
+	return nil
+}
+
 func NewConfig(ctx Context, args ...string) Config {
 	ret := &configImpl{
 		environ: OsEnvironment(),
@@ -148,6 +203,12 @@ func NewConfig(ctx Context, args ...string) Config {
 			}
 		}
 		ret.environ.Set("OUT_DIR", outDir)
+	}
+
+	// loadEnvConfig needs to know what the OUT_DIR is, so it should
+	// be called after we determine the appropriate out directory.
+	if err := loadEnvConfig(ret); err != nil {
+		ctx.Fatalln("Failed to parse env config files: %v", err)
 	}
 
 	if distDir, ok := ret.environ.Get("DIST_DIR"); ok {
@@ -911,7 +972,7 @@ func (c *configImpl) StartGoma() bool {
 }
 
 func (c *configImpl) UseRBE() bool {
-	if v, ok := c.environ.Get("USE_RBE"); ok {
+	if v, ok := c.Environment().Get("USE_RBE"); ok {
 		v = strings.TrimSpace(v)
 		if v != "" && v != "false" {
 			return true
@@ -948,34 +1009,25 @@ func (c *configImpl) StartRBE() bool {
 	return true
 }
 
-func (c *configImpl) rbeLogDir() string {
-	for _, f := range []string{"RBE_log_dir", "FLAG_log_dir"} {
+func (c *configImpl) rbeProxyLogsDir() string {
+	for _, f := range []string{"RBE_proxy_log_dir", "FLAG_output_dir"} {
 		if v, ok := c.environ.Get(f); ok {
 			return v
 		}
 	}
-	if c.Dist() {
-		return c.LogsDir()
-	}
-	return c.OutDir()
+	buildTmpDir := shared.TempDirForOutDir(c.SoongOutDir())
+	return filepath.Join(buildTmpDir, "rbe")
 }
 
-func (c *configImpl) rbeStatsOutputDir() string {
-	for _, f := range []string{"RBE_output_dir", "FLAG_output_dir"} {
-		if v, ok := c.environ.Get(f); ok {
-			return v
+func (c *configImpl) shouldCleanupRBELogsDir() bool {
+	// Perform a log directory cleanup only when the log directory
+	// is auto created by the build rather than user-specified.
+	for _, f := range []string{"RBE_proxy_log_dir", "FLAG_output_dir"} {
+		if _, ok := c.environ.Get(f); ok {
+			return false
 		}
 	}
-	return c.rbeLogDir()
-}
-
-func (c *configImpl) rbeLogPath() string {
-	for _, f := range []string{"RBE_log_path", "FLAG_log_path"} {
-		if v, ok := c.environ.Get(f); ok {
-			return v
-		}
-	}
-	return fmt.Sprintf("text://%v/reproxy_log.txt", c.rbeLogDir())
+	return true
 }
 
 func (c *configImpl) rbeExecRoot() string {
@@ -1008,7 +1060,12 @@ func (c *configImpl) rbeReproxy() string {
 }
 
 func (c *configImpl) rbeAuth() (string, string) {
-	credFlags := []string{"use_application_default_credentials", "use_gce_credentials", "credential_file"}
+	credFlags := []string{
+		"use_application_default_credentials",
+		"use_gce_credentials",
+		"credential_file",
+		"use_google_prod_creds",
+	}
 	for _, cf := range credFlags {
 		for _, f := range []string{"RBE_" + cf, "FLAG_" + cf} {
 			if v, ok := c.environ.Get(f); ok {
@@ -1020,6 +1077,23 @@ func (c *configImpl) rbeAuth() (string, string) {
 		}
 	}
 	return "RBE_use_application_default_credentials", "true"
+}
+
+func (c *configImpl) rbeSockAddr(dir string) (string, error) {
+	maxNameLen := len(syscall.RawSockaddrUnix{}.Path)
+	base := fmt.Sprintf("reproxy_%v.sock", rbeRandPrefix)
+
+	name := filepath.Join(dir, base)
+	if len(name) < maxNameLen {
+		return name, nil
+	}
+
+	name = filepath.Join("/tmp", base)
+	if len(name) < maxNameLen {
+		return name, nil
+	}
+
+	return "", fmt.Errorf("cannot generate a proxy socket address shorter than the limit of %v", maxNameLen)
 }
 
 func (c *configImpl) UseRemoteBuild() bool {
