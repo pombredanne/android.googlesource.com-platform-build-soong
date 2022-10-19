@@ -3626,6 +3626,16 @@ func (c *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
 		return err
 	}
 
+	// A dependency only needs to support a min_sdk_version at least
+	// as high as  the api level that the architecture was introduced in.
+	// This allows introducing new architectures in the platform that
+	// need to be included in apexes that normally require an older
+	// min_sdk_version.
+	minApiForArch := minApiForArch(ctx, c.Target().Arch.ArchType)
+	if sdkVersion.LessThan(minApiForArch) {
+		sdkVersion = minApiForArch
+	}
+
 	if ver.GreaterThan(sdkVersion) {
 		return fmt.Errorf("newer SDK(%v)", ver)
 	}
@@ -3714,7 +3724,9 @@ func (c *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 	prebuilt := c.IsPrebuilt()
 	switch c.typ() {
 	case binary:
-		if !prebuilt {
+		if prebuilt {
+			prebuiltBinaryBp2Build(ctx, c)
+		} else {
 			binaryBp2build(ctx, c)
 		}
 	case testBin:
@@ -3751,7 +3763,18 @@ func (c *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 var _ android.ApiProvider = (*Module)(nil)
 
 func (c *Module) ConvertWithApiBp2build(ctx android.TopDownMutatorContext) {
+	if c.IsPrebuilt() {
+		return
+	}
 	switch c.typ() {
+	case fullLibrary:
+		apiContributionBp2Build(ctx, c)
+	case sharedLibrary:
+		apiContributionBp2Build(ctx, c)
+	case headerLibrary:
+		// Aggressively generate api targets for all header modules
+		// This is necessary since the header module does not know if it is a dep of API surface stub library
+		apiLibraryHeadersBp2Build(ctx, c)
 	case ndkLibrary:
 		ndkLibraryBp2build(ctx, c)
 	}

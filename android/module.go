@@ -915,8 +915,15 @@ type commonProperties struct {
 type CommonAttributes struct {
 	// Soong nameProperties -> Bazel name
 	Name string
+
 	// Data mapped from: Required
 	Data bazel.LabelListAttribute
+
+	// SkipData is neither a Soong nor Bazel target attribute
+	// If true, this will not fill the data attribute automatically
+	// This is useful for Soong modules that have 1:many Bazel targets
+	// Some of the generated Bazel targets might not have a data attribute
+	SkipData *bool
 
 	Tags bazel.StringListAttribute
 
@@ -1239,12 +1246,14 @@ func (attrs *CommonAttributes) fillCommonBp2BuildModuleAttrs(ctx *topDownMutator
 	// when generated as the 'data' label list attribute in Bazel. Remove it if
 	// it exists. See b/247985196.
 	_, requiredWithoutCycles := RemoveFromList(ctx.ModuleName(), mod.commonProperties.Required)
+	requiredWithoutCycles = FirstUniqueStrings(requiredWithoutCycles)
 	required := depsToLabelList(requiredWithoutCycles)
 	archVariantProps := mod.GetArchVariantProperties(ctx, &commonProperties{})
 	for axis, configToProps := range archVariantProps {
 		for config, _props := range configToProps {
 			if archProps, ok := _props.(*commonProperties); ok {
 				_, requiredWithoutCycles := RemoveFromList(ctx.ModuleName(), archProps.Required)
+				requiredWithoutCycles = FirstUniqueStrings(requiredWithoutCycles)
 				required.SetSelectValue(axis, config, depsToLabelList(requiredWithoutCycles).Value)
 				if !neitherHostNorDevice {
 					if archProps.Enabled != nil {
@@ -1305,7 +1314,12 @@ func (attrs *CommonAttributes) fillCommonBp2BuildModuleAttrs(ctx *topDownMutator
 		platformEnabledAttribute.Add(&l)
 	}
 
-	attrs.Data.Append(required)
+	if !proptools.Bool(attrs.SkipData) {
+		attrs.Data.Append(required)
+	}
+	// SkipData is not an attribute of any Bazel target
+	// Set this to nil so that it does not appear in the generated build file
+	attrs.SkipData = nil
 
 	moduleEnableConstraints := bazel.LabelListAttribute{}
 	moduleEnableConstraints.Append(platformEnabledAttribute)

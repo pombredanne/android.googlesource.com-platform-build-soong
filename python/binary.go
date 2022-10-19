@@ -34,7 +34,7 @@ func registerPythonBinaryComponents(ctx android.RegistrationContext) {
 }
 
 type bazelPythonBinaryAttributes struct {
-	Main           *string
+	Main           *bazel.Label
 	Srcs           bazel.LabelListAttribute
 	Deps           bazel.LabelListAttribute
 	Python_version *string
@@ -42,17 +42,6 @@ type bazelPythonBinaryAttributes struct {
 }
 
 func pythonBinaryBp2Build(ctx android.TopDownMutatorContext, m *Module) {
-	var main *string
-	for _, propIntf := range m.GetProperties() {
-		if props, ok := propIntf.(*BinaryProperties); ok {
-			// main is optional.
-			if props.Main != nil {
-				main = props.Main
-				break
-			}
-		}
-	}
-
 	// TODO(b/182306917): this doesn't fully handle all nested props versioned
 	// by the python version, which would have been handled by the version split
 	// mutator. This is sufficient for very simple python_binary_host modules
@@ -72,11 +61,22 @@ func pythonBinaryBp2Build(ctx android.TopDownMutatorContext, m *Module) {
 
 	baseAttrs := m.makeArchVariantBaseAttributes(ctx)
 	attrs := &bazelPythonBinaryAttributes{
-		Main:           main,
+		Main:           nil,
 		Srcs:           baseAttrs.Srcs,
 		Deps:           baseAttrs.Deps,
 		Python_version: python_version,
 		Imports:        baseAttrs.Imports,
+	}
+
+	for _, propIntf := range m.GetProperties() {
+		if props, ok := propIntf.(*BinaryProperties); ok {
+			// main is optional.
+			if props.Main != nil {
+				main := android.BazelLabelForModuleSrcSingle(ctx, *props.Main)
+				attrs.Main = &main
+				break
+			}
+		}
 	}
 
 	props := bazel.BazelTargetModuleProperties{
@@ -192,8 +192,8 @@ func (binary *binaryDecorator) bootstrap(ctx android.ModuleContext, actualVersio
 		})
 	}
 
-	addTopDirectoriesToPath := !proptools.BoolDefault(binary.binaryProperties.Dont_add_top_level_directories_to_path, false)
-	dontAddEntrypointFolderToPath := proptools.BoolDefault(binary.binaryProperties.Dont_add_entrypoint_folder_to_path, false)
+	addTopDirectoriesToPath := !proptools.BoolDefault(binary.binaryProperties.Dont_add_top_level_directories_to_path, true)
+	dontAddEntrypointFolderToPath := proptools.BoolDefault(binary.binaryProperties.Dont_add_entrypoint_folder_to_path, true)
 
 	binFile := registerBuildActionForParFile(ctx, embeddedLauncher, launcherPath,
 		binary.getHostInterpreterName(ctx, actualVersion),
