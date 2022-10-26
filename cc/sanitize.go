@@ -430,6 +430,32 @@ func (sanitize *sanitize) begin(ctx BaseModuleContext) {
 		s.Never = BoolPtr(true)
 	}
 
+
+	// Disable all sanitizers for 16k
+	s.Address = nil
+	s.Thread = nil
+	s.Hwaddress = nil
+	s.All_undefined = nil
+	s.Undefined = nil
+	s.Misc_undefined = nil
+	s.Fuzzer = nil
+	s.Safestack = nil
+	s.Cfi = nil
+	s.Integer_overflow = nil
+	s.Scudo = nil
+	s.Scs = nil
+	s.Memtag_heap = nil
+	s.Memtag_stack = nil
+	s.Writeonly = nil
+	s.Diag.Undefined = nil
+	s.Diag.Cfi = nil
+	s.Diag.Integer_overflow = nil
+	s.Diag.Memtag_heap = nil
+	s.Diag.Misc_undefined = nil
+	s.Diag.No_recover = nil
+
+	return
+
 	// Never always wins.
 	if Bool(s.Never) {
 		return
