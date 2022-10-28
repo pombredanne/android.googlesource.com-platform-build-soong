@@ -93,6 +93,11 @@ func (c Config) PrimaryBuilderInvocations() []bootstrap.PrimaryBuilderInvocation
 	return []bootstrap.PrimaryBuilderInvocation{}
 }
 
+// RunningInsideUnitTest returns true if this code is being run as part of a Soong unit test.
+func (c Config) RunningInsideUnitTest() bool {
+	return c.config.TestProductVariables != nil
+}
+
 // A DeviceConfig object represents the configuration for a particular device
 // being built. For now there will only be one of these, but in the future there
 // may be multiple devices being built.
@@ -402,6 +407,9 @@ func modifyTestConfigToSupportArchMutator(testConfig Config) {
 			{config.BuildOS, Arch{ArchType: X86}, NativeBridgeDisabled, "", "", false},
 		},
 	}
+
+	// Make the CommonOS OsType available for all products.
+	config.Targets[CommonOS] = []Target{commonTargetMap[CommonOS.Name]}
 
 	if runtime.GOOS == "darwin" {
 		config.Targets[config.BuildOS] = config.Targets[config.BuildOS][:1]
@@ -747,6 +755,10 @@ func (c *config) PlatformVersionName() string {
 
 func (c *config) PlatformSdkVersion() ApiLevel {
 	return uncheckedFinalApiLevel(*c.productVariables.Platform_sdk_version)
+}
+
+func (c *config) PlatformSdkFinal() bool {
+	return Bool(c.productVariables.Platform_sdk_final)
 }
 
 func (c *config) PlatformSdkCodename() string {

@@ -101,6 +101,15 @@ type appProperties struct {
 	PreventInstall    bool `blueprint:"mutated"`
 	IsCoverageVariant bool `blueprint:"mutated"`
 
+	// It can be set to test the behaviour of default target sdk version.
+	// Only required when updatable: false. It is an error if updatable: true and this is false.
+	Enforce_default_target_sdk_version *bool
+
+	// If set, the targetSdkVersion for the target is set to the latest default API level.
+	// This would be by default false, unless updatable: true or
+	// enforce_default_target_sdk_version: true in which case this defaults to true.
+	EnforceDefaultTargetSdkVersion bool `blueprint:"mutated"`
+
 	// Whether this app is considered mainline updatable or not. When set to true, this will enforce
 	// additional rules to make sure an app can safely be updated. Default is false.
 	// Prefer using other specific properties if build behaviour must be changed; avoid using this
@@ -296,6 +305,18 @@ func (a *AndroidApp) checkAppSdkVersions(ctx android.ModuleContext) {
 		} else {
 			ctx.PropertyErrorf("min_sdk_version", "%s", err.Error())
 		}
+
+		if !BoolDefault(a.appProperties.Enforce_default_target_sdk_version, true) {
+			ctx.PropertyErrorf("enforce_default_target_sdk_version", "Updatable apps must enforce default target sdk version")
+		}
+		// TODO(b/227460469) after all the modules removes the target sdk version, throw an error if the target sdk version is explicitly set.
+		if a.deviceProperties.Target_sdk_version == nil {
+			a.SetEnforceDefaultTargetSdkVersion(true)
+		}
+	}
+
+	if Bool(a.appProperties.Enforce_default_target_sdk_version) {
+		a.SetEnforceDefaultTargetSdkVersion(true)
 	}
 
 	a.checkPlatformAPI(ctx)
@@ -424,7 +445,7 @@ func (a *AndroidApp) aaptBuildActions(ctx android.ModuleContext) {
 	a.aapt.splitNames = a.appProperties.Package_splits
 	a.aapt.LoggingParent = String(a.overridableAppProperties.Logging_parent)
 	a.aapt.buildActions(ctx, android.SdkContext(a), a.classLoaderContexts,
-		a.usesLibraryProperties.Exclude_uses_libs, aaptLinkFlags...)
+		a.usesLibraryProperties.Exclude_uses_libs, a.enforceDefaultTargetSdkVersion(), aaptLinkFlags...)
 
 	// apps manifests are handled by aapt, don't let Module see them
 	a.properties.Manifest = nil
@@ -589,6 +610,16 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 
 	a.classLoaderContexts = a.usesLibrary.classLoaderContextForUsesLibDeps(ctx)
 
+	var noticeAssetPath android.WritablePath
+	if Bool(a.appProperties.Embed_notices) || ctx.Config().IsEnvTrue("ALWAYS_EMBED_NOTICES") {
+		// The rule to create the notice file can't be generated yet, as the final output path
+		// for the apk isn't known yet.  Add the path where the notice file will be generated to the
+		// aapt rules now before calling aaptBuildActions, the rule to create the notice file will
+		// be generated later.
+		noticeAssetPath = android.PathForModuleOut(ctx, "NOTICE", "NOTICE.html.gz")
+		a.aapt.noticeFile = android.OptionalPathForPath(noticeAssetPath)
+	}
+
 	// Process all building blocks, from AAPT to certificates.
 	a.aaptBuildActions(ctx)
 
@@ -663,7 +694,8 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 		a.extraOutputFiles = append(a.extraOutputFiles, v4SignatureFile)
 	}
 
-	if Bool(a.appProperties.Embed_notices) || ctx.Config().IsEnvTrue("ALWAYS_EMBED_NOTICES") {
+	if a.aapt.noticeFile.Valid() {
+		// Generating the notice file rule has to be here after a.outputFile is known.
 		noticeFile := android.PathForModuleOut(ctx, "NOTICE.html.gz")
 		android.BuildNoticeHtmlOutputFromLicenseMetadata(
 			ctx, noticeFile, "", "",
@@ -672,13 +704,11 @@ func (a *AndroidApp) generateAndroidBuildActions(ctx android.ModuleContext) {
 				android.PathForModuleInstall(ctx).String() + "/",
 				a.outputFile.String(),
 			})
-		noticeAssetPath := android.PathForModuleOut(ctx, "NOTICE", "NOTICE.html.gz")
 		builder := android.NewRuleBuilder(pctx, ctx)
 		builder.Command().Text("cp").
 			Input(noticeFile).
 			Output(noticeAssetPath)
 		builder.Build("notice_dir", "Building notice dir")
-		a.aapt.noticeFile = android.OptionalPathForPath(noticeAssetPath)
 	}
 
 	for _, split := range a.aapt.splits {
@@ -846,6 +876,14 @@ func (a *AndroidApp) buildAppDependencyInfo(ctx android.ModuleContext) {
 	})
 
 	a.ApexBundleDepsInfo.BuildDepsInfoLists(ctx, a.MinSdkVersion(ctx).String(), depsInfo)
+}
+
+func (a *AndroidApp) enforceDefaultTargetSdkVersion() bool {
+	return a.appProperties.EnforceDefaultTargetSdkVersion
+}
+
+func (a *AndroidApp) SetEnforceDefaultTargetSdkVersion(val bool) {
+	a.appProperties.EnforceDefaultTargetSdkVersion = val
 }
 
 func (a *AndroidApp) Updatable() bool {
