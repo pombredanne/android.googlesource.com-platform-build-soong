@@ -33,6 +33,10 @@ const (
 	// all modules in this package (not recursively) default to bp2build_available: false.
 	// allows modules to opt-in.
 	Bp2BuildDefaultFalse
+
+	// all modules in this package and subpackages default to bp2build_available: false.
+	// allows modules to opt-in.
+	Bp2BuildDefaultFalseRecursively
 )
 
 var (
@@ -47,11 +51,13 @@ var (
 		"bionic":                                Bp2BuildDefaultTrueRecursively,
 		"bootable/recovery/minadbd":             Bp2BuildDefaultTrue,
 		"bootable/recovery/minui":               Bp2BuildDefaultTrue,
+		"bootable/recovery/applypatch":          Bp2BuildDefaultTrue,
 		"bootable/recovery/recovery_utils":      Bp2BuildDefaultTrue,
 		"bootable/recovery/tools/recovery_l10n": Bp2BuildDefaultTrue,
 
 		"build/bazel":                        Bp2BuildDefaultTrueRecursively,
 		"build/make/target/product/security": Bp2BuildDefaultTrue,
+		"build/make/tools/releasetools":      Bp2BuildDefaultTrue,
 		"build/make/tools/signapk":           Bp2BuildDefaultTrue,
 		"build/make/tools/zipalign":          Bp2BuildDefaultTrueRecursively,
 		"build/soong":                        Bp2BuildDefaultTrue,
@@ -109,6 +115,8 @@ var (
 		"external/boringssl":                     Bp2BuildDefaultTrueRecursively,
 		"external/bouncycastle":                  Bp2BuildDefaultTrue,
 		"external/brotli":                        Bp2BuildDefaultTrue,
+		"external/bsdiff":                        Bp2BuildDefaultTrueRecursively,
+		"external/bzip2":                         Bp2BuildDefaultTrueRecursively,
 		"external/conscrypt":                     Bp2BuildDefaultTrue,
 		"external/e2fsprogs":                     Bp2BuildDefaultTrueRecursively,
 		"external/eigen":                         Bp2BuildDefaultTrueRecursively,
@@ -138,6 +146,7 @@ var (
 		"external/libcap":                        Bp2BuildDefaultTrueRecursively,
 		"external/libcxx":                        Bp2BuildDefaultTrueRecursively,
 		"external/libcxxabi":                     Bp2BuildDefaultTrueRecursively,
+		"external/libdivsufsort":                 Bp2BuildDefaultTrueRecursively,
 		"external/libdrm":                        Bp2BuildDefaultTrue,
 		"external/libevent":                      Bp2BuildDefaultTrueRecursively,
 		"external/libgav1":                       Bp2BuildDefaultTrueRecursively,
@@ -148,6 +157,7 @@ var (
 		"external/libvpx":                        Bp2BuildDefaultTrueRecursively,
 		"external/libyuv":                        Bp2BuildDefaultTrueRecursively,
 		"external/lz4/lib":                       Bp2BuildDefaultTrue,
+		"external/lz4/programs":                  Bp2BuildDefaultTrue,
 		"external/lzma/C":                        Bp2BuildDefaultTrueRecursively,
 		"external/mdnsresponder":                 Bp2BuildDefaultTrueRecursively,
 		"external/minijail":                      Bp2BuildDefaultTrueRecursively,
@@ -177,18 +187,21 @@ var (
 		"frameworks/base/services/tests/servicestests/aidl":  Bp2BuildDefaultTrue,
 		"frameworks/base/startop/apps/test":                  Bp2BuildDefaultTrue,
 		"frameworks/base/tests/appwidgets/AppWidgetHostTest": Bp2BuildDefaultTrueRecursively,
+		"frameworks/base/tools/streaming_proto":              Bp2BuildDefaultTrueRecursively,
 		"frameworks/base/tools/aapt2":                        Bp2BuildDefaultTrue,
 		"frameworks/native/libs/adbd_auth":                   Bp2BuildDefaultTrueRecursively,
 		"frameworks/native/libs/arect":                       Bp2BuildDefaultTrueRecursively,
+		"frameworks/native/libs/gui":                         Bp2BuildDefaultTrue,
 		"frameworks/native/libs/math":                        Bp2BuildDefaultTrueRecursively,
 		"frameworks/native/libs/nativebase":                  Bp2BuildDefaultTrueRecursively,
+		"frameworks/native/libs/vr":                          Bp2BuildDefaultTrueRecursively,
 		"frameworks/native/opengl/tests/gl2_cameraeye":       Bp2BuildDefaultTrue,
 		"frameworks/native/opengl/tests/gl2_java":            Bp2BuildDefaultTrue,
 		"frameworks/native/opengl/tests/testLatency":         Bp2BuildDefaultTrue,
 		"frameworks/native/opengl/tests/testPauseResume":     Bp2BuildDefaultTrue,
 		"frameworks/native/opengl/tests/testViewport":        Bp2BuildDefaultTrue,
 		"frameworks/native/services/batteryservice":          Bp2BuildDefaultTrue,
-		"frameworks/proto_logging/stats/stats_log_api_gen":   Bp2BuildDefaultTrueRecursively,
+		"frameworks/proto_logging/stats":                     Bp2BuildDefaultTrueRecursively,
 
 		"hardware/interfaces":                          Bp2BuildDefaultTrue,
 		"hardware/interfaces/common/aidl":              Bp2BuildDefaultTrue,
@@ -259,6 +272,9 @@ var (
 		"prebuilts/tools":                          Bp2BuildDefaultTrue,
 		"prebuilts/tools/common/m2":                Bp2BuildDefaultTrue,
 
+		"sdk/eventanalyzer": Bp2BuildDefaultTrue,
+		"sdk/dumpeventlog":  Bp2BuildDefaultTrue,
+
 		"system/apex":                                            Bp2BuildDefaultFalse, // TODO(b/207466993): flaky failures
 		"system/apex/apexer":                                     Bp2BuildDefaultTrue,
 		"system/apex/libs":                                       Bp2BuildDefaultTrueRecursively,
@@ -280,8 +296,10 @@ var (
 		"system/core/libsysutils":                                Bp2BuildDefaultTrueRecursively,
 		"system/core/libutils":                                   Bp2BuildDefaultTrueRecursively,
 		"system/core/libvndksupport":                             Bp2BuildDefaultTrueRecursively,
+		"system/core/mkbootfs":                                   Bp2BuildDefaultTrueRecursively,
 		"system/core/property_service/libpropertyinfoparser":     Bp2BuildDefaultTrueRecursively,
 		"system/core/property_service/libpropertyinfoserializer": Bp2BuildDefaultTrueRecursively,
+		"system/extras/toolchain-extras":                         Bp2BuildDefaultTrue,
 		"system/incremental_delivery/incfs":                      Bp2BuildDefaultTrue,
 		"system/libartpalette":                                   Bp2BuildDefaultTrueRecursively,
 		"system/libbase":                                         Bp2BuildDefaultTrueRecursively,
@@ -312,10 +330,9 @@ var (
 		"system/timezone/apex":                                   Bp2BuildDefaultTrueRecursively,
 		"system/timezone/output_data":                            Bp2BuildDefaultTrueRecursively,
 		"system/tools/aidl/build/tests_bp2build":                 Bp2BuildDefaultTrue,
+		"system/tools/mkbootimg":                                 Bp2BuildDefaultTrueRecursively,
 		"system/tools/sysprop":                                   Bp2BuildDefaultTrue,
 		"system/unwinding/libunwindstack":                        Bp2BuildDefaultTrueRecursively,
-
-		"frameworks/proto_logging/stats": Bp2BuildDefaultTrueRecursively,
 
 		"tools/apksig": Bp2BuildDefaultTrue,
 		"tools/platform-compat/java/android/compat":  Bp2BuildDefaultTrueRecursively,
@@ -384,8 +401,10 @@ var (
 		"com.android.neuralnetworks.certificate",
 		"com.android.neuralnetworks.key",
 		"flatbuffer_headers",
+		"framework-connectivity-protos",
 		"gemmlowp_headers",
 		"gl_headers",
+		"ipconnectivity-proto-src",
 		"libaidlcommonsupport",
 		"libandroid_runtime_lazy",
 		"libandroid_runtime_vm_headers",
@@ -397,14 +416,11 @@ var (
 		"libbinder_headers_platform_shared",
 		"libbinderthreadstateutils",
 		"libbluetooth-types-header",
-		"libbufferhub_headers",
 		"libcodec2",
 		"libcodec2_headers",
 		"libcodec2_internal",
 		"libdmabufheap",
-		"libdvr_headers",
 		"libgsm",
-		"libgui_bufferqueue_sources",
 		"libgrallocusage",
 		"libgralloctypes",
 		"libnativewindow",
@@ -417,7 +433,6 @@ var (
 		"libneuralnetworks_headers",
 		"libneuralnetworks_packageinfo",
 		"libopus",
-		"libpdx_headers",
 		"libprocpartition",
 		"libruy_static",
 		"libandroidio",
@@ -443,7 +458,6 @@ var (
 		"libtextclassifier_hash_static",
 		"libtflite_kernel_utils",
 		"libtinyxml2",
-		"libgui_aidl",
 		"libui",
 		"libui-types",
 		"libui_headers",
@@ -466,17 +480,19 @@ var (
 		"philox_random",
 		"philox_random_headers",
 		"server_configurable_flags",
+		"service-permission-streaming-proto-sources",
 		"statslog_neuralnetworks.cpp",
 		"statslog_neuralnetworks.h",
 		"tensorflow_headers",
 
-		"libgui_headers",
 		"libstagefright_bufferpool@2.0",
 		"libstagefright_bufferpool@2.0.1",
 		"libSurfaceFlingerProp",
 
+		// prebuilts
+		"prebuilt_stats-log-api-gen",
+
 		// fastboot
-		"bootimg_headers",
 		"fastboot",
 		"libfastboot",
 		"liblp",
@@ -509,6 +525,7 @@ var (
 
 		//system/extras/verity/fec
 		"fec",
+		"boot_signer",
 
 		//packages/apps/Car/libs/car-ui-lib/car-ui-androidx
 		// genrule dependencies for java_imports
@@ -584,7 +601,6 @@ var (
 		"libcodec2_hidl_plugin_stub",
 		"libcodec2_hidl_plugin",
 		"libstagefright_bufferqueue_helper_novndk",
-		"libgui_bufferqueue_static",
 		"libGLESv2",
 		"libEGL",
 		"libcodec2_vndk",
@@ -592,8 +608,6 @@ var (
 		"libnativeloader",
 		"libEGL_getProcAddress",
 		"libEGL_blobCache",
-
-		"protoc-gen-cppstream",
 
 		"mediaswcodec",
 		"libmedia_headers",
@@ -634,13 +648,10 @@ var (
 
 	Bp2buildModuleTypeAlwaysConvertList = []string{
 		"aidl_interface_headers",
-		"api_domain",
 		"license",
 		"linker_config",
 		"java_import",
 		"java_import_host",
-		"ndk_headers",
-		"ndk_library",
 		"sysprop_library",
 		"bpf",
 	}
@@ -653,6 +664,23 @@ var (
 	// the "prebuilt_" prefix to the name, so that it's differentiable from
 	// the source versions within Soong's module graph.
 	Bp2buildModuleDoNotConvertList = []string{
+		// TODO(b/250876486): Created cc_aidl_library doesn't have static libs from parent cc module
+		"libgui_window_info_static",
+		"libgui",     // Depends on unconverted libgui_window_info_static
+		"libdisplay", // Depends on uncovnerted libgui
+		// Depends on unconverted libdisplay
+		"libdvr_static.google",
+		"libdvr.google",
+		"libvrsensor",
+		"dvr_api-test",
+		// Depends on unconverted libandroid, libgui
+		"dvr_buffer_queue-test",
+		"dvr_display-test",
+		// Depends on unconverted libchrome
+		"pdx_benchmarks",
+		"buffer_hub_queue-test",
+		"buffer_hub_queue_producer-test",
+
 		// cc bugs
 		"libactivitymanager_aidl", // TODO(b/207426160): Unsupported use of aidl sources (via Dactivity_manager_procstate_aidl) in a cc_library
 
@@ -935,6 +963,7 @@ var (
 		"libdlext_test_norelro",
 		"libdlext_test_recursive",
 		"libdlext_test_zip",
+		"libdvrcommon_test",
 		"libfortify1-new-tests-clang",
 		"libfortify1-new-tests-clang",
 		"libfortify1-tests-clang",
@@ -1233,6 +1262,33 @@ var (
 		"launcherprotosnano",
 		"datastallprotosnano",
 		"devicepolicyprotosnano",
+		"ota_metadata_proto_java",
+		"merge_ota",
+
+		// releasetools
+		"releasetools_fsverity_metadata_generator",
+		"verity_utils",
+		"check_ota_package_signature",
+		"check_target_files_vintf",
+		"releasetools_check_target_files_vintf",
+		"releasetools_verity_utils",
+		"build_image",
+		"ota_from_target_files",
+		"releasetools_ota_from_target_files",
+		"releasetools_build_image",
+		"add_img_to_target_files",
+		"releasetools_add_img_to_target_files",
+		"fsverity_metadata_generator",
+		"sign_target_files_apks",
+
+		// depends on the support of yacc file
+		"libapplypatch",
+		"libapplypatch_modes",
+		"applypatch",
+
+		// TODO(b/254476335): disable the following due to this bug
+		"libapexinfo",
+		"libapexinfo_tests",
 	}
 
 	Bp2buildCcLibraryStaticOnlyList = []string{}
@@ -1281,23 +1337,11 @@ var (
 		"prebuilt_platform-robolectric-4.4-prebuilt",
 		"prebuilt_platform-robolectric-4.5.1-prebuilt",
 		"prebuilt_currysrc_org.eclipse",
-
-		// TODO(b/247782695 and/or b/242847534) Fix mixed build between unconverted gensrcs and converted filegroup
-		"libstats_atom_enum_protos",
-		"data_stall_event_proto",
-		"device_policy_proto",
-		"dns_resolver_proto",
-		"launcher_proto",
-		"network_stack_proto",
-		"srcs_bluetooth_protos",
-		"srcs_bluetooth_leaudio_protos",
-		"style_proto",
-		"tethering_proto",
-		"text_classifier_proto",
-		"libstats_atom_message_protos",
 	}
 
-	ProdMixedBuildsEnabledList = []string{
-		"com.android.adbd",
-	}
+	ProdMixedBuildsEnabledList = []string{}
+
+	// Staging builds should be entirely prod, plus some near-ready ones. Add the
+	// new ones to the first argument as needed.
+	StagingMixedBuildsEnabledList = append([]string{}, ProdMixedBuildsEnabledList...)
 )

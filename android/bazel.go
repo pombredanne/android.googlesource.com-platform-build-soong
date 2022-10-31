@@ -134,6 +134,11 @@ type Bazelable interface {
 	SetBaseModuleType(baseModuleType string)
 }
 
+// ApiProvider is implemented by modules that contribute to an API surface
+type ApiProvider interface {
+	ConvertWithApiBp2build(ctx TopDownMutatorContext)
+}
+
 // MixedBuildBuildable is an interface that module types should implement in order
 // to be "handled by Bazel" in a mixed build.
 type MixedBuildBuildable interface {
@@ -415,6 +420,13 @@ func (b *BazelModuleBase) shouldConvertWithBp2build(ctx bazelOtherModuleContext,
 		return false
 	}
 
+	// In api_bp2build mode, all soong modules that can provide API contributions should be converted
+	// This is irrespective of its presence/absence in bp2build allowlists
+	if ctx.Config().BuildMode == ApiBp2build {
+		_, providesApis := module.(ApiProvider)
+		return providesApis
+	}
+
 	propValue := b.bazelProperties.Bazel_module.Bp2build_available
 	packagePath := ctx.OtherModuleDir(module)
 
@@ -477,21 +489,27 @@ func bp2buildDefaultTrueRecursively(packagePath string, config allowlists.Bp2Bui
 	// Check if the package path has an exact match in the config.
 	if config[packagePath] == allowlists.Bp2BuildDefaultTrue || config[packagePath] == allowlists.Bp2BuildDefaultTrueRecursively {
 		return true, packagePath
-	} else if config[packagePath] == allowlists.Bp2BuildDefaultFalse {
+	} else if config[packagePath] == allowlists.Bp2BuildDefaultFalse || config[packagePath] == allowlists.Bp2BuildDefaultFalseRecursively {
 		return false, packagePath
 	}
 
 	// If not, check for the config recursively.
-	packagePrefix := ""
-	// e.g. for x/y/z, iterate over x, x/y, then x/y/z, taking the final value from the allowlist.
-	for _, part := range strings.Split(packagePath, "/") {
-		packagePrefix += part
-		if config[packagePrefix] == allowlists.Bp2BuildDefaultTrueRecursively {
+	packagePrefix := packagePath
+
+	// e.g. for x/y/z, iterate over x/y, then x, taking the most-specific value from the allowlist.
+	for strings.Contains(packagePrefix, "/") {
+		dirIndex := strings.LastIndex(packagePrefix, "/")
+		packagePrefix = packagePrefix[:dirIndex]
+		switch value := config[packagePrefix]; value {
+		case allowlists.Bp2BuildDefaultTrueRecursively:
 			// package contains this prefix and this prefix should convert all modules
 			return true, packagePrefix
+		case allowlists.Bp2BuildDefaultFalseRecursively:
+			//package contains this prefix and this prefix should NOT convert any modules
+			return false, packagePrefix
 		}
 		// Continue to the next part of the package dir.
-		packagePrefix += "/"
+
 	}
 
 	return false, packagePath
@@ -508,6 +526,17 @@ func convertWithBp2build(ctx TopDownMutatorContext) {
 	}
 
 	bModule.ConvertWithBp2build(ctx)
+}
+
+func registerApiBp2buildConversionMutator(ctx RegisterMutatorsContext) {
+	ctx.TopDown("apiBp2build_conversion", convertWithApiBp2build).Parallel()
+}
+
+// Generate API contribution targets if the Soong module provides APIs
+func convertWithApiBp2build(ctx TopDownMutatorContext) {
+	if m, ok := ctx.Module().(ApiProvider); ok {
+		m.ConvertWithApiBp2build(ctx)
+	}
 }
 
 // GetMainClassInManifest scans the manifest file specified in filepath and returns

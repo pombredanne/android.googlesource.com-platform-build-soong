@@ -28,7 +28,6 @@ import (
 	"android/soong/android"
 	"android/soong/bazel"
 	"android/soong/starlark_fmt"
-
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
 )
@@ -163,6 +162,9 @@ const (
 	// This mode is used for discovering and introspecting the existing Soong
 	// module graph.
 	QueryView
+
+	// ApiBp2build - generate BUILD files for API contribution targets
+	ApiBp2build
 )
 
 type unconvertedDepsMode int
@@ -181,6 +183,8 @@ func (mode CodegenMode) String() string {
 		return "Bp2Build"
 	case QueryView:
 		return "QueryView"
+	case ApiBp2build:
+		return "ApiBp2build"
 	default:
 		return fmt.Sprintf("%d", mode)
 	}
@@ -240,12 +244,7 @@ func GenerateBazelTargets(ctx *CodegenContext, generateFilegroups bool) (convers
 	buildFileToTargets := make(map[string]BazelTargets)
 
 	// Simple metrics tracking for bp2build
-	metrics := CodegenMetrics{
-		ruleClassCount:           make(map[string]uint64),
-		convertedModulePathMap:   make(map[string]string),
-		convertedModuleTypeCount: make(map[string]uint64),
-		totalModuleTypeCount:     make(map[string]uint64),
-	}
+	metrics := CreateCodegenMetrics()
 
 	dirs := make(map[string]bool)
 
@@ -327,6 +326,10 @@ func GenerateBazelTargets(ctx *CodegenContext, generateFilegroups bool) (convers
 				errs = append(errs, err)
 			}
 			targets = append(targets, t)
+		case ApiBp2build:
+			if aModule, ok := m.(android.Module); ok && aModule.IsConvertedByBp2build() {
+				targets, errs = generateBazelTargets(bpCtx, aModule)
+			}
 		default:
 			errs = append(errs, fmt.Errorf("Unknown code-generation mode: %s", ctx.Mode()))
 			return

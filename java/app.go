@@ -798,6 +798,7 @@ func collectAppDeps(ctx android.ModuleContext, app appDepsInterface,
 						target:         module.Target(),
 						coverageFile:   dep.CoverageOutputFile(),
 						unstrippedFile: dep.UnstrippedOutputFile(),
+						partition:      dep.Partition(),
 					})
 				} else {
 					ctx.ModuleErrorf("dependency %q missing output file", otherName)
@@ -1485,8 +1486,8 @@ type bazelAndroidAppAttributes struct {
 	*bazelAapt
 	Deps             bazel.LabelListAttribute
 	Custom_package   *string
-	Certificate      *bazel.Label
-	Certificate_name *string
+	Certificate      bazel.LabelAttribute
+	Certificate_name bazel.StringAttribute
 }
 
 // ConvertWithBp2build is used to convert android_app to Bazel.
@@ -1498,15 +1499,8 @@ func (a *AndroidApp) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 
 	aapt := a.convertAaptAttrsWithBp2Build(ctx)
 
-	var certificate *bazel.Label
-	certificateNamePtr := a.overridableAppProperties.Certificate
-	certificateName := proptools.StringDefault(certificateNamePtr, "")
-	certModule := android.SrcIsModule(certificateName)
-	if certModule != "" {
-		c := android.BazelLabelForModuleDepSingle(ctx, certificateName)
-		certificate = &c
-		certificateNamePtr = nil
-	}
+	certificate, certificateName := android.BazelStringOrLabelFromProp(ctx, a.overridableAppProperties.Certificate)
+
 	attrs := &bazelAndroidAppAttributes{
 		commonAttrs,
 		aapt,
@@ -1514,7 +1508,7 @@ func (a *AndroidApp) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 		// TODO(b/209576404): handle package name override by product variable PRODUCT_MANIFEST_PACKAGE_NAME_OVERRIDES
 		a.overridableAppProperties.Package_name,
 		certificate,
-		certificateNamePtr,
+		certificateName,
 	}
 
 	props := bazel.BazelTargetModuleProperties{

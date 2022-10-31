@@ -71,6 +71,7 @@ type configImpl struct {
 	checkbuild      bool
 	dist            bool
 	jsonModuleGraph bool
+	apiBp2build     bool // Generate BUILD files for Soong modules that contribute APIs
 	bp2build        bool
 	queryview       bool
 	reportMkMetrics bool // Collect and report mk2bp migration progress metrics.
@@ -99,8 +100,9 @@ type configImpl struct {
 
 	pathReplaced bool
 
-	bazelProdMode bool
-	bazelDevMode  bool
+	bazelProdMode    bool
+	bazelDevMode     bool
+	bazelStagingMode bool
 
 	// Set by multiproduct_kati
 	emptyNinjaFile bool
@@ -387,13 +389,13 @@ func NewConfig(ctx Context, args ...string) Config {
 		if override, ok := ret.environ.Get("OVERRIDE_ANDROID_JAVA_HOME"); ok {
 			return override
 		}
-		if ret.environ.IsEnvTrue("EXPERIMENTAL_USE_OPENJDK17_TOOLCHAIN") {
-			return java17Home
-		}
 		if toolchain11, ok := ret.environ.Get("EXPERIMENTAL_USE_OPENJDK11_TOOLCHAIN"); ok && toolchain11 != "true" {
 			ctx.Fatalln("The environment variable EXPERIMENTAL_USE_OPENJDK11_TOOLCHAIN is no longer supported. An OpenJDK 11 toolchain is now the global default.")
 		}
-		return java11Home
+		if toolchain17, ok := ret.environ.Get("EXPERIMENTAL_USE_OPENJDK17_TOOLCHAIN"); ok && toolchain17 != "true" {
+			ctx.Fatalln("The environment variable EXPERIMENTAL_USE_OPENJDK17_TOOLCHAIN is no longer supported. An OpenJDK 17 toolchain is now the global default.")
+		}
+		return java17Home
 	}()
 	absJavaHome := absPath(ctx, javaHome)
 
@@ -462,10 +464,11 @@ func storeConfigMetrics(ctx Context, config Config) {
 
 func buildConfig(config Config) *smpb.BuildConfig {
 	c := &smpb.BuildConfig{
-		ForceUseGoma:    proto.Bool(config.ForceUseGoma()),
-		UseGoma:         proto.Bool(config.UseGoma()),
-		UseRbe:          proto.Bool(config.UseRBE()),
-		BazelMixedBuild: proto.Bool(config.BazelBuildEnabled()),
+		ForceUseGoma:                proto.Bool(config.ForceUseGoma()),
+		UseGoma:                     proto.Bool(config.UseGoma()),
+		UseRbe:                      proto.Bool(config.UseRBE()),
+		BazelMixedBuild:             proto.Bool(config.BazelBuildEnabled()),
+		ForceDisableBazelMixedBuild: proto.Bool(config.IsBazelMixedBuildForceDisabled()),
 	}
 	c.Targets = append(c.Targets, config.arguments...)
 
@@ -720,6 +723,8 @@ func (c *configImpl) parseArgs(ctx Context, args []string) {
 			c.bazelProdMode = true
 		} else if arg == "--bazel-mode-dev" {
 			c.bazelDevMode = true
+		} else if arg == "--bazel-mode-staging" {
+			c.bazelStagingMode = true
 		} else if len(arg) > 0 && arg[0] == '-' {
 			parseArgNum := func(def int) int {
 				if len(arg) > 2 {
@@ -756,6 +761,8 @@ func (c *configImpl) parseArgs(ctx Context, args []string) {
 			c.jsonModuleGraph = true
 		} else if arg == "bp2build" {
 			c.bp2build = true
+		} else if arg == "api_bp2build" {
+			c.apiBp2build = true
 		} else if arg == "queryview" {
 			c.queryview = true
 		} else if arg == "soong_docs" {
@@ -833,7 +840,7 @@ func (c *configImpl) SoongBuildInvocationNeeded() bool {
 		return true
 	}
 
-	if !c.JsonModuleGraph() && !c.Bp2Build() && !c.Queryview() && !c.SoongDocs() {
+	if !c.JsonModuleGraph() && !c.Bp2Build() && !c.Queryview() && !c.SoongDocs() && !c.ApiBp2build() {
 		// Command line was empty, the default Ninja target is built
 		return true
 	}
@@ -904,7 +911,11 @@ func (c *configImpl) UsedEnvFile(tag string) string {
 	return shared.JoinPath(c.SoongOutDir(), usedEnvFile+"."+tag)
 }
 
-func (c *configImpl) Bp2BuildMarkerFile() string {
+func (c *configImpl) Bp2BuildFilesMarkerFile() string {
+	return shared.JoinPath(c.SoongOutDir(), "bp2build_files_marker")
+}
+
+func (c *configImpl) Bp2BuildWorkspaceMarkerFile() string {
 	return shared.JoinPath(c.SoongOutDir(), "bp2build_workspace_marker")
 }
 
@@ -914,6 +925,10 @@ func (c *configImpl) SoongDocsHtml() string {
 
 func (c *configImpl) QueryviewMarkerFile() string {
 	return shared.JoinPath(c.SoongOutDir(), "queryview.marker")
+}
+
+func (c *configImpl) ApiBp2buildMarkerFile() string {
+	return shared.JoinPath(c.SoongOutDir(), "api_bp2build.marker")
 }
 
 func (c *configImpl) ModuleGraphFile() string {
@@ -955,6 +970,10 @@ func (c *configImpl) JsonModuleGraph() bool {
 
 func (c *configImpl) Bp2Build() bool {
 	return c.bp2build
+}
+
+func (c *configImpl) ApiBp2build() bool {
+	return c.apiBp2build
 }
 
 func (c *configImpl) Queryview() bool {
@@ -1104,7 +1123,7 @@ func (c *configImpl) UseRBE() bool {
 }
 
 func (c *configImpl) BazelBuildEnabled() bool {
-	return c.bazelProdMode || c.bazelDevMode
+	return c.bazelProdMode || c.bazelDevMode || c.bazelStagingMode
 }
 
 func (c *configImpl) StartRBE() bool {
@@ -1436,6 +1455,10 @@ func (c *configImpl) SetEmptyNinjaFile(v bool) {
 
 func (c *configImpl) EmptyNinjaFile() bool {
 	return c.emptyNinjaFile
+}
+
+func (c *configImpl) IsBazelMixedBuildForceDisabled() bool {
+	return c.Environment().IsEnvTrue("BUILD_BROKEN_DISABLE_BAZEL")
 }
 
 func GetMetricsUploader(topDir string, env *Environment) string {

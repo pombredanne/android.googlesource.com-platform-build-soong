@@ -915,12 +915,21 @@ type commonProperties struct {
 type CommonAttributes struct {
 	// Soong nameProperties -> Bazel name
 	Name string
+
 	// Data mapped from: Required
 	Data bazel.LabelListAttribute
+
+	// SkipData is neither a Soong nor Bazel target attribute
+	// If true, this will not fill the data attribute automatically
+	// This is useful for Soong modules that have 1:many Bazel targets
+	// Some of the generated Bazel targets might not have a data attribute
+	SkipData *bool
 
 	Tags bazel.StringListAttribute
 
 	Applicable_licenses bazel.LabelListAttribute
+
+	Testonly *bool
 }
 
 // constraintAttributes represents Bazel attributes pertaining to build constraints,
@@ -1239,12 +1248,14 @@ func (attrs *CommonAttributes) fillCommonBp2BuildModuleAttrs(ctx *topDownMutator
 	// when generated as the 'data' label list attribute in Bazel. Remove it if
 	// it exists. See b/247985196.
 	_, requiredWithoutCycles := RemoveFromList(ctx.ModuleName(), mod.commonProperties.Required)
+	requiredWithoutCycles = FirstUniqueStrings(requiredWithoutCycles)
 	required := depsToLabelList(requiredWithoutCycles)
 	archVariantProps := mod.GetArchVariantProperties(ctx, &commonProperties{})
 	for axis, configToProps := range archVariantProps {
 		for config, _props := range configToProps {
 			if archProps, ok := _props.(*commonProperties); ok {
 				_, requiredWithoutCycles := RemoveFromList(ctx.ModuleName(), archProps.Required)
+				requiredWithoutCycles = FirstUniqueStrings(requiredWithoutCycles)
 				required.SetSelectValue(axis, config, depsToLabelList(requiredWithoutCycles).Value)
 				if !neitherHostNorDevice {
 					if archProps.Enabled != nil {
@@ -1305,7 +1316,12 @@ func (attrs *CommonAttributes) fillCommonBp2BuildModuleAttrs(ctx *topDownMutator
 		platformEnabledAttribute.Add(&l)
 	}
 
-	attrs.Data.Append(required)
+	if !proptools.Bool(attrs.SkipData) {
+		attrs.Data.Append(required)
+	}
+	// SkipData is not an attribute of any Bazel target
+	// Set this to nil so that it does not appear in the generated build file
+	attrs.SkipData = nil
 
 	moduleEnableConstraints := bazel.LabelListAttribute{}
 	moduleEnableConstraints.Append(platformEnabledAttribute)
@@ -3546,10 +3562,29 @@ func OutputFileForModule(ctx PathContext, module blueprint.Module, tag string) P
 		reportPathError(ctx, err)
 		return nil
 	}
+	if len(paths) == 0 {
+		type addMissingDependenciesIntf interface {
+			AddMissingDependencies([]string)
+			OtherModuleName(blueprint.Module) string
+		}
+		if mctx, ok := ctx.(addMissingDependenciesIntf); ok && ctx.Config().AllowMissingDependencies() {
+			mctx.AddMissingDependencies([]string{mctx.OtherModuleName(module)})
+		} else {
+			ReportPathErrorf(ctx, "failed to get output files from module %q", pathContextName(ctx, module))
+		}
+		// Return a fake output file to avoid nil dereferences of Path objects later.
+		// This should never get used for an actual build as the error or missing
+		// dependency has already been reported.
+		p, err := pathForSource(ctx, filepath.Join("missing_output_file", pathContextName(ctx, module)))
+		if err != nil {
+			reportPathError(ctx, err)
+			return nil
+		}
+		return p
+	}
 	if len(paths) > 1 {
 		ReportPathErrorf(ctx, "got multiple output files from module %q, expected exactly one",
 			pathContextName(ctx, module))
-		return nil
 	}
 	return paths[0]
 }
@@ -3561,18 +3596,12 @@ func outputFilesForModule(ctx PathContext, module blueprint.Module, tag string) 
 			return nil, fmt.Errorf("failed to get output file from module %q: %s",
 				pathContextName(ctx, module), err.Error())
 		}
-		if len(paths) == 0 {
-			return nil, fmt.Errorf("failed to get output files from module %q", pathContextName(ctx, module))
-		}
 		return paths, nil
 	} else if sourceFileProducer, ok := module.(SourceFileProducer); ok {
 		if tag != "" {
 			return nil, fmt.Errorf("module %q is a SourceFileProducer, not an OutputFileProducer, and so does not support tag %q", pathContextName(ctx, module), tag)
 		}
 		paths := sourceFileProducer.Srcs()
-		if len(paths) == 0 {
-			return nil, fmt.Errorf("failed to get output files from module %q", pathContextName(ctx, module))
-		}
 		return paths, nil
 	} else {
 		return nil, fmt.Errorf("module %q is not an OutputFileProducer", pathContextName(ctx, module))

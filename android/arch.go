@@ -147,10 +147,11 @@ const COMMON_VARIANT = "common"
 var (
 	archTypeList []ArchType
 
-	Arm    = newArch("arm", "lib32")
-	Arm64  = newArch("arm64", "lib64")
-	X86    = newArch("x86", "lib32")
-	X86_64 = newArch("x86_64", "lib64")
+	Arm     = newArch("arm", "lib32")
+	Arm64   = newArch("arm64", "lib64")
+	Riscv64 = newArch("riscv64", "lib64")
+	X86     = newArch("x86", "lib32")
+	X86_64  = newArch("x86_64", "lib64")
 
 	Common = ArchType{
 		Name: COMMON_VARIANT,
@@ -318,7 +319,7 @@ var (
 	Windows = newOsType("windows", Host, true, X86, X86_64)
 	// Android is the OS for target devices that run all of Android, including the Linux kernel
 	// and the Bionic libc runtime.
-	Android = newOsType("android", Device, false, Arm, Arm64, X86, X86_64)
+	Android = newOsType("android", Device, false, Arm, Arm64, Riscv64, X86, X86_64)
 
 	// CommonOS is a pseudo OSType for a common OS variant, which is OsType agnostic and which
 	// has dependencies on all the OS variants.
@@ -1686,14 +1687,12 @@ type archConfig struct {
 	abi         []string
 }
 
-// getNdkAbisConfig returns the list of archConfigs that are used for bulding
-// the API stubs and static libraries that are included in the NDK. These are
-// built *without Neon*, because non-Neon is still supported and building these
-// with Neon will break those users.
+// getNdkAbisConfig returns the list of archConfigs that are used for building
+// the API stubs and static libraries that are included in the NDK.
 func getNdkAbisConfig() []archConfig {
 	return []archConfig{
 		{"arm64", "armv8-a-branchprot", "", []string{"arm64-v8a"}},
-		{"arm", "armv7-a", "", []string{"armeabi-v7a"}},
+		{"arm", "armv7-a-neon", "", []string{"armeabi-v7a"}},
 		{"x86_64", "", "", []string{"x86_64"}},
 		{"x86", "", "", []string{"x86"}},
 	}

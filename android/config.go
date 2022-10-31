@@ -75,6 +75,9 @@ const (
 	// Don't use bazel at all during module analysis.
 	AnalysisNoBazel SoongBuildMode = iota
 
+	// Symlink fores mode: merge two directory trees into a symlink forest
+	SymlinkForest
+
 	// Bp2build mode: Generate BUILD files from blueprint files and exit.
 	Bp2build
 
@@ -82,6 +85,9 @@ const (
 	// blueprint modules. Individual BUILD targets will not, however, faitfhully
 	// express build semantics.
 	GenerateQueryView
+
+	// Generate BUILD files for API contributions to API surfaces
+	ApiBp2build
 
 	// Create a JSON representation of the module graph and exit.
 	GenerateModuleGraph
@@ -93,6 +99,11 @@ const (
 	// is considered a "developer mode" allowlist, as some modules may be
 	// allowlisted on an experimental basis.
 	BazelDevMode
+
+	// Use bazel during analysis of a few allowlisted build modules. The allowlist
+	// is considered "staging, as these are modules being prepared to be released
+	// into prod mode shortly after.
+	BazelStagingMode
 
 	// Use bazel during analysis of build modules from an allowlist carefully
 	// curated by the build team to be proven stable.
@@ -122,6 +133,11 @@ func (c Config) Subninjas() []string {
 
 func (c Config) PrimaryBuilderInvocations() []bootstrap.PrimaryBuilderInvocation {
 	return []bootstrap.PrimaryBuilderInvocation{}
+}
+
+// RunningInsideUnitTest returns true if this code is being run as part of a Soong unit test.
+func (c Config) RunningInsideUnitTest() bool {
+	return c.config.TestProductVariables != nil
 }
 
 // A DeviceConfig object represents the configuration for a particular device

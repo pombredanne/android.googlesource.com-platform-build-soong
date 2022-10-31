@@ -34,7 +34,7 @@ SOONG_OUTPUT_DIR="$OUTPUT_DIR/soong"
 BAZEL_OUTPUT_DIR="$OUTPUT_DIR/bazel"
 
 function call_bazel() {
-  tools/bazel --output_base="$BAZEL_OUTPUT_DIR" $@
+  build/bazel/bin/bazel --output_base="$BAZEL_OUTPUT_DIR" $@
 }
 
 function cleanup {
@@ -58,7 +58,7 @@ packages/modules/common/build/build_unbundled_mainline_module.sh \
 ######################
 build/soong/soong_ui.bash --make-mode BP2BUILD_VERBOSE=1 --skip-soong-tests bp2build
 
-BAZEL_OUT="$(call_bazel info output_path)"
+BAZEL_OUT="$(call_bazel info --config=bp2build output_path)"
 
 export TARGET_PRODUCT="module_arm"
 call_bazel build --config=bp2build --config=ci --config=android \

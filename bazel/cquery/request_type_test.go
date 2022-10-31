@@ -145,21 +145,51 @@ func TestGetApexInfoParseResults(t *testing.T) {
 			input: `{"signed_output":"my.apex",` +
 				`"unsigned_output":"my.apex.unsigned",` +
 				`"requires_native_libs":["//bionic/libc:libc","//bionic/libdl:libdl"],` +
-				`"bundle_key_pair":["foo.pem","foo.privkey"],` +
-				`"container_key_pair":["foo.x509.pem", "foo.pk8"],` +
+				`"bundle_key_info":["foo.pem", "foo.privkey"],` +
+				`"container_key_info":["foo.x509.pem", "foo.pk8", "foo"],` +
+				`"package_name":"package.name",` +
 				`"provides_native_libs":[]}`,
 			expectedOutput: ApexCqueryInfo{
 				SignedOutput:     "my.apex",
 				UnsignedOutput:   "my.apex.unsigned",
 				RequiresLibs:     []string{"//bionic/libc:libc", "//bionic/libdl:libdl"},
 				ProvidesLibs:     []string{},
-				BundleKeyPair:    []string{"foo.pem", "foo.privkey"},
-				ContainerKeyPair: []string{"foo.x509.pem", "foo.pk8"},
+				BundleKeyInfo:    []string{"foo.pem", "foo.privkey"},
+				ContainerKeyInfo: []string{"foo.x509.pem", "foo.pk8", "foo"},
+				PackageName:      "package.name",
 			},
 		},
 	}
 	for _, tc := range testCases {
 		actualOutput := GetApexInfo.ParseResult(tc.input)
+		if !reflect.DeepEqual(tc.expectedOutput, actualOutput) {
+			t.Errorf("%q: expected %#v != actual %#v", tc.description, tc.expectedOutput, actualOutput)
+		}
+	}
+}
+
+func TestGetCcUnstrippedParseResults(t *testing.T) {
+	testCases := []struct {
+		description    string
+		input          string
+		expectedOutput CcUnstrippedInfo
+	}{
+		{
+			description:    "no result",
+			input:          "{}",
+			expectedOutput: CcUnstrippedInfo{},
+		},
+		{
+			description: "one result",
+			input:       `{"OutputFile":"myapp", "UnstrippedOutput":"myapp_unstripped"}`,
+			expectedOutput: CcUnstrippedInfo{
+				OutputFile:       "myapp",
+				UnstrippedOutput: "myapp_unstripped",
+			},
+		},
+	}
+	for _, tc := range testCases {
+		actualOutput := GetCcUnstrippedInfo.ParseResult(tc.input)
 		if !reflect.DeepEqual(tc.expectedOutput, actualOutput) {
 			t.Errorf("%q: expected %#v != actual %#v", tc.description, tc.expectedOutput, actualOutput)
 		}

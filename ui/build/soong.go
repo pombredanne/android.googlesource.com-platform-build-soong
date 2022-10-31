@@ -41,11 +41,13 @@ const (
 	availableEnvFile = "soong.environment.available"
 	usedEnvFile      = "soong.environment.used"
 
-	soongBuildTag      = "build"
-	bp2buildTag        = "bp2build"
-	jsonModuleGraphTag = "modulegraph"
-	queryviewTag       = "queryview"
-	soongDocsTag       = "soong_docs"
+	soongBuildTag        = "build"
+	bp2buildFilesTag     = "bp2build_files"
+	bp2buildWorkspaceTag = "bp2build_workspace"
+	jsonModuleGraphTag   = "modulegraph"
+	queryviewTag         = "queryview"
+	apiBp2buildTag       = "api_bp2build"
+	soongDocsTag         = "soong_docs"
 
 	// bootstrapEpoch is used to determine if an incremental build is incompatible with the current
 	// version of bootstrap and needs cleaning before continuing the build.  Increment this for
@@ -234,9 +236,10 @@ func bootstrapEpochCleanup(ctx Context, config Config) {
 func bootstrapGlobFileList(config Config) []string {
 	return []string{
 		config.NamedGlobFile(soongBuildTag),
-		config.NamedGlobFile(bp2buildTag),
+		config.NamedGlobFile(bp2buildFilesTag),
 		config.NamedGlobFile(jsonModuleGraphTag),
 		config.NamedGlobFile(queryviewTag),
+		config.NamedGlobFile(apiBp2buildTag),
 		config.NamedGlobFile(soongDocsTag),
 	}
 }
@@ -258,6 +261,9 @@ func bootstrapBlueprint(ctx Context, config Config) {
 	if config.bazelDevMode {
 		mainSoongBuildExtraArgs = append(mainSoongBuildExtraArgs, "--bazel-mode-dev")
 	}
+	if config.bazelStagingMode {
+		mainSoongBuildExtraArgs = append(mainSoongBuildExtraArgs, "--bazel-mode-staging")
+	}
 
 	mainSoongBuildInvocation := primaryBuilderInvocation(
 		config,
@@ -271,19 +277,32 @@ func bootstrapBlueprint(ctx Context, config Config) {
 		// Mixed builds call Bazel from soong_build and they therefore need the
 		// Bazel workspace to be available. Make that so by adding a dependency on
 		// the bp2build marker file to the action that invokes soong_build .
-		mainSoongBuildInvocation.Inputs = append(mainSoongBuildInvocation.Inputs,
-			config.Bp2BuildMarkerFile())
+		mainSoongBuildInvocation.OrderOnlyInputs = append(mainSoongBuildInvocation.OrderOnlyInputs,
+			config.Bp2BuildWorkspaceMarkerFile())
 	}
 
 	bp2buildInvocation := primaryBuilderInvocation(
 		config,
-		bp2buildTag,
-		config.Bp2BuildMarkerFile(),
+		bp2buildFilesTag,
+		config.Bp2BuildFilesMarkerFile(),
 		[]string{
-			"--bp2build_marker", config.Bp2BuildMarkerFile(),
+			"--bp2build_marker", config.Bp2BuildFilesMarkerFile(),
 		},
 		fmt.Sprintf("converting Android.bp files to BUILD files at %s/bp2build", config.SoongOutDir()),
 	)
+
+	bp2buildWorkspaceInvocation := primaryBuilderInvocation(
+		config,
+		bp2buildWorkspaceTag,
+		config.Bp2BuildWorkspaceMarkerFile(),
+		[]string{
+			"--symlink_forest_marker", config.Bp2BuildWorkspaceMarkerFile(),
+		},
+		fmt.Sprintf("Creating Bazel symlink forest"),
+	)
+
+	bp2buildWorkspaceInvocation.Inputs = append(bp2buildWorkspaceInvocation.Inputs,
+		config.Bp2BuildFilesMarkerFile())
 
 	jsonModuleGraphInvocation := primaryBuilderInvocation(
 		config,
@@ -305,6 +324,19 @@ func bootstrapBlueprint(ctx Context, config Config) {
 			"--bazel_queryview_dir", queryviewDir,
 		},
 		fmt.Sprintf("generating the Soong module graph as a Bazel workspace at %s", queryviewDir),
+	)
+
+	// The BUILD files will be generated in out/soong/.api_bp2build (no symlinks to src files)
+	// The final workspace will be generated in out/soong/api_bp2build
+	apiBp2buildDir := filepath.Join(config.SoongOutDir(), ".api_bp2build")
+	apiBp2buildInvocation := primaryBuilderInvocation(
+		config,
+		apiBp2buildTag,
+		config.ApiBp2buildMarkerFile(),
+		[]string{
+			"--bazel_api_bp2build_dir", apiBp2buildDir,
+		},
+		fmt.Sprintf("generating BUILD files for API contributions at %s", apiBp2buildDir),
 	)
 
 	soongDocsInvocation := primaryBuilderInvocation(
@@ -343,8 +375,10 @@ func bootstrapBlueprint(ctx Context, config Config) {
 		primaryBuilderInvocations: []bootstrap.PrimaryBuilderInvocation{
 			mainSoongBuildInvocation,
 			bp2buildInvocation,
+			bp2buildWorkspaceInvocation,
 			jsonModuleGraphInvocation,
 			queryviewInvocation,
+			apiBp2buildInvocation,
 			soongDocsInvocation},
 	}
 
@@ -380,7 +414,7 @@ func runSoong(ctx Context, config Config) {
 	soongBuildEnv := config.Environment().Copy()
 	soongBuildEnv.Set("TOP", os.Getenv("TOP"))
 	// For Bazel mixed builds.
-	soongBuildEnv.Set("BAZEL_PATH", "./tools/bazel")
+	soongBuildEnv.Set("BAZEL_PATH", "./build/bazel/bin/bazel")
 	// Bazel's HOME var is set to an output subdirectory which doesn't exist. This
 	// prevents Bazel from file I/O in the actual user HOME directory.
 	soongBuildEnv.Set("BAZEL_HOME", absPath(ctx, filepath.Join(config.BazelOutDir(), "bazelhome")))
@@ -388,6 +422,7 @@ func runSoong(ctx Context, config Config) {
 	soongBuildEnv.Set("BAZEL_WORKSPACE", absPath(ctx, "."))
 	soongBuildEnv.Set("BAZEL_METRICS_DIR", config.BazelMetricsDir())
 	soongBuildEnv.Set("LOG_DIR", config.LogsDir())
+	soongBuildEnv.Set("BAZEL_DEPS_FILE", absPath(ctx, filepath.Join(config.BazelOutDir(), "bazel.list")))
 
 	// For Soong bootstrapping tests
 	if os.Getenv("ALLOW_MISSING_DEPENDENCIES") == "true" {
@@ -406,7 +441,7 @@ func runSoong(ctx Context, config Config) {
 		checkEnvironmentFile(soongBuildEnv, config.UsedEnvFile(soongBuildTag))
 
 		if config.BazelBuildEnabled() || config.Bp2Build() {
-			checkEnvironmentFile(soongBuildEnv, config.UsedEnvFile(bp2buildTag))
+			checkEnvironmentFile(soongBuildEnv, config.UsedEnvFile(bp2buildFilesTag))
 		}
 
 		if config.JsonModuleGraph() {
@@ -415,6 +450,10 @@ func runSoong(ctx Context, config Config) {
 
 		if config.Queryview() {
 			checkEnvironmentFile(soongBuildEnv, config.UsedEnvFile(queryviewTag))
+		}
+
+		if config.ApiBp2build() {
+			checkEnvironmentFile(soongBuildEnv, config.UsedEnvFile(apiBp2buildTag))
 		}
 
 		if config.SoongDocs() {
@@ -473,11 +512,15 @@ func runSoong(ctx Context, config Config) {
 	}
 
 	if config.Bp2Build() {
-		targets = append(targets, config.Bp2BuildMarkerFile())
+		targets = append(targets, config.Bp2BuildWorkspaceMarkerFile())
 	}
 
 	if config.Queryview() {
 		targets = append(targets, config.QueryviewMarkerFile())
+	}
+
+	if config.ApiBp2build() {
+		targets = append(targets, config.ApiBp2buildMarkerFile())
 	}
 
 	if config.SoongDocs() {

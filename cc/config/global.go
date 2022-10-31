@@ -91,9 +91,6 @@ var (
 		// Warnings from clang-7.0
 		"-Wno-sign-compare",
 
-		// Warnings from clang-8.0
-		"-Wno-defaulted-function-deleted",
-
 		// Disable -Winconsistent-missing-override until we can clean up the existing
 		// codebase for it.
 		"-Wno-inconsistent-missing-override",
@@ -150,6 +147,11 @@ var (
 		"-fdebug-info-for-profiling",
 	}
 
+	commonGlobalLldflags = []string{
+		"-fuse-ld=lld",
+		"-Wl,--icf=safe",
+	}
+
 	deviceGlobalCppflags = []string{
 		"-fvisibility-inlines-hidden",
 	}
@@ -167,13 +169,9 @@ var (
 		"-Wl,--exclude-libs,libgcc_stripped.a",
 		"-Wl,--exclude-libs,libunwind_llvm.a",
 		"-Wl,--exclude-libs,libunwind.a",
-		"-Wl,--icf=safe",
 	}
 
-	deviceGlobalLldflags = append(deviceGlobalLdflags,
-		[]string{
-			"-fuse-ld=lld",
-		}...)
+	deviceGlobalLldflags = append(deviceGlobalLdflags, commonGlobalLldflags...)
 
 	hostGlobalCflags = []string{}
 
@@ -181,7 +179,7 @@ var (
 
 	hostGlobalLdflags = []string{}
 
-	hostGlobalLldflags = []string{"-fuse-ld=lld"}
+	hostGlobalLldflags = commonGlobalLldflags
 
 	commonGlobalCppflags = []string{
 		"-Wsign-promo",
@@ -295,10 +293,8 @@ var (
 	}
 
 	llvmNextExtraCommonGlobalCflags = []string{
-		// New warnings to be fixed after clang-r468909
-		"-Wno-error=array-parameter",     // http://b/241941550
-		"-Wno-error=deprecated-builtins", // http://b/241601211
-		"-Wno-error=deprecated",          // in external/googletest/googletest
+		// New warnings to be fixed after clang-r475365
+		"-Wno-error=single-bit-bitfield-constant-conversion", // http://b/243965903
 	}
 
 	IllegalFlags = []string{
@@ -312,8 +308,8 @@ var (
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r468909"
-	ClangDefaultShortVersion = "15.0.2"
+	ClangDefaultVersion      = "clang-r468909b"
+	ClangDefaultShortVersion = "15.0.3"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{

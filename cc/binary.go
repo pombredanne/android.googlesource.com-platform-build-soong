@@ -540,6 +540,12 @@ func (binary *binaryDecorator) hostToolPath() android.OptionalPath {
 	return binary.toolPath
 }
 
+func (binary *binaryDecorator) overriddenModules() []string {
+	return binary.Properties.Overrides
+}
+
+var _ overridable = (*binaryDecorator)(nil)
+
 func init() {
 	pctx.HostBinToolVariable("verifyHostBionicCmd", "host_bionic_verify")
 }
@@ -571,25 +577,20 @@ var _ BazelHandler = (*ccBinaryBazelHandler)(nil)
 
 func (handler *ccBinaryBazelHandler) QueueBazelCall(ctx android.BaseModuleContext, label string) {
 	bazelCtx := ctx.Config().BazelContext
-	bazelCtx.QueueBazelRequest(label, cquery.GetOutputFiles, android.GetConfigKey(ctx))
+	bazelCtx.QueueBazelRequest(label, cquery.GetCcUnstrippedInfo, android.GetConfigKey(ctx))
 }
 
 func (handler *ccBinaryBazelHandler) ProcessBazelQueryResponse(ctx android.ModuleContext, label string) {
 	bazelCtx := ctx.Config().BazelContext
-	filePaths, err := bazelCtx.GetOutputFiles(label, android.GetConfigKey(ctx))
+	info, err := bazelCtx.GetCcUnstrippedInfo(label, android.GetConfigKey(ctx))
 	if err != nil {
 		ctx.ModuleErrorf(err.Error())
 		return
 	}
 
-	if len(filePaths) != 1 {
-		ctx.ModuleErrorf("expected exactly one output file for '%s', but got %s", label, filePaths)
-		return
-	}
-	outputFilePath := android.PathForBazelOut(ctx, filePaths[0])
+	outputFilePath := android.PathForBazelOut(ctx, info.OutputFile)
 	handler.module.outputFile = android.OptionalPathForPath(outputFilePath)
-	// TODO(b/220164721): We need to decide if we should return the stripped as the unstripped.
-	handler.module.linker.(*binaryDecorator).unstrippedOutputFile = outputFilePath
+	handler.module.linker.(*binaryDecorator).unstrippedOutputFile = android.PathForBazelOut(ctx, info.UnstrippedOutput)
 }
 
 func binaryBp2buildAttrs(ctx android.TopDownMutatorContext, m *Module) binaryAttributes {
@@ -645,6 +646,8 @@ func binaryBp2buildAttrs(ctx android.TopDownMutatorContext, m *Module) binaryAtt
 		sdkAttributes: bp2BuildParseSdkAttributes(m),
 	}
 
+	m.convertTidyAttributes(&attrs.tidyAttributes)
+
 	return attrs
 }
 
@@ -697,4 +700,6 @@ type binaryAttributes struct {
 	Features bazel.StringListAttribute
 
 	sdkAttributes
+
+	tidyAttributes
 }

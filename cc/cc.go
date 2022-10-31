@@ -616,6 +616,10 @@ type xref interface {
 	XrefCcFiles() android.Paths
 }
 
+type overridable interface {
+	overriddenModules() []string
+}
+
 type libraryDependencyKind int
 
 const (
@@ -2331,9 +2335,11 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 	ctx.ctx = ctx
 
 	deps := c.deps(ctx)
-
 	apiImportInfo := GetApiImports(c, actx)
-	deps = updateDepsWithApiImports(deps, apiImportInfo)
+
+	if ctx.Os() == android.Android && c.Target().NativeBridge != android.NativeBridgeEnabled {
+		deps = updateDepsWithApiImports(deps, apiImportInfo)
+	}
 
 	c.Properties.AndroidMkSystemSharedLibs = deps.SystemSharedLibs
 
@@ -2358,7 +2364,9 @@ func (c *Module) DepsMutator(actx android.BottomUpMutatorContext) {
 		}
 
 		// Check header lib replacement from API surface first, and then check again with VSDK
-		lib = GetReplaceModuleName(lib, apiImportInfo.HeaderLibs)
+		if ctx.Os() == android.Android && c.Target().NativeBridge != android.NativeBridgeEnabled {
+			lib = GetReplaceModuleName(lib, apiImportInfo.HeaderLibs)
+		}
 		lib = GetReplaceModuleName(lib, GetSnapshot(c, &snapshotInfo, actx).HeaderLibs)
 
 		if c.isNDKStubLibrary() {
@@ -3330,6 +3338,11 @@ func (c *Module) OutputFiles(tag string) (android.Paths, error) {
 			return android.Paths{c.outputFile.Path()}, nil
 		}
 		return android.Paths{}, nil
+	case "unstripped":
+		if c.linker != nil {
+			return android.PathsIfNonNil(c.linker.unstrippedOutputFilePath()), nil
+		}
+		return nil, nil
 	default:
 		return nil, fmt.Errorf("unsupported module reference tag %q", tag)
 	}
@@ -3617,6 +3630,16 @@ func (c *Module) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
 		return err
 	}
 
+	// A dependency only needs to support a min_sdk_version at least
+	// as high as  the api level that the architecture was introduced in.
+	// This allows introducing new architectures in the platform that
+	// need to be included in apexes that normally require an older
+	// min_sdk_version.
+	minApiForArch := minApiForArch(ctx, c.Target().Arch.ArchType)
+	if sdkVersion.LessThan(minApiForArch) {
+		sdkVersion = minApiForArch
+	}
+
 	if ver.GreaterThan(sdkVersion) {
 		return fmt.Errorf("newer SDK(%v)", ver)
 	}
@@ -3635,6 +3658,13 @@ func (c *Module) UniqueApexVariations() bool {
 	// APEX variation. Otherwise, another vendor APEX with use_vndk_as_stable:true may use a wrong
 	// variation of the VNDK lib because APEX variations are merged/grouped.
 	return c.UseVndk() && c.IsVndk()
+}
+
+func (c *Module) overriddenModules() []string {
+	if o, ok := c.linker.(overridable); ok {
+		return o.overriddenModules()
+	}
+	return nil
 }
 
 var _ snapshot.RelativeInstallPath = (*Module)(nil)
@@ -3698,7 +3728,9 @@ func (c *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 	prebuilt := c.IsPrebuilt()
 	switch c.typ() {
 	case binary:
-		if !prebuilt {
+		if prebuilt {
+			prebuiltBinaryBp2Build(ctx, c)
+		} else {
 			binaryBp2build(ctx, c)
 		}
 	case testBin:
@@ -3729,6 +3761,24 @@ func (c *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 		} else {
 			sharedOrStaticLibraryBp2Build(ctx, c, false)
 		}
+	}
+}
+
+var _ android.ApiProvider = (*Module)(nil)
+
+func (c *Module) ConvertWithApiBp2build(ctx android.TopDownMutatorContext) {
+	if c.IsPrebuilt() {
+		return
+	}
+	switch c.typ() {
+	case fullLibrary:
+		apiContributionBp2Build(ctx, c)
+	case sharedLibrary:
+		apiContributionBp2Build(ctx, c)
+	case headerLibrary:
+		// Aggressively generate api targets for all header modules
+		// This is necessary since the header module does not know if it is a dep of API surface stub library
+		apiLibraryHeadersBp2Build(ctx, c)
 	case ndkLibrary:
 		ndkLibraryBp2build(ctx, c)
 	}
@@ -3819,6 +3869,15 @@ func (ks *kytheExtractAllSingleton) GenerateBuildActions(ctx android.SingletonCo
 	if len(xrefTargets) > 0 {
 		ctx.Phony("xref_cxx", xrefTargets...)
 	}
+}
+
+func (c *Module) Partition() string {
+	if p, ok := c.installer.(interface {
+		getPartition() string
+	}); ok {
+		return p.getPartition()
+	}
+	return ""
 }
 
 var Bool = proptools.Bool
