@@ -100,6 +100,7 @@ var (
 	// Add the dessert build releases from oldest to newest.
 	buildReleaseS = initBuildRelease("S")
 	buildReleaseT = initBuildRelease("Tiramisu")
+	buildReleaseU = initBuildRelease("UpsideDownCake")
 
 	// Add the current build release which is always treated as being more recent than any other
 	// build release, including those added in tests.
@@ -397,7 +398,9 @@ func newPropertyPrunerForStructType(structType reflect.Type, selector fieldSelec
 // structure which are not supported by the specified target build release.
 //
 // A property is pruned if its field has a tag of the form:
-//     `supported_build_releases:"<build-release-set>"`
+//
+//	`supported_build_releases:"<build-release-set>"`
+//
 // and the resulting build release set does not contain the target build release. Properties that
 // have no such tag are assumed to be supported by all releases.
 func newPropertyPrunerByBuildRelease(propertiesStruct interface{}, targetBuildRelease *buildRelease) *propertyPruner {
