@@ -364,16 +364,16 @@ func (p *prebuiltCommon) DepIsInSameApex(ctx android.BaseModuleContext, dep andr
 // While it may be possible to provide sufficient information to determine whether two prebuilt_apex
 // modules were compatible it would be a lot of work and would not provide much benefit for a couple
 // of reasons:
-// * The number of prebuilt_apex modules that will be exporting files for the same module will be
-//   low as the prebuilt_apex only exports files for the direct dependencies that require it and
-//   very few modules are direct dependencies of multiple prebuilt_apex modules, e.g. there are a
-//   few com.android.art* apex files that contain the same contents and could export files for the
-//   same modules but only one of them needs to do so. Contrast that with source apex modules which
-//   need apex specific variants for every module that contributes code to the apex, whether direct
-//   or indirect.
-// * The build cost of a prebuilt_apex variant is generally low as at worst it will involve some
-//   extra copying of files. Contrast that with source apex modules that has to build each variant
-//   from source.
+//   - The number of prebuilt_apex modules that will be exporting files for the same module will be
+//     low as the prebuilt_apex only exports files for the direct dependencies that require it and
+//     very few modules are direct dependencies of multiple prebuilt_apex modules, e.g. there are a
+//     few com.android.art* apex files that contain the same contents and could export files for the
+//     same modules but only one of them needs to do so. Contrast that with source apex modules which
+//     need apex specific variants for every module that contributes code to the apex, whether direct
+//     or indirect.
+//   - The build cost of a prebuilt_apex variant is generally low as at worst it will involve some
+//     extra copying of files. Contrast that with source apex modules that has to build each variant
+//     from source.
 func (p *prebuiltCommon) apexInfoMutator(mctx android.TopDownMutatorContext) {
 
 	// Collect direct dependencies into contents.
@@ -500,6 +500,9 @@ type ApexFileProperties struct {
 		Arm64 struct {
 			Src *string `android:"path"`
 		}
+		Riscv64 struct {
+			Src *string `android:"path"`
+		}
 		X86 struct {
 			Src *string `android:"path"`
 		}
@@ -527,6 +530,8 @@ func (p *ApexFileProperties) prebuiltApexSelector(ctx android.BaseModuleContext,
 		src = String(p.Arch.Arm.Src)
 	case android.Arm64:
 		src = String(p.Arch.Arm64.Src)
+	case android.Riscv64:
+		src = String(p.Arch.Riscv64.Src)
 	case android.X86:
 		src = String(p.Arch.X86.Src)
 	case android.X86_64:
@@ -703,28 +708,29 @@ var _ prebuiltApexModuleCreator = (*Prebuilt)(nil)
 // e.g. make dex implementation jars available for java_import modules listed in exported_java_libs,
 // it does so as follows:
 //
-// 1. It creates a `deapexer` module that actually extracts the files from the `.apex` file and
-//    makes them available for use by other modules, at both Soong and ninja levels.
+//  1. It creates a `deapexer` module that actually extracts the files from the `.apex` file and
+//     makes them available for use by other modules, at both Soong and ninja levels.
 //
-// 2. It adds a dependency onto those modules and creates an apex specific variant similar to what
-//    an `apex` module does. That ensures that code which looks for specific apex variant, e.g.
-//    dexpreopt, will work the same way from source and prebuilt.
+//  2. It adds a dependency onto those modules and creates an apex specific variant similar to what
+//     an `apex` module does. That ensures that code which looks for specific apex variant, e.g.
+//     dexpreopt, will work the same way from source and prebuilt.
 //
-// 3. The `deapexer` module adds a dependency from the modules that require the exported files onto
-//    itself so that they can retrieve the file paths to those files.
+//  3. The `deapexer` module adds a dependency from the modules that require the exported files onto
+//     itself so that they can retrieve the file paths to those files.
 //
 // It also creates a child module `selector` that is responsible for selecting the appropriate
 // input apex for both the prebuilt_apex and the deapexer. That is needed for a couple of reasons:
-// 1. To dedup the selection logic so it only runs in one module.
-// 2. To allow the deapexer to be wired up to a different source for the input apex, e.g. an
-//    `apex_set`.
 //
-//                     prebuilt_apex
-//                    /      |      \
-//                 /         |         \
-//              V            V            V
-//       selector  <---  deapexer  <---  exported java lib
+//  1. To dedup the selection logic so it only runs in one module.
 //
+//  2. To allow the deapexer to be wired up to a different source for the input apex, e.g. an
+//     `apex_set`.
+//
+//     prebuilt_apex
+//     /      |      \
+//     /         |         \
+//     V            V            V
+//     selector  <---  deapexer  <---  exported java lib
 func (p *Prebuilt) createPrebuiltApexModules(ctx android.TopDownMutatorContext) {
 	baseModuleName := p.BaseModuleName()
 
