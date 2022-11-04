@@ -74,6 +74,26 @@ type SdkAware interface {
 	sdkAwareWithoutModule
 }
 
+// minApiLevelForSdkSnapshot provides access to the min_sdk_version for MinApiLevelForSdkSnapshot
+type minApiLevelForSdkSnapshot interface {
+	MinSdkVersion(ctx EarlyModuleContext) SdkSpec
+}
+
+// MinApiLevelForSdkSnapshot returns the ApiLevel of the min_sdk_version of the supplied module.
+//
+// If the module does not provide a min_sdk_version then it defaults to 1.
+func MinApiLevelForSdkSnapshot(ctx EarlyModuleContext, module Module) ApiLevel {
+	minApiLevel := NoneApiLevel
+	if m, ok := module.(minApiLevelForSdkSnapshot); ok {
+		minApiLevel = m.MinSdkVersion(ctx).ApiLevel
+	}
+	if minApiLevel == NoneApiLevel {
+		// The default min API level is 1.
+		minApiLevel = uncheckedFinalApiLevel(1)
+	}
+	return minApiLevel
+}
+
 // SdkRef refers to a version of an SDK
 type SdkRef struct {
 	Name    string
@@ -430,13 +450,13 @@ func (r *sdkRegistry) uniqueOnceKey() OnceKey {
 // required for some members but not others. Traits can cause additional information to be output
 // to the sdk snapshot or replace the default information exported for a member with something else.
 // e.g.
-// * By default cc libraries only export the default image variants to the SDK. However, for some
-//   members it may be necessary to export specific image variants, e.g. vendor, or recovery.
-// * By default cc libraries export all the configured architecture variants except for the native
-//   bridge architecture variants. However, for some members it may be necessary to export the
-//   native bridge architecture variants as well.
-// * By default cc libraries export the platform variant (i.e. sdk:). However, for some members it
-//   may be necessary to export the sdk variant (i.e. sdk:sdk).
+//   - By default cc libraries only export the default image variants to the SDK. However, for some
+//     members it may be necessary to export specific image variants, e.g. vendor, or recovery.
+//   - By default cc libraries export all the configured architecture variants except for the native
+//     bridge architecture variants. However, for some members it may be necessary to export the
+//     native bridge architecture variants as well.
+//   - By default cc libraries export the platform variant (i.e. sdk:). However, for some members it
+//     may be necessary to export the sdk variant (i.e. sdk:sdk).
 //
 // A sdk can request a module to provide no traits, one trait or a collection of traits. The exact
 // behavior of a trait is determined by how SdkMemberType implementations handle the traits. A trait
@@ -447,17 +467,17 @@ func (r *sdkRegistry) uniqueOnceKey() OnceKey {
 // SdkPropertyName(). Each property contains a list of modules that are required to have that trait.
 // e.g. something like this:
 //
-//   sdk {
-//     name: "sdk",
-//     ...
-//     traits: {
-//       recovery_image: ["module1", "module4", "module5"],
-//       native_bridge: ["module1", "module2"],
-//       native_sdk: ["module1", "module3"],
-//       ...
-//     },
-//     ...
-//   }
+//	sdk {
+//	  name: "sdk",
+//	  ...
+//	  traits: {
+//	    recovery_image: ["module1", "module4", "module5"],
+//	    native_bridge: ["module1", "module2"],
+//	    native_sdk: ["module1", "module3"],
+//	    ...
+//	  },
+//	  ...
+//	}
 type SdkMemberTrait interface {
 	// SdkPropertyName returns the name of the traits property on an sdk module.
 	SdkPropertyName() string
@@ -639,20 +659,19 @@ func DependencyTagForSdkMemberType(memberType SdkMemberType, export bool) SdkMem
 // The basic implementation should look something like this, where ModuleType is
 // the name of the module type being supported.
 //
-//    type moduleTypeSdkMemberType struct {
-//        android.SdkMemberTypeBase
-//    }
+//	type moduleTypeSdkMemberType struct {
+//	    android.SdkMemberTypeBase
+//	}
 //
-//    func init() {
-//        android.RegisterSdkMemberType(&moduleTypeSdkMemberType{
-//            SdkMemberTypeBase: android.SdkMemberTypeBase{
-//                PropertyName: "module_types",
-//            },
-//        }
-//    }
+//	func init() {
+//	    android.RegisterSdkMemberType(&moduleTypeSdkMemberType{
+//	        SdkMemberTypeBase: android.SdkMemberTypeBase{
+//	            PropertyName: "module_types",
+//	        },
+//	    }
+//	}
 //
-//    ...methods...
-//
+//	...methods...
 type SdkMemberType interface {
 	// SdkPropertyName returns the name of the member type property on an sdk module.
 	SdkPropertyName() string
@@ -716,8 +735,13 @@ type SdkMemberType interface {
 	//   have common values. Those fields are cleared and the common value added to the common
 	//   properties.
 	//
-	//   A field annotated with a tag of `sdk:"keep"` will be treated as if it
-	//   was not capitalized, i.e. not optimized for common values.
+	//   A field annotated with a tag of `sdk:"ignore"` will be treated as if it
+	//   was not capitalized, i.e. ignored and not optimized for common values.
+	//
+	//   A field annotated with a tag of `sdk:"keep"` will not be cleared even if the value is common
+	//   across multiple structs. Common values will still be copied into the common property struct.
+	//   So, if the same value is placed in all structs populated from variants that value would be
+	//   copied into all common property structs and so be available in every instance.
 	//
 	//   A field annotated with a tag of `android:"arch_variant"` will be allowed to have
 	//   values that differ by arch, fields not tagged as such must have common values across
@@ -904,18 +928,18 @@ type SdkMemberPropertiesBase struct {
 	// the locations of any of their prebuilt files in the snapshot by os type to prevent them
 	// from colliding. See OsPrefix().
 	//
-	// This property is the same for all variants of a member and so would be optimized away
-	// if it was not explicitly kept.
-	Os_count int `sdk:"keep"`
+	// Ignore this property during optimization. This is needed because this property is the same for
+	// all variants of a member and so would be optimized away if it was not ignored.
+	Os_count int `sdk:"ignore"`
 
 	// The os type for which these properties refer.
 	//
 	// Provided to allow a member to differentiate between os types in the locations of their
 	// prebuilt files when it supports more than one os type.
 	//
-	// This property is the same for all os type specific variants of a member and so would be
-	// optimized away if it was not explicitly kept.
-	Os OsType `sdk:"keep"`
+	// Ignore this property during optimization. This is needed because this property is the same for
+	// all variants of a member and so would be optimized away if it was not ignored.
+	Os OsType `sdk:"ignore"`
 
 	// The setting to use for the compile_multilib property.
 	Compile_multilib string `android:"arch_variant"`
