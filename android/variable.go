@@ -443,6 +443,8 @@ type productVariables struct {
 	SepolicyFreezeTestExtraPrebuiltDirs []string `json:",omitempty"`
 
 	GenerateAidlNdkPlatformBackend bool `json:",omitempty"`
+
+	IncludeTags []string `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {
