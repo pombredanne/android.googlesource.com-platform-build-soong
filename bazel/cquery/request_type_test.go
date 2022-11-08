@@ -133,12 +133,12 @@ func TestGetApexInfoParseResults(t *testing.T) {
 	testCases := []struct {
 		description    string
 		input          string
-		expectedOutput ApexCqueryInfo
+		expectedOutput ApexInfo
 	}{
 		{
 			description:    "no result",
 			input:          "{}",
-			expectedOutput: ApexCqueryInfo{},
+			expectedOutput: ApexInfo{},
 		},
 		{
 			description: "one result",
@@ -148,15 +148,17 @@ func TestGetApexInfoParseResults(t *testing.T) {
 				`"bundle_key_info":["foo.pem", "foo.privkey"],` +
 				`"container_key_info":["foo.x509.pem", "foo.pk8", "foo"],` +
 				`"package_name":"package.name",` +
+				`"symbols_used_by_apex": "path/to/my.apex_using.txt",` +
 				`"provides_native_libs":[]}`,
-			expectedOutput: ApexCqueryInfo{
-				SignedOutput:     "my.apex",
-				UnsignedOutput:   "my.apex.unsigned",
-				RequiresLibs:     []string{"//bionic/libc:libc", "//bionic/libdl:libdl"},
-				ProvidesLibs:     []string{},
-				BundleKeyInfo:    []string{"foo.pem", "foo.privkey"},
-				ContainerKeyInfo: []string{"foo.x509.pem", "foo.pk8", "foo"},
-				PackageName:      "package.name",
+			expectedOutput: ApexInfo{
+				SignedOutput:      "my.apex",
+				UnsignedOutput:    "my.apex.unsigned",
+				RequiresLibs:      []string{"//bionic/libc:libc", "//bionic/libdl:libdl"},
+				ProvidesLibs:      []string{},
+				BundleKeyInfo:     []string{"foo.pem", "foo.privkey"},
+				ContainerKeyInfo:  []string{"foo.x509.pem", "foo.pk8", "foo"},
+				PackageName:       "package.name",
+				SymbolsUsedByApex: "path/to/my.apex_using.txt",
 			},
 		},
 	}
