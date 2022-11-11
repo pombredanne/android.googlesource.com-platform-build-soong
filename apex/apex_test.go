@@ -9768,11 +9768,13 @@ apex {
 				OutputBaseDir: outputBaseDir,
 				LabelToApexInfo: map[string]cquery.ApexInfo{
 					"//:foo": cquery.ApexInfo{
-						SignedOutput:      "signed_out.apex",
-						UnsignedOutput:    "unsigned_out.apex",
-						BundleKeyInfo:     []string{"public_key", "private_key"},
-						ContainerKeyInfo:  []string{"container_cert", "container_private"},
-						SymbolsUsedByApex: "foo_using.txt",
+						SignedOutput:          "signed_out.apex",
+						UnsignedOutput:        "unsigned_out.apex",
+						BundleKeyInfo:         []string{"public_key", "private_key"},
+						ContainerKeyInfo:      []string{"container_cert", "container_private"},
+						SymbolsUsedByApex:     "foo_using.txt",
+						JavaSymbolsUsedByApex: "foo_using.xml",
+						BundleFile:            "apex_bundle.zip",
 
 						// unused
 						PackageName:  "pkg_name",
@@ -9812,5 +9814,18 @@ apex {
 
 	if w, g := "out/bazel/execroot/__main__/foo_using.txt", ab.nativeApisUsedByModuleFile.String(); w != g {
 		t.Errorf("Expected output file %q, got %q", w, g)
+	}
+
+	if w, g := "out/bazel/execroot/__main__/foo_using.xml", ab.javaApisUsedByModuleFile.String(); w != g {
+		t.Errorf("Expected output file %q, got %q", w, g)
+	}
+
+	mkData := android.AndroidMkDataForTest(t, result.TestContext, m)
+	var builder strings.Builder
+	mkData.Custom(&builder, "foo", "BAZEL_TARGET_", "", mkData)
+
+	data := builder.String()
+	if w := "ALL_MODULES.$(my_register_name).BUNDLE := out/bazel/execroot/__main__/apex_bundle.zip"; !strings.Contains(data, w) {
+		t.Errorf("Expected %q in androidmk data, but did not find %q", w, data)
 	}
 }
