@@ -898,6 +898,10 @@ func (c *configImpl) BazelOutDir() string {
 	return filepath.Join(c.OutDir(), "bazel")
 }
 
+func (c *configImpl) bazelOutputBase() string {
+	return filepath.Join(c.BazelOutDir(), "output")
+}
+
 func (c *configImpl) SoongOutDir() string {
 	return filepath.Join(c.OutDir(), "soong")
 }
