@@ -8413,6 +8413,30 @@ func TestApexSet(t *testing.T) {
 	}
 }
 
+func TestApexSet_NativeBridge(t *testing.T) {
+	ctx := testApex(t, `
+		apex_set {
+			name: "myapex",
+			set: "myapex.apks",
+			filename: "foo_v2.apex",
+			overrides: ["foo"],
+		}
+	`,
+		android.FixtureModifyConfig(func(config android.Config) {
+			config.Targets[android.Android] = []android.Target{
+				{Os: android.Android, Arch: android.Arch{ArchType: android.X86_64, ArchVariant: "", Abi: []string{"x86_64"}}},
+				{Os: android.Android, Arch: android.Arch{ArchType: android.Arm64, ArchVariant: "armv8-a", Abi: []string{"arm64-v8a"}}, NativeBridge: android.NativeBridgeEnabled},
+			}
+		}),
+	)
+
+	m := ctx.ModuleForTests("myapex.apex.extractor", "android_common")
+
+	// Check extract_apks tool parameters. No native bridge arch expected
+	extractedApex := m.Output("extracted/myapex.apks")
+	android.AssertStringEquals(t, "abis", "X86_64", extractedApex.Args["abis"])
+}
+
 func TestNoStaticLinkingToStubsLib(t *testing.T) {
 	testApexError(t, `.*required by "mylib" is a native library providing stub.*`, `
 		apex {
@@ -9775,6 +9799,7 @@ apex {
 						SymbolsUsedByApex:     "foo_using.txt",
 						JavaSymbolsUsedByApex: "foo_using.xml",
 						BundleFile:            "apex_bundle.zip",
+						InstalledFiles:        "installed-files.txt",
 
 						// unused
 						PackageName:  "pkg_name",
@@ -9820,12 +9845,19 @@ apex {
 		t.Errorf("Expected output file %q, got %q", w, g)
 	}
 
+	if w, g := "out/bazel/execroot/__main__/installed-files.txt", ab.installedFilesFile.String(); w != g {
+		t.Errorf("Expected installed-files.txt %q, got %q", w, g)
+	}
+
 	mkData := android.AndroidMkDataForTest(t, result.TestContext, m)
 	var builder strings.Builder
 	mkData.Custom(&builder, "foo", "BAZEL_TARGET_", "", mkData)
 
 	data := builder.String()
 	if w := "ALL_MODULES.$(my_register_name).BUNDLE := out/bazel/execroot/__main__/apex_bundle.zip"; !strings.Contains(data, w) {
+		t.Errorf("Expected %q in androidmk data, but did not find %q", w, data)
+	}
+	if w := "$(call dist-for-goals,checkbuild,out/bazel/execroot/__main__/installed-files.txt:foo-installed-files.txt)"; !strings.Contains(data, w) {
 		t.Errorf("Expected %q in androidmk data, but did not find %q", w, data)
 	}
 }

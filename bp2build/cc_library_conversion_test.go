@@ -1409,6 +1409,7 @@ func makeCcLibraryTargets(name string, attrs AttrNameToString) []string {
 		"strip":                    true,
 		"inject_bssl_hash":         true,
 		"has_stubs":                true,
+		"stubs_symbol_file":        true,
 		"use_version_lib":          true,
 	}
 
@@ -2710,7 +2711,8 @@ func TestCcLibraryStaticDisabledForSomeArch(t *testing.T) {
 
 func TestCcLibraryStubs(t *testing.T) {
 	expectedBazelTargets := makeCcLibraryTargets("a", AttrNameToString{
-		"has_stubs": `True`,
+		"has_stubs":         `True`,
+		"stubs_symbol_file": `"a.map.txt"`,
 	})
 	expectedBazelTargets = append(expectedBazelTargets, makeCcStubSuiteTargets("a", AttrNameToString{
 		"soname":            `"a.so"`,
@@ -2972,6 +2974,63 @@ cc_library {
         "//conditions:default": [":barlib"],
     })`,
 			"local_includes": `["."]`,
+		}),
+	})
+}
+
+func TestCcLibraryExcludesLibsHost(t *testing.T) {
+	runCcLibraryTestCase(t, Bp2buildTestCase{
+		ModuleTypeUnderTest:        "cc_library",
+		ModuleTypeUnderTestFactory: cc.LibraryFactory,
+		Filesystem: map[string]string{
+			"bar.map.txt": "",
+		},
+		Blueprint: simpleModuleDoNotConvertBp2build("cc_library", "bazlib") + `
+cc_library {
+	name: "quxlib",
+	stubs: { symbol_file: "bar.map.txt", versions: ["current"] },
+	bazel_module: { bp2build_available: false },
+}
+cc_library {
+	name: "barlib",
+	stubs: { symbol_file: "bar.map.txt", versions: ["28", "29", "current"] },
+	bazel_module: { bp2build_available: false },
+}
+cc_library {
+	name: "foolib",
+	shared_libs: ["barlib", "quxlib"],
+	target: {
+		host: {
+			shared_libs: ["bazlib"],
+			exclude_shared_libs: ["barlib"],
+		},
+	},
+	include_build_directory: false,
+	bazel_module: { bp2build_available: true },
+}`,
+		ExpectedBazelTargets: makeCcLibraryTargets("foolib", AttrNameToString{
+			"implementation_dynamic_deps": `select({
+        "//build/bazel/platforms/os:darwin": [":bazlib"],
+        "//build/bazel/platforms/os:linux": [":bazlib"],
+        "//build/bazel/platforms/os:linux_bionic": [":bazlib"],
+        "//build/bazel/platforms/os:linux_musl": [":bazlib"],
+        "//build/bazel/platforms/os:windows": [":bazlib"],
+        "//conditions:default": [],
+    }) + select({
+        "//build/bazel/platforms/os:darwin": [":quxlib"],
+        "//build/bazel/platforms/os:linux": [":quxlib"],
+        "//build/bazel/platforms/os:linux_bionic": [":quxlib"],
+        "//build/bazel/platforms/os:linux_musl": [":quxlib"],
+        "//build/bazel/platforms/os:windows": [":quxlib"],
+        "//build/bazel/rules/apex:android-in_apex": [
+            ":barlib_stub_libs_current",
+            ":quxlib_stub_libs_current",
+        ],
+        "//conditions:default": [
+            ":barlib",
+            ":quxlib",
+        ],
+    })`,
 		}),
 	})
 }
@@ -3539,6 +3598,49 @@ cc_library_static {
     ]`,
 				"tidy_disabled_srcs": `["bar.cpp"]`,
 				"tidy_timeout_srcs":  `["baz.cpp"]`,
+			}),
+		},
+	})
+}
+
+func TestCcLibraryHeaderAbiChecker(t *testing.T) {
+	runCcLibraryTestCase(t, Bp2buildTestCase{
+		Description:                "cc_library with header abi checker",
+		ModuleTypeUnderTest:        "cc_library",
+		ModuleTypeUnderTestFactory: cc.LibraryFactory,
+		Blueprint: `cc_library {
+    name: "foo",
+    header_abi_checker: {
+        enabled: true,
+        symbol_file: "a.map.txt",
+        exclude_symbol_versions: [
+						"29",
+						"30",
+				],
+        exclude_symbol_tags: [
+						"tag1",
+						"tag2",
+				],
+        check_all_apis: true,
+        diff_flags: ["-allow-adding-removing-weak-symbols"],
+    },
+    include_build_directory: false,
+}`,
+		ExpectedBazelTargets: []string{
+			MakeBazelTarget("cc_library_static", "foo_bp2build_cc_library_static", AttrNameToString{}),
+			MakeBazelTarget("cc_library_shared", "foo", AttrNameToString{
+				"abi_checker_enabled":     `True`,
+				"abi_checker_symbol_file": `"a.map.txt"`,
+				"abi_checker_exclude_symbol_versions": `[
+        "29",
+        "30",
+    ]`,
+				"abi_checker_exclude_symbol_tags": `[
+        "tag1",
+        "tag2",
+    ]`,
+				"abi_checker_check_all_apis": `True`,
+				"abi_checker_diff_flags":     `["-allow-adding-removing-weak-symbols"]`,
 			}),
 		},
 	})

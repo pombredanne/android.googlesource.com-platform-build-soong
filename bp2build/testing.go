@@ -90,6 +90,7 @@ type Bp2buildTestCase struct {
 }
 
 func RunBp2BuildTestCase(t *testing.T, registerModuleTypes func(ctx android.RegistrationContext), tc Bp2buildTestCase) {
+	t.Helper()
 	bp2buildSetup := func(ctx *android.TestContext) {
 		registerModuleTypes(ctx)
 		ctx.RegisterForBazelConversion()
@@ -98,6 +99,7 @@ func RunBp2BuildTestCase(t *testing.T, registerModuleTypes func(ctx android.Regi
 }
 
 func RunApiBp2BuildTestCase(t *testing.T, registerModuleTypes func(ctx android.RegistrationContext), tc Bp2buildTestCase) {
+	t.Helper()
 	apiBp2BuildSetup := func(ctx *android.TestContext) {
 		registerModuleTypes(ctx)
 		ctx.RegisterForApiBazelConversion()
@@ -529,4 +531,11 @@ func makeCcStubSuiteTargets(name string, attrs AttrNameToString) string {
 		}
 	}
 	return MakeBazelTarget("cc_stub_suite", name+"_stub_libs", stubSuiteAttrs)
+}
+
+func MakeNeverlinkDuplicateTarget(moduleType string, name string) string {
+	return MakeBazelTarget(moduleType, name+"-neverlink", AttrNameToString{
+		"neverlink": `True`,
+		"exports":   `[":` + name + `"]`,
+	})
 }

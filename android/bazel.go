@@ -341,16 +341,19 @@ func (a Bp2BuildConversionAllowlist) ShouldKeepExistingBuildFileForDir(dir strin
 		// Exact dir match
 		return true
 	}
+	var i int
 	// Check if subtree match
-	for prefix, recursive := range a.keepExistingBuildFile {
-		if recursive {
-			if strings.HasPrefix(dir, prefix+"/") {
-				return true
-			}
+	for {
+		j := strings.Index(dir[i:], "/")
+		if j == -1 {
+			return false //default
+		}
+		prefix := dir[0 : i+j]
+		i = i + j + 1 // skip the "/"
+		if recursive, ok := a.keepExistingBuildFile[prefix]; ok && recursive {
+			return true
 		}
 	}
-	// Default
-	return false
 }
 
 var bp2BuildAllowListKey = NewOnceKey("Bp2BuildAllowlist")
@@ -380,6 +383,9 @@ func MixedBuildsEnabled(ctx BaseModuleContext) bool {
 // mixedBuildPossible returns true if a module is ready to be replaced by a
 // converted or handcrafted Bazel target.
 func mixedBuildPossible(ctx BaseModuleContext) bool {
+	if !ctx.Config().IsMixedBuildsEnabled() {
+		return false
+	}
 	if ctx.Os() == Windows {
 		// Windows toolchains are not currently supported.
 		return false

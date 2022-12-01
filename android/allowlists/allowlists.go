@@ -166,6 +166,7 @@ var (
 		"external/minijail":                      Bp2BuildDefaultTrueRecursively,
 		"external/objenesis":                     Bp2BuildDefaultTrueRecursively,
 		"external/openscreen":                    Bp2BuildDefaultTrueRecursively,
+		"external/ow2-asm":                       Bp2BuildDefaultTrueRecursively,
 		"external/pcre":                          Bp2BuildDefaultTrueRecursively,
 		"external/protobuf":                      Bp2BuildDefaultTrueRecursively,
 		"external/python/six":                    Bp2BuildDefaultTrueRecursively,
@@ -347,6 +348,7 @@ var (
 		".":/*recursive = */ false,
 
 		"build/bazel":/* recursive = */ true,
+		"build/make/core":/* recursive = */ false,
 		"build/bazel_common_rules":/* recursive = */ true,
 		// build/make/tools/signapk BUILD file is generated, so build/make/tools is not recursive.
 		"build/make/tools":/* recursive = */ false,
@@ -372,9 +374,12 @@ var (
 		"packages/apps/Music":/* recursive = */ true,
 		"packages/apps/QuickSearchBox":/* recursive = */ true,
 
+		"prebuilts/abi-dumps/platform":/* recursive = */ true,
+		"prebuilts/abi-dumps/ndk":/* recursive = */ true,
 		"prebuilts/bazel":/* recursive = */ true,
 		"prebuilts/bundletool":/* recursive = */ true,
 		"prebuilts/clang/host/linux-x86":/* recursive = */ false,
+		"prebuilts/clang-tools":/* recursive = */ true,
 		"prebuilts/gcc":/* recursive = */ true,
 		"prebuilts/build-tools":/* recursive = */ true,
 		"prebuilts/jdk/jdk11":/* recursive = */ false,
@@ -382,6 +387,11 @@ var (
 		"prebuilts/sdk":/* recursive = */ false,
 		"prebuilts/sdk/tools":/* recursive = */ false,
 		"prebuilts/r8":/* recursive = */ false,
+		"prebuilts/runtime":/* recursive = */ false,
+
+		// not recursive due to conflicting workspace paths in tools/atest/bazel/rules
+		"tools/asuite/atest":/* recursive = */ false,
+		"tools/asuite/atest/bazel/reporter":/* recursive = */ true,
 	}
 
 	Bp2buildModuleAlwaysConvertList = []string{
@@ -647,6 +657,10 @@ var (
 		"libcodec2_soft_avcenc",
 		"libcodec2_soft_aacdec",
 		"libcodec2_soft_common",
+
+		// kotlin srcs in java libs
+		"CtsPkgInstallerConstants",
+		"kotlinx_atomicfu",
 	}
 
 	Bp2buildModuleTypeAlwaysConvertList = []string{
@@ -718,7 +732,6 @@ var (
 
 		// aar support
 		"prebuilt_car-ui-androidx-core-common",         // TODO(b/224773339), genrule dependency creates an .aar, not a .jar
-		"prebuilt_platform-robolectric-4.4-prebuilt",   // aosp/1999250, needs .aar support in Jars
 		"prebuilt_platform-robolectric-4.5.1-prebuilt", // aosp/1999250, needs .aar support in Jars
 		// ERROR: The dependencies for the following 1 jar(s) are not complete.
 		// 1.bazel-out/android_target-fastbuild/bin/prebuilts/tools/common/m2/_aar/robolectric-monitor-1.0.2-alpha1/classes_and_libs_merged.jar
@@ -1337,14 +1350,13 @@ var (
 		"prebuilt_kotlin-stdlib-jdk8",
 		"prebuilt_kotlin-test",
 		// TODO(b/217750501) exclude_files property not supported
-		"prebuilt_platform-robolectric-4.4-prebuilt",
 		"prebuilt_platform-robolectric-4.5.1-prebuilt",
 		"prebuilt_currysrc_org.eclipse",
 	}
 
 	// Bazel prod-mode allowlist. Modules in this list are built by Bazel
 	// in either prod mode or staging mode.
-	ProdMixedBuildsEnabledList = []string{}
+	ProdMixedBuildsEnabledList = []string{"com.android.tzdata"}
 
 	// Staging-mode allowlist. Modules in this list are only built
 	// by Bazel with --bazel-mode-staging. This list should contain modules
