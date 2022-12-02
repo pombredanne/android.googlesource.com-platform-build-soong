@@ -82,6 +82,7 @@ function symlink_directory {
 }
 
 function create_mock_soong {
+  create_mock_bazel
   copy_directory build/blueprint
   copy_directory build/soong
   copy_directory build/make/tools/rbcrun
@@ -123,10 +124,11 @@ function create_mock_bazel {
   symlink_directory prebuilts/jdk
   symlink_directory external/bazel-skylib
   symlink_directory external/bazelbuild-rules_android
+  symlink_directory external/bazelbuild-rules_license
+  symlink_directory external/bazelbuild-kotlin-rules
 
   symlink_file WORKSPACE
   symlink_file BUILD
-  symlink_file tools/bazel
 }
 
 function run_bazel {
@@ -134,7 +136,7 @@ function run_bazel {
   # output should not be parsed as such.
   rm -rf out/ninja_build
 
-  tools/bazel "$@"
+  build/bazel/bin/bazel "$@"
 }
 
 function run_ninja {

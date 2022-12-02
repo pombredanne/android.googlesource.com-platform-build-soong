@@ -147,16 +147,6 @@ func (m *headerModule) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 }
 
-const (
-	apiContributionSuffix = ".contribution"
-)
-
-// apiContributionTargetName returns the name of the cc_api(headers|contribution) bp2build target of ndk modules
-// A suffix is necessary to prevent a name collision with the base ndk_(library|header) target in the same bp2build bazel package
-func apiContributionTargetName(moduleName string) string {
-	return moduleName + apiContributionSuffix
-}
-
 // TODO(b/243196151): Populate `system` and `arch` metadata
 type bazelCcApiHeadersAttributes struct {
 	Hdrs        bazel.LabelListAttribute
@@ -179,11 +169,13 @@ func createCcApiHeadersTarget(ctx android.TopDownMutatorContext, includes []stri
 		Include_dir: include_dir,
 	}
 	ctx.CreateBazelTargetModule(props, android.CommonAttributes{
-		Name: apiContributionTargetName(ctx.ModuleName()),
+		Name: android.ApiContributionTargetName(ctx.ModuleName()),
 	}, attrs)
 }
 
-func (h *headerModule) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
+var _ android.ApiProvider = (*headerModule)(nil)
+
+func (h *headerModule) ConvertWithApiBp2build(ctx android.TopDownMutatorContext) {
 	// Generate `cc_api_headers` target for Multi-tree API export
 	createCcApiHeadersTarget(ctx, h.properties.Srcs, h.properties.Exclude_srcs, h.properties.From)
 }
@@ -202,7 +194,6 @@ func ndkHeadersFactory() android.Module {
 	module := &headerModule{}
 	module.AddProperties(&module.properties)
 	android.InitAndroidModule(module)
-	android.InitBazelModule(module)
 	return module
 }
 
@@ -273,7 +264,9 @@ func (m *versionedHeaderModule) GenerateAndroidBuildActions(ctx android.ModuleCo
 	processHeadersWithVersioner(ctx, fromSrcPath, toOutputPath, srcFiles, installPaths)
 }
 
-func (h *versionedHeaderModule) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
+var _ android.ApiProvider = (*versionedHeaderModule)(nil)
+
+func (h *versionedHeaderModule) ConvertWithApiBp2build(ctx android.TopDownMutatorContext) {
 	// Glob all .h files under `From`
 	includePattern := headerGlobPattern(proptools.String(h.properties.From))
 	// Generate `cc_api_headers` target for Multi-tree API export
@@ -329,7 +322,6 @@ func versionedNdkHeadersFactory() android.Module {
 	module.AddProperties(&module.properties)
 
 	android.InitAndroidModule(module)
-	android.InitBazelModule(module)
 
 	return module
 }

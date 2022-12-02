@@ -75,6 +75,9 @@ const (
 	// Don't use bazel at all during module analysis.
 	AnalysisNoBazel SoongBuildMode = iota
 
+	// Symlink fores mode: merge two directory trees into a symlink forest
+	SymlinkForest
+
 	// Bp2build mode: Generate BUILD files from blueprint files and exit.
 	Bp2build
 
@@ -82,6 +85,9 @@ const (
 	// blueprint modules. Individual BUILD targets will not, however, faitfhully
 	// express build semantics.
 	GenerateQueryView
+
+	// Generate BUILD files for API contributions to API surfaces
+	ApiBp2build
 
 	// Create a JSON representation of the module graph and exit.
 	GenerateModuleGraph
@@ -93,6 +99,11 @@ const (
 	// is considered a "developer mode" allowlist, as some modules may be
 	// allowlisted on an experimental basis.
 	BazelDevMode
+
+	// Use bazel during analysis of a few allowlisted build modules. The allowlist
+	// is considered "staging, as these are modules being prepared to be released
+	// into prod mode shortly after.
+	BazelStagingMode
 
 	// Use bazel during analysis of build modules from an allowlist carefully
 	// curated by the build team to be proven stable.
@@ -122,6 +133,11 @@ func (c Config) Subninjas() []string {
 
 func (c Config) PrimaryBuilderInvocations() []bootstrap.PrimaryBuilderInvocation {
 	return []bootstrap.PrimaryBuilderInvocation{}
+}
+
+// RunningInsideUnitTest returns true if this code is being run as part of a Soong unit test.
+func (c Config) RunningInsideUnitTest() bool {
+	return c.config.TestProductVariables != nil
 }
 
 // A DeviceConfig object represents the configuration for a particular device
@@ -520,7 +536,40 @@ func (c *config) mockFileSystem(bp string, fs map[string][]byte) {
 // Returns true if "Bazel builds" is enabled. In this mode, part of build
 // analysis is handled by Bazel.
 func (c *config) IsMixedBuildsEnabled() bool {
-	return c.BuildMode == BazelProdMode || c.BuildMode == BazelDevMode
+	globalMixedBuildsSupport := c.Once(OnceKey{"globalMixedBuildsSupport"}, func() interface{} {
+		if c.productVariables.DeviceArch != nil && *c.productVariables.DeviceArch == "riscv64" {
+			fmt.Fprintln(os.Stderr, "unsupported device arch 'riscv64' for Bazel: falling back to non-mixed build")
+			return false
+		}
+		if c.IsEnvTrue("GLOBAL_THINLTO") {
+			fmt.Fprintln(os.Stderr, "unsupported env var GLOBAL_THINLTO for Bazel: falling back to non-mixed build")
+			return false
+		}
+		if c.IsEnvTrue("CLANG_COVERAGE") {
+			fmt.Fprintln(os.Stderr, "unsupported env var CLANG_COVERAGE for Bazel: falling back to non-mixed build")
+			return false
+		}
+		if len(c.productVariables.SanitizeHost) > 0 {
+			fmt.Fprintln(os.Stderr, "unsupported product var SanitizeHost for Bazel: falling back to non-mixed build")
+			return false
+		}
+		if len(c.productVariables.SanitizeDevice) > 0 {
+			fmt.Fprintln(os.Stderr, "unsupported product var SanitizeDevice for Bazel: falling back to non-mixed build")
+			return false
+		}
+		if len(c.productVariables.SanitizeDeviceDiag) > 0 {
+			fmt.Fprintln(os.Stderr, "unsupported product var SanitizeDeviceDiag for Bazel: falling back to non-mixed build")
+			return false
+		}
+		if len(c.productVariables.SanitizeDeviceArch) > 0 {
+			fmt.Fprintln(os.Stderr, "unsupported product var SanitizeDeviceArch for Bazel: falling back to non-mixed build")
+			return false
+		}
+		return true
+	}).(bool)
+
+	bazelModeEnabled := c.BuildMode == BazelProdMode || c.BuildMode == BazelDevMode || c.BuildMode == BazelStagingMode
+	return globalMixedBuildsSupport && bazelModeEnabled
 }
 
 func (c *config) SetAllowMissingDependencies() {
@@ -1093,7 +1142,7 @@ func (c *deviceConfig) WithDexpreopt() bool {
 	return c.config.productVariables.WithDexpreopt
 }
 
-func (c *config) FrameworksBaseDirExists(ctx PathContext) bool {
+func (c *config) FrameworksBaseDirExists(ctx PathGlobContext) bool {
 	return ExistentPathForSource(ctx, "frameworks", "base", "Android.bp").Valid()
 }
 
@@ -1254,10 +1303,6 @@ func (c *deviceConfig) NativeCoverageEnabledForPath(path string) bool {
 		}
 	}
 	return coverage
-}
-
-func (c *deviceConfig) AfdoAdditionalProfileDirs() []string {
-	return c.config.productVariables.AfdoAdditionalProfileDirs
 }
 
 func (c *deviceConfig) PgoAdditionalProfileDirs() []string {
@@ -1617,6 +1662,14 @@ func (c *deviceConfig) ShippingApiLevel() ApiLevel {
 	}
 	apiLevel, _ := strconv.Atoi(*c.config.productVariables.ShippingApiLevel)
 	return uncheckedFinalApiLevel(apiLevel)
+}
+
+func (c *deviceConfig) BuildBrokenClangAsFlags() bool {
+	return c.config.productVariables.BuildBrokenClangAsFlags
+}
+
+func (c *deviceConfig) BuildBrokenClangCFlags() bool {
+	return c.config.productVariables.BuildBrokenClangCFlags
 }
 
 func (c *deviceConfig) BuildBrokenClangProperty() bool {

@@ -336,8 +336,8 @@ func (m *syspropLibrary) AndroidMk() android.AndroidMkData {
 		Custom: func(w io.Writer, name, prefix, moduleDir string, data android.AndroidMkData) {
 			// sysprop_library module itself is defined as a FAKE module to perform API check.
 			// Actual implementation libraries are created on LoadHookMutator
-			fmt.Fprintln(w, "\ninclude $(CLEAR_VARS)")
-			fmt.Fprintf(w, "LOCAL_MODULE := %s\n", m.Name())
+			fmt.Fprintln(w, "\ninclude $(CLEAR_VARS)", " # sysprop.syspropLibrary")
+			fmt.Fprintln(w, "LOCAL_MODULE :=", m.Name())
 			data.Entries.WriteLicenseVariables(w)
 			fmt.Fprintf(w, "LOCAL_MODULE_CLASS := FAKE\n")
 			fmt.Fprintf(w, "LOCAL_MODULE_TAGS := optional\n")
@@ -365,7 +365,10 @@ func (m *syspropLibrary) ShouldSupportSdkVersion(ctx android.BaseModuleContext,
 // sysprop_library creates schematized APIs from sysprop description files (.sysprop).
 // Both Java and C++ modules can link against sysprop_library, and API stability check
 // against latest APIs (see build/soong/scripts/freeze-sysprop-api-files.sh)
-// is performed.
+// is performed. Note that the generated C++ module has its name prefixed with
+// `lib`, and it is this module that should be depended on from other C++
+// modules; i.e., if the sysprop_library module is named `foo`, C++ modules
+// should depend on `libfoo`.
 func syspropLibraryFactory() android.Module {
 	m := &syspropLibrary{}
 
@@ -570,43 +573,14 @@ func syspropLibraryHook(ctx android.LoadHookContext, m *syspropLibrary) {
 }
 
 // TODO(b/240463568): Additional properties will be added for API validation
-type bazelSyspropLibraryAttributes struct {
-	Srcs bazel.LabelListAttribute
-}
-
-type bazelCcSyspropLibraryAttributes struct {
-	Dep             bazel.LabelAttribute
-	Min_sdk_version *string
-}
-
 func (m *syspropLibrary) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
-	ctx.CreateBazelTargetModule(
-		bazel.BazelTargetModuleProperties{
-			Rule_class:        "sysprop_library",
-			Bzl_load_location: "//build/bazel/rules/sysprop:sysprop_library.bzl",
-		},
-		android.CommonAttributes{Name: m.Name()},
-		&bazelSyspropLibraryAttributes{
-			Srcs: bazel.MakeLabelListAttribute(android.BazelLabelForModuleSrc(ctx, m.properties.Srcs)),
-		})
-
-	attrs := &bazelCcSyspropLibraryAttributes{
-		Dep:             *bazel.MakeLabelAttribute(":" + m.Name()),
-		Min_sdk_version: m.properties.Cpp.Min_sdk_version,
+	labels := cc.SyspropLibraryLabels{
+		SyspropLibraryLabel: m.BaseModuleName(),
+		SharedLibraryLabel:  m.CcImplementationModuleName(),
+		StaticLibraryLabel:  cc.BazelLabelNameForStaticModule(m.CcImplementationModuleName()),
 	}
-
-	ctx.CreateBazelTargetModule(
-		bazel.BazelTargetModuleProperties{
-			Rule_class:        "cc_sysprop_library_shared",
-			Bzl_load_location: "//build/bazel/rules/cc:cc_sysprop_library.bzl",
-		},
-		android.CommonAttributes{Name: m.CcImplementationModuleName()},
-		attrs)
-	ctx.CreateBazelTargetModule(
-		bazel.BazelTargetModuleProperties{
-			Rule_class:        "cc_sysprop_library_static",
-			Bzl_load_location: "//build/bazel/rules/cc:cc_sysprop_library.bzl",
-		},
-		android.CommonAttributes{Name: m.CcImplementationModuleName() + "_bp2build_cc_library_static"},
-		attrs)
+	cc.Bp2buildSysprop(ctx,
+		labels,
+		bazel.MakeLabelListAttribute(android.BazelLabelForModuleSrc(ctx, m.properties.Srcs)),
+		m.properties.Cpp.Min_sdk_version)
 }

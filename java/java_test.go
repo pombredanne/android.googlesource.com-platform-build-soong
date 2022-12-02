@@ -588,8 +588,8 @@ func TestPrebuilts(t *testing.T) {
 	sdklibStubsJar := ctx.ModuleForTests("sdklib.stubs", "android_common").Rule("combineJar").Output
 
 	fooLibrary := fooModule.Module().(*Library)
-	assertDeepEquals(t, "foo java sources incorrect",
-		[]string{"a.java"}, fooLibrary.compiledJavaSrcs.Strings())
+	assertDeepEquals(t, "foo unique sources incorrect",
+		[]string{"a.java"}, fooLibrary.uniqueSrcFiles.Strings())
 
 	assertDeepEquals(t, "foo java source jars incorrect",
 		[]string{".intermediates/stubs-source/android_common/stubs-source-stubs.srcjar"},
@@ -1288,6 +1288,8 @@ func TestAidlExportIncludeDirsFromImports(t *testing.T) {
 }
 
 func TestAidlIncludeDirFromConvertedFileGroupWithPathPropInMixedBuilds(t *testing.T) {
+	// TODO(b/247782695), TODO(b/242847534) Fix mixed builds for filegroups
+	t.Skip("Re-enable once filegroups are corrected for mixed builds")
 	bp := `
 	filegroup {
 		name: "foo_aidl",
@@ -1365,6 +1367,39 @@ func TestAidlFlagsWithMinSdkVersion(t *testing.T) {
 				t.Errorf("aidl command %q does not contain %q", aidlCommand, expectedAidlFlag)
 			}
 		})
+	}
+}
+
+func TestAidlFlagsMinSdkVersionDroidstubs(t *testing.T) {
+	bpTemplate := `
+	droidstubs {
+		name: "foo-stubs",
+		srcs: ["foo.aidl"],
+		%s
+		system_modules: "none",
+	}
+	`
+	testCases := []struct {
+		desc                  string
+		sdkVersionBp          string
+		minSdkVersionExpected string
+	}{
+		{
+			desc:                  "sdk_version not set, module compiles against private platform APIs",
+			sdkVersionBp:          ``,
+			minSdkVersionExpected: "10000",
+		},
+		{
+			desc:                  "sdk_version set to none, module does not build against an SDK",
+			sdkVersionBp:          `sdk_version: "none",`,
+			minSdkVersionExpected: "10000",
+		},
+	}
+	for _, tc := range testCases {
+		ctx := prepareForJavaTest.RunTestWithBp(t, fmt.Sprintf(bpTemplate, tc.sdkVersionBp))
+		aidlCmd := ctx.ModuleForTests("foo-stubs", "android_common").Rule("aidl").RuleParams.Command
+		expected := "--min_sdk_version=" + tc.minSdkVersionExpected
+		android.AssertStringDoesContain(t, "aidl command conatins incorrect min_sdk_version for testCse: "+tc.desc, aidlCmd, expected)
 	}
 }
 
@@ -1779,5 +1814,133 @@ func TestGenAidlIncludeFlagsForMixedBuilds(t *testing.T) {
 	flags := genAidlIncludeFlags(ctx, srcs, dirsAlreadyIncluded)
 	if flags != expectedFlags {
 		t.Errorf("expected flags to be %q; was %q", expectedFlags, flags)
+	}
+}
+
+func TestDeviceBinaryWrapperGeneration(t *testing.T) {
+	// Scenario 1: java_binary has main_class property in its bp
+	ctx, _ := testJava(t, `
+		java_binary {
+			name: "foo",
+			srcs: ["foo.java"],
+			main_class: "foo.bar.jb",
+		}
+	`)
+	wrapperPath := fmt.Sprint(ctx.ModuleForTests("foo", "android_arm64_armv8-a").AllOutputs())
+	if !strings.Contains(wrapperPath, "foo.sh") {
+		t.Errorf("wrapper file foo.sh is not generated")
+	}
+
+	// Scenario 2: java_binary has neither wrapper nor main_class, its build
+	// is expected to be failed.
+	testJavaError(t, "main_class property is required for device binary if no default wrapper is assigned", `
+		java_binary {
+			name: "foo",
+			srcs: ["foo.java"],
+		}`)
+}
+
+func TestJavaApiLibraryAndProviderLink(t *testing.T) {
+	provider_bp_a := `
+	java_api_contribution {
+		name: "foo1",
+		api_file: "foo1.txt",
+	}
+	`
+	provider_bp_b := `java_api_contribution {
+		name: "foo2",
+		api_file: "foo2.txt",
+	}
+	`
+	ctx, _ := testJavaWithFS(t, `
+		java_api_library {
+			name: "bar1",
+			api_surface: "public",
+			api_contributions: ["foo1"],
+		}
+
+		java_api_library {
+			name: "bar2",
+			api_surface: "system",
+			api_contributions: ["foo1", "foo2"],
+		}
+		`,
+		map[string][]byte{
+			"a/Android.bp": []byte(provider_bp_a),
+			"b/Android.bp": []byte(provider_bp_b),
+		})
+
+	testcases := []struct {
+		moduleName         string
+		sourceTextFileDirs []string
+	}{
+		{
+			moduleName:         "bar1",
+			sourceTextFileDirs: []string{"a/foo1.txt"},
+		},
+		{
+			moduleName:         "bar2",
+			sourceTextFileDirs: []string{"a/foo1.txt", "b/foo2.txt"},
+		},
+	}
+	for _, c := range testcases {
+		m := ctx.ModuleForTests(c.moduleName, "android_common")
+		manifest := m.Output("metalava.sbox.textproto")
+		sboxProto := android.RuleBuilderSboxProtoForTests(t, manifest)
+		manifestCommand := sboxProto.Commands[0].GetCommand()
+		sourceFilesFlag := "--source-files " + strings.Join(c.sourceTextFileDirs, " ")
+		android.AssertStringDoesContain(t, "source text files not present", manifestCommand, sourceFilesFlag)
+	}
+}
+
+func TestJavaApiLibraryJarGeneration(t *testing.T) {
+	provider_bp_a := `
+	java_api_contribution {
+		name: "foo1",
+		api_file: "foo1.txt",
+	}
+	`
+	provider_bp_b := `java_api_contribution {
+		name: "foo2",
+		api_file: "foo2.txt",
+	}
+	`
+	ctx, _ := testJavaWithFS(t, `
+		java_api_library {
+			name: "bar1",
+			api_surface: "public",
+			api_contributions: ["foo1"],
+		}
+
+		java_api_library {
+			name: "bar2",
+			api_surface: "system",
+			api_contributions: ["foo1", "foo2"],
+		}
+		`,
+		map[string][]byte{
+			"a/Android.bp": []byte(provider_bp_a),
+			"b/Android.bp": []byte(provider_bp_b),
+		})
+
+	testcases := []struct {
+		moduleName    string
+		outputJarName string
+	}{
+		{
+			moduleName:    "bar1",
+			outputJarName: "bar1/android.jar",
+		},
+		{
+			moduleName:    "bar2",
+			outputJarName: "bar2/android.jar",
+		},
+	}
+	for _, c := range testcases {
+		m := ctx.ModuleForTests(c.moduleName, "android_common")
+		outputs := fmt.Sprint(m.AllOutputs())
+		if !strings.Contains(outputs, c.outputJarName) {
+			t.Errorf("Module output does not contain expected jar %s", c.outputJarName)
+		}
 	}
 }

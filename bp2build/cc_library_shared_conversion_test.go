@@ -338,22 +338,66 @@ cc_library_shared {
 	})
 }
 
-func TestCcLibrarySharedVersionScript(t *testing.T) {
+func TestCcLibrarySharedVersionScriptAndDynamicList(t *testing.T) {
 	runCcLibrarySharedTestCase(t, Bp2buildTestCase{
-		Description: "cc_library_shared version script",
+		Description: "cc_library_shared version script and dynamic list",
 		Filesystem: map[string]string{
 			"version_script": "",
+			"dynamic.list":   "",
 		},
 		Blueprint: soongCcLibrarySharedPreamble + `
 cc_library_shared {
     name: "foo_shared",
     version_script: "version_script",
+    dynamic_list: "dynamic.list",
     include_build_directory: false,
 }`,
 		ExpectedBazelTargets: []string{
 			MakeBazelTarget("cc_library_shared", "foo_shared", AttrNameToString{
-				"additional_linker_inputs": `["version_script"]`,
-				"linkopts":                 `["-Wl,--version-script,$(location version_script)"]`,
+				"additional_linker_inputs": `[
+        "version_script",
+        "dynamic.list",
+    ]`,
+				"linkopts": `[
+        "-Wl,--version-script,$(location version_script)",
+        "-Wl,--dynamic-list,$(location dynamic.list)",
+    ]`,
+			}),
+		},
+	})
+}
+
+func TestCcLibraryLdflagsSplitBySpaceSoongAdded(t *testing.T) {
+	runCcLibrarySharedTestCase(t, Bp2buildTestCase{
+		Description: "ldflags are split by spaces except for the ones added by soong (version script and dynamic list)",
+		Filesystem: map[string]string{
+			"version_script": "",
+			"dynamic.list":   "",
+		},
+		Blueprint: `
+cc_library_shared {
+    name: "foo",
+    ldflags: [
+        "--nospace_flag",
+        "-z spaceflag",
+    ],
+    version_script: "version_script",
+    dynamic_list: "dynamic.list",
+    include_build_directory: false,
+}`,
+		ExpectedBazelTargets: []string{
+			MakeBazelTarget("cc_library_shared", "foo", AttrNameToString{
+				"additional_linker_inputs": `[
+        "version_script",
+        "dynamic.list",
+    ]`,
+				"linkopts": `[
+        "--nospace_flag",
+        "-z",
+        "spaceflag",
+        "-Wl,--version-script,$(location version_script)",
+        "-Wl,--dynamic-list,$(location dynamic.list)",
+    ]`,
 			}),
 		},
 	})
@@ -454,6 +498,9 @@ func TestCcLibrarySharedProto(t *testing.T) {
 
 func TestCcLibrarySharedUseVersionLib(t *testing.T) {
 	runCcLibrarySharedTestCase(t, Bp2buildTestCase{
+		Filesystem: map[string]string{
+			soongCcVersionLibBpPath: soongCcVersionLibBp,
+		},
 		Blueprint: soongCcProtoPreamble + `cc_library_shared {
         name: "foo",
         use_version_lib: true,
@@ -461,7 +508,8 @@ func TestCcLibrarySharedUseVersionLib(t *testing.T) {
 }`,
 		ExpectedBazelTargets: []string{
 			MakeBazelTarget("cc_library_shared", "foo", AttrNameToString{
-				"use_version_lib": "True",
+				"use_version_lib":                   "True",
+				"implementation_whole_archive_deps": `["//build/soong/cc/libbuildversion:libbuildversion"]`,
 			}),
 		},
 	})
@@ -484,12 +532,22 @@ cc_library_shared {
 `,
 		},
 		Blueprint: soongCcLibraryPreamble,
-		ExpectedBazelTargets: []string{MakeBazelTarget("cc_library_shared", "a", AttrNameToString{
-			"has_stubs": `True`,
+		ExpectedBazelTargets: []string{makeCcStubSuiteTargets("a", AttrNameToString{
+			"soname":            `"a.so"`,
+			"source_library":    `":a"`,
+			"stubs_symbol_file": `"a.map.txt"`,
+			"stubs_versions": `[
+        "28",
+        "29",
+        "current",
+    ]`,
 		}),
+			MakeBazelTarget("cc_library_shared", "a", AttrNameToString{
+				"has_stubs":         `True`,
+				"stubs_symbol_file": `"a.map.txt"`,
+			}),
 		},
-	},
-	)
+	})
 }
 
 func TestCcLibrarySharedSystemSharedLibsSharedEmpty(t *testing.T) {
@@ -710,6 +768,120 @@ cc_library_shared {
         "//build/bazel/platforms/arch:arm64": "-64",
         "//conditions:default": None,
     })`,
+			}),
+		},
+	})
+}
+
+func TestCcLibrarySharedWithSyspropSrcs(t *testing.T) {
+	runCcLibrarySharedTestCase(t, Bp2buildTestCase{
+		Description: "cc_library_shared with sysprop sources",
+		Blueprint: `
+cc_library_shared {
+	name: "foo",
+	srcs: [
+		"bar.sysprop",
+		"baz.sysprop",
+		"blah.cpp",
+	],
+	min_sdk_version: "5",
+}`,
+		ExpectedBazelTargets: []string{
+			MakeBazelTarget("sysprop_library", "foo_sysprop_library", AttrNameToString{
+				"srcs": `[
+        "bar.sysprop",
+        "baz.sysprop",
+    ]`,
+			}),
+			MakeBazelTarget("cc_sysprop_library_static", "foo_cc_sysprop_library_static", AttrNameToString{
+				"dep":             `":foo_sysprop_library"`,
+				"min_sdk_version": `"5"`,
+			}),
+			MakeBazelTarget("cc_library_shared", "foo", AttrNameToString{
+				"srcs":               `["blah.cpp"]`,
+				"local_includes":     `["."]`,
+				"min_sdk_version":    `"5"`,
+				"whole_archive_deps": `[":foo_cc_sysprop_library_static"]`,
+			}),
+		},
+	})
+}
+
+func TestCcLibrarySharedWithSyspropSrcsSomeConfigs(t *testing.T) {
+	runCcLibrarySharedTestCase(t, Bp2buildTestCase{
+		Description: "cc_library_shared with sysprop sources in some configs but not others",
+		Blueprint: `
+cc_library_shared {
+	name: "foo",
+	srcs: [
+		"blah.cpp",
+	],
+	target: {
+		android: {
+			srcs: ["bar.sysprop"],
+		},
+	},
+	min_sdk_version: "5",
+}`,
+		ExpectedBazelTargets: []string{
+			MakeBazelTarget("sysprop_library", "foo_sysprop_library", AttrNameToString{
+				"srcs": `select({
+        "//build/bazel/platforms/os:android": ["bar.sysprop"],
+        "//conditions:default": [],
+    })`,
+			}),
+			MakeBazelTarget("cc_sysprop_library_static", "foo_cc_sysprop_library_static", AttrNameToString{
+				"dep":             `":foo_sysprop_library"`,
+				"min_sdk_version": `"5"`,
+			}),
+			MakeBazelTarget("cc_library_shared", "foo", AttrNameToString{
+				"srcs":            `["blah.cpp"]`,
+				"local_includes":  `["."]`,
+				"min_sdk_version": `"5"`,
+				"whole_archive_deps": `select({
+        "//build/bazel/platforms/os:android": [":foo_cc_sysprop_library_static"],
+        "//conditions:default": [],
+    })`,
+			}),
+		},
+	})
+}
+
+func TestCcLibrarySharedHeaderAbiChecker(t *testing.T) {
+	runCcLibrarySharedTestCase(t, Bp2buildTestCase{
+		Description: "cc_library_shared with header abi checker",
+		Blueprint: `cc_library_shared {
+    name: "foo",
+    header_abi_checker: {
+        enabled: true,
+        symbol_file: "a.map.txt",
+        exclude_symbol_versions: [
+						"29",
+						"30",
+				],
+        exclude_symbol_tags: [
+						"tag1",
+						"tag2",
+				],
+        check_all_apis: true,
+        diff_flags: ["-allow-adding-removing-weak-symbols"],
+    },
+    include_build_directory: false,
+}`,
+		ExpectedBazelTargets: []string{
+			MakeBazelTarget("cc_library_shared", "foo", AttrNameToString{
+				"abi_checker_enabled":     `True`,
+				"abi_checker_symbol_file": `"a.map.txt"`,
+				"abi_checker_exclude_symbol_versions": `[
+        "29",
+        "30",
+    ]`,
+				"abi_checker_exclude_symbol_tags": `[
+        "tag1",
+        "tag2",
+    ]`,
+				"abi_checker_check_all_apis": `True`,
+				"abi_checker_diff_flags":     `["-allow-adding-removing-weak-symbols"]`,
 			}),
 		},
 	})

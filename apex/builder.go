@@ -459,8 +459,13 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 			pathOnDevice := filepath.Join("/system", fi.path())
 			copyCommands = append(copyCommands, "ln -sfn "+pathOnDevice+" "+destPath)
 		} else {
+			// Copy the file into APEX
+			copyCommands = append(copyCommands, "cp -f "+fi.builtFile.String()+" "+destPath)
+
 			var installedPath android.InstallPath
 			if fi.class == appSet {
+				// In case of AppSet, we need to copy additional APKs as well. They
+				// are zipped. So we need to unzip them.
 				copyCommands = append(copyCommands,
 					fmt.Sprintf("unzip -qDD -d %s %s", destPathDir,
 						fi.module.(*java.AndroidAppSet).PackedAdditionalOutputs().String()))
@@ -469,7 +474,6 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 						fi.stem(), fi.builtFile, fi.module.(*java.AndroidAppSet).PackedAdditionalOutputs())
 				}
 			} else {
-				copyCommands = append(copyCommands, "cp -f "+fi.builtFile.String()+" "+destPath)
 				if installSymbolFiles {
 					installedPath = ctx.InstallFile(pathWhenActivated.Join(ctx, fi.installDir), fi.stem(), fi.builtFile)
 				}
@@ -646,9 +650,9 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		}
 
 		// Create a NOTICE file, and embed it as an asset file in the APEX.
-		a.htmlGzNotice = android.PathForModuleOut(ctx, "NOTICE.html.gz")
+		htmlGzNotice := android.PathForModuleOut(ctx, "NOTICE.html.gz")
 		android.BuildNoticeHtmlOutputFromLicenseMetadata(
-			ctx, a.htmlGzNotice, "", "",
+			ctx, htmlGzNotice, "", "",
 			[]string{
 				android.PathForModuleInstall(ctx).String() + "/",
 				android.PathForModuleInPartitionInstall(ctx, "apex").String() + "/",
@@ -656,7 +660,7 @@ func (a *apexBundle) buildUnflattenedApex(ctx android.ModuleContext) {
 		noticeAssetPath := android.PathForModuleOut(ctx, "NOTICE", "NOTICE.html.gz")
 		builder := android.NewRuleBuilder(pctx, ctx)
 		builder.Command().Text("cp").
-			Input(a.htmlGzNotice).
+			Input(htmlGzNotice).
 			Output(noticeAssetPath)
 		builder.Build("notice_dir", "Building notice dir")
 		implicitInputs = append(implicitInputs, noticeAssetPath)
@@ -918,10 +922,16 @@ func (a *apexBundle) buildFlattenedApex(ctx android.ModuleContext) {
 				installedSymlinks = append(installedSymlinks,
 					ctx.InstallAbsoluteSymlink(installDir, fi.stem(), pathOnDevice))
 			} else {
-				target := ctx.InstallFile(installDir, fi.stem(), fi.builtFile)
-				for _, sym := range fi.symlinks {
-					installedSymlinks = append(installedSymlinks,
-						ctx.InstallSymlink(installDir, sym, target))
+				if fi.class == appSet {
+					as := fi.module.(*java.AndroidAppSet)
+					ctx.InstallFileWithExtraFilesZip(installDir, as.BaseModuleName()+".apk",
+						as.OutputFile(), as.PackedAdditionalOutputs())
+				} else {
+					target := ctx.InstallFile(installDir, fi.stem(), fi.builtFile)
+					for _, sym := range fi.symlinks {
+						installedSymlinks = append(installedSymlinks,
+							ctx.InstallSymlink(installDir, sym, target))
+					}
 				}
 			}
 		}
@@ -1086,8 +1096,11 @@ func (a *apexBundle) buildCannedFsConfig(ctx android.ModuleContext) android.Outp
 				executablePaths = append(executablePaths, filepath.Join(f.installDir, s))
 			}
 		} else if f.class == appSet {
+			// base APK
+			readOnlyPaths = append(readOnlyPaths, pathInApex)
+			// Additional APKs
 			appSetDirs = append(appSetDirs, f.installDir)
-			appSetFiles[f.installDir] = f.builtFile
+			appSetFiles[f.installDir] = f.module.(*java.AndroidAppSet).PackedAdditionalOutputs()
 		} else {
 			readOnlyPaths = append(readOnlyPaths, pathInApex)
 		}

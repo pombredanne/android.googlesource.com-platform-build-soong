@@ -218,15 +218,16 @@ type EmbeddedPropertiesStruct struct {
 }
 
 type testPropertiesStruct struct {
-	name        string
-	private     string
-	Public_Kept string `sdk:"keep"`
-	S_Common    string
-	S_Different string `android:"arch_variant"`
-	A_Common    []string
-	A_Different []string `android:"arch_variant"`
-	F_Common    *bool
-	F_Different *bool `android:"arch_variant"`
+	name          string
+	private       string
+	Public_Ignore string `sdk:"ignore"`
+	Public_Keep   string `sdk:"keep"`
+	S_Common      string
+	S_Different   string `android:"arch_variant"`
+	A_Common      []string
+	A_Different   []string `android:"arch_variant"`
+	F_Common      *bool
+	F_Different   *bool `android:"arch_variant"`
 	EmbeddedPropertiesStruct
 }
 
@@ -244,30 +245,32 @@ func TestCommonValueOptimization(t *testing.T) {
 	common := &testPropertiesStruct{name: "common"}
 	structs := []propertiesContainer{
 		&testPropertiesStruct{
-			name:        "struct-0",
-			private:     "common",
-			Public_Kept: "common",
-			S_Common:    "common",
-			S_Different: "upper",
-			A_Common:    []string{"first", "second"},
-			A_Different: []string{"alpha", "beta"},
-			F_Common:    proptools.BoolPtr(false),
-			F_Different: proptools.BoolPtr(false),
+			name:          "struct-0",
+			private:       "common",
+			Public_Ignore: "common",
+			Public_Keep:   "keep",
+			S_Common:      "common",
+			S_Different:   "upper",
+			A_Common:      []string{"first", "second"},
+			A_Different:   []string{"alpha", "beta"},
+			F_Common:      proptools.BoolPtr(false),
+			F_Different:   proptools.BoolPtr(false),
 			EmbeddedPropertiesStruct: EmbeddedPropertiesStruct{
 				S_Embedded_Common:    "embedded_common",
 				S_Embedded_Different: "embedded_upper",
 			},
 		},
 		&testPropertiesStruct{
-			name:        "struct-1",
-			private:     "common",
-			Public_Kept: "common",
-			S_Common:    "common",
-			S_Different: "lower",
-			A_Common:    []string{"first", "second"},
-			A_Different: []string{"alpha", "delta"},
-			F_Common:    proptools.BoolPtr(false),
-			F_Different: proptools.BoolPtr(true),
+			name:          "struct-1",
+			private:       "common",
+			Public_Ignore: "common",
+			Public_Keep:   "keep",
+			S_Common:      "common",
+			S_Different:   "lower",
+			A_Common:      []string{"first", "second"},
+			A_Different:   []string{"alpha", "delta"},
+			F_Common:      proptools.BoolPtr(false),
+			F_Different:   proptools.BoolPtr(true),
 			EmbeddedPropertiesStruct: EmbeddedPropertiesStruct{
 				S_Embedded_Common:    "embedded_common",
 				S_Embedded_Different: "embedded_lower",
@@ -282,15 +285,16 @@ func TestCommonValueOptimization(t *testing.T) {
 
 	android.AssertDeepEquals(t, "common properties not correct",
 		&testPropertiesStruct{
-			name:        "common",
-			private:     "",
-			Public_Kept: "",
-			S_Common:    "common",
-			S_Different: "",
-			A_Common:    []string{"first", "second"},
-			A_Different: []string(nil),
-			F_Common:    proptools.BoolPtr(false),
-			F_Different: nil,
+			name:          "common",
+			private:       "",
+			Public_Ignore: "",
+			Public_Keep:   "keep",
+			S_Common:      "common",
+			S_Different:   "",
+			A_Common:      []string{"first", "second"},
+			A_Different:   []string(nil),
+			F_Common:      proptools.BoolPtr(false),
+			F_Different:   nil,
 			EmbeddedPropertiesStruct: EmbeddedPropertiesStruct{
 				S_Embedded_Common:    "embedded_common",
 				S_Embedded_Different: "",
@@ -300,15 +304,16 @@ func TestCommonValueOptimization(t *testing.T) {
 
 	android.AssertDeepEquals(t, "updated properties[0] not correct",
 		&testPropertiesStruct{
-			name:        "struct-0",
-			private:     "common",
-			Public_Kept: "common",
-			S_Common:    "",
-			S_Different: "upper",
-			A_Common:    nil,
-			A_Different: []string{"alpha", "beta"},
-			F_Common:    nil,
-			F_Different: proptools.BoolPtr(false),
+			name:          "struct-0",
+			private:       "common",
+			Public_Ignore: "common",
+			Public_Keep:   "keep",
+			S_Common:      "",
+			S_Different:   "upper",
+			A_Common:      nil,
+			A_Different:   []string{"alpha", "beta"},
+			F_Common:      nil,
+			F_Different:   proptools.BoolPtr(false),
 			EmbeddedPropertiesStruct: EmbeddedPropertiesStruct{
 				S_Embedded_Common:    "",
 				S_Embedded_Different: "embedded_upper",
@@ -318,15 +323,16 @@ func TestCommonValueOptimization(t *testing.T) {
 
 	android.AssertDeepEquals(t, "updated properties[1] not correct",
 		&testPropertiesStruct{
-			name:        "struct-1",
-			private:     "common",
-			Public_Kept: "common",
-			S_Common:    "",
-			S_Different: "lower",
-			A_Common:    nil,
-			A_Different: []string{"alpha", "delta"},
-			F_Common:    nil,
-			F_Different: proptools.BoolPtr(true),
+			name:          "struct-1",
+			private:       "common",
+			Public_Ignore: "common",
+			Public_Keep:   "keep",
+			S_Common:      "",
+			S_Different:   "lower",
+			A_Common:      nil,
+			A_Different:   []string{"alpha", "delta"},
+			F_Common:      nil,
+			F_Different:   proptools.BoolPtr(true),
 			EmbeddedPropertiesStruct: EmbeddedPropertiesStruct{
 				S_Embedded_Common:    "",
 				S_Embedded_Different: "embedded_lower",
@@ -403,60 +409,6 @@ java_import {
 		)
 	})
 
-	t.Run("SOONG_SDK_SNAPSHOT_PREFER=true", func(t *testing.T) {
-		result := android.GroupFixturePreparers(
-			preparer,
-			android.FixtureMergeEnv(map[string]string{
-				"SOONG_SDK_SNAPSHOT_PREFER": "true",
-			}),
-		).RunTest(t)
-
-		checkZipFile(t, result, "out/soong/.intermediates/mysdk/common_os/mysdk-current.zip")
-
-		CheckSnapshot(t, result, "mysdk", "",
-			checkAndroidBpContents(`
-// This is auto-generated. DO NOT EDIT.
-
-java_import {
-    name: "myjavalib",
-    prefer: true,
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
-}
-			`),
-		)
-	})
-
-	t.Run("SOONG_SDK_SNAPSHOT_USE_SOURCE_CONFIG_VAR=module:build_from_source", func(t *testing.T) {
-		result := android.GroupFixturePreparers(
-			preparer,
-			android.FixtureMergeEnv(map[string]string{
-				"SOONG_SDK_SNAPSHOT_USE_SOURCE_CONFIG_VAR": "module:build_from_source",
-			}),
-		).RunTest(t)
-
-		checkZipFile(t, result, "out/soong/.intermediates/mysdk/common_os/mysdk-current.zip")
-
-		CheckSnapshot(t, result, "mysdk", "",
-			checkAndroidBpContents(`
-// This is auto-generated. DO NOT EDIT.
-
-java_import {
-    name: "myjavalib",
-    prefer: false,
-    use_source_config_var: {
-        config_namespace: "module",
-        var_name: "build_from_source",
-    },
-    visibility: ["//visibility:public"],
-    apex_available: ["//apex_available:platform"],
-    jars: ["java/myjavalib.jar"],
-}
-			`),
-		)
-	})
-
 	t.Run("SOONG_SDK_SNAPSHOT_TARGET_BUILD_RELEASE=S", func(t *testing.T) {
 		result := android.GroupFixturePreparers(
 			prepareForSdkTestWithJava,
@@ -482,6 +434,7 @@ java_import {
 				name: "mysdklibrary",
 				srcs: ["Test.java"],
 				compile_dex: true,
+				sdk_version: "S",
 				public: {enabled: true},
 				permitted_packages: ["mysdklibrary"],
 			}

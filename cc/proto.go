@@ -178,7 +178,7 @@ func bp2buildProto(ctx android.Bp2buildMutatorContext, m *Module, protoSrcs baze
 	var ret bp2buildProtoDeps
 
 	protoInfo, ok := android.Bp2buildProtoProperties(ctx, &m.ModuleBase, protoSrcs)
-	if !ok {
+	if !ok || protoInfo.Proto_libs.IsEmpty() {
 		return ret
 	}
 
@@ -201,18 +201,17 @@ func bp2buildProto(ctx android.Bp2buildMutatorContext, m *Module, protoSrcs baze
 	dep := android.BazelLabelForModuleDepSingle(ctx, depName)
 	ret.protoDep = &bazel.LabelAttribute{Value: &dep}
 
-	protoLabel := bazel.Label{Label: ":" + protoInfo.Name}
 	var protoAttrs protoAttributes
-	protoAttrs.Deps.SetValue(bazel.LabelList{Includes: []bazel.Label{protoLabel}})
+	protoAttrs.Deps.SetValue(protoInfo.Proto_libs)
 
 	name := m.Name() + suffix
-
+	tags := android.ApexAvailableTags(m)
 	ctx.CreateBazelTargetModule(
 		bazel.BazelTargetModuleProperties{
 			Rule_class:        rule_class,
 			Bzl_load_location: "//build/bazel/rules/cc:cc_proto.bzl",
 		},
-		android.CommonAttributes{Name: name},
+		android.CommonAttributes{Name: name, Tags: tags},
 		&protoAttrs)
 
 	var privateHdrs bool

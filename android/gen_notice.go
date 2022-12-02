@@ -61,6 +61,9 @@ func (s *genNoticeBuildRules) GenerateBuildActions(ctx SingletonContext) {
 				if mod == nil {
 					continue
 				}
+				if !mod.Enabled() { // don't depend on variants without build rules
+					continue
+				}
 				modules = append(modules, mod)
 			}
 		}
@@ -111,6 +114,9 @@ type genNoticeModule struct {
 }
 
 func (m *genNoticeModule) DepsMutator(ctx BottomUpMutatorContext) {
+	if ctx.ContainsProperty("licenses") {
+		ctx.PropertyErrorf("licenses", "not supported on \"gen_notice\" modules")
+	}
 	if proptools.Bool(m.properties.Html) && proptools.Bool(m.properties.Xml) {
 		ctx.ModuleErrorf("can be html or xml but not both")
 	}
@@ -179,7 +185,7 @@ func GenNoticeFactory() Module {
 	// The visibility property needs to be checked and parsed by the visibility module.
 	setPrimaryVisibilityProperty(module, "visibility", &module.properties.Visibility)
 
-	initAndroidModuleBase(module)
+	InitAndroidArchModule(module, DeviceSupported, MultilibCommon)
 	InitDefaultableModule(module)
 
 	return module
@@ -193,6 +199,16 @@ func (m *genNoticeModule) OutputFiles(tag string) (Paths, error) {
 		return Paths{m.output}, nil
 	}
 	return nil, fmt.Errorf("unrecognized tag %q", tag)
+}
+
+var _ AndroidMkEntriesProvider = (*genNoticeModule)(nil)
+
+// Implements AndroidMkEntriesProvider
+func (m *genNoticeModule) AndroidMkEntries() []AndroidMkEntries {
+	return []AndroidMkEntries{AndroidMkEntries{
+		Class:      "ETC",
+		OutputFile: OptionalPathForPath(m.output),
+	}}
 }
 
 // missingReferencesRule emits an ErrorRule for missing module references.

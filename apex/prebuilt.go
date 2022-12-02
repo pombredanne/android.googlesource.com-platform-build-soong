@@ -24,6 +24,7 @@ import (
 	"android/soong/android"
 	"android/soong/java"
 	"android/soong/provenance"
+
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/proptools"
 )
@@ -500,6 +501,9 @@ type ApexFileProperties struct {
 		Arm64 struct {
 			Src *string `android:"path"`
 		}
+		Riscv64 struct {
+			Src *string `android:"path"`
+		}
 		X86 struct {
 			Src *string `android:"path"`
 		}
@@ -527,6 +531,12 @@ func (p *ApexFileProperties) prebuiltApexSelector(ctx android.BaseModuleContext,
 		src = String(p.Arch.Arm.Src)
 	case android.Arm64:
 		src = String(p.Arch.Arm64.Src)
+	case android.Riscv64:
+		src = String(p.Arch.Riscv64.Src)
+		// HACK: fall back to arm64 prebuilts, the riscv64 ones don't exist yet.
+		if src == "" {
+			src = String(p.Arch.Arm64.Src)
+		}
 	case android.X86:
 		src = String(p.Arch.X86.Src)
 	case android.X86_64:
@@ -537,7 +547,11 @@ func (p *ApexFileProperties) prebuiltApexSelector(ctx android.BaseModuleContext,
 	}
 
 	if src == "" {
-		ctx.OtherModuleErrorf(prebuilt, "prebuilt_apex does not support %q", multiTargets[0].Arch.String())
+		if ctx.Config().AllowMissingDependencies() {
+			ctx.AddMissingDependencies([]string{ctx.OtherModuleName(prebuilt)})
+		} else {
+			ctx.OtherModuleErrorf(prebuilt, "prebuilt_apex does not support %q", multiTargets[0].Arch.String())
+		}
 		// Drop through to return an empty string as the src (instead of nil) to avoid the prebuilt
 		// logic from reporting a more general, less useful message.
 	}
@@ -818,6 +832,8 @@ func (p *prebuiltApexExtractorModule) GenerateAndroidBuildActions(ctx android.Mo
 	}
 	apexSet := android.SingleSourcePathFromSupplier(ctx, srcsSupplier, "set")
 	p.extractedApex = android.PathForModuleOut(ctx, "extracted", apexSet.Base())
+	// Filter out NativeBridge archs (b/260115309)
+	abis := java.SupportedAbis(ctx, true)
 	ctx.Build(pctx,
 		android.BuildParams{
 			Rule:        extractMatchingApex,
@@ -825,7 +841,7 @@ func (p *prebuiltApexExtractorModule) GenerateAndroidBuildActions(ctx android.Mo
 			Inputs:      android.Paths{apexSet},
 			Output:      p.extractedApex,
 			Args: map[string]string{
-				"abis":              strings.Join(java.SupportedAbis(ctx), ","),
+				"abis":              strings.Join(abis, ","),
 				"allow-prereleased": strconv.FormatBool(proptools.Bool(p.properties.Prerelease)),
 				"sdk-version":       ctx.Config().PlatformSdkVersion().String(),
 			},
@@ -840,17 +856,17 @@ type ApexSet struct {
 
 type ApexExtractorProperties struct {
 	// the .apks file path that contains prebuilt apex files to be extracted.
-	Set *string
+	Set *string `android:"path"`
 
 	Sanitized struct {
 		None struct {
-			Set *string
+			Set *string `android:"path"`
 		}
 		Address struct {
-			Set *string
+			Set *string `android:"path"`
 		}
 		Hwaddress struct {
-			Set *string
+			Set *string `android:"path"`
 		}
 	}
 

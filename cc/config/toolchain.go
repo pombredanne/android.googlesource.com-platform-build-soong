@@ -63,11 +63,6 @@ func findToolchain(os android.OsType, arch android.Arch) (Toolchain, error) {
 type Toolchain interface {
 	Name() string
 
-	GccRoot() string
-	GccTriple() string
-	// GccVersion should return a real value, not a ninja reference
-	GccVersion() string
-
 	IncludeFlags() string
 
 	ClangTriple() string
@@ -247,6 +242,10 @@ func ScudoMinimalRuntimeLibrary(t Toolchain) string {
 
 func LibFuzzerRuntimeLibrary(t Toolchain) string {
 	return LibclangRuntimeLibrary(t, "fuzzer")
+}
+
+func LibFuzzerRuntimeInterceptors(t Toolchain) string {
+	return LibclangRuntimeLibrary(t, "fuzzer_interceptors")
 }
 
 var inList = android.InList

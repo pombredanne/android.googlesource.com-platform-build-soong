@@ -643,6 +643,8 @@ type testBinaryAttributes struct {
 
 	Gtest    bool
 	Isolated bool
+
+	tidyAttributes
 }
 
 // testBinaryBp2build is the bp2build converter for cc_test modules. A cc_test's
@@ -659,6 +661,7 @@ func testBinaryBp2build(ctx android.TopDownMutatorContext, m *Module) {
 	testBinaryAttrs.binaryAttributes = binaryBp2buildAttrs(ctx, m)
 
 	var data bazel.LabelListAttribute
+	var tags bazel.StringListAttribute
 
 	testBinaryProps := m.GetArchVariantProperties(ctx, &TestBinaryProperties{})
 	for axis, configToProps := range testBinaryProps {
@@ -670,9 +673,12 @@ func testBinaryBp2build(ctx android.TopDownMutatorContext, m *Module) {
 				combinedData.Append(android.BazelLabelForModuleDeps(ctx, p.Data_bins))
 				combinedData.Append(android.BazelLabelForModuleDeps(ctx, p.Data_libs))
 				data.SetSelectValue(axis, config, combinedData)
+				tags.SetSelectValue(axis, config, p.Test_options.Tags)
 			}
 		}
 	}
+
+	m.convertTidyAttributes(ctx, &testBinaryAttrs.tidyAttributes)
 
 	for _, propIntf := range m.GetProperties() {
 		if testLinkerProps, ok := propIntf.(*TestLinkerProperties); ok {
@@ -690,6 +696,7 @@ func testBinaryBp2build(ctx android.TopDownMutatorContext, m *Module) {
 		android.CommonAttributes{
 			Name: m.Name(),
 			Data: data,
+			Tags: tags,
 		},
 		&testBinaryAttrs)
 }

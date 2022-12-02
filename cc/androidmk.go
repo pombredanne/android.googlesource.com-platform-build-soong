@@ -227,27 +227,17 @@ func (library *libraryDecorator) androidMkWriteExportedFlags(entries *android.An
 	}
 }
 
-func (library *libraryDecorator) getAbiDiffsForAndroidMkDeps() []string {
-	if library.static() {
-		return nil
-	}
-	var abiDiffs []string
-	if library.sAbiDiff.Valid() {
-		abiDiffs = append(abiDiffs, library.sAbiDiff.String())
-	}
-	if library.prevSAbiDiff.Valid() {
-		abiDiffs = append(abiDiffs, library.prevSAbiDiff.String())
-	}
-	return abiDiffs
-}
-
 func (library *libraryDecorator) androidMkEntriesWriteAdditionalDependenciesForSourceAbiDiff(entries *android.AndroidMkEntries) {
-	entries.AddStrings("LOCAL_ADDITIONAL_DEPENDENCIES", library.getAbiDiffsForAndroidMkDeps()...)
+	if !library.static() {
+		entries.AddPaths("LOCAL_ADDITIONAL_DEPENDENCIES", library.sAbiDiff)
+	}
 }
 
 // TODO(ccross): remove this once apex/androidmk.go is converted to AndroidMkEntries
 func (library *libraryDecorator) androidMkWriteAdditionalDependenciesForSourceAbiDiff(w io.Writer) {
-	fmt.Fprintln(w, "LOCAL_ADDITIONAL_DEPENDENCIES +=", strings.Join(library.getAbiDiffsForAndroidMkDeps(), " "))
+	if !library.static() {
+		fmt.Fprintln(w, "LOCAL_ADDITIONAL_DEPENDENCIES +=", strings.Join(library.sAbiDiff.Strings(), " "))
+	}
 }
 
 func (library *libraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entries *android.AndroidMkEntries) {
@@ -540,13 +530,15 @@ func (c *snapshotLibraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entrie
 
 	entries.SubName = ""
 
-	if c.sanitizerProperties.CfiEnabled {
+	if c.isSanitizerEnabled(cfi) {
 		entries.SubName += ".cfi"
+	} else if c.isSanitizerEnabled(Hwasan) {
+		entries.SubName += ".hwasan"
 	}
 
 	entries.SubName += c.baseProperties.Androidmk_suffix
 
-	entries.ExtraEntries = append(entries.ExtraEntries, func(ctx android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
+	entries.ExtraEntries = append(entries.ExtraEntries, func(_ android.AndroidMkExtraEntriesContext, entries *android.AndroidMkEntries) {
 		c.libraryDecorator.androidMkWriteExportedFlags(entries)
 
 		if c.shared() || c.static() {
@@ -566,6 +558,10 @@ func (c *snapshotLibraryDecorator) AndroidMkEntries(ctx AndroidMkContext, entrie
 			}
 			if c.tocFile.Valid() {
 				entries.SetString("LOCAL_SOONG_TOC", c.tocFile.String())
+			}
+
+			if c.shared() && len(c.Properties.Overrides) > 0 {
+				entries.SetString("LOCAL_OVERRIDES_MODULES", strings.Join(makeOverrideModuleNames(ctx, c.Properties.Overrides), " "))
 			}
 		}
 
