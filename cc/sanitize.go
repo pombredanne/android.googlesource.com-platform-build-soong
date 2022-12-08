@@ -452,7 +452,6 @@ func (sanitize *sanitize) begin(ctx BaseModuleContext) {
 	s.Diag.Integer_overflow = nil
 	s.Diag.Memtag_heap = nil
 	s.Diag.Misc_undefined = nil
-	s.Diag.No_recover = nil
 
 	return
 
