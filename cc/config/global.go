@@ -278,8 +278,6 @@ var (
 		// http://b/145211477
 		"-Wno-pointer-compare",
 		// http://b/145211022
-		"-Wno-xor-used-as-pow",
-		// http://b/145211022
 		"-Wno-final-dtor-non-final-class",
 
 		// http://b/165945989
@@ -311,8 +309,8 @@ var (
 
 	// prebuilts/clang default settings.
 	ClangDefaultBase         = "prebuilts/clang/host"
-	ClangDefaultVersion      = "clang-r475365"
-	ClangDefaultShortVersion = "16.0.1"
+	ClangDefaultVersion      = "clang-r475365b"
+	ClangDefaultShortVersion = "16.0.2"
 
 	// Directories with warnings from Android.bp files.
 	WarningAllowedProjects = []string{
