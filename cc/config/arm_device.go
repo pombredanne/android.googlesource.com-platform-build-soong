@@ -35,6 +35,7 @@ var (
 	armLdflags = []string{
 		"-Wl,--hash-style=gnu",
 		"-Wl,-m,armelf",
+		"-Wl,-z,max-page-size=16384",
 	}
 
 	armLldflags = armLdflags
