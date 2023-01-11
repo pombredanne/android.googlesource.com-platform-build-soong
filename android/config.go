@@ -595,10 +595,6 @@ func (c *config) IsMixedBuildsEnabled() bool {
 			fmt.Fprintln(os.Stderr, "unsupported env var GLOBAL_THINLTO for Bazel: falling back to non-mixed build")
 			return false
 		}
-		if c.IsEnvTrue("CLANG_COVERAGE") {
-			fmt.Fprintln(os.Stderr, "unsupported env var CLANG_COVERAGE for Bazel: falling back to non-mixed build")
-			return false
-		}
 		if len(c.productVariables.SanitizeHost) > 0 {
 			fmt.Fprintln(os.Stderr, "unsupported product var SanitizeHost for Bazel: falling back to non-mixed build")
 			return false
@@ -771,6 +767,13 @@ func (c *config) DeviceName() string {
 // NOTE: Do not base conditional logic on this value. It may break product inheritance.
 func (c *config) DeviceProduct() string {
 	return *c.productVariables.DeviceProduct
+}
+
+// HasDeviceProduct returns if the build has a product. A build will not
+// necessarily have a product when --skip-config is passed to soong, like it is
+// in prebuilts/build-tools/build-prebuilts.sh
+func (c *config) HasDeviceProduct() bool {
+	return c.productVariables.DeviceProduct != nil
 }
 
 func (c *config) DeviceResourceOverlays() []string {

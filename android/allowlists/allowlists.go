@@ -212,7 +212,9 @@ var (
 		"frameworks/proto_logging/stats":                     Bp2BuildDefaultTrueRecursively,
 
 		"hardware/interfaces":                          Bp2BuildDefaultTrue,
+		"hardware/interfaces/audio/aidl":               Bp2BuildDefaultTrue,
 		"hardware/interfaces/common/aidl":              Bp2BuildDefaultTrue,
+		"hardware/interfaces/common/fmq/aidl":          Bp2BuildDefaultTrue,
 		"hardware/interfaces/configstore/1.0":          Bp2BuildDefaultTrue,
 		"hardware/interfaces/configstore/1.1":          Bp2BuildDefaultTrue,
 		"hardware/interfaces/configstore/utils":        Bp2BuildDefaultTrue,
@@ -1364,7 +1366,10 @@ var (
 
 	// Bazel prod-mode allowlist. Modules in this list are built by Bazel
 	// in either prod mode or staging mode.
-	ProdMixedBuildsEnabledList = []string{"com.android.tzdata"}
+	ProdMixedBuildsEnabledList = []string{
+		"com.android.tzdata",
+		"test1_com.android.tzdata",
+	}
 
 	// Staging-mode allowlist. Modules in this list are only built
 	// by Bazel with --bazel-mode-staging. This list should contain modules
@@ -1373,5 +1378,6 @@ var (
 	// also be built - do not add them to this list.
 	StagingMixedBuildsEnabledList = []string{
 		"com.android.adbd",
+		"adbd_test",
 	}
 )
