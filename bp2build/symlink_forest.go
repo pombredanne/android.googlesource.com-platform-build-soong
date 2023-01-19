@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"sync"
 	"sync/atomic"
 
@@ -50,7 +51,6 @@ type symlinkForestContext struct {
 	depCh        chan string
 	mkdirCount   atomic.Uint64
 	symlinkCount atomic.Uint64
-	okay         atomic.Bool // Whether the forest was successfully constructed
 }
 
 // A simple thread pool to limit concurrency on system calls.
@@ -276,14 +276,17 @@ func plantSymlinkForestRecursive(context *symlinkForestContext, instructions *in
 		}
 	}
 
-	allEntries := make(map[string]struct{})
+	allEntries := make([]string, 0, len(srcDirMap)+len(buildFilesMap))
 	for n := range srcDirMap {
-		allEntries[n] = struct{}{}
+		allEntries = append(allEntries, n)
 	}
-
 	for n := range buildFilesMap {
-		allEntries[n] = struct{}{}
+		if _, ok := srcDirMap[n]; !ok {
+			allEntries = append(allEntries, n)
+		}
 	}
+	// Tests read the error messages generated, so ensure their order is deterministic
+	sort.Strings(allEntries)
 
 	err := os.MkdirAll(shared.JoinPath(context.topdir, forestDir), 0777)
 	if err != nil {
@@ -292,7 +295,7 @@ func plantSymlinkForestRecursive(context *symlinkForestContext, instructions *in
 	}
 	context.mkdirCount.Add(1)
 
-	for f := range allEntries {
+	for _, f := range allEntries {
 		if f[0] == '.' {
 			continue // Ignore dotfiles
 		}
@@ -366,14 +369,14 @@ func plantSymlinkForestRecursive(context *symlinkForestContext, instructions *in
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error merging %s and %s: %s",
 					srcBuildFile, generatedBuildFile, err)
-				context.okay.Store(false)
+				os.Exit(1)
 			}
 		} else {
 			// Both exist and one is a file. This is an error.
 			fmt.Fprintf(os.Stderr,
 				"Conflict in workspace symlink tree creation: both '%s' and '%s' exist and exactly one is a directory\n",
 				srcChild, buildFilesChild)
-			context.okay.Store(false)
+			os.Exit(1)
 		}
 	}
 }
@@ -436,8 +439,6 @@ func PlantSymlinkForest(verbose bool, topdir string, forest string, buildFiles s
 		symlinkCount: atomic.Uint64{},
 	}
 
-	context.okay.Store(true)
-
 	removeParallel(shared.JoinPath(topdir, forest))
 
 	instructions := instructionsFromExcludePathList(exclude)
@@ -450,10 +451,6 @@ func PlantSymlinkForest(verbose bool, topdir string, forest string, buildFiles s
 
 	for dep := range context.depCh {
 		deps = append(deps, dep)
-	}
-
-	if !context.okay.Load() {
-		os.Exit(1)
 	}
 
 	return deps, context.mkdirCount.Load(), context.symlinkCount.Load()
