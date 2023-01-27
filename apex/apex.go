@@ -80,6 +80,7 @@ func RegisterPostDepsMutators(ctx android.RegisterMutatorsContext) {
 	ctx.BottomUp("apex", apexMutator).Parallel()
 	ctx.BottomUp("apex_directly_in_any", apexDirectlyInAnyMutator).Parallel()
 	ctx.BottomUp("apex_flattened", apexFlattenedMutator).Parallel()
+	ctx.BottomUp("apex_dcla_deps", apexDCLADepsMutator).Parallel()
 	// Register after apex_info mutator so that it can use ApexVariationName
 	ctx.TopDown("apex_strict_updatability_lint", apexStrictUpdatibilityLintMutator).Parallel()
 }
@@ -389,6 +390,9 @@ type overridableProperties struct {
 	// conditions, e.g., target device needs to support APEX compression, are also fulfilled.
 	// Default: false.
 	Compressible *bool
+
+	// Trim against a specific Dynamic Common Lib APEX
+	Trim_against *string
 }
 
 type apexBundle struct {
@@ -675,6 +679,7 @@ var (
 	androidAppTag   = &dependencyTag{name: "androidApp", payload: true}
 	bpfTag          = &dependencyTag{name: "bpf", payload: true}
 	certificateTag  = &dependencyTag{name: "certificate"}
+	dclaTag         = &dependencyTag{name: "dcla"}
 	executableTag   = &dependencyTag{name: "executable", payload: true}
 	fsTag           = &dependencyTag{name: "filesystem", payload: true}
 	bcpfTag         = &dependencyTag{name: "bootclasspathFragment", payload: true, sourceOnly: true, memberType: java.BootclasspathFragmentSdkMemberType}
@@ -908,6 +913,33 @@ func (a *apexBundle) OverridablePropertiesDepsMutator(ctx android.BottomUpMutato
 	}
 }
 
+func apexDCLADepsMutator(mctx android.BottomUpMutatorContext) {
+	if !mctx.Config().ApexTrimEnabled() {
+		return
+	}
+	if a, ok := mctx.Module().(*apexBundle); ok && a.overridableProperties.Trim_against != nil {
+		commonVariation := mctx.Config().AndroidCommonTarget.Variations()
+		mctx.AddFarVariationDependencies(commonVariation, dclaTag, String(a.overridableProperties.Trim_against))
+	} else if o, ok := mctx.Module().(*OverrideApex); ok {
+		for _, p := range o.GetProperties() {
+			properties, ok := p.(*overridableProperties)
+			if !ok {
+				continue
+			}
+			if properties.Trim_against != nil {
+				commonVariation := mctx.Config().AndroidCommonTarget.Variations()
+				mctx.AddFarVariationDependencies(commonVariation, dclaTag, String(properties.Trim_against))
+			}
+		}
+	}
+}
+
+type DCLAInfo struct {
+	ProvidedLibs []string
+}
+
+var DCLAInfoProvider = blueprint.NewMutatorProvider(DCLAInfo{}, "apex_info")
+
 type ApexBundleInfo struct {
 	Contents *android.ApexContents
 }
@@ -1035,6 +1067,12 @@ func (a *apexBundle) ApexInfoMutator(mctx android.TopDownMutatorContext) {
 		child.(android.ApexModule).BuildForApex(apexInfo) // leave a mark!
 		return true
 	})
+
+	if a.dynamic_common_lib_apex() {
+		mctx.SetProvider(DCLAInfoProvider, DCLAInfo{
+			ProvidedLibs: a.properties.Native_shared_libs,
+		})
+	}
 }
 
 type ApexInfoMutator interface {
@@ -1531,6 +1569,19 @@ func (a *apexBundle) dynamic_common_lib_apex() bool {
 	return proptools.BoolDefault(a.properties.Dynamic_common_lib_apex, false)
 }
 
+// See the list of libs to trim
+func (a *apexBundle) libs_to_trim(ctx android.ModuleContext) []string {
+	dclaModules := ctx.GetDirectDepsWithTag(dclaTag)
+	if len(dclaModules) > 1 {
+		panic(fmt.Errorf("expected exactly at most one dcla dependency, got %d", len(dclaModules)))
+	}
+	if len(dclaModules) > 0 {
+		DCLAInfo := ctx.OtherModuleProvider(dclaModules[0], DCLAInfoProvider).(DCLAInfo)
+		return DCLAInfo.ProvidedLibs
+	}
+	return []string{}
+}
+
 // These functions are interfacing with cc/sanitizer.go. The entire APEX (along with all of its
 // members) can be sanitized, either forcibly, or by the global configuration. For some of the
 // sanitizers, extra dependencies can be forcibly added as well.
@@ -1657,7 +1708,7 @@ func apexFileForRustLibrary(ctx android.BaseModuleContext, rustm *rust.Module) a
 	return newApexFile(ctx, fileToCopy, androidMkModuleName, dirInApex, nativeSharedLib, rustm)
 }
 
-func apexFileForPyBinary(ctx android.BaseModuleContext, py *python.Module) apexFile {
+func apexFileForPyBinary(ctx android.BaseModuleContext, py *python.PythonBinaryModule) apexFile {
 	dirInApex := "bin"
 	fileToCopy := py.HostToolPath().Path()
 	return newApexFile(ctx, fileToCopy, py.BaseModuleName(), dirInApex, pyBinary, py)
@@ -2147,7 +2198,7 @@ func (a *apexBundle) depVisitor(vctx *visitorContext, ctx android.ModuleContext,
 			case *cc.Module:
 				vctx.filesInfo = append(vctx.filesInfo, apexFileForExecutable(ctx, ch))
 				return true // track transitive dependencies
-			case *python.Module:
+			case *python.PythonBinaryModule:
 				if ch.HostToolPath().Valid() {
 					vctx.filesInfo = append(vctx.filesInfo, apexFileForPyBinary(ctx, ch))
 				}
@@ -2479,7 +2530,6 @@ func (a *apexBundle) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	}
 	////////////////////////////////////////////////////////////////////////////////////////////
 	// 2) traverse the dependency tree to collect apexFile structs from them.
-
 	// Collect the module directory for IDE info in java/jdeps.go.
 	a.modulePaths = append(a.modulePaths, ctx.ModuleDir())
 
