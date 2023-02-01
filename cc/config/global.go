@@ -319,6 +319,15 @@ var (
 	}
 )
 
+func AddPageSizeCFlag(ctx android.PackageVarContext, flags []string) []string{
+	if (ctx.Config().TargetPageSize16k()) {
+		flags = append(flags, "-DTARGET_PAGE_SIZE=16384")
+	} else {
+		flags = append(flags, "-DTARGET_PAGE_SIZE=4096")
+	}
+	return flags;
+}
+
 // BazelCcToolchainVars generates bzl file content containing variables for
 // Bazel's cc_toolchain configuration.
 func BazelCcToolchainVars(config android.Config) string {
@@ -347,7 +356,7 @@ func init() {
 	exportedVars.ExportStringList("CommonGlobalCflags", commonGlobalCflags)
 
 	pctx.VariableFunc("CommonGlobalCflags", func(ctx android.PackageVarContext) string {
-		flags := commonGlobalCflags
+		flags := AddPageSizeCFlag(ctx, commonGlobalCflags)
 
 		// http://b/131390872
 		// Automatically initialize any uninitialized stack variables.
@@ -396,7 +405,14 @@ func init() {
 
 	exportedVars.ExportStringListStaticVariable("HostGlobalCflags", hostGlobalCflags)
 	exportedVars.ExportStringListStaticVariable("NoOverrideExternalGlobalCflags", noOverrideExternalGlobalCflags)
-	exportedVars.ExportStringListStaticVariable("CommonGlobalCppflags", commonGlobalCppflags)
+	exportedVars.ExportStringList("CommonGlobalCppflags", commonGlobalCppflags)
+
+	pctx.VariableFunc("CommonGlobalCppflags", func(ctx android.PackageVarContext) string {
+		flags := AddPageSizeCFlag(ctx, commonGlobalCppflags)
+
+		return strings.Join(flags, " ")
+	})
+
 	exportedVars.ExportStringListStaticVariable("ExternalCflags", extraExternalCflags)
 
 	exportedVars.ExportString("CStdVersion", CStdVersion)

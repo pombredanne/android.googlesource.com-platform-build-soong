@@ -159,6 +159,10 @@ func (c Config) RunningInsideUnitTest() bool {
 	return c.config.TestProductVariables != nil
 }
 
+func (c Config) TargetPageSize16k() bool {
+	return *c.config.productVariables.Target_page_size_16k == true
+}
+
 // A DeviceConfig object represents the configuration for a particular device
 // being built. For now there will only be one of these, but in the future there
 // may be multiple devices being built.
