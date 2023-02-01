@@ -53,7 +53,7 @@ android_library {
 }
 `,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget(
+			MakeBazelTarget(
 				"android_library",
 				"TestLib",
 				AttrNameToString{
@@ -68,6 +68,7 @@ android_library {
 					"exports":        `[":static_lib_dep"]`,
 					"javacopts":      `["-source 1.7 -target 1.7"]`,
 				}),
+			MakeNeverlinkDuplicateTarget("android_library", "TestLib"),
 		}})
 }
 
@@ -120,7 +121,7 @@ android_library_import {
 }
 `,
 			ExpectedBazelTargets: []string{
-				makeBazelTarget(
+				MakeBazelTarget(
 					"aar_import",
 					"TestImport",
 					AttrNameToString{
@@ -132,7 +133,41 @@ android_library_import {
 						"exports": `[":static_import_dep"]`,
 					},
 				),
+				MakeNeverlinkDuplicateTarget("android_library", "TestImport"),
 			},
 		},
 	)
+}
+
+func TestConvertAndroidLibraryKotlin(t *testing.T) {
+	t.Helper()
+	RunBp2BuildTestCase(t, func(ctx android.RegistrationContext) {}, Bp2buildTestCase{
+		Description:                "Android Library with .kt srcs and common_srcs attribute",
+		ModuleTypeUnderTest:        "android_library",
+		ModuleTypeUnderTestFactory: java.AndroidLibraryFactory,
+		Filesystem: map[string]string{
+			"AndroidManifest.xml": "",
+		},
+		Blueprint: `
+android_library {
+        name: "TestLib",
+        srcs: ["a.java", "b.kt"],
+        common_srcs: ["c.kt"],
+}
+`,
+		ExpectedBazelTargets: []string{
+			MakeBazelTarget(
+				"android_library",
+				"TestLib",
+				AttrNameToString{
+					"srcs": `[
+        "a.java",
+        "b.kt",
+    ]`,
+					"common_srcs":    `["c.kt"]`,
+					"manifest":       `"AndroidManifest.xml"`,
+					"resource_files": `[]`,
+				}),
+			MakeNeverlinkDuplicateTarget("android_library", "TestLib"),
+		}})
 }

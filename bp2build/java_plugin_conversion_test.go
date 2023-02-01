@@ -54,13 +54,13 @@ java_library {
     bazel_module: { bp2build_available: false },
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("java_plugin", "java-plug-1", AttrNameToString{
+			MakeBazelTarget("java_plugin", "java-plug-1", AttrNameToString{
 				"target_compatible_with": `select({
         "//build/bazel/platforms/os:android": ["@platforms//:incompatible"],
         "//conditions:default": [],
     })`,
 				"deps": `[
-        ":java-lib-1",
+        ":java-lib-1-neverlink",
         ":java-lib-2",
     ]`,
 				"srcs": `[
@@ -95,13 +95,13 @@ java_library {
     bazel_module: { bp2build_available: false },
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("java_plugin", "java-plug-1", AttrNameToString{
+			MakeBazelTarget("java_plugin", "java-plug-1", AttrNameToString{
 				"target_compatible_with": `select({
         "//build/bazel/platforms/os:android": ["@platforms//:incompatible"],
         "//conditions:default": [],
     })`,
 				"deps": `[
-        ":java-lib-1",
+        ":java-lib-1-neverlink",
         ":java-lib-2",
     ]`,
 			}),

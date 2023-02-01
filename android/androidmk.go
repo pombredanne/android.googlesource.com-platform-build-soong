@@ -366,7 +366,9 @@ func (a *AndroidMkEntries) getDistContributions(mod blueprint.Module) *distContr
 	// Collate the contributions this module makes to the dist.
 	distContributions := &distContributions{}
 
-	distContributions.licenseMetadataFile = amod.licenseMetadataFile
+	if !exemptFromRequiredApplicableLicensesProperty(mod.(Module)) {
+		distContributions.licenseMetadataFile = amod.licenseMetadataFile
+	}
 
 	// Iterate over this module's dist structs, merged from the dist and dists properties.
 	for _, dist := range amod.Dists() {
@@ -458,10 +460,12 @@ func generateDistContributionsForMake(distContributions *distContributions) []st
 		ret = append(ret, fmt.Sprintf(".PHONY: %s\n", d.goals))
 		// Create dist-for-goals calls for each of the copy instructions.
 		for _, c := range d.copies {
-			ret = append(
-				ret,
-				fmt.Sprintf("$(if $(strip $(ALL_TARGETS.%s.META_LIC)),,$(eval ALL_TARGETS.%s.META_LIC := %s))\n",
-					c.from.String(), c.from.String(), distContributions.licenseMetadataFile.String()))
+			if distContributions.licenseMetadataFile != nil {
+				ret = append(
+					ret,
+					fmt.Sprintf("$(if $(strip $(ALL_TARGETS.%s.META_LIC)),,$(eval ALL_TARGETS.%s.META_LIC := %s))\n",
+						c.from.String(), c.from.String(), distContributions.licenseMetadataFile.String()))
+			}
 			ret = append(
 				ret,
 				fmt.Sprintf("$(call dist-for-goals,%s,%s:%s)\n", d.goals, c.from.String(), c.dest))
@@ -485,11 +489,11 @@ func (a *AndroidMkEntries) GetDistForGoals(mod blueprint.Module) []string {
 // Write the license variables to Make for AndroidMkData.Custom(..) methods that do not call WriteAndroidMkData(..)
 // It's required to propagate the license metadata even for module types that have non-standard interfaces to Make.
 func (a *AndroidMkEntries) WriteLicenseVariables(w io.Writer) {
-	fmt.Fprintln(w, "LOCAL_LICENSE_KINDS :=", strings.Join(a.EntryMap["LOCAL_LICENSE_KINDS"], " "))
-	fmt.Fprintln(w, "LOCAL_LICENSE_CONDITIONS :=", strings.Join(a.EntryMap["LOCAL_LICENSE_CONDITIONS"], " "))
-	fmt.Fprintln(w, "LOCAL_NOTICE_FILE :=", strings.Join(a.EntryMap["LOCAL_NOTICE_FILE"], " "))
+	AndroidMkEmitAssignList(w, "LOCAL_LICENSE_KINDS", a.EntryMap["LOCAL_LICENSE_KINDS"])
+	AndroidMkEmitAssignList(w, "LOCAL_LICENSE_CONDITIONS", a.EntryMap["LOCAL_LICENSE_CONDITIONS"])
+	AndroidMkEmitAssignList(w, "LOCAL_NOTICE_FILE", a.EntryMap["LOCAL_NOTICE_FILE"])
 	if pn, ok := a.EntryMap["LOCAL_LICENSE_PACKAGE_NAME"]; ok {
-		fmt.Fprintln(w, "LOCAL_LICENSE_PACKAGE_NAME :=", strings.Join(pn, " "))
+		AndroidMkEmitAssignList(w, "LOCAL_LICENSE_PACKAGE_NAME", pn)
 	}
 }
 
@@ -500,6 +504,7 @@ type fillInEntriesContext interface {
 	Config() Config
 	ModuleProvider(module blueprint.Module, provider blueprint.ProviderKey) interface{}
 	ModuleHasProvider(module blueprint.Module, provider blueprint.ProviderKey) bool
+	ModuleType(module blueprint.Module) string
 }
 
 func (a *AndroidMkEntries) fillInEntries(ctx fillInEntriesContext, mod blueprint.Module) {
@@ -523,7 +528,7 @@ func (a *AndroidMkEntries) fillInEntries(ctx fillInEntriesContext, mod blueprint
 		fmt.Fprintf(&a.header, distString)
 	}
 
-	fmt.Fprintln(&a.header, "\ninclude $(CLEAR_VARS)")
+	fmt.Fprintln(&a.header, "\ninclude $(CLEAR_VARS)  # "+ctx.ModuleType(mod))
 
 	// Collect make variable assignment entries.
 	a.SetString("LOCAL_PATH", ctx.ModuleDir(mod))
@@ -667,7 +672,7 @@ func (a *AndroidMkEntries) write(w io.Writer) {
 
 	w.Write(a.header.Bytes())
 	for _, name := range a.entryOrder {
-		fmt.Fprintln(w, name+" := "+strings.Join(a.EntryMap[name], " "))
+		AndroidMkEmitAssignList(w, name, a.EntryMap[name])
 	}
 	w.Write(a.footer.Bytes())
 }
@@ -966,4 +971,29 @@ func AndroidMkDataPaths(data []DataPath) []string {
 		testFiles = append(testFiles, testFileString)
 	}
 	return testFiles
+}
+
+// AndroidMkEmitAssignList emits the line
+//
+//	VAR := ITEM ...
+//
+// Items are the elements to the given set of lists
+// If all the passed lists are empty, no line will be emitted
+func AndroidMkEmitAssignList(w io.Writer, varName string, lists ...[]string) {
+	doPrint := false
+	for _, l := range lists {
+		if doPrint = len(l) > 0; doPrint {
+			break
+		}
+	}
+	if !doPrint {
+		return
+	}
+	fmt.Fprint(w, varName, " :=")
+	for _, l := range lists {
+		for _, item := range l {
+			fmt.Fprint(w, " ", item)
+		}
+	}
+	fmt.Fprintln(w)
 }

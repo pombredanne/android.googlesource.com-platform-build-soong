@@ -23,6 +23,7 @@ import (
 )
 
 func TestLibraryReuse(t *testing.T) {
+	t.Parallel()
 	t.Run("simple", func(t *testing.T) {
 		ctx := testCc(t, `
 		cc_library {
@@ -191,6 +192,7 @@ func TestLibraryReuse(t *testing.T) {
 }
 
 func TestStubsVersions(t *testing.T) {
+	t.Parallel()
 	bp := `
 		cc_library {
 			name: "libfoo",
@@ -214,6 +216,7 @@ func TestStubsVersions(t *testing.T) {
 }
 
 func TestStubsVersions_NotSorted(t *testing.T) {
+	t.Parallel()
 	bp := `
 		cc_library {
 			name: "libfoo",
@@ -229,6 +232,7 @@ func TestStubsVersions_NotSorted(t *testing.T) {
 }
 
 func TestStubsVersions_ParseError(t *testing.T) {
+	t.Parallel()
 	bp := `
 		cc_library {
 			name: "libfoo",
@@ -243,6 +247,7 @@ func TestStubsVersions_ParseError(t *testing.T) {
 }
 
 func TestCcLibraryWithBazel(t *testing.T) {
+	t.Parallel()
 	bp := `
 cc_library {
 	name: "foo",
@@ -259,6 +264,7 @@ cc_library {
 				SystemIncludes:       []string{"system_include"},
 				Headers:              []string{"foo.h"},
 				RootDynamicLibraries: []string{"foo.so"},
+				UnstrippedOutput:     "foo_unstripped.so",
 			},
 			"//foo/bar:bar_bp2build_cc_library_static": cquery.CcInfo{
 				CcObjectFiles:      []string{"foo.o"},
@@ -294,6 +300,7 @@ cc_library {
 	expectedOutputFiles = []string{"outputbase/execroot/__main__/foo.so"}
 	android.AssertDeepEquals(t, "output files", expectedOutputFiles, outputFiles.Strings())
 
+	android.AssertStringEquals(t, "unstripped shared library", "outputbase/execroot/__main__/foo_unstripped.so", sharedFoo.(*Module).linker.unstrippedOutputFilePath().String())
 	flagExporter = ctx.ModuleProvider(sharedFoo, FlagExporterInfoProvider).(FlagExporterInfo)
 	android.AssertPathsRelativeToTopEquals(t, "exported include dirs", []string{"outputbase/execroot/__main__/include"}, flagExporter.IncludeDirs)
 	android.AssertPathsRelativeToTopEquals(t, "exported system include dirs", []string{"outputbase/execroot/__main__/system_include"}, flagExporter.SystemIncludeDirs)
@@ -302,6 +309,7 @@ cc_library {
 }
 
 func TestLibraryVersionScript(t *testing.T) {
+	t.Parallel()
 	result := PrepareForIntegrationTestWithCc.RunTestWithBp(t, `
 		cc_library {
 			name: "libfoo",
@@ -319,6 +327,7 @@ func TestLibraryVersionScript(t *testing.T) {
 }
 
 func TestLibraryDynamicList(t *testing.T) {
+	t.Parallel()
 	result := PrepareForIntegrationTestWithCc.RunTestWithBp(t, `
 		cc_library {
 			name: "libfoo",
@@ -336,6 +345,7 @@ func TestLibraryDynamicList(t *testing.T) {
 }
 
 func TestCcLibrarySharedWithBazel(t *testing.T) {
+	t.Parallel()
 	bp := `
 cc_library_shared {
 	name: "foo",
@@ -381,6 +391,7 @@ cc_library_shared {
 }
 
 func TestWholeStaticLibPrebuilts(t *testing.T) {
+	t.Parallel()
 	result := PrepareForIntegrationTestWithCc.RunTestWithBp(t, `
 		cc_prebuilt_library_static {
 			name: "libprebuilt",

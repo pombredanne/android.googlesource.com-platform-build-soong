@@ -352,6 +352,73 @@ java_import {
 	})
 }
 
+func TestSnapshotWithJavaLibrary_MinSdkVersion(t *testing.T) {
+	runTest := func(t *testing.T, targetBuildRelease, minSdkVersion, expectedMinSdkVersion string) {
+		result := android.GroupFixturePreparers(
+			prepareForSdkTestWithJava,
+			android.FixtureModifyProductVariables(func(variables android.FixtureProductVariables) {
+				variables.Platform_version_active_codenames = []string{"S", "Tiramisu", "Unfinalized"}
+			}),
+			android.FixtureMergeEnv(map[string]string{
+				"SOONG_SDK_SNAPSHOT_TARGET_BUILD_RELEASE": targetBuildRelease,
+			}),
+		).RunTestWithBp(t, fmt.Sprintf(`
+		sdk {
+			name: "mysdk",
+			java_header_libs: ["mylib"],
+		}
+
+		java_library {
+			name: "mylib",
+			srcs: ["Test.java"],
+			system_modules: "none",
+			sdk_version: "none",
+			compile_dex: true,
+			min_sdk_version: "%s",
+		}
+	`, minSdkVersion))
+
+		expectedMinSdkVersionLine := ""
+		if expectedMinSdkVersion != "" {
+			expectedMinSdkVersionLine = fmt.Sprintf("    min_sdk_version: %q,\n", expectedMinSdkVersion)
+		}
+
+		CheckSnapshot(t, result, "mysdk", "",
+			checkAndroidBpContents(fmt.Sprintf(`
+// This is auto-generated. DO NOT EDIT.
+
+java_import {
+    name: "mylib",
+    prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:platform"],
+    jars: ["java/mylib.jar"],
+%s}
+`, expectedMinSdkVersionLine)),
+		)
+	}
+
+	t.Run("min_sdk_version=S in S", func(t *testing.T) {
+		// min_sdk_version was not added to java_import until Tiramisu.
+		runTest(t, "S", "S", "")
+	})
+
+	t.Run("min_sdk_version=S in Tiramisu", func(t *testing.T) {
+		// The canonical form of S is 31.
+		runTest(t, "Tiramisu", "S", "31")
+	})
+
+	t.Run("min_sdk_version=24 in Tiramisu", func(t *testing.T) {
+		// A numerical min_sdk_version is already in canonical form.
+		runTest(t, "Tiramisu", "24", "24")
+	})
+
+	t.Run("min_sdk_version=Unfinalized in latest", func(t *testing.T) {
+		// An unfinalized min_sdk_version has no numeric value yet.
+		runTest(t, "", "Unfinalized", "Unfinalized")
+	})
+}
+
 func TestSnapshotWithJavaSystemserverLibrary(t *testing.T) {
 	result := android.GroupFixturePreparers(
 		prepareForSdkTestWithJava,
@@ -889,6 +956,56 @@ java_sdk_library_import {
 	)
 }
 
+func TestSnapshotWithJavaSdkLibrary_DistStem(t *testing.T) {
+	result := android.GroupFixturePreparers(prepareForSdkTestWithJavaSdkLibrary).RunTestWithBp(t, `
+		sdk {
+			name: "mysdk",
+			java_sdk_libs: ["myjavalib-foo"],
+		}
+
+		java_sdk_library {
+			name: "myjavalib-foo",
+			apex_available: ["//apex_available:anyapex"],
+			srcs: ["Test.java"],
+			sdk_version: "current",
+			shared_library: false,
+			public: {
+				enabled: true,
+			},
+			dist_stem: "myjavalib",
+		}
+	`)
+
+	CheckSnapshot(t, result, "mysdk", "",
+		checkAndroidBpContents(`
+// This is auto-generated. DO NOT EDIT.
+
+java_sdk_library_import {
+    name: "myjavalib-foo",
+    prefer: false,
+    visibility: ["//visibility:public"],
+    apex_available: ["//apex_available:anyapex"],
+    shared_library: false,
+    public: {
+        jars: ["sdk_library/public/myjavalib-stubs.jar"],
+        stub_srcs: ["sdk_library/public/myjavalib_stub_sources"],
+        current_api: "sdk_library/public/myjavalib.txt",
+        removed_api: "sdk_library/public/myjavalib-removed.txt",
+        sdk_version: "current",
+    },
+}
+`),
+		checkAllCopyRules(`
+.intermediates/myjavalib-foo.stubs/android_common/javac/myjavalib-foo.stubs.jar -> sdk_library/public/myjavalib-stubs.jar
+.intermediates/myjavalib-foo.stubs.source/android_common/metalava/myjavalib-foo.stubs.source_api.txt -> sdk_library/public/myjavalib.txt
+.intermediates/myjavalib-foo.stubs.source/android_common/metalava/myjavalib-foo.stubs.source_removed.txt -> sdk_library/public/myjavalib-removed.txt
+`),
+		checkMergeZips(
+			".intermediates/mysdk/common_os/tmp/sdk_library/public/myjavalib_stub_sources.zip",
+		),
+	)
+}
+
 func TestSnapshotWithJavaSdkLibrary_UseSrcJar(t *testing.T) {
 	result := android.GroupFixturePreparers(
 		prepareForSdkTestWithJavaSdkLibrary,
@@ -1004,7 +1121,7 @@ func TestSnapshotWithJavaSdkLibrary_AnnotationsZip_PreT(t *testing.T) {
 		java_sdk_library {
 			name: "myjavalib",
 			srcs: ["Test.java"],
-			sdk_version: "current",
+			sdk_version: "S",
 			shared_library: false,
 			annotations_enabled: true,
 			public: {

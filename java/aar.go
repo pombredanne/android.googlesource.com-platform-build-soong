@@ -29,8 +29,8 @@ import (
 )
 
 type AndroidLibraryDependency interface {
+	LibraryDependency
 	ExportPackage() android.Path
-	ExportedProguardFlagFiles() android.Paths
 	ExportedRRODirs() []rroDir
 	ExportedStaticPackages() android.Paths
 	ExportedManifests() android.Paths
@@ -270,7 +270,7 @@ var extractAssetsRule = pctx.AndroidStaticRule("extractAssets",
 
 func (a *aapt) buildActions(ctx android.ModuleContext, sdkContext android.SdkContext,
 	classLoaderContexts dexpreopt.ClassLoaderContextMap, excludedLibs []string,
-	extraLinkFlags ...string) {
+	enforceDefaultTargetSdkVersion bool, extraLinkFlags ...string) {
 
 	transitiveStaticLibs, transitiveStaticLibManifests, staticRRODirs, assetPackages, libDeps, libFlags :=
 		aaptLibs(ctx, sdkContext, classLoaderContexts)
@@ -283,15 +283,16 @@ func (a *aapt) buildActions(ctx android.ModuleContext, sdkContext android.SdkCon
 	manifestSrcPath := android.PathForModuleSrc(ctx, manifestFile)
 
 	manifestPath := ManifestFixer(ctx, manifestSrcPath, ManifestFixerParams{
-		SdkContext:             sdkContext,
-		ClassLoaderContexts:    classLoaderContexts,
-		IsLibrary:              a.isLibrary,
-		DefaultManifestVersion: a.defaultManifestVersion,
-		UseEmbeddedNativeLibs:  a.useEmbeddedNativeLibs,
-		UsesNonSdkApis:         a.usesNonSdkApis,
-		UseEmbeddedDex:         a.useEmbeddedDex,
-		HasNoCode:              a.hasNoCode,
-		LoggingParent:          a.LoggingParent,
+		SdkContext:                     sdkContext,
+		ClassLoaderContexts:            classLoaderContexts,
+		IsLibrary:                      a.isLibrary,
+		DefaultManifestVersion:         a.defaultManifestVersion,
+		UseEmbeddedNativeLibs:          a.useEmbeddedNativeLibs,
+		UsesNonSdkApis:                 a.usesNonSdkApis,
+		UseEmbeddedDex:                 a.useEmbeddedDex,
+		HasNoCode:                      a.hasNoCode,
+		LoggingParent:                  a.LoggingParent,
+		EnforceDefaultTargetSdkVersion: enforceDefaultTargetSdkVersion,
 	})
 
 	// Add additional manifest files to transitive manifests.
@@ -439,7 +440,7 @@ func aaptLibs(ctx android.ModuleContext, sdkContext android.SdkContext, classLoa
 		switch depTag {
 		case instrumentationForTag:
 			// Nothing, instrumentationForTag is treated as libTag for javac but not for aapt2.
-		case libTag:
+		case sdkLibTag, libTag:
 			if exportPackage != nil {
 				sharedLibs = append(sharedLibs, exportPackage)
 			}
@@ -497,8 +498,7 @@ type AndroidLibrary struct {
 
 	aarFile android.WritablePath
 
-	exportedProguardFlagFiles android.Paths
-	exportedStaticPackages    android.Paths
+	exportedStaticPackages android.Paths
 }
 
 var _ android.OutputFileProducer = (*AndroidLibrary)(nil)
@@ -513,10 +513,6 @@ func (a *AndroidLibrary) OutputFiles(tag string) (android.Paths, error) {
 	}
 }
 
-func (a *AndroidLibrary) ExportedProguardFlagFiles() android.Paths {
-	return a.exportedProguardFlagFiles
-}
-
 func (a *AndroidLibrary) ExportedStaticPackages() android.Paths {
 	return a.exportedStaticPackages
 }
@@ -529,13 +525,13 @@ func (a *AndroidLibrary) DepsMutator(ctx android.BottomUpMutatorContext) {
 	if sdkDep.hasFrameworkLibs() {
 		a.aapt.deps(ctx, sdkDep)
 	}
-	a.usesLibrary.deps(ctx, sdkDep.hasFrameworkLibs())
+	a.usesLibrary.deps(ctx, false)
 }
 
 func (a *AndroidLibrary) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 	a.aapt.isLibrary = true
 	a.classLoaderContexts = a.usesLibrary.classLoaderContextForUsesLibDeps(ctx)
-	a.aapt.buildActions(ctx, android.SdkContext(a), a.classLoaderContexts, nil)
+	a.aapt.buildActions(ctx, android.SdkContext(a), a.classLoaderContexts, nil, false)
 
 	a.hideApexVariantFromMake = !ctx.Provider(android.ApexInfoProvider).(android.ApexInfo).IsForPlatform()
 
@@ -565,13 +561,16 @@ func (a *AndroidLibrary) GenerateAndroidBuildActions(ctx android.ModuleContext) 
 	a.exportedProguardFlagFiles = append(a.exportedProguardFlagFiles,
 		android.PathsForModuleSrc(ctx, a.dexProperties.Optimize.Proguard_flags_files)...)
 	ctx.VisitDirectDeps(func(m android.Module) {
-		if lib, ok := m.(AndroidLibraryDependency); ok && ctx.OtherModuleDependencyTag(m) == staticLibTag {
-			a.exportedProguardFlagFiles = append(a.exportedProguardFlagFiles, lib.ExportedProguardFlagFiles()...)
-			a.exportedStaticPackages = append(a.exportedStaticPackages, lib.ExportPackage())
-			a.exportedStaticPackages = append(a.exportedStaticPackages, lib.ExportedStaticPackages()...)
+		if ctx.OtherModuleDependencyTag(m) == staticLibTag {
+			if lib, ok := m.(LibraryDependency); ok {
+				a.exportedProguardFlagFiles = append(a.exportedProguardFlagFiles, lib.ExportedProguardFlagFiles()...)
+			}
+			if alib, ok := m.(AndroidLibraryDependency); ok {
+				a.exportedStaticPackages = append(a.exportedStaticPackages, alib.ExportPackage())
+				a.exportedStaticPackages = append(a.exportedStaticPackages, alib.ExportedStaticPackages()...)
+			}
 		}
 	})
-
 	a.exportedProguardFlagFiles = android.FirstUniquePaths(a.exportedProguardFlagFiles)
 	a.exportedStaticPackages = android.FirstUniquePaths(a.exportedStaticPackages)
 
@@ -651,6 +650,8 @@ type AARImport struct {
 
 	// Functionality common to Module and Import.
 	embeddableInModuleAndImport
+
+	providesTransitiveHeaderJars
 
 	properties AARImportProperties
 
@@ -898,8 +899,11 @@ func (a *AARImport) GenerateAndroidBuildActions(ctx android.ModuleContext) {
 		a.assetsPackage = mergedAssets
 	}
 
+	a.collectTransitiveHeaderJars(ctx)
 	ctx.SetProvider(JavaInfoProvider, JavaInfo{
 		HeaderJars:                     android.PathsIfNonNil(a.classpathFile),
+		TransitiveLibsHeaderJars:       a.transitiveLibsHeaderJars,
+		TransitiveStaticLibsHeaderJars: a.transitiveStaticLibsHeaderJars,
 		ImplementationAndResourcesJars: android.PathsIfNonNil(a.classpathFile),
 		ImplementationJars:             android.PathsIfNonNil(a.classpathFile),
 	})
@@ -1032,7 +1036,7 @@ func (a *AARImport) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 	ctx.CreateBazelTargetModule(
 		bazel.BazelTargetModuleProperties{
 			Rule_class:        "aar_import",
-			Bzl_load_location: "@rules_android//rules:rules.bzl",
+			Bzl_load_location: "//build/bazel/rules/android:rules.bzl",
 		},
 		android.CommonAttributes{Name: name},
 		&bazelAndroidLibraryImport{
@@ -1042,10 +1046,26 @@ func (a *AARImport) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 		},
 	)
 
+	neverlink := true
+	ctx.CreateBazelTargetModule(
+		bazel.BazelTargetModuleProperties{
+			Rule_class:        "android_library",
+			Bzl_load_location: "//build/bazel/rules/android:rules.bzl",
+		},
+		android.CommonAttributes{Name: name + "-neverlink"},
+		&bazelAndroidLibrary{
+			javaLibraryAttributes: &javaLibraryAttributes{
+				Neverlink: bazel.BoolAttribute{Value: &neverlink},
+				Exports:   bazel.MakeSingleLabelListAttribute(bazel.Label{Label: ":" + name}),
+			},
+		},
+	)
+
 }
 
 func (a *AndroidLibrary) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
-	commonAttrs, depLabels := a.convertLibraryAttrsBp2Build(ctx)
+	commonAttrs, bp2buildInfo := a.convertLibraryAttrsBp2Build(ctx)
+	depLabels := bp2buildInfo.DepLabels
 
 	deps := depLabels.Deps
 	if !commonAttrs.Srcs.IsEmpty() {
@@ -1054,12 +1074,19 @@ func (a *AndroidLibrary) ConvertWithBp2build(ctx android.TopDownMutatorContext) 
 		ctx.ModuleErrorf("Module has direct dependencies but no sources. Bazel will not allow this.")
 	}
 
+	if len(a.properties.Common_srcs) != 0 {
+		commonAttrs.Common_srcs = bazel.MakeLabelListAttribute(android.BazelLabelForModuleSrc(ctx, a.properties.Common_srcs))
+	}
+
+	name := a.Name()
+	props := bazel.BazelTargetModuleProperties{
+		Rule_class:        "android_library",
+		Bzl_load_location: "//build/bazel/rules/android:rules.bzl",
+	}
+
 	ctx.CreateBazelTargetModule(
-		bazel.BazelTargetModuleProperties{
-			Rule_class:        "android_library",
-			Bzl_load_location: "@rules_android//rules:rules.bzl",
-		},
-		android.CommonAttributes{Name: a.Name()},
+		props,
+		android.CommonAttributes{Name: name},
 		&bazelAndroidLibrary{
 			&javaLibraryAttributes{
 				javaCommonAttributes: commonAttrs,
@@ -1067,6 +1094,18 @@ func (a *AndroidLibrary) ConvertWithBp2build(ctx android.TopDownMutatorContext) 
 				Exports:              depLabels.StaticDeps,
 			},
 			a.convertAaptAttrsWithBp2Build(ctx),
+		},
+	)
+
+	neverlink := true
+	ctx.CreateBazelTargetModule(
+		props,
+		android.CommonAttributes{Name: name + "-neverlink"},
+		&bazelAndroidLibrary{
+			javaLibraryAttributes: &javaLibraryAttributes{
+				Neverlink: bazel.BoolAttribute{Value: &neverlink},
+				Exports:   bazel.MakeSingleLabelListAttribute(bazel.Label{Label: ":" + name}),
+			},
 		},
 	)
 }

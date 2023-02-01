@@ -43,6 +43,7 @@ var (
 	InstrumentFrameworkModules = []string{
 		"framework",
 		"framework-minus-apex",
+		"ims-common",
 		"telephony-common",
 		"services",
 		"android.car",
@@ -78,12 +79,12 @@ var (
 func init() {
 	pctx.Import("github.com/google/blueprint/bootstrap")
 
-	exportedVars.ExportStringStaticVariable("JavacHeapSize", "2048M")
+	exportedVars.ExportStringStaticVariable("JavacHeapSize", "4096M")
 	exportedVars.ExportStringStaticVariable("JavacHeapFlags", "-J-Xmx${JavacHeapSize}")
 
 	// ErrorProne can use significantly more memory than javac alone, give it a higher heap
 	// size (b/221480398).
-	exportedVars.ExportStringStaticVariable("ErrorProneHeapSize", "4096M")
+	exportedVars.ExportStringStaticVariable("ErrorProneHeapSize", "8192M")
 	exportedVars.ExportStringStaticVariable("ErrorProneHeapFlags", "-J-Xmx${ErrorProneHeapSize}")
 
 	// D8 invocations are shorter lived, so we restrict their JIT tiering relative to R8.
@@ -97,6 +98,8 @@ func init() {
 		"-JXmx2048M",
 		// Disable this optimization as it can impact weak reference semantics. See b/233432839.
 		"-JDcom.android.tools.r8.disableEnqueuerDeferredTracing=true",
+		// Disable class merging across different files to improve attribution. See b/242881914.
+		"-JDcom.android.tools.r8.enableSameFilePolicy=true",
 	}, dexerJavaVmFlagsList...))
 
 	exportedVars.ExportStringListStaticVariable("CommonJdkFlags", []string{
@@ -128,12 +131,7 @@ func init() {
 		if override := ctx.Config().Getenv("OVERRIDE_JLINK_VERSION_NUMBER"); override != "" {
 			return override
 		}
-		switch ctx.Config().Getenv("EXPERIMENTAL_USE_OPENJDK17_TOOLCHAIN") {
-		case "true":
-			return "17"
-		default:
-			return "11"
-		}
+		return "17"
 	})
 
 	pctx.SourcePathVariable("JavaToolchain", "${JavaHome}/bin")
@@ -148,7 +146,7 @@ func init() {
 	pctx.SourcePathVariable("JavaKytheExtractorJar", "prebuilts/build-tools/common/framework/javac_extractor.jar")
 	pctx.SourcePathVariable("Ziptime", "prebuilts/build-tools/${hostPrebuiltTag}/bin/ziptime")
 
-	pctx.HostBinToolVariable("GenKotlinBuildFileCmd", "gen-kotlin-build-file.py")
+	pctx.HostBinToolVariable("GenKotlinBuildFileCmd", "gen-kotlin-build-file")
 
 	pctx.SourcePathVariable("JarArgsCmd", "build/soong/scripts/jar-args.sh")
 	pctx.SourcePathVariable("PackageCheckCmd", "build/soong/scripts/package-check.sh")
@@ -160,6 +158,7 @@ func init() {
 	pctx.HostBinToolVariable("ApiCheckCmd", "apicheck")
 	pctx.HostBinToolVariable("D8Cmd", "d8")
 	pctx.HostBinToolVariable("R8Cmd", "r8")
+	pctx.HostBinToolVariable("ResourceShrinkerCmd", "resourceshrinker")
 	pctx.HostBinToolVariable("HiddenAPICmd", "hiddenapi")
 	pctx.HostBinToolVariable("ExtractApksCmd", "extract_apks")
 	pctx.VariableFunc("TurbineJar", func(ctx android.PackageVarContext) string {

@@ -52,7 +52,7 @@ var combineApk = pctx.AndroidStaticRule("combineApk",
 	})
 
 func CreateAndSignAppPackage(ctx android.ModuleContext, outputFile android.WritablePath,
-	packageFile, jniJarFile, dexJarFile android.Path, certificates []Certificate, deps android.Paths, v4SignatureFile android.WritablePath, lineageFile android.Path) {
+	packageFile, jniJarFile, dexJarFile android.Path, certificates []Certificate, deps android.Paths, v4SignatureFile android.WritablePath, lineageFile android.Path, rotationMinSdkVersion string, shrinkResources bool) {
 
 	unsignedApkName := strings.TrimSuffix(outputFile.Base(), ".apk") + "-unsigned.apk"
 	unsignedApk := android.PathForModuleOut(ctx, unsignedApkName)
@@ -65,7 +65,6 @@ func CreateAndSignAppPackage(ctx android.ModuleContext, outputFile android.Writa
 	if jniJarFile != nil {
 		inputs = append(inputs, jniJarFile)
 	}
-
 	ctx.Build(pctx, android.BuildParams{
 		Rule:      combineApk,
 		Inputs:    inputs,
@@ -73,10 +72,15 @@ func CreateAndSignAppPackage(ctx android.ModuleContext, outputFile android.Writa
 		Implicits: deps,
 	})
 
-	SignAppPackage(ctx, outputFile, unsignedApk, certificates, v4SignatureFile, lineageFile)
+	if shrinkResources {
+		shrunkenApk := android.PathForModuleOut(ctx, "resource-shrunken", unsignedApk.Base())
+		ShrinkResources(ctx, unsignedApk, shrunkenApk)
+		unsignedApk = shrunkenApk
+	}
+	SignAppPackage(ctx, outputFile, unsignedApk, certificates, v4SignatureFile, lineageFile, rotationMinSdkVersion)
 }
 
-func SignAppPackage(ctx android.ModuleContext, signedApk android.WritablePath, unsignedApk android.Path, certificates []Certificate, v4SignatureFile android.WritablePath, lineageFile android.Path) {
+func SignAppPackage(ctx android.ModuleContext, signedApk android.WritablePath, unsignedApk android.Path, certificates []Certificate, v4SignatureFile android.WritablePath, lineageFile android.Path, rotationMinSdkVersion string) {
 
 	var certificateArgs []string
 	var deps android.Paths
@@ -84,7 +88,6 @@ func SignAppPackage(ctx android.ModuleContext, signedApk android.WritablePath, u
 		certificateArgs = append(certificateArgs, c.Pem.String(), c.Key.String())
 		deps = append(deps, c.Pem, c.Key)
 	}
-
 	outputFiles := android.WritablePaths{signedApk}
 	var flags []string
 	if v4SignatureFile != nil {
@@ -95,6 +98,10 @@ func SignAppPackage(ctx android.ModuleContext, signedApk android.WritablePath, u
 	if lineageFile != nil {
 		flags = append(flags, "--lineage", lineageFile.String())
 		deps = append(deps, lineageFile)
+	}
+
+	if rotationMinSdkVersion != "" {
+		flags = append(flags, "--rotation-min-sdk-version", rotationMinSdkVersion)
 	}
 
 	rule := Signapk
@@ -178,7 +185,7 @@ func BuildBundleModule(ctx android.ModuleContext, outputFile android.WritablePat
 	packageFile, jniJarFile, dexJarFile android.Path) {
 
 	protoResJarFile := android.PathForModuleOut(ctx, "package-res.pb.apk")
-	aapt2Convert(ctx, protoResJarFile, packageFile)
+	aapt2Convert(ctx, protoResJarFile, packageFile, "proto")
 
 	var zips android.Paths
 
@@ -265,6 +272,18 @@ func TransformJniLibsToJar(
 		Inputs:      append(prebuiltJniPackages, jniJarPath),
 		Output:      outputFile,
 	})
+}
+
+func (a *AndroidApp) generateJavaUsedByApex(ctx android.ModuleContext) {
+	javaApiUsedByOutputFile := android.PathForModuleOut(ctx, a.installApkName+"_using.xml")
+	javaUsedByRule := android.NewRuleBuilder(pctx, ctx)
+	javaUsedByRule.Command().
+		Tool(android.PathForSource(ctx, "build/soong/scripts/gen_java_usedby_apex.sh")).
+		BuiltTool("dexdeps").
+		Output(javaApiUsedByOutputFile).
+		Input(a.Library.Module.outputFile)
+	javaUsedByRule.Build("java_usedby_list", "Generate Java APIs used by Apex")
+	a.javaApiUsedByOutputFile = javaApiUsedByOutputFile
 }
 
 func targetToJniDir(target android.Target) string {

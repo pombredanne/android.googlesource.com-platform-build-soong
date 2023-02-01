@@ -22,7 +22,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/google/blueprint"
 	"github.com/google/blueprint/parser"
 	"github.com/google/blueprint/proptools"
 
@@ -343,27 +342,29 @@ func (defs Bp2BuildSoongConfigDefinitions) String() string {
 //
 // For example, the acme_cc_defaults example above would
 // produce a reflect.Value whose type is:
-// *struct {
-//     Soong_config_variables struct {
-//         Board struct {
-//             Soc_a interface{}
-//             Soc_b interface{}
-//         }
-//     }
-// }
+//
+//	*struct {
+//	    Soong_config_variables struct {
+//	        Board struct {
+//	            Soc_a interface{}
+//	            Soc_b interface{}
+//	        }
+//	    }
+//	}
+//
 // And whose value is:
-// &{
-//     Soong_config_variables: {
-//         Board: {
-//             Soc_a: (*struct{ Cflags []string })(nil),
-//             Soc_b: (*struct{ Cflags []string })(nil),
-//         },
-//     },
-// }
-func CreateProperties(factory blueprint.ModuleFactory, moduleType *ModuleType) reflect.Value {
+//
+//	&{
+//	    Soong_config_variables: {
+//	        Board: {
+//	            Soc_a: (*struct{ Cflags []string })(nil),
+//	            Soc_b: (*struct{ Cflags []string })(nil),
+//	        },
+//	    },
+//	}
+func CreateProperties(factoryProps []interface{}, moduleType *ModuleType) reflect.Value {
 	var fields []reflect.StructField
 
-	_, factoryProps := factory()
 	affectablePropertiesType := createAffectablePropertiesType(moduleType.affectableProperties, factoryProps)
 	if affectablePropertiesType == nil {
 		return reflect.Value{}
@@ -639,9 +640,13 @@ func (s *stringVariable) initializeProperties(v reflect.Value, typ reflect.Type)
 // Extracts an interface from values containing the properties to apply based on config.
 // If config does not match a value with a non-nil property set, the default value will be returned.
 func (s *stringVariable) PropertiesToApply(config SoongConfig, values reflect.Value) (interface{}, error) {
+	configValue := config.String(s.variable)
+	if configValue != "" && !InList(configValue, s.values) {
+		return nil, fmt.Errorf("Soong config property %q must be one of %v, found %q", s.variable, s.values, configValue)
+	}
 	for j, v := range s.values {
 		f := values.Field(j)
-		if config.String(s.variable) == v && !f.Elem().IsNil() {
+		if configValue == v && !f.Elem().IsNil() {
 			return f.Interface(), nil
 		}
 	}
@@ -858,3 +863,13 @@ type emptyInterfaceStruct struct {
 }
 
 var emptyInterfaceType = reflect.TypeOf(emptyInterfaceStruct{}).Field(0).Type
+
+// InList checks if the string belongs to the list
+func InList(s string, list []string) bool {
+	for _, s2 := range list {
+		if s2 == s {
+			return true
+		}
+	}
+	return false
+}

@@ -73,6 +73,27 @@ func MakeLabelList(labels []Label) LabelList {
 	}
 }
 
+func SortedConfigurationAxes[T any](m map[ConfigurationAxis]T) []ConfigurationAxis {
+	keys := make([]ConfigurationAxis, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+
+	sort.Slice(keys, func(i, j int) bool { return keys[i].less(keys[j]) })
+	return keys
+}
+
+// MakeLabelListFromTargetNames creates a LabelList from unqualified target names
+// This is a utiltity function for bp2build converters of Soong modules that have 1:many generated targets
+func MakeLabelListFromTargetNames(targetNames []string) LabelList {
+	labels := []Label{}
+	for _, name := range targetNames {
+		label := Label{Label: ":" + name}
+		labels = append(labels, label)
+	}
+	return MakeLabelList(labels)
+}
+
 func (ll *LabelList) Equals(other LabelList) bool {
 	if len(ll.Includes) != len(other.Includes) || len(ll.Excludes) != len(other.Excludes) {
 		return false
@@ -119,12 +140,20 @@ func (ll *LabelList) uniqueParentDirectories() []string {
 	return dirs
 }
 
-// Add inserts the label Label at the end of the LabelList.
+// Add inserts the label Label at the end of the LabelList.Includes.
 func (ll *LabelList) Add(label *Label) {
 	if label == nil {
 		return
 	}
 	ll.Includes = append(ll.Includes, *label)
+}
+
+// AddExclude inserts the label Label at the end of the LabelList.Excludes.
+func (ll *LabelList) AddExclude(label *Label) {
+	if label == nil {
+		return
+	}
+	ll.Excludes = append(ll.Excludes, *label)
 }
 
 // Append appends the fields of other labelList to the corresponding fields of ll.
@@ -133,8 +162,32 @@ func (ll *LabelList) Append(other LabelList) {
 		ll.Includes = append(ll.Includes, other.Includes...)
 	}
 	if len(ll.Excludes) > 0 || len(other.Excludes) > 0 {
-		ll.Excludes = append(other.Excludes, other.Excludes...)
+		ll.Excludes = append(ll.Excludes, other.Excludes...)
 	}
+}
+
+// Partition splits a LabelList into two LabelLists depending on the return value
+// of the predicate.
+// This function preserves the Includes and Excludes, but it does not provide
+// that information to the partition function.
+func (ll *LabelList) Partition(predicate func(label Label) bool) (LabelList, LabelList) {
+	predicated := LabelList{}
+	unpredicated := LabelList{}
+	for _, include := range ll.Includes {
+		if predicate(include) {
+			predicated.Add(&include)
+		} else {
+			unpredicated.Add(&include)
+		}
+	}
+	for _, exclude := range ll.Excludes {
+		if predicate(exclude) {
+			predicated.AddExclude(&exclude)
+		} else {
+			unpredicated.AddExclude(&exclude)
+		}
+	}
+	return predicated, unpredicated
 }
 
 // UniqueSortedBazelLabels takes a []Label and deduplicates the labels, and returns
@@ -277,7 +330,19 @@ func (la *LabelAttribute) Collapse() error {
 	_, containsProductVariables := axisTypes[productVariables]
 	if containsProductVariables {
 		if containsOs || containsArch || containsOsArch {
-			return fmt.Errorf("label attribute could not be collapsed as it has two or more unrelated axes")
+			if containsArch {
+				allProductVariablesAreArchVariant := true
+				for k := range la.ConfigurableValues {
+					if k.configurationType == productVariables && k.outerAxisType != arch {
+						allProductVariablesAreArchVariant = false
+					}
+				}
+				if !allProductVariablesAreArchVariant {
+					return fmt.Errorf("label attribute could not be collapsed as it has two or more unrelated axes")
+				}
+			} else {
+				return fmt.Errorf("label attribute could not be collapsed as it has two or more unrelated axes")
+			}
 		}
 	}
 	if (containsOs && containsArch) || (containsOsArch && (containsOs || containsArch)) {
@@ -332,7 +397,7 @@ func (la *LabelAttribute) SetSelectValue(axis ConfigurationAxis, config string, 
 	switch axis.configurationType {
 	case noConfig:
 		la.Value = &value
-	case arch, os, osArch, productVariables:
+	case arch, os, osArch, productVariables, osAndInApex:
 		if la.ConfigurableValues == nil {
 			la.ConfigurableValues = make(configurableLabels)
 		}
@@ -348,7 +413,7 @@ func (la *LabelAttribute) SelectValue(axis ConfigurationAxis, config string) *La
 	switch axis.configurationType {
 	case noConfig:
 		return la.Value
-	case arch, os, osArch, productVariables:
+	case arch, os, osArch, productVariables, osAndInApex:
 		return la.ConfigurableValues[axis][config]
 	default:
 		panic(fmt.Errorf("Unrecognized ConfigurationAxis %s", axis))
@@ -357,13 +422,7 @@ func (la *LabelAttribute) SelectValue(axis ConfigurationAxis, config string) *La
 
 // SortedConfigurationAxes returns all the used ConfigurationAxis in sorted order.
 func (la *LabelAttribute) SortedConfigurationAxes() []ConfigurationAxis {
-	keys := make([]ConfigurationAxis, 0, len(la.ConfigurableValues))
-	for k := range la.ConfigurableValues {
-		keys = append(keys, k)
-	}
-
-	sort.Slice(keys, func(i, j int) bool { return keys[i].less(keys[j]) })
-	return keys
+	return SortedConfigurationAxes(la.ConfigurableValues)
 }
 
 // MakeLabelAttribute turns a string into a LabelAttribute
@@ -424,7 +483,7 @@ func (ba *BoolAttribute) SetSelectValue(axis ConfigurationAxis, config string, v
 	switch axis.configurationType {
 	case noConfig:
 		ba.Value = value
-	case arch, os, osArch, productVariables:
+	case arch, os, osArch, productVariables, osAndInApex:
 		if ba.ConfigurableValues == nil {
 			ba.ConfigurableValues = make(configurableBools)
 		}
@@ -540,7 +599,7 @@ func (ba BoolAttribute) SelectValue(axis ConfigurationAxis, config string) *bool
 	switch axis.configurationType {
 	case noConfig:
 		return ba.Value
-	case arch, os, osArch, productVariables:
+	case arch, os, osArch, productVariables, osAndInApex:
 		if v, ok := ba.ConfigurableValues[axis][config]; ok {
 			return &v
 		} else {
@@ -553,13 +612,7 @@ func (ba BoolAttribute) SelectValue(axis ConfigurationAxis, config string) *bool
 
 // SortedConfigurationAxes returns all the used ConfigurationAxis in sorted order.
 func (ba *BoolAttribute) SortedConfigurationAxes() []ConfigurationAxis {
-	keys := make([]ConfigurationAxis, 0, len(ba.ConfigurableValues))
-	for k := range ba.ConfigurableValues {
-		keys = append(keys, k)
-	}
-
-	sort.Slice(keys, func(i, j int) bool { return keys[i].less(keys[j]) })
-	return keys
+	return SortedConfigurationAxes(ba.ConfigurableValues)
 }
 
 // labelListSelectValues supports config-specific label_list typed Bazel attribute values.
@@ -619,6 +672,11 @@ type LabelListAttribute struct {
 	// specific select statements where an empty list for a non-default select
 	// key has a meaning.
 	EmitEmptyList bool
+
+	// If a property has struct tag "variant_prepend", this value should
+	// be set to True, so that when bp2build generates BUILD.bazel, variant
+	// properties(select ...) come before general properties.
+	Prepend bool
 }
 
 type configurableLabelLists map[ConfigurationAxis]labelListSelectValues
@@ -676,7 +734,7 @@ func (lla *LabelListAttribute) SetSelectValue(axis ConfigurationAxis, config str
 	switch axis.configurationType {
 	case noConfig:
 		lla.Value = list
-	case arch, os, osArch, productVariables:
+	case arch, os, osArch, productVariables, osAndInApex, inApex:
 		if lla.ConfigurableValues == nil {
 			lla.ConfigurableValues = make(configurableLabelLists)
 		}
@@ -692,7 +750,7 @@ func (lla *LabelListAttribute) SelectValue(axis ConfigurationAxis, config string
 	switch axis.configurationType {
 	case noConfig:
 		return lla.Value
-	case arch, os, osArch, productVariables:
+	case arch, os, osArch, productVariables, osAndInApex, inApex:
 		return lla.ConfigurableValues[axis][config]
 	default:
 		panic(fmt.Errorf("Unrecognized ConfigurationAxis %s", axis))
@@ -701,13 +759,7 @@ func (lla *LabelListAttribute) SelectValue(axis ConfigurationAxis, config string
 
 // SortedConfigurationAxes returns all the used ConfigurationAxis in sorted order.
 func (lla *LabelListAttribute) SortedConfigurationAxes() []ConfigurationAxis {
-	keys := make([]ConfigurationAxis, 0, len(lla.ConfigurableValues))
-	for k := range lla.ConfigurableValues {
-		keys = append(keys, k)
-	}
-
-	sort.Slice(keys, func(i, j int) bool { return keys[i].less(keys[j]) })
-	return keys
+	return SortedConfigurationAxes(lla.ConfigurableValues)
 }
 
 // Append all values, including os and arch specific ones, from another
@@ -754,6 +806,16 @@ func (lla LabelListAttribute) HasConfigurableValues() bool {
 	return false
 }
 
+// HasAxisSpecificValues returns true if the attribute contains axis specific label list values from a given axis
+func (lla LabelListAttribute) HasAxisSpecificValues(axis ConfigurationAxis) bool {
+	for _, values := range lla.ConfigurableValues[axis] {
+		if !values.IsNil() {
+			return true
+		}
+	}
+	return false
+}
+
 // IsEmpty returns true if the attribute has no values under any configuration.
 func (lla LabelListAttribute) IsEmpty() bool {
 	if len(lla.Value.Includes) > 0 {
@@ -788,6 +850,26 @@ func (lla *LabelListAttribute) Exclude(axis ConfigurationAxis, config string, la
 // ResolveExcludes handles excludes across the various axes, ensuring that items are removed from
 // the base value and included in default values as appropriate.
 func (lla *LabelListAttribute) ResolveExcludes() {
+	// If there are OsAndInApexAxis, we need to use
+	//   * includes from the OS & in APEX Axis for non-Android configs for libraries that need to be
+	//     included in non-Android OSes
+	//   * excludes from the OS Axis for non-Android configs, to exclude libraries that should _not_
+	//     be included in the non-Android OSes
+	if _, ok := lla.ConfigurableValues[OsAndInApexAxis]; ok {
+		inApexLabels := lla.ConfigurableValues[OsAndInApexAxis][ConditionsDefaultConfigKey]
+		for config, labels := range lla.ConfigurableValues[OsConfigurationAxis] {
+			// OsAndroid has already handled its excludes.
+			// We only need to copy the excludes from other arches, so if there are none, skip it.
+			if config == OsAndroid || len(labels.Excludes) == 0 {
+				continue
+			}
+			lla.ConfigurableValues[OsAndInApexAxis][config] = LabelList{
+				Includes: inApexLabels.Includes,
+				Excludes: labels.Excludes,
+			}
+		}
+	}
+
 	for axis, configToLabels := range lla.ConfigurableValues {
 		baseLabels := lla.Value.deepCopy()
 		for config, val := range configToLabels {
@@ -798,7 +880,7 @@ func (lla *LabelListAttribute) ResolveExcludes() {
 			// then remove all config-specific excludes
 			allLabels := baseLabels.deepCopy()
 			allLabels.Append(val)
-			lla.ConfigurableValues[axis][config] = SubtractBazelLabelList(allLabels, LabelList{Includes: val.Excludes})
+			lla.ConfigurableValues[axis][config] = SubtractBazelLabelList(allLabels, LabelList{Includes: allLabels.Excludes})
 		}
 
 		// After going through all configs, delete the duplicates in the config
@@ -820,6 +902,29 @@ func (lla *LabelListAttribute) ResolveExcludes() {
 			delete(lla.ConfigurableValues, axis)
 		}
 	}
+}
+
+// Partition splits a LabelListAttribute into two LabelListAttributes depending
+// on the return value of the predicate.
+// This function preserves the Includes and Excludes, but it does not provide
+// that information to the partition function.
+func (lla LabelListAttribute) Partition(predicate func(label Label) bool) (LabelListAttribute, LabelListAttribute) {
+	predicated := LabelListAttribute{}
+	unpredicated := LabelListAttribute{}
+
+	valuePartitionTrue, valuePartitionFalse := lla.Value.Partition(predicate)
+	predicated.SetValue(valuePartitionTrue)
+	unpredicated.SetValue(valuePartitionFalse)
+
+	for axis, selectValueLabelLists := range lla.ConfigurableValues {
+		for config, labelList := range selectValueLabelLists {
+			configPredicated, configUnpredicated := labelList.Partition(predicate)
+			predicated.SetSelectValue(axis, config, configPredicated)
+			unpredicated.SetSelectValue(axis, config, configUnpredicated)
+		}
+	}
+
+	return predicated, unpredicated
 }
 
 // OtherModuleContext is a limited context that has methods with information about other modules.
@@ -960,6 +1065,156 @@ func PartitionLabelListAttribute(ctx OtherModuleContext, lla *LabelListAttribute
 	return ret
 }
 
+// StringAttribute corresponds to the string Bazel attribute type with
+// support for additional metadata, like configurations.
+type StringAttribute struct {
+	// The base value of the string attribute.
+	Value *string
+
+	// The configured attribute label list Values. Optional
+	// a map of independent configurability axes
+	ConfigurableValues configurableStrings
+}
+
+type configurableStrings map[ConfigurationAxis]stringSelectValues
+
+func (cs configurableStrings) setValueForAxis(axis ConfigurationAxis, config string, str *string) {
+	if cs[axis] == nil {
+		cs[axis] = make(stringSelectValues)
+	}
+	cs[axis][config] = str
+}
+
+type stringSelectValues map[string]*string
+
+// HasConfigurableValues returns true if the attribute contains axis-specific string values.
+func (sa StringAttribute) HasConfigurableValues() bool {
+	for _, selectValues := range sa.ConfigurableValues {
+		if len(selectValues) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// SetValue sets the base, non-configured value for the Label
+func (sa *StringAttribute) SetValue(value string) {
+	sa.SetSelectValue(NoConfigAxis, "", &value)
+}
+
+// SetSelectValue set a value for a bazel select for the given axis, config and value.
+func (sa *StringAttribute) SetSelectValue(axis ConfigurationAxis, config string, str *string) {
+	axis.validateConfig(config)
+	switch axis.configurationType {
+	case noConfig:
+		sa.Value = str
+	case arch, os, osArch, productVariables:
+		if sa.ConfigurableValues == nil {
+			sa.ConfigurableValues = make(configurableStrings)
+		}
+		sa.ConfigurableValues.setValueForAxis(axis, config, str)
+	default:
+		panic(fmt.Errorf("Unrecognized ConfigurationAxis %s", axis))
+	}
+}
+
+// SelectValue gets a value for a bazel select for the given axis and config.
+func (sa *StringAttribute) SelectValue(axis ConfigurationAxis, config string) *string {
+	axis.validateConfig(config)
+	switch axis.configurationType {
+	case noConfig:
+		return sa.Value
+	case arch, os, osArch, productVariables:
+		if v, ok := sa.ConfigurableValues[axis][config]; ok {
+			return v
+		} else {
+			return nil
+		}
+	default:
+		panic(fmt.Errorf("Unrecognized ConfigurationAxis %s", axis))
+	}
+}
+
+// SortedConfigurationAxes returns all the used ConfigurationAxis in sorted order.
+func (sa *StringAttribute) SortedConfigurationAxes() []ConfigurationAxis {
+	return SortedConfigurationAxes(sa.ConfigurableValues)
+}
+
+// Collapse reduces the configurable axes of the string attribute to a single axis.
+// This is necessary for final writing to bp2build, as a configurable string
+// attribute can only be comprised by a single select.
+func (sa *StringAttribute) Collapse() error {
+	axisTypes := sa.axisTypes()
+	_, containsOs := axisTypes[os]
+	_, containsArch := axisTypes[arch]
+	_, containsOsArch := axisTypes[osArch]
+	_, containsProductVariables := axisTypes[productVariables]
+	if containsProductVariables {
+		if containsOs || containsArch || containsOsArch {
+			return fmt.Errorf("string attribute could not be collapsed as it has two or more unrelated axes")
+		}
+	}
+	if (containsOs && containsArch) || (containsOsArch && (containsOs || containsArch)) {
+		// If a bool attribute has both os and arch configuration axes, the only
+		// way to successfully union their values is to increase the granularity
+		// of the configuration criteria to os_arch.
+		for osType, supportedArchs := range osToArchMap {
+			for _, supportedArch := range supportedArchs {
+				osArch := osArchString(osType, supportedArch)
+				if archOsVal := sa.SelectValue(OsArchConfigurationAxis, osArch); archOsVal != nil {
+					// Do nothing, as the arch_os is explicitly defined already.
+				} else {
+					archVal := sa.SelectValue(ArchConfigurationAxis, supportedArch)
+					osVal := sa.SelectValue(OsConfigurationAxis, osType)
+					if osVal != nil && archVal != nil {
+						// In this case, arch takes precedence. (This fits legacy Soong behavior, as arch mutator
+						// runs after os mutator.
+						sa.SetSelectValue(OsArchConfigurationAxis, osArch, archVal)
+					} else if osVal != nil && archVal == nil {
+						sa.SetSelectValue(OsArchConfigurationAxis, osArch, osVal)
+					} else if osVal == nil && archVal != nil {
+						sa.SetSelectValue(OsArchConfigurationAxis, osArch, archVal)
+					}
+				}
+			}
+		}
+		/// All os_arch values are now set. Clear os and arch axes.
+		delete(sa.ConfigurableValues, ArchConfigurationAxis)
+		delete(sa.ConfigurableValues, OsConfigurationAxis)
+		// Verify post-condition; this should never fail, provided no additional
+		// axes are introduced.
+		if len(sa.ConfigurableValues) > 1 {
+			panic(fmt.Errorf("error in collapsing attribute: %#v", sa))
+		}
+	} else if containsProductVariables {
+		usedBaseValue := false
+		for a, configToProp := range sa.ConfigurableValues {
+			if a.configurationType == productVariables {
+				for c, p := range configToProp {
+					if p == nil {
+						sa.SetSelectValue(a, c, sa.Value)
+						usedBaseValue = true
+					}
+				}
+			}
+		}
+		if usedBaseValue {
+			sa.Value = nil
+		}
+	}
+	return nil
+}
+
+func (sa *StringAttribute) axisTypes() map[configurationType]bool {
+	types := map[configurationType]bool{}
+	for k := range sa.ConfigurableValues {
+		if strs := sa.ConfigurableValues[k]; len(strs) > 0 {
+			types[k.configurationType] = true
+		}
+	}
+	return types
+}
+
 // StringListAttribute corresponds to the string_list Bazel attribute type with
 // support for additional metadata, like configurations.
 type StringListAttribute struct {
@@ -969,6 +1224,16 @@ type StringListAttribute struct {
 	// The configured attribute label list Values. Optional
 	// a map of independent configurability axes
 	ConfigurableValues configurableStringLists
+
+	// If a property has struct tag "variant_prepend", this value should
+	// be set to True, so that when bp2build generates BUILD.bazel, variant
+	// properties(select ...) come before general properties.
+	Prepend bool
+}
+
+// IsEmpty returns true if the attribute has no values under any configuration.
+func (sla StringListAttribute) IsEmpty() bool {
+	return len(sla.Value) == 0 && !sla.HasConfigurableValues()
 }
 
 type configurableStringLists map[ConfigurationAxis]stringListSelectValues
@@ -1049,7 +1314,7 @@ func (sla *StringListAttribute) SetSelectValue(axis ConfigurationAxis, config st
 	switch axis.configurationType {
 	case noConfig:
 		sla.Value = list
-	case arch, os, osArch, productVariables:
+	case arch, os, osArch, productVariables, osAndInApex:
 		if sla.ConfigurableValues == nil {
 			sla.ConfigurableValues = make(configurableStringLists)
 		}
@@ -1065,7 +1330,7 @@ func (sla *StringListAttribute) SelectValue(axis ConfigurationAxis, config strin
 	switch axis.configurationType {
 	case noConfig:
 		return sla.Value
-	case arch, os, osArch, productVariables:
+	case arch, os, osArch, productVariables, osAndInApex:
 		return sla.ConfigurableValues[axis][config]
 	default:
 		panic(fmt.Errorf("Unrecognized ConfigurationAxis %s", axis))
@@ -1074,26 +1339,23 @@ func (sla *StringListAttribute) SelectValue(axis ConfigurationAxis, config strin
 
 // SortedConfigurationAxes returns all the used ConfigurationAxis in sorted order.
 func (sla *StringListAttribute) SortedConfigurationAxes() []ConfigurationAxis {
-	keys := make([]ConfigurationAxis, 0, len(sla.ConfigurableValues))
-	for k := range sla.ConfigurableValues {
-		keys = append(keys, k)
-	}
-
-	sort.Slice(keys, func(i, j int) bool { return keys[i].less(keys[j]) })
-	return keys
+	return SortedConfigurationAxes(sla.ConfigurableValues)
 }
 
 // DeduplicateAxesFromBase ensures no duplication of items between the no-configuration value and
 // configuration-specific values. For example, if we would convert this StringListAttribute as:
-// ["a", "b", "c"] + select({
-//    "//condition:one": ["a", "d"],
-//    "//conditions:default": [],
-// })
+//
+//	["a", "b", "c"] + select({
+//	   "//condition:one": ["a", "d"],
+//	   "//conditions:default": [],
+//	})
+//
 // after this function, we would convert this StringListAttribute as:
-// ["a", "b", "c"] + select({
-//    "//condition:one": ["d"],
-//    "//conditions:default": [],
-// })
+//
+//	["a", "b", "c"] + select({
+//	   "//condition:one": ["d"],
+//	   "//conditions:default": [],
+//	})
 func (sla *StringListAttribute) DeduplicateAxesFromBase() {
 	base := sla.Value
 	for axis, configToList := range sla.ConfigurableValues {
@@ -1111,6 +1373,9 @@ func (sla *StringListAttribute) DeduplicateAxesFromBase() {
 // TryVariableSubstitution, replace string substitution formatting within each string in slice with
 // Starlark string.format compatible tag for productVariable.
 func TryVariableSubstitutions(slice []string, productVariable string) ([]string, bool) {
+	if len(slice) == 0 {
+		return slice, false
+	}
 	ret := make([]string, 0, len(slice))
 	changesMade := false
 	for _, s := range slice {

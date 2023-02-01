@@ -336,8 +336,7 @@ type productVariables struct {
 
 	NamespacesToExport []string `json:",omitempty"`
 
-	AfdoAdditionalProfileDirs []string `json:",omitempty"`
-	PgoAdditionalProfileDirs  []string `json:",omitempty"`
+	PgoAdditionalProfileDirs []string `json:",omitempty"`
 
 	VndkUseCoreVariant         *bool `json:",omitempty"`
 	VndkSnapshotBuildArtifacts *bool `json:",omitempty"`
@@ -381,6 +380,7 @@ type productVariables struct {
 
 	Ndk_abis *bool `json:",omitempty"`
 
+	TrimmedApex                  *bool `json:",omitempty"`
 	Flatten_apex                 *bool `json:",omitempty"`
 	ForceApexSymlinkOptimization *bool `json:",omitempty"`
 	CompressedApex               *bool `json:",omitempty"`
@@ -430,6 +430,9 @@ type productVariables struct {
 
 	ShippingApiLevel *string `json:",omitempty"`
 
+	BuildBrokenClangAsFlags            bool     `json:",omitempty"`
+	BuildBrokenClangCFlags             bool     `json:",omitempty"`
+	BuildBrokenClangProperty           bool     `json:",omitempty"`
 	BuildBrokenDepfile                 *bool    `json:",omitempty"`
 	BuildBrokenEnforceSyspropOwner     bool     `json:",omitempty"`
 	BuildBrokenTrebleSyspropNeverallow bool     `json:",omitempty"`
@@ -450,6 +453,8 @@ type productVariables struct {
 	GenerateAidlNdkPlatformBackend bool `json:",omitempty"`
 
 	IgnorePrefer32OnDevice bool `json:",omitempty"`
+
+	IncludeTags []string `json:",omitempty"`
 }
 
 func boolPtr(v bool) *bool {
@@ -498,6 +503,7 @@ func (v *productVariables) SetDefaultConfig() {
 		Malloc_zero_contents:         boolPtr(true),
 		Malloc_pattern_fill_contents: boolPtr(false),
 		Safestack:                    boolPtr(false),
+		TrimmedApex:                  boolPtr(false),
 
 		BootJars:     ConfiguredJarList{apexes: []string{}, jars: []string{}},
 		ApexBootJars: ConfiguredJarList{apexes: []string{}, jars: []string{}},
@@ -591,6 +597,9 @@ type ProductConfigProperty struct {
 	// "acme__board__soc_a", "acme__board__soc_b", and
 	// "acme__board__conditions_default"
 	FullConfig string
+
+	// keeps track of whether this product variable is nested under an arch variant
+	OuterAxis bazel.ConfigurationAxis
 }
 
 func (p *ProductConfigProperty) AlwaysEmit() bool {
@@ -599,11 +608,11 @@ func (p *ProductConfigProperty) AlwaysEmit() bool {
 
 func (p *ProductConfigProperty) ConfigurationAxis() bazel.ConfigurationAxis {
 	if p.Namespace == "" {
-		return bazel.ProductVariableConfigurationAxis(p.FullConfig)
+		return bazel.ProductVariableConfigurationAxis(p.FullConfig, p.OuterAxis)
 	} else {
 		// Soong config variables can be uniquely identified by the namespace
 		// (e.g. acme, android) and the product variable name (e.g. board, size)
-		return bazel.ProductVariableConfigurationAxis(p.Namespace + "__" + p.Name)
+		return bazel.ProductVariableConfigurationAxis(p.Namespace+"__"+p.Name, bazel.NoConfigAxis)
 	}
 }
 
@@ -662,9 +671,11 @@ func ProductVariableProperties(ctx BazelConversionPathContext) ProductConfigProp
 			moduleBase.variableProperties,
 			"",
 			"",
-			&productConfigProperties)
+			&productConfigProperties,
+			bazel.ConfigurationAxis{},
+		)
 
-		for _, configToProps := range moduleBase.GetArchVariantProperties(ctx, moduleBase.variableProperties) {
+		for axis, configToProps := range moduleBase.GetArchVariantProperties(ctx, moduleBase.variableProperties) {
 			for config, props := range configToProps {
 				// GetArchVariantProperties is creating an instance of the requested type
 				// and productVariablesValues expects an interface, so no need to cast
@@ -673,7 +684,8 @@ func ProductVariableProperties(ctx BazelConversionPathContext) ProductConfigProp
 					props,
 					"",
 					config,
-					&productConfigProperties)
+					&productConfigProperties,
+					axis)
 			}
 		}
 	}
@@ -686,130 +698,17 @@ func ProductVariableProperties(ctx BazelConversionPathContext) ProductConfigProp
 					namespacedVariableProp,
 					namespace,
 					"",
-					&productConfigProperties)
+					&productConfigProperties,
+					bazel.NoConfigAxis)
 			}
 		}
 	}
-
-	productConfigProperties.zeroValuesForNamespacedVariables()
 
 	return productConfigProperties
 }
 
-// zeroValuesForNamespacedVariables ensures that selects that contain __only__
-// conditions default values have zero values set for the other non-default
-// values for that select statement.
-//
-// If the ProductConfigProperties map contains these items, as parsed from the .bp file:
-//
-// library_linking_strategy: {
-//     prefer_static: {
-//         static_libs: [
-//             "lib_a",
-//             "lib_b",
-//         ],
-//     },
-//     conditions_default: {
-//         shared_libs: [
-//             "lib_a",
-//             "lib_b",
-//         ],
-//     },
-// },
-//
-// Static_libs {Library_linking_strategy ANDROID prefer_static} [lib_a lib_b]
-// Shared_libs {Library_linking_strategy ANDROID conditions_default} [lib_a lib_b]
-//
-// We need to add this:
-//
-// Shared_libs {Library_linking_strategy ANDROID prefer_static} []
-//
-// so that the following gets generated for the "dynamic_deps" attribute,
-// instead of putting lib_a and lib_b directly into dynamic_deps without a
-// select:
-//
-// dynamic_deps = select({
-//     "//build/bazel/product_variables:android__library_linking_strategy__prefer_static": [],
-//     "//conditions:default": [
-//         "//foo/bar:lib_a",
-//         "//foo/bar:lib_b",
-//     ],
-// }),
-func (props *ProductConfigProperties) zeroValuesForNamespacedVariables() {
-	// A map of product config properties to the zero values of their respective
-	// property value.
-	zeroValues := make(map[ProductConfigProperty]interface{})
-
-	// A map of prop names (e.g. cflags) to product config properties where the
-	// (prop name, ProductConfigProperty) tuple contains a non-conditions_default key.
-	//
-	// e.g.
-	//
-	// prefer_static: {
-	//     static_libs: [
-	//         "lib_a",
-	//         "lib_b",
-	//     ],
-	// },
-	// conditions_default: {
-	//     shared_libs: [
-	//         "lib_a",
-	//         "lib_b",
-	//     ],
-	// },
-	//
-	// The tuple of ("static_libs", prefer_static) would be in this map.
-	hasNonDefaultValue := make(map[string]map[ProductConfigProperty]bool)
-
-	// Iterate over all added soong config variables.
-	for propName, v := range *props {
-		for p, intf := range v {
-			if p.Namespace == "" {
-				// If there's no namespace, this isn't a soong config variable,
-				// i.e. this is a product variable. product variables have no
-				// conditions_defaults, so skip them.
-				continue
-			}
-			if p.FullConfig == bazel.ConditionsDefaultConfigKey {
-				// Skip conditions_defaults.
-				continue
-			}
-			if hasNonDefaultValue[propName] == nil {
-				hasNonDefaultValue[propName] = make(map[ProductConfigProperty]bool)
-				hasNonDefaultValue[propName][p] = false
-			}
-			// Create the zero value of the variable.
-			if _, exists := zeroValues[p]; !exists {
-				zeroValue := reflect.Zero(reflect.ValueOf(intf).Type()).Interface()
-				if zeroValue == nil {
-					panic(fmt.Errorf("Expected non-nil zero value for product/config variable %+v\n", intf))
-				}
-				zeroValues[p] = zeroValue
-			}
-			hasNonDefaultValue[propName][p] = true
-		}
-	}
-
-	for propName := range *props {
-		for p, zeroValue := range zeroValues {
-			// Ignore variables that already have a non-default value for that axis
-			if exists, _ := hasNonDefaultValue[propName][p]; !exists {
-				// fmt.Println(propName, p.Namespace, p.Name, p.FullConfig, zeroValue)
-				// Insert the zero value for this propname + product config value.
-				props.AddProductConfigProperty(
-					propName,
-					p.Namespace,
-					p.Name,
-					p.FullConfig,
-					zeroValue,
-				)
-			}
-		}
-	}
-}
-
 func (p *ProductConfigProperties) AddProductConfigProperty(
-	propertyName, namespace, productVariableName, config string, property interface{}) {
+	propertyName, namespace, productVariableName, config string, property interface{}, outerAxis bazel.ConfigurationAxis) {
 	if (*p)[propertyName] == nil {
 		(*p)[propertyName] = make(map[ProductConfigProperty]interface{})
 	}
@@ -818,6 +717,7 @@ func (p *ProductConfigProperties) AddProductConfigProperty(
 		Namespace:  namespace,           // e.g. acme, android
 		Name:       productVariableName, // e.g. size, feature1, feature2, FEATURE3, board
 		FullConfig: config,              // e.g. size, feature1-x86, size__conditions_default
+		OuterAxis:  outerAxis,
 	}
 
 	if existing, ok := (*p)[propertyName][productConfigProp]; ok && namespace != "" {
@@ -868,7 +768,7 @@ func maybeExtractConfigVarProp(v reflect.Value) (reflect.Value, bool) {
 	return v, true
 }
 
-func (productConfigProperties *ProductConfigProperties) AddProductConfigProperties(namespace, suffix string, variableValues reflect.Value) {
+func (productConfigProperties *ProductConfigProperties) AddProductConfigProperties(namespace, suffix string, variableValues reflect.Value, outerAxis bazel.ConfigurationAxis) {
 	// variableValues can either be a product_variables or
 	// soong_config_variables struct.
 	//
@@ -932,13 +832,15 @@ func (productConfigProperties *ProductConfigProperties) AddProductConfigProperti
 
 		for j := 0; j < variableValue.NumField(); j++ {
 			property := variableValue.Field(j)
+			// e.g. Asflags, Cflags, Enabled, etc.
+			propertyName := variableValue.Type().Field(j).Name
+			// config can also be "conditions_default".
+			config := proptools.PropertyNameForField(propertyName)
+
 			// If the property wasn't set, no need to pass it along
 			if property.IsZero() {
 				continue
 			}
-
-			// e.g. Asflags, Cflags, Enabled, etc.
-			propertyName := variableValue.Type().Field(j).Name
 
 			if v, ok := maybeExtractConfigVarProp(property); ok {
 				// The field is a struct, which is used by:
@@ -959,13 +861,14 @@ func (productConfigProperties *ProductConfigProperties) AddProductConfigProperti
 				//     static_libs: ...
 				// }
 				field := v
+				// Iterate over fields of this struct prop.
 				for k := 0; k < field.NumField(); k++ {
-					// Iterate over fields of this struct prop.
-					if field.Field(k).IsZero() {
+					// For product variables, zero values are irrelevant; however, for soong config variables,
+					// empty values are relevant because there can also be a conditions default which is not
+					// applied for empty variables.
+					if field.Field(k).IsZero() && namespace == "" {
 						continue
 					}
-					// config can also be "conditions_default".
-					config := proptools.PropertyNameForField(propertyName)
 					actualPropertyName := field.Type().Field(k).Name
 
 					productConfigProperties.AddProductConfigProperty(
@@ -973,7 +876,8 @@ func (productConfigProperties *ProductConfigProperties) AddProductConfigProperti
 						namespace,           // e.g. acme, android
 						productVariableName, // e.g. size, feature1, FEATURE2, board
 						config,
-						field.Field(k).Interface(), // e.g. ["-DDEFAULT"], ["foo", "bar"]
+						field.Field(k).Interface(), // e.g. ["-DDEFAULT"], ["foo", "bar"],
+						outerAxis,
 					)
 				}
 			} else if property.Kind() != reflect.Interface {
@@ -987,6 +891,7 @@ func (productConfigProperties *ProductConfigProperties) AddProductConfigProperti
 					productVariableName,
 					config,
 					property.Interface(),
+					outerAxis,
 				)
 			}
 		}
@@ -997,14 +902,14 @@ func (productConfigProperties *ProductConfigProperties) AddProductConfigProperti
 // product_variables and soong_config_variables to structs that can be generated
 // as select statements.
 func productVariableValues(
-	fieldName string, variableProps interface{}, namespace, suffix string, productConfigProperties *ProductConfigProperties) {
+	fieldName string, variableProps interface{}, namespace, suffix string, productConfigProperties *ProductConfigProperties, outerAxis bazel.ConfigurationAxis) {
 	if suffix != "" {
 		suffix = "-" + suffix
 	}
 
 	// variableValues represent the product_variables or soong_config_variables struct.
 	variableValues := reflect.ValueOf(variableProps).Elem().FieldByName(fieldName)
-	productConfigProperties.AddProductConfigProperties(namespace, suffix, variableValues)
+	productConfigProperties.AddProductConfigProperties(namespace, suffix, variableValues, outerAxis)
 }
 
 func VariableMutator(mctx BottomUpMutatorContext) {

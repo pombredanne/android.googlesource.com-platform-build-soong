@@ -84,16 +84,28 @@ func TestCreateBazelFiles_QueryView_AddsTopLevelFiles(t *testing.T) {
 
 func TestCreateBazelFiles_Bp2Build_CreatesDefaultFiles(t *testing.T) {
 	testConfig := android.TestConfig("", make(map[string]string), "", make(map[string][]byte))
-	files := CreateSoongInjectionFiles(testConfig, CodegenMetrics{})
+	files := soongInjectionFiles(testConfig, CreateCodegenMetrics())
 
 	expectedFilePaths := []bazelFilepath{
+		{
+			dir:      "android",
+			basename: GeneratedBuildFileName,
+		},
+		{
+			dir:      "android",
+			basename: "constants.bzl",
+		},
 		{
 			dir:      "cc_toolchain",
 			basename: GeneratedBuildFileName,
 		},
 		{
 			dir:      "cc_toolchain",
-			basename: "constants.bzl",
+			basename: "config_constants.bzl",
+		},
+		{
+			dir:      "cc_toolchain",
+			basename: "sanitizer_constants.bzl",
 		},
 		{
 			dir:      "java_toolchain",
@@ -116,6 +128,10 @@ func TestCreateBazelFiles_Bp2Build_CreatesDefaultFiles(t *testing.T) {
 			basename: "converted_modules.txt",
 		},
 		{
+			dir:      "metrics",
+			basename: "converted_modules_path_map.json",
+		},
+		{
 			dir:      "product_config",
 			basename: "soong_config_variables.bzl",
 		},
@@ -134,6 +150,14 @@ func TestCreateBazelFiles_Bp2Build_CreatesDefaultFiles(t *testing.T) {
 		{
 			dir:      "api_levels",
 			basename: "api_levels.bzl",
+		},
+		{
+			dir:      "allowlists",
+			basename: "mixed_build_prod_allowlist.txt",
+		},
+		{
+			dir:      "allowlists",
+			basename: "mixed_build_staging_allowlist.txt",
 		},
 	}
 

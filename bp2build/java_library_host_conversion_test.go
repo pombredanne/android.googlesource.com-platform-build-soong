@@ -46,17 +46,33 @@ java_library_host {
     java_version: "9",
 }`,
 		ExpectedBazelTargets: []string{
-			makeBazelTarget("java_library", "java-lib-host-1", AttrNameToString{
+			MakeBazelTarget("java_library", "java-lib-host-1", AttrNameToString{
 				"srcs": `["a.java"]`,
-				"deps": `[":java-lib-host-2"]`,
+				"deps": `[":java-lib-host-2-neverlink"]`,
 				"target_compatible_with": `select({
         "//build/bazel/platforms/os:android": ["@platforms//:incompatible"],
         "//conditions:default": [],
     })`,
 			}),
-			makeBazelTarget("java_library", "java-lib-host-2", AttrNameToString{
+			MakeBazelTarget("java_library", "java-lib-host-1-neverlink", AttrNameToString{
+				"exports":   `[":java-lib-host-1"]`,
+				"neverlink": `True`,
+				"target_compatible_with": `select({
+        "//build/bazel/platforms/os:android": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    })`,
+			}),
+			MakeBazelTarget("java_library", "java-lib-host-2", AttrNameToString{
 				"javacopts": `["-source 1.9 -target 1.9"]`,
 				"srcs":      `["c.java"]`,
+				"target_compatible_with": `select({
+        "//build/bazel/platforms/os:android": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    })`,
+			}),
+			MakeBazelTarget("java_library", "java-lib-host-2-neverlink", AttrNameToString{
+				"exports":   `[":java-lib-host-2"]`,
+				"neverlink": `True`,
 				"target_compatible_with": `select({
         "//build/bazel/platforms/os:android": ["@platforms//:incompatible"],
         "//conditions:default": [],

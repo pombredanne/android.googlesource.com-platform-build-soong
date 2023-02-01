@@ -26,7 +26,7 @@ import (
 // Codegen is the backend of bp2build. The code generator is responsible for
 // writing .bzl files that are equivalent to Android.bp files that are capable
 // of being built with Bazel.
-func Codegen(ctx *CodegenContext) CodegenMetrics {
+func Codegen(ctx *CodegenContext) *CodegenMetrics {
 	// This directory stores BUILD files that could be eventually checked-in.
 	bp2buildDir := android.PathForOutput(ctx, "bp2build")
 	if err := android.RemoveAllOutputDir(bp2buildDir); err != nil {
@@ -46,9 +46,26 @@ func Codegen(ctx *CodegenContext) CodegenMetrics {
 	writeFiles(ctx, bp2buildDir, bp2buildFiles)
 
 	soongInjectionDir := android.PathForOutput(ctx, bazel.SoongInjectionDirName)
-	writeFiles(ctx, soongInjectionDir, CreateSoongInjectionFiles(ctx.Config(), res.metrics))
+	writeFiles(ctx, soongInjectionDir, CreateSoongInjectionDirFiles(ctx, res.metrics))
 
-	return res.metrics
+	return &res.metrics
+}
+
+// Wrapper function that will be responsible for all files in soong_injection directory
+// This includes
+// 1. config value(s) that are hardcoded in Soong
+// 2. product_config variables
+func CreateSoongInjectionDirFiles(ctx *CodegenContext, metrics CodegenMetrics) []BazelFile {
+	var ret []BazelFile
+
+	productConfigFiles, err := CreateProductConfigFiles(ctx)
+	if err != nil {
+		fmt.Printf("ERROR: %s", err.Error())
+		os.Exit(1)
+	}
+	ret = append(ret, productConfigFiles...)
+	ret = append(ret, soongInjectionFiles(ctx.Config(), metrics)...)
+	return ret
 }
 
 // Get the output directory and create it if it doesn't exist.

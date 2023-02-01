@@ -62,6 +62,7 @@ func TestConfig(buildDir string, env map[string]string, bp string, fs map[string
 		TestAllowNonExistentPaths: true,
 
 		BazelContext:              noopBazelContext{},
+		BuildMode:                 BazelProdMode,
 		mixedBuildDisabledModules: make(map[string]struct{}),
 		mixedBuildEnabledModules:  make(map[string]struct{}),
 	}
@@ -91,6 +92,9 @@ func modifyTestConfigToSupportArchMutator(testConfig Config) {
 		},
 	}
 
+	// Make the CommonOS OsType available for all products.
+	config.Targets[CommonOS] = []Target{commonTargetMap[CommonOS.Name]}
+
 	if runtime.GOOS == "darwin" {
 		config.Targets[config.BuildOS] = config.Targets[config.BuildOS][:1]
 	}
@@ -116,6 +120,11 @@ func modifyTestConfigForMusl(config Config) {
 
 	config.BuildOSTarget = config.Targets[config.BuildOS][0]
 	config.BuildOSCommonTarget = getCommonTargets(config.Targets[config.BuildOS])[0]
+}
+
+func modifyTestConfigForMuslArm64HostCross(config Config) {
+	config.Targets[LinuxMusl] = append(config.Targets[LinuxMusl],
+		Target{config.BuildOS, Arch{ArchType: Arm64}, NativeBridgeDisabled, "", "", true})
 }
 
 // TestArchConfig returns a Config object suitable for using for tests that

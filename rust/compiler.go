@@ -15,6 +15,7 @@
 package rust
 
 import (
+	"android/soong/cc"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -161,7 +162,7 @@ type BaseCompilerProperties struct {
 	// This is primarily meant for rust_binary and rust_ffi modules where the default
 	// linkage of libstd might need to be overridden in some use cases. This should
 	// generally be avoided with other module types since it may cause collisions at
-	// linkage if all dependencies of the root binary module do not link against libstd\
+	// linkage if all dependencies of the root binary module do not link against libstd
 	// the same way.
 	Prefer_rlib *bool `android:"arch_variant"`
 
@@ -307,19 +308,7 @@ func (compiler *baseCompiler) compilerFlags(ctx ModuleContext, flags Flags) Flag
 	flags.EmitXrefs = ctx.Config().EmitXrefRules()
 
 	if ctx.Host() && !ctx.Windows() {
-		rpathPrefix := `\$$ORIGIN/`
-		if ctx.Darwin() {
-			rpathPrefix = "@loader_path/"
-		}
-
-		var rpath string
-		if ctx.toolchain().Is64Bit() {
-			rpath = "lib64"
-		} else {
-			rpath = "lib"
-		}
-		flags.LinkFlags = append(flags.LinkFlags, "-Wl,-rpath,"+rpathPrefix+rpath)
-		flags.LinkFlags = append(flags.LinkFlags, "-Wl,-rpath,"+rpathPrefix+"../"+rpath)
+		flags.LinkFlags = append(flags.LinkFlags, cc.RpathFlags(ctx)...)
 	}
 
 	return flags

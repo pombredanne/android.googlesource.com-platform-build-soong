@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"android/soong/bazel/cquery"
+
 	"github.com/google/blueprint"
 	"github.com/google/blueprint/bootstrap"
 	"github.com/google/blueprint/proptools"
@@ -468,6 +469,7 @@ func (g *Module) generateCommonBuildActions(ctx android.ModuleContext) {
 				return "SOONG_ERROR", nil
 			}
 
+			// Apply shell escape to each cases to prevent source file paths containing $ from being evaluated in shell
 			switch name {
 			case "location":
 				if len(g.properties.Tools) == 0 && len(g.properties.Tool_files) == 0 {
@@ -481,15 +483,15 @@ func (g *Module) generateCommonBuildActions(ctx android.ModuleContext) {
 					return reportError("default label %q has multiple files, use $(locations %s) to reference it",
 						firstLabel, firstLabel)
 				}
-				return paths[0], nil
+				return proptools.ShellEscape(paths[0]), nil
 			case "in":
-				return strings.Join(cmd.PathsForInputs(srcFiles), " "), nil
+				return strings.Join(proptools.ShellEscapeList(cmd.PathsForInputs(srcFiles)), " "), nil
 			case "out":
 				var sandboxOuts []string
 				for _, out := range task.out {
 					sandboxOuts = append(sandboxOuts, cmd.PathForOutput(out))
 				}
-				return strings.Join(sandboxOuts, " "), nil
+				return strings.Join(proptools.ShellEscapeList(sandboxOuts), " "), nil
 			case "depfile":
 				referencedDepfile = true
 				if !Bool(g.properties.Depfile) {
@@ -497,7 +499,7 @@ func (g *Module) generateCommonBuildActions(ctx android.ModuleContext) {
 				}
 				return "__SBOX_DEPFILE__", nil
 			case "genDir":
-				return cmd.PathForOutput(task.genDir), nil
+				return proptools.ShellEscape(cmd.PathForOutput(task.genDir)), nil
 			default:
 				if strings.HasPrefix(name, "location ") {
 					label := strings.TrimSpace(strings.TrimPrefix(name, "location "))
@@ -509,7 +511,7 @@ func (g *Module) generateCommonBuildActions(ctx android.ModuleContext) {
 							return reportError("label %q has multiple files, use $(locations %s) to reference it",
 								label, label)
 						}
-						return paths[0], nil
+						return proptools.ShellEscape(paths[0]), nil
 					} else {
 						return reportError("unknown location label %q is not in srcs, out, tools or tool_files.", label)
 					}
@@ -520,7 +522,7 @@ func (g *Module) generateCommonBuildActions(ctx android.ModuleContext) {
 						if len(paths) == 0 {
 							return reportError("label %q has no files", label)
 						}
-						return strings.Join(paths, " "), nil
+						return proptools.ShellEscape(strings.Join(paths, " ")), nil
 					} else {
 						return reportError("unknown locations label %q is not in srcs, out, tools or tool_files.", label)
 					}
@@ -873,7 +875,7 @@ func GenRuleFactory() android.Module {
 
 type genRuleProperties struct {
 	// names of the output files that will be generated
-	Out []string `android:"arch_variant"`
+	Out []string
 }
 
 type bazelGenruleAttributes struct {
@@ -891,11 +893,27 @@ func (m *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 	tools_prop.Append(tool_files_prop)
 
 	tools := bazel.MakeLabelListAttribute(tools_prop)
-	srcs := bazel.MakeLabelListAttribute(android.BazelLabelForModuleSrc(ctx, m.properties.Srcs))
+	srcs := bazel.LabelListAttribute{}
+	srcs_labels := bazel.LabelList{}
+	// Only cc_genrule is arch specific
+	if ctx.ModuleType() == "cc_genrule" {
+		for axis, configToProps := range m.GetArchVariantProperties(ctx, &generatorProperties{}) {
+			for config, props := range configToProps {
+				if props, ok := props.(*generatorProperties); ok {
+					labels := android.BazelLabelForModuleSrcExcludes(ctx, props.Srcs, props.Exclude_srcs)
+					srcs_labels.Append(labels)
+					srcs.SetSelectValue(axis, config, labels)
+				}
+			}
+		}
+	} else {
+		srcs_labels = android.BazelLabelForModuleSrcExcludes(ctx, m.properties.Srcs, m.properties.Exclude_srcs)
+		srcs = bazel.MakeLabelListAttribute(srcs_labels)
+	}
 
 	var allReplacements bazel.LabelList
 	allReplacements.Append(tools.Value)
-	allReplacements.Append(srcs.Value)
+	allReplacements.Append(bazel.FirstUniqueBazelLabelList(srcs_labels))
 
 	// Replace in and out variables with $< and $@
 	var cmd string
@@ -907,12 +925,7 @@ func (m *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 			cmd = strings.Replace(*m.properties.Cmd, "$(in)", "$(SRCS)", -1)
 			cmd = strings.Replace(cmd, "$(out)", "$(OUTS)", -1)
 		}
-
-		genDir := "$(GENDIR)"
-		if t := ctx.ModuleType(); t == "cc_genrule" || t == "java_genrule" || t == "java_genrule_host" {
-			genDir = "$(RULEDIR)"
-		}
-		cmd = strings.Replace(cmd, "$(genDir)", genDir, -1)
+		cmd = strings.Replace(cmd, "$(genDir)", "$(RULEDIR)", -1)
 		if len(tools.Value.Includes) > 0 {
 			cmd = strings.Replace(cmd, "$(location)", fmt.Sprintf("$(location %s)", tools.Value.Includes[0].Label), -1)
 			cmd = strings.Replace(cmd, "$(locations)", fmt.Sprintf("$(locations %s)", tools.Value.Includes[0].Label), -1)
@@ -926,6 +939,8 @@ func (m *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 			cmd = strings.Replace(cmd, bpLocs, bazelLocs, -1)
 		}
 	}
+
+	tags := android.ApexAvailableTags(m)
 
 	if ctx.ModuleType() == "gensrcs" {
 		// The Output_extension prop is not in an immediately accessible field
@@ -948,7 +963,10 @@ func (m *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 			Cmd:              cmd,
 			Tools:            tools,
 		}
-		ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: m.Name()}, attrs)
+		ctx.CreateBazelTargetModule(props, android.CommonAttributes{
+			Name: m.Name(),
+			Tags: tags,
+		}, attrs)
 	} else {
 		// The Out prop is not in an immediately accessible field
 		// in the Module struct, so use GetProperties and cast it
@@ -969,16 +987,17 @@ func (m *Module) ConvertWithBp2build(ctx android.TopDownMutatorContext) {
 		props := bazel.BazelTargetModuleProperties{
 			Rule_class: "genrule",
 		}
-		ctx.CreateBazelTargetModule(props, android.CommonAttributes{Name: m.Name()}, attrs)
+		ctx.CreateBazelTargetModule(props, android.CommonAttributes{
+			Name: m.Name(),
+			Tags: tags,
+		}, attrs)
 	}
 }
 
 var Bool = proptools.Bool
 var String = proptools.String
 
-//
 // Defaults
-//
 type Defaults struct {
 	android.ModuleBase
 	android.DefaultsModuleBase

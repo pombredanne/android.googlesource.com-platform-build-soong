@@ -29,9 +29,16 @@ fi
 # Test Setup
 ############
 
-OUTPUT_DIR="$(mktemp -d)"
+OUTPUT_DIR="$(mktemp -d tmp.XXXXXX)"
 SOONG_OUTPUT_DIR="$OUTPUT_DIR/soong"
 BAZEL_OUTPUT_DIR="$OUTPUT_DIR/bazel"
+
+export TARGET_PRODUCT="module_arm"
+[ "$#" -eq 1 ] && export TARGET_PRODUCT="$1"
+
+function call_bazel() {
+  build/bazel/bin/bazel --output_base="$BAZEL_OUTPUT_DIR" $@
+}
 
 function cleanup {
   # call bazel clean because some bazel outputs don't have w bits.
@@ -46,7 +53,7 @@ trap cleanup EXIT
 export UNBUNDLED_BUILD_SDKS_FROM_SOURCE=true # don't rely on prebuilts
 export TARGET_BUILD_APPS="com.android.adbd com.android.tzdata build.bazel.examples.apex.minimal"
 packages/modules/common/build/build_unbundled_mainline_module.sh \
-  --product module_arm \
+  --product "$TARGET_PRODUCT" \
   --dist_dir "$SOONG_OUTPUT_DIR"
 
 ######################
@@ -54,44 +61,38 @@ packages/modules/common/build/build_unbundled_mainline_module.sh \
 ######################
 build/soong/soong_ui.bash --make-mode BP2BUILD_VERBOSE=1 --skip-soong-tests bp2build
 
-function call_bazel() {
-  tools/bazel --output_base="$BAZEL_OUTPUT_DIR" $@
-}
-BAZEL_OUT="$(call_bazel info output_path)"
+BAZEL_OUT="$(call_bazel info --config=bp2build output_path)"
 
-call_bazel build --config=bp2build --config=ci --config=android_arm \
+call_bazel build --config=bp2build --config=ci --config=android \
   //packages/modules/adb/apex:com.android.adbd \
   //system/timezone/apex:com.android.tzdata \
   //build/bazel/examples/apex/minimal:build.bazel.examples.apex.minimal.apex
+BAZEL_ADBD="$(realpath $(call_bazel cquery --config=bp2build --config=android --config=ci --output=files //packages/modules/adb/apex:com.android.adbd))"
+BAZEL_TZDATA="$(realpath $(call_bazel cquery --config=bp2build --config=android --config=ci --output=files //system/timezone/apex:com.android.tzdata))"
+BAZEL_MINIMAL="$(realpath $(call_bazel cquery --config=bp2build --config=android --config=ci --output=files //build/bazel/examples/apex/minimal:build.bazel.examples.apex.minimal.apex))"
 
-# Build debugfs separately, as it's not a dep of apexer, but needs to be an explicit arg.
-call_bazel build --config=bp2build --config=linux_x86_64 //external/e2fsprogs/debugfs
-DEBUGFS_PATH="$BAZEL_OUT/linux_x86_64-fastbuild/bin/external/e2fsprogs/debugfs/debugfs"
-
-function run_deapexer() {
-  call_bazel run --config=bp2build --config=linux_x86_64 //system/apex/tools:deapexer \
-    -- \
-    --debugfs_path="$DEBUGFS_PATH" \
-    $@
-}
+# # Build debugfs separately, as it's not a dep of apexer, but needs to be an explicit arg.
+call_bazel build --config=bp2build --config=linux_x86_64 //external/e2fsprogs/debugfs //system/apex/tools:deapexer
+DEBUGFS_PATH="$(realpath $(call_bazel cquery --config=bp2build --config=linux_x86_64 --config=ci --output=files //external/e2fsprogs/debugfs))"
+DEAPEXER="bazel-bin/system/apex/tools/deapexer"
+DEAPEXER="$DEAPEXER --debugfs_path=$DEBUGFS_PATH"
 
 #######
 # Tests
 #######
 
 function compare_deapexer_list() {
-  local APEX_DIR=$1; shift
+  local BAZEL_APEX=$1; shift
   local APEX=$1; shift
 
   # Compare the outputs of `deapexer list`, which lists the contents of the apex filesystem image.
   local SOONG_APEX="$SOONG_OUTPUT_DIR/$APEX"
-  local BAZEL_APEX="$BAZEL_OUT/android_arm-fastbuild/bin/$APEX_DIR/$APEX"
 
   local SOONG_LIST="$OUTPUT_DIR/soong.list"
   local BAZEL_LIST="$OUTPUT_DIR/bazel.list"
 
-  run_deapexer list "$SOONG_APEX" > "$SOONG_LIST"
-  run_deapexer list "$BAZEL_APEX" > "$BAZEL_LIST"
+  $DEAPEXER list "$SOONG_APEX" > "$SOONG_LIST"
+  $DEAPEXER list "$BAZEL_APEX" > "$BAZEL_LIST"
 
   if cmp -s "$SOONG_LIST" "$BAZEL_LIST"
   then
@@ -110,6 +111,6 @@ function compare_deapexer_list() {
   fi
 }
 
-compare_deapexer_list packages/modules/adb/apex com.android.adbd.apex
-compare_deapexer_list system/timezone/apex com.android.tzdata.apex
-compare_deapexer_list build/bazel/examples/apex/minimal build.bazel.examples.apex.minimal.apex
+compare_deapexer_list "${BAZEL_ADBD}" com.android.adbd.apex
+compare_deapexer_list "${BAZEL_TZDATA}" com.android.tzdata.apex
+compare_deapexer_list "${BAZEL_MINIMAL}" build.bazel.examples.apex.minimal.apex

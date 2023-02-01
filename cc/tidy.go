@@ -68,6 +68,7 @@ func (tidy *tidyFeature) props() []interface{} {
 // Then, that old style usage will be obsolete and an error.
 const NoWarningsAsErrorsInTidyFlags = true
 
+// keep this up to date with https://cs.android.com/android/platform/superproject/+/master:build/bazel/rules/cc/clang_tidy.bzl
 func (tidy *tidyFeature) flags(ctx ModuleContext, flags Flags) Flags {
 	CheckBadTidyFlags(ctx, "tidy_flags", tidy.Properties.Tidy_flags)
 	CheckBadTidyChecks(ctx, "tidy_checks", tidy.Properties.Tidy_checks)
@@ -76,7 +77,15 @@ func (tidy *tidyFeature) flags(ctx ModuleContext, flags Flags) Flags {
 	if tidy.Properties.Tidy != nil && !*tidy.Properties.Tidy {
 		return flags
 	}
-
+	// Some projects like external/* and vendor/* have clang-tidy disabled by default,
+	// unless they are enabled explicitly with the "tidy:true" property or
+	// when TIDY_EXTERNAL_VENDOR is set to true.
+	if !proptools.Bool(tidy.Properties.Tidy) &&
+		config.NoClangTidyForDir(
+			ctx.Config().IsEnvTrue("TIDY_EXTERNAL_VENDOR"),
+			ctx.ModuleDir()) {
+		return flags
+	}
 	// If not explicitly disabled, set flags.Tidy to generate .tidy rules.
 	// Note that libraries and binaries will depend on .tidy files ONLY if
 	// the global WITH_TIDY or module 'tidy' property is true.
@@ -127,19 +136,7 @@ func (tidy *tidyFeature) flags(ctx ModuleContext, flags Flags) Flags {
 		flags.TidyFlags = append(flags.TidyFlags, "-extra-arg-before=-fno-caret-diagnostics")
 	}
 
-	extraArgFlags := []string{
-		// We might be using the static analyzer through clang tidy.
-		// https://bugs.llvm.org/show_bug.cgi?id=32914
-		"-D__clang_analyzer__",
-
-		// A recent change in clang-tidy (r328258) enabled destructor inlining, which
-		// appears to cause a number of false positives. Until that's resolved, this turns
-		// off the effects of r328258.
-		// https://bugs.llvm.org/show_bug.cgi?id=37459
-		"-Xclang", "-analyzer-config", "-Xclang", "c++-temp-dtor-inlining=false",
-	}
-
-	for _, f := range extraArgFlags {
+	for _, f := range config.TidyExtraArgFlags() {
 		flags.TidyFlags = append(flags.TidyFlags, "-extra-arg-before="+f)
 	}
 

@@ -53,7 +53,6 @@ func makeStringOfKeys(ctx android.MakeVarsContext, key android.OnceKey) string {
 
 func makeStringOfWarningAllowedProjects() string {
 	allProjects := append([]string{}, config.WarningAllowedProjects...)
-	allProjects = append(allProjects, config.WarningAllowedOldProjects...)
 	sort.Strings(allProjects)
 	// Makefile rules use pattern "path/%" to match module paths.
 	if len(allProjects) > 0 {
@@ -94,6 +93,7 @@ func makeVarsProvider(ctx android.MakeVarsContext) {
 
 	ctx.Strict("CLANG_EXTERNAL_CFLAGS", "${config.ExternalCflags}")
 	ctx.Strict("GLOBAL_CLANG_CFLAGS_NO_OVERRIDE", "${config.NoOverrideGlobalCflags}")
+	ctx.Strict("GLOBAL_CLANG_CFLAGS_64_NO_OVERRIDE", "${config.NoOverride64GlobalCflags}")
 	ctx.Strict("GLOBAL_CLANG_CPPFLAGS_NO_OVERRIDE", "")
 	ctx.Strict("GLOBAL_CLANG_EXTERNAL_CFLAGS_NO_OVERRIDE", "${config.NoOverrideExternalGlobalCflags}")
 
@@ -315,8 +315,6 @@ func makeVarsToolchain(ctx android.MakeVarsContext, secondPrefix string,
 		ctx.Strict(makePrefix+"LD", "${config.ClangBin}/lld")
 		ctx.Strict(makePrefix+"NDK_TRIPLE", config.NDKTriple(toolchain))
 		ctx.Strict(makePrefix+"TOOLS_PREFIX", "${config.ClangBin}/llvm-")
-		// TODO: GCC version is obsolete now that GCC has been removed.
-		ctx.Strict(makePrefix+"GCC_VERSION", toolchain.GccVersion())
 	}
 
 	if target.Os.Class == android.Host {

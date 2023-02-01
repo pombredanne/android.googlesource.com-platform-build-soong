@@ -201,6 +201,11 @@ func GetSystemServerDexLocation(ctx android.PathContext, global *GlobalConfig, l
 	if apex := global.AllApexSystemServerJars(ctx).ApexOfJar(lib); apex != "" {
 		return fmt.Sprintf("/apex/%s/javalib/%s.jar", apex, lib)
 	}
+
+	if apex := global.AllPlatformSystemServerJars(ctx).ApexOfJar(lib); apex == "system_ext" {
+		return fmt.Sprintf("/system_ext/framework/%s.jar", lib)
+	}
+
 	return fmt.Sprintf("/system/framework/%s.jar", lib)
 }
 
@@ -488,6 +493,10 @@ func dexpreoptCommand(ctx android.PathContext, globalSoong *GlobalSoongConfig, g
 
 	if profile != nil {
 		cmd.FlagWithInput("--profile-file=", profile)
+	}
+
+	if global.EnableUffdGc {
+		cmd.Flag("--runtime-arg").Flag("-Xgc:CMC")
 	}
 
 	rule.Install(odexPath, odexInstallPath)

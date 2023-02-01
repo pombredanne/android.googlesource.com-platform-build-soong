@@ -282,7 +282,7 @@ var (
 	sAbiDiff = pctx.RuleFunc("sAbiDiff",
 		func(ctx android.PackageRuleContext) blueprint.RuleParams {
 			commandStr := "($sAbiDiffer ${extraFlags} -lib ${libName} -arch ${arch} -o ${out} -new ${in} -old ${referenceDump})"
-			commandStr += "|| (echo 'error: Please update ABI references with: $$ANDROID_BUILD_TOP/development/vndk/tools/header-checker/utils/create_reference_dumps.py ${createReferenceDumpFlags} -l ${libName}'"
+			commandStr += "|| (echo '${errorMessage}'"
 			commandStr += " && (mkdir -p $$DIST_DIR/abidiffs && cp ${out} $$DIST_DIR/abidiffs/)"
 			commandStr += " && exit 1)"
 			return blueprint.RuleParams{
@@ -290,13 +290,7 @@ var (
 				CommandDeps: []string{"$sAbiDiffer"},
 			}
 		},
-		"extraFlags", "referenceDump", "libName", "arch", "createReferenceDumpFlags")
-
-	// Rule to unzip a reference abi dump.
-	unzipRefSAbiDump = pctx.AndroidStaticRule("unzipRefSAbiDump",
-		blueprint.RuleParams{
-			Command: "gunzip -c $in > $out",
-		})
+		"extraFlags", "referenceDump", "libName", "arch", "errorMessage")
 
 	// Rule to zip files.
 	zip = pctx.AndroidStaticRule("zip",
@@ -525,6 +519,13 @@ func transformSourceToObj(ctx ModuleContext, subdir string, srcFiles, noTidySrcs
 	cppflags += " ${config.NoOverrideGlobalCflags}"
 	toolingCppflags += " ${config.NoOverrideGlobalCflags}"
 
+	if flags.toolchain.Is64Bit() {
+		cflags += " ${config.NoOverride64GlobalCflags}"
+		toolingCflags += " ${config.NoOverride64GlobalCflags}"
+		cppflags += " ${config.NoOverride64GlobalCflags}"
+		toolingCppflags += " ${config.NoOverride64GlobalCflags}"
+	}
+
 	modulePath := android.PathForModuleSrc(ctx).String()
 	if android.IsThirdPartyPath(modulePath) {
 		cflags += " ${config.NoOverrideExternalGlobalCflags}"
@@ -672,11 +673,16 @@ func transformSourceToObj(ctx ModuleContext, subdir string, srcFiles, noTidySrcs
 			tidyCmd := "${config.ClangBin}/clang-tidy"
 
 			rule := clangTidy
+			reducedCFlags := moduleFlags
 			if ctx.Config().UseRBE() && ctx.Config().IsEnvTrue("RBE_CLANG_TIDY") {
 				rule = clangTidyRE
+				// b/248371171, work around RBE input processor problem
+				// some cflags rejected by input processor, but usually
+				// do not affect included files or clang-tidy
+				reducedCFlags = config.TidyReduceCFlags(reducedCFlags)
 			}
 
-			sharedCFlags := shareFlags("cFlags", moduleFlags)
+			sharedCFlags := shareFlags("cFlags", reducedCFlags)
 			srcRelPath := srcFile.Rel()
 
 			// Add the .tidy rule
@@ -906,53 +912,16 @@ func transformDumpToLinkedDump(ctx android.ModuleContext, sAbiDumps android.Path
 	return android.OptionalPathForPath(outputFile)
 }
 
-// unzipRefDump registers a build statement to unzip a reference abi dump.
-func unzipRefDump(ctx android.ModuleContext, zippedRefDump android.Path, baseName string) android.Path {
-	outputFile := android.PathForModuleOut(ctx, baseName+"_ref.lsdump")
-	ctx.Build(pctx, android.BuildParams{
-		Rule:        unzipRefSAbiDump,
-		Description: "gunzip" + outputFile.Base(),
-		Output:      outputFile,
-		Input:       zippedRefDump,
-	})
-	return outputFile
-}
-
-// sourceAbiDiff registers a build statement to compare linked sAbi dump files (.lsdump).
-func sourceAbiDiff(ctx android.ModuleContext, inputDump android.Path, referenceDump android.Path,
-	baseName, prevVersion, exportedHeaderFlags string, diffFlags []string,
-	checkAllApis, isLlndk, isNdk, isVndkExt, previousVersionDiff bool) android.OptionalPath {
+func transformAbiDumpToAbiDiff(ctx android.ModuleContext, inputDump, referenceDump android.Path,
+	baseName, nameExt string, extraFlags []string, errorMessage string) android.Path {
 
 	var outputFile android.ModuleOutPath
-	if prevVersion == "" {
-		outputFile = android.PathForModuleOut(ctx, baseName+".abidiff")
+	if nameExt != "" {
+		outputFile = android.PathForModuleOut(ctx, baseName+"."+nameExt+".abidiff")
 	} else {
-		outputFile = android.PathForModuleOut(ctx, baseName+"."+prevVersion+".abidiff")
+		outputFile = android.PathForModuleOut(ctx, baseName+".abidiff")
 	}
 	libName := strings.TrimSuffix(baseName, filepath.Ext(baseName))
-
-	var extraFlags []string
-	if checkAllApis {
-		extraFlags = append(extraFlags, "-check-all-apis")
-	} else {
-		extraFlags = append(extraFlags,
-			"-allow-unreferenced-changes",
-			"-allow-unreferenced-elf-symbol-changes")
-	}
-
-	// TODO(b/241496591): Remove -advice-only after b/239792343 and b/239790286 are reolved.
-	if previousVersionDiff {
-		extraFlags = append(extraFlags, "-advice-only")
-	}
-
-	if isLlndk || isNdk {
-		extraFlags = append(extraFlags, "-consider-opaque-types-different")
-	}
-	if isVndkExt || previousVersionDiff {
-		extraFlags = append(extraFlags, "-allow-extensions")
-	}
-	// TODO(b/232891473): Simplify the above logic with diffFlags.
-	extraFlags = append(extraFlags, diffFlags...)
 
 	ctx.Build(pctx, android.BuildParams{
 		Rule:        sAbiDiff,
@@ -961,14 +930,14 @@ func sourceAbiDiff(ctx android.ModuleContext, inputDump android.Path, referenceD
 		Input:       inputDump,
 		Implicit:    referenceDump,
 		Args: map[string]string{
-			"referenceDump":            referenceDump.String(),
-			"libName":                  libName,
-			"arch":                     ctx.Arch().ArchType.Name,
-			"extraFlags":               strings.Join(extraFlags, " "),
-			"createReferenceDumpFlags": "",
+			"referenceDump": referenceDump.String(),
+			"libName":       libName,
+			"arch":          ctx.Arch().ArchType.Name,
+			"extraFlags":    strings.Join(extraFlags, " "),
+			"errorMessage":  errorMessage,
 		},
 	})
-	return android.OptionalPathForPath(outputFile)
+	return outputFile
 }
 
 // Generate a rule for extracting a table of contents from a shared library (.so)
@@ -1125,8 +1094,4 @@ func transformArchiveRepack(ctx android.ModuleContext, inputFile android.Path,
 			"objects": strings.Join(objects, " "),
 		},
 	})
-}
-
-func mingwCmd(toolchain config.Toolchain, cmd string) string {
-	return filepath.Join(toolchain.GccRoot(), "bin", toolchain.GccTriple()+"-"+cmd)
 }

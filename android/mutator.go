@@ -31,22 +31,33 @@ import (
 
 // RegisterMutatorsForBazelConversion is a alternate registration pipeline for bp2build. Exported for testing.
 func RegisterMutatorsForBazelConversion(ctx *Context, preArchMutators []RegisterMutatorFunc) {
+	bp2buildMutators := append(preArchMutators, registerBp2buildConversionMutator)
+	registerMutatorsForBazelConversion(ctx, bp2buildMutators)
+}
+
+// RegisterMutatorsForApiBazelConversion is an alternate registration pipeline for api_bp2build
+// This pipeline restricts generation of Bazel targets to Soong modules that contribute APIs
+func RegisterMutatorsForApiBazelConversion(ctx *Context, preArchMutators []RegisterMutatorFunc) {
+	bp2buildMutators := append(preArchMutators, registerApiBp2buildConversionMutator)
+	registerMutatorsForBazelConversion(ctx, bp2buildMutators)
+}
+
+func registerMutatorsForBazelConversion(ctx *Context, bp2buildMutators []RegisterMutatorFunc) {
 	mctx := &registerMutatorsContext{
 		bazelConversionMode: true,
 	}
 
-	bp2buildMutators := append([]RegisterMutatorFunc{
+	allMutators := append([]RegisterMutatorFunc{
 		RegisterNamespaceMutator,
 		RegisterDefaultsPreArchMutators,
 		// TODO(b/165114590): this is required to resolve deps that are only prebuilts, but we should
 		// evaluate the impact on conversion.
 		RegisterPrebuiltsPreArchMutators,
 	},
-		preArchMutators...)
-	bp2buildMutators = append(bp2buildMutators, registerBp2buildConversionMutator)
+		bp2buildMutators...)
 
 	// Register bp2build mutators
-	for _, f := range bp2buildMutators {
+	for _, f := range allMutators {
 		f(mctx)
 	}
 
@@ -398,7 +409,7 @@ func bottomUpMutatorContextFactory(ctx blueprint.BottomUpMutatorContext, a Modul
 
 	return &bottomUpMutatorContext{
 		bp:                ctx,
-		baseModuleContext: a.base().baseModuleContextFactory(ctx),
+		baseModuleContext: moduleContext,
 		finalPhase:        finalPhase,
 	}
 }
@@ -692,6 +703,28 @@ func (t *topDownMutatorContext) CreateBazelTargetModuleWithRestrictions(
 	attrs interface{},
 	enabledProperty bazel.BoolAttribute) {
 	t.createBazelTargetModule(bazelProps, commonAttrs, attrs, enabledProperty)
+}
+
+// ApexAvailableTags converts the apex_available property value of an ApexModule
+// module and returns it as a list of keyed tags.
+func ApexAvailableTags(mod Module) bazel.StringListAttribute {
+	attr := bazel.StringListAttribute{}
+	tags := []string{}
+	// Transform specific attributes into tags.
+	if am, ok := mod.(ApexModule); ok {
+		// TODO(b/218841706): hidl_interface has the apex_available prop, but it's
+		// defined directly as a prop and not via ApexModule, so this doesn't
+		// pick those props up.
+		// TODO(b/260694842): This does not pick up aidl_interface.backend.ndk.apex_available.
+		for _, a := range am.apexModuleBase().ApexAvailable() {
+			tags = append(tags, "apex_available="+a)
+		}
+	}
+	if len(tags) > 0 {
+		// This avoids creating a tags attr with an empty list if there are no tags.
+		attr.Value = tags
+	}
+	return attr
 }
 
 func (t *topDownMutatorContext) createBazelTargetModule(

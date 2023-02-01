@@ -33,6 +33,7 @@ func TestRuntimeResourceOverlay(t *testing.T) {
 			name: "foo",
 			certificate: "platform",
 			lineage: "lineage.bin",
+			rotationMinSdkVersion: "32",
 			product_specific: true,
 			static_libs: ["bar"],
 			resource_libs: ["baz"],
@@ -89,13 +90,14 @@ func TestRuntimeResourceOverlay(t *testing.T) {
 		t.Errorf("Resource lib flag %q missing in aapt2 link flags: %q", resourceLibFlag, aapt2Flags)
 	}
 
-	// Check cert signing flag.
+	// Check cert signing flags.
 	signedApk := m.Output("signed/foo.apk")
-	lineageFlag := signedApk.Args["flags"]
-	expectedLineageFlag := "--lineage lineage.bin"
-	if expectedLineageFlag != lineageFlag {
-		t.Errorf("Incorrect signing lineage flags, expected: %q, got: %q", expectedLineageFlag, lineageFlag)
+	actualCertSigningFlags := signedApk.Args["flags"]
+	expectedCertSigningFlags := "--lineage lineage.bin --rotation-min-sdk-version 32"
+	if expectedCertSigningFlags != actualCertSigningFlags {
+		t.Errorf("Incorrect cert signing flags, expected: %q, got: %q", expectedCertSigningFlags, actualCertSigningFlags)
 	}
+
 	signingFlag := signedApk.Args["certificates"]
 	expected := "build/make/target/product/security/platform.x509.pem build/make/target/product/security/platform.pk8"
 	if expected != signingFlag {
@@ -199,6 +201,7 @@ func TestOverrideRuntimeResourceOverlay(t *testing.T) {
 			base: "foo_overlay",
 			package_name: "com.android.bar.overlay",
 			target_package_name: "com.android.bar",
+			category: "mycategory",
 		}
 		`)
 
@@ -210,6 +213,7 @@ func TestOverrideRuntimeResourceOverlay(t *testing.T) {
 		targetVariant     string
 		packageFlag       string
 		targetPackageFlag string
+		categoryFlag      string
 	}{
 		{
 			variantName:       "android_common",
@@ -226,6 +230,7 @@ func TestOverrideRuntimeResourceOverlay(t *testing.T) {
 			targetVariant:     "android_common_bar",
 			packageFlag:       "com.android.bar.overlay",
 			targetPackageFlag: "com.android.bar",
+			categoryFlag:      "mycategory",
 		},
 	}
 	for _, expected := range expectedVariants {
@@ -247,6 +252,7 @@ func TestOverrideRuntimeResourceOverlay(t *testing.T) {
 		checkAapt2LinkFlag(t, aapt2Flags, "rename-manifest-package", expected.packageFlag)
 		checkAapt2LinkFlag(t, aapt2Flags, "rename-resources-package", "")
 		checkAapt2LinkFlag(t, aapt2Flags, "rename-overlay-target-package", expected.targetPackageFlag)
+		checkAapt2LinkFlag(t, aapt2Flags, "rename-overlay-category", expected.categoryFlag)
 	}
 }
 
