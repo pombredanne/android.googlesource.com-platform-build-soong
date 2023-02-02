@@ -521,27 +521,33 @@ func NewConfig(cmdArgs CmdArgs, availableEnv map[string]string) (Config, error) 
 		config.AndroidFirstDeviceTarget = FirstTarget(config.Targets[Android], "lib64", "lib32")[0]
 	}
 
-	if cmdArgs.SymlinkForestMarker != "" {
-		config.BuildMode = SymlinkForest
-	} else if cmdArgs.Bp2buildMarker != "" {
-		config.BuildMode = Bp2build
-	} else if cmdArgs.BazelQueryViewDir != "" {
-		config.BuildMode = GenerateQueryView
-	} else if cmdArgs.BazelApiBp2buildDir != "" {
-		config.BuildMode = ApiBp2build
-	} else if cmdArgs.ModuleGraphFile != "" {
-		config.BuildMode = GenerateModuleGraph
-	} else if cmdArgs.DocFile != "" {
-		config.BuildMode = GenerateDocFile
-	} else if cmdArgs.BazelModeDev {
-		config.BuildMode = BazelDevMode
-	} else if cmdArgs.BazelMode {
-		config.BuildMode = BazelProdMode
-	} else if cmdArgs.BazelModeStaging {
-		config.BuildMode = BazelStagingMode
-	} else {
-		config.BuildMode = AnalysisNoBazel
+	setBuildMode := func(arg string, mode SoongBuildMode) {
+		if arg != "" {
+			if config.BuildMode != AnalysisNoBazel {
+				fmt.Fprintf(os.Stderr, "buildMode is already set, illegal argument: %s", arg)
+				os.Exit(1)
+			}
+			config.BuildMode = mode
+		}
 	}
+	setBazelMode := func(arg bool, argName string, mode SoongBuildMode) {
+		if arg {
+			if config.BuildMode != AnalysisNoBazel {
+				fmt.Fprintf(os.Stderr, "buildMode is already set, illegal argument: %s", argName)
+				os.Exit(1)
+			}
+			config.BuildMode = mode
+		}
+	}
+	setBuildMode(cmdArgs.SymlinkForestMarker, SymlinkForest)
+	setBuildMode(cmdArgs.Bp2buildMarker, Bp2build)
+	setBuildMode(cmdArgs.BazelQueryViewDir, GenerateQueryView)
+	setBuildMode(cmdArgs.BazelApiBp2buildDir, ApiBp2build)
+	setBuildMode(cmdArgs.ModuleGraphFile, GenerateModuleGraph)
+	setBuildMode(cmdArgs.DocFile, GenerateDocFile)
+	setBazelMode(cmdArgs.BazelModeDev, "--bazel-mode-dev", BazelDevMode)
+	setBazelMode(cmdArgs.BazelMode, "--bazel-mode", BazelProdMode)
+	setBazelMode(cmdArgs.BazelModeStaging, "--bazel-mode-staging", BazelStagingMode)
 
 	config.BazelContext, err = NewBazelContext(config)
 	config.Bp2buildPackageConfig = GetBp2BuildAllowList()
@@ -717,10 +723,6 @@ func (c *config) IsEnvTrue(key string) bool {
 func (c *config) IsEnvFalse(key string) bool {
 	value := c.Getenv(key)
 	return value == "0" || value == "n" || value == "no" || value == "off" || value == "false"
-}
-
-func (c *config) TargetsJava17() bool {
-	return c.IsEnvTrue("EXPERIMENTAL_TARGET_JAVA_VERSION_17")
 }
 
 // EnvDeps returns the environment variables this build depends on. The first
