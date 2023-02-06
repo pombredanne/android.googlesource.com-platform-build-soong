@@ -48,8 +48,7 @@ var (
 		"-Wl,-z,separate-code",
 	}
 
-	arm64DeviceLldflags = append(arm64Ldflags,
-		"-Wl,-z,max-page-size=16384")
+	arm64DeviceLldflags = []string{}
 
 	arm64Cppflags = []string{}
 
@@ -86,9 +85,24 @@ var (
 	}
 )
 
+func Arm64LldFlag(ctx android.PackageVarContext, flags []string) []string{
+	if (ctx.Config().TargetPageSize16k()) {
+		flags = append(arm64Ldflags, "-Wl,-z,max-page-size=16384")
+	} else {
+		flags = append(arm64Ldflags, "-Wl,-z,max-page-size=4096")
+	}
+	return flags;
+}
+
 func init() {
 	exportedVars.ExportStringListStaticVariable("Arm64Ldflags", arm64Ldflags)
-	exportedVars.ExportStringListStaticVariable("Arm64Lldflags", arm64DeviceLldflags)
+
+	exportedVars.ExportStringList("Arm64Lldflags", arm64DeviceLldflags)
+
+	pctx.VariableFunc("Arm64Lldflags", func(ctx android.PackageVarContext) string {
+		flags := Arm64LldFlag(ctx, arm64DeviceLldflags)
+		return strings.Join(flags, " ")
+	})
 
 	exportedVars.ExportStringListStaticVariable("Arm64Cflags", arm64Cflags)
 	exportedVars.ExportStringListStaticVariable("Arm64Cppflags", arm64Cppflags)

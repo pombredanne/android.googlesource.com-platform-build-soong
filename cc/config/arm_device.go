@@ -35,10 +35,9 @@ var (
 	armLdflags = []string{
 		"-Wl,--hash-style=gnu",
 		"-Wl,-m,armelf",
-		"-Wl,-z,max-page-size=16384",
 	}
 
-	armLldflags = armLdflags
+	armLldflags = []string{}
 
 	armFixCortexA8LdFlags = []string{"-Wl,--fix-cortex-a8"}
 
@@ -172,12 +171,26 @@ const (
 	clangTriple = "armv7a-linux-androideabi"
 )
 
+func ArmLldFlag(ctx android.PackageVarContext, flags []string) []string{
+        if (ctx.Config().TargetPageSize16k()) {
+                flags = append(armLdflags, "-Wl,-z,max-page-size=16384")
+        } else {
+                flags = append(armLdflags, "-Wl,-z,max-page-size=4096")
+        }
+        return flags;
+}
+
 func init() {
 	// Just exported. Not created as a Ninja static variable.
 	exportedVars.ExportString("ArmClangTriple", clangTriple)
 
 	exportedVars.ExportStringListStaticVariable("ArmLdflags", armLdflags)
-	exportedVars.ExportStringListStaticVariable("ArmLldflags", armLldflags)
+	exportedVars.ExportStringList("ArmLldflags", armLldflags)
+
+        pctx.VariableFunc("ArmLldflags", func(ctx android.PackageVarContext) string {
+                flags := ArmLldFlag(ctx, armLldflags)
+                return strings.Join(flags, " ")
+        })
 
 	exportedVars.ExportStringListStaticVariable("ArmFixCortexA8LdFlags", armFixCortexA8LdFlags)
 	exportedVars.ExportStringListStaticVariable("ArmNoFixCortexA8LdFlags", armNoFixCortexA8LdFlags)
