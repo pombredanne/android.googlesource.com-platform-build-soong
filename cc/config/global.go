@@ -279,7 +279,6 @@ var (
 
 		// http://b/145211477
 		"-Wno-pointer-compare",
-		// http://b/145211022
 		"-Wno-final-dtor-non-final-class",
 
 		// http://b/165945989
@@ -293,6 +292,9 @@ var (
 
 		// http://b/239661264
 		"-Wno-deprecated-non-prototype",
+
+		// http://b/191699019
+		"-Wno-format-insufficient-args",
 	}
 
 	llvmNextExtraCommonGlobalCflags = []string{
